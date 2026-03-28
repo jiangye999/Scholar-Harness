@@ -1,0 +1,2037 @@
+﻿FN Clarivate Analytics Web of Science
+VR 1.0
+PT J
+AU Zhou, YZ
+   Zhang, YY
+   Tian, D
+   Mu, YJ
+AF Zhou, Yizhen
+   Zhang, Yuanyuan
+   Tian, Di
+   Mu, Yujing
+TI Impact of dicyandiamide on emissions of nitrous oxide, nitric oxide and
+   ammonia from agricultural field in the North China Plain
+SO JOURNAL OF ENVIRONMENTAL SCIENCES
+LA English
+DT Article; Proceedings Paper
+CT 4th Sino-French Workshop
+CY DEC 10-13, 2014
+CL Lyon, FRANCE
+SP French Embassy, French Ctr Natl Rech Sci, Minist Environm Protect P R China, Chinese Res Acad Environm Sci, Res Ctr Eco Environm Sci, Fudan Univ, Journal Environm Sci, Shandong Univ
+DE Dicyandiamide; Nitrous oxide; Nitric oxide; Ammonia; North China Plain
+ID FLUVO-AQUIC SOIL; NITRIFICATION INHIBITORS; GASEOUS EMISSIONS; UREASE
+   INHIBITOR; N2O EMISSIONS; GRAZED GRASSLAND; MAIZE ROTATION; NH3
+   EMISSIONS; PASTURE SOIL; PIG SLURRY
+AB Nitrous oxide (N2O), nitric oxide (NO) and ammonia (NH3) emissions from an agricultural field in the North China Plain were compared for three treatments during a whole maize growing period from 26 June to 11 October, 2012. Compared with the control treatment (without fertilization, designated as CK), remarkable pulse emissions of N2O, NO and NH3 were observed from the normal fertilization treatment (designated as NP) just after fertilization, whereas only N2O and NH3 pulse emissions were evident from the nitrification inhibitor treatment (designated as ND). The reduction proportions of N2O and NO emissions from the ND treatment compared to those from the NP treatment during the whole maize growing period were 31% and 100%, respectively. A measurable increase of NH3 emission from the ND treatment was found with a cumulative NH3 emission of 3.8 +/- 1.2 kg N/ha, which was 1.4 times greater than that from the NP treatment (2.7 +/- 0.7 kg N/ha). (C) 2015 The Research Center for Eco-Environmental Sciences, Chinese Academy of Sciences. Published by Elsevier B.V.
+C1 [Zhou, Yizhen; Zhang, Yuanyuan; Tian, Di; Mu, Yujing] Chinese Acad Sci, Res Ctr Ecoenvironm Sci, Beijing 100085, Peoples R China.
+   [Zhou, Yizhen; Tian, Di] Univ Chinese Acad Sci, Beijing 100049, Peoples R China.
+C3 Chinese Academy of Sciences; Research Center for Eco-Environmental
+   Sciences (RCEES), CAS; Chinese Academy of Sciences; University of
+   Chinese Academy of Sciences, CAS
+RP Mu, YJ (corresponding author), Chinese Acad Sci, Res Ctr Ecoenvironm Sci, Beijing 100085, Peoples R China.
+EM zhouyizhen0519@163.com; yjmu@rcees.ac.cn
+RI Zhang, Yuanyuan/KIA-1939-2024
+NR 68
+TC 22
+Z9 25
+U1 3
+U2 138
+PU SCIENCE PRESS
+PI BEIJING
+PA 16 DONGHUANGCHENGGEN NORTH ST, BEIJING 100717, PEOPLES R CHINA
+SN 1001-0742
+EI 1878-7320
+J9 J ENVIRON SCI
+JI J. Environ. Sci.
+PD FEB
+PY 2016
+VL 40
+BP 20
+EP 27
+DI 10.1016/j.jes.2015.08.016
+PG 8
+WC Environmental Sciences
+WE Science Citation Index Expanded (SCI-EXPANDED); Conference Proceedings Citation Index - Science (CPCI-S)
+SC Environmental Sciences & Ecology
+GA DG5DF
+UT WOS:000372093200004
+PM 26969541
+DA 2026-01-16
+ER
+
+PT J
+AU Zhang, YY
+   Mu, YJ
+   Zhou, YZ
+   Tian, D
+   Liu, JF
+   Zhang, CL
+AF Zhang, Yuanyuan
+   Mu, Yujing
+   Zhou, Yizhen
+   Tian, Di
+   Liu, Junfeng
+   Zhang, Chenglong
+TI NO and N2O emissions from agricultural fields in the North
+   China Plain: Origination and mitigation
+SO SCIENCE OF THE TOTAL ENVIRONMENT
+LA English
+DT Article
+DE Nitric oxide; Nitrous oxide; Origination; Nitrification; Mitigation;
+   North China Plain
+ID NITROUS-OXIDE EMISSIONS; FILLED PORE-SPACE; NITRIC-OXIDE; CROPPING
+   SYSTEM; SOIL; DENITRIFICATION; NITRIFICATION; TEMPERATURE; FERTILIZER;
+   INVENTORY
+AB Agricultural soil has been recognized as a major source of atmospheric NO and N2O emissions which have important impacts on regional and global environments. Here we comparably investigated the effects of ammonium, nitrate fertilizers and nitrification inhibitor dicyandiamide (DCD) addition on NO and N2O emissions from the agricultural soil in the North China Plain (NCP). Compared with the ammonium fertilizer application, the reductions of NO emissions caused by nitrate fertilizer and DCD addition were 100% and 93%, and of N2O emissions were 54% and 74%, respectively. Remarkable reductions of NO and N2O emissions were also observed from five different agricultural soils in the NCP by replacing ammonium with nitrate fertilizer, indicating that nitrification is the predominant process for the emissions of NO and N2O from the soils in the vast area of NCP. NO emission peaks were found to be several days later than N2O peaks after the application of ammonium fertilizer and flooding irrigation, implying that most of NO initially produced via nitrification process might be fast reduced to N2O under the high soil moisture condition. Interestingly, the relative contribution of denitrification to N2O emission showed obviously time-dependent, e.g., evident N2O emission caused by the application of nitrate was only observed after the basal fertilization for the maize and the top dressing for the wheat. Replacing ammonium with nitrate fertilizer and mixing with the nitrification inhibitor are verified to be effective measures for mitigating NO and N2O emissions from arable soils in the NCP. (C) 2016 Elsevier B.V. All rights reserved.
+C1 [Zhang, Yuanyuan; Mu, Yujing; Zhou, Yizhen; Tian, Di; Liu, Junfeng; Zhang, Chenglong] Chinese Acad Sci, Ecoenvironm Sci Res Ctr, Beijing 100085, Peoples R China.
+   [Mu, Yujing] Chinese Acad Sci, Inst Urban Environm, CAS Ctr Excellence Urban Atmospher Environm, Xiamen 361021, Peoples R China.
+C3 Chinese Academy of Sciences; Research Center for Eco-Environmental
+   Sciences (RCEES), CAS; Chinese Academy of Sciences; Institute of Urban
+   Environment, CAS
+RP Mu, YJ (corresponding author), Chinese Acad Sci, Ecoenvironm Sci Res Ctr, Beijing 100085, Peoples R China.; Mu, YJ (corresponding author), Chinese Acad Sci, Inst Urban Environm, CAS Ctr Excellence Urban Atmospher Environm, Xiamen 361021, Peoples R China.
+EM yjmu@rcees.ac.cn
+RI Zhang, Yuanyuan/KIA-1939-2024; Zhang, Chenglong/MGP-9341-2025
+FU National Key Technology R&D Program of China [2013BAD11B03-3]; Chinese
+   Academy of Sciences [XDB05010100]; National Natural Science Foundation
+   of China [21177140]
+FX This work was financially supported by the National Key Technology R&D
+   Program of China (No. 2013BAD11B03-3), the Strategic Priority Research
+   Program of the Chinese Academy of Sciences (No. XDB05010100), and the
+   National Natural Science Foundation of China (No. 21177140).
+NR 50
+TC 48
+Z9 56
+U1 11
+U2 207
+PU ELSEVIER
+PI AMSTERDAM
+PA RADARWEG 29, 1043 NX AMSTERDAM, NETHERLANDS
+SN 0048-9697
+EI 1879-1026
+J9 SCI TOTAL ENVIRON
+JI Sci. Total Environ.
+PD MAY 1
+PY 2016
+VL 551
+BP 197
+EP 204
+DI 10.1016/j.scitotenv.2016.01.209
+PG 8
+WC Environmental Sciences
+WE Science Citation Index Expanded (SCI-EXPANDED)
+SC Environmental Sciences & Ecology
+GA DH2BT
+UT WOS:000372589800023
+PM 26874775
+DA 2026-01-16
+ER
+
+PT J
+AU Zhang, YY
+   Guo, GX
+   Wu, H
+   Mu, YJ
+   Liu, PF
+   Liu, JF
+   Zhang, CL
+AF Zhang, Yuanyuan
+   Guo, Guangxia
+   Wu, Hai
+   Mu, Yujing
+   Liu, Pengfei
+   Liu, Junfeng
+   Zhang, Chenglong
+TI The coupling interaction of NO2- with
+   NH4+ or NO3- as an important
+   source of N2O emission from agricultural soil in the North
+   China Plain
+SO SCIENCE OF THE TOTAL ENVIRONMENT
+LA English
+DT Article
+DE Nitrous oxide; Nitric oxide; Nitrite; N2O reductase; North China Plain
+ID NITROUS-OXIDE EMISSIONS; NITRIC-OXIDE; DENITRIFYING BACTERIA; N
+   MANAGEMENT; GENES; DENITRIFICATION; AMMONIA; NITRIFICATION;
+   ACCUMULATION; COMMUNITY
+AB NO2- plays a crucial role in regulating N2O formation from the soil, while how it affects the production of soil N2O is still not well understood. In this study, N2O and NO emissions from an agricultural field of the North China Plain (NCP) were comparatively investigated under live different fertilizer treatments (NH4+, NO3-, NO2-, NH4+ + NO2- and NO3- + NO2-). Additionally, soil NH4+, NO2- and NO3- concentrations and the abundance of functional genes associated with nitrogen cycling were also analyzed in the incubation experiment. The results showed that the N2O average fluxes from the complex treatments of NO2- + NO3- were 1.4-2.4 times the sum of those from the separate treatments of NO2- and NO3- whereas from the complex treatments of NO2- + NH4+ were a factor of 1 - 1.4 larger than those from the separate treatments of NO(2)( )(-)and NH4+, indicating the coupling interaction of NO2- with NH4+ or NO3- makes a remarkable contribution to N2O emission from the soil. Significant reduction of the activity of N2O reductase was found in the soil with the addition of NO2-, which favored the accumulation of N2O formed through nitrification of NH4+ and denitrification of NO2-, resulting in relatively high N2O emissions from the complex treatments. As the intermediate product of nitrification and denitrification, NO2- produced is also expected to interact with NH(4)( )(+)or NO3- to promote N2O emission from the soil, especially during fertilization events when NO2- is easily accumulated due to the acceleration of the nitrification and denitrification processes. (C) 2019 Elsevier B.V. All rights reserved.
+C1 [Zhang, Yuanyuan; Guo, Guangxia; Mu, Yujing; Liu, Pengfei; Liu, Junfeng; Zhang, Chenglong] Chinese Acad Sci, Res Ctr Ecoenvironm Sci, Beijing 100085, Peoples R China.
+   [Zhang, Yuanyuan; Mu, Yujing; Liu, Pengfei; Liu, Junfeng; Zhang, Chenglong] Chinese Acad Sci, Inst Urban Environm, Ctr Excellence Urban Atmospher Environm, Xiamen 361021, Fujian, Peoples R China.
+   [Zhang, Yuanyuan; Guo, Guangxia; Mu, Yujing; Liu, Pengfei; Liu, Junfeng; Zhang, Chenglong] Univ Chinese Acad Sci, Beijing 100049, Peoples R China.
+   [Wu, Hai] Natl Inst Metrol, Beijing, Peoples R China.
+C3 Chinese Academy of Sciences; Research Center for Eco-Environmental
+   Sciences (RCEES), CAS; Chinese Academy of Sciences; Institute of Urban
+   Environment, CAS; Chinese Academy of Sciences; University of Chinese
+   Academy of Sciences, CAS; National Institute of Metrology China
+RP Mu, YJ (corresponding author), Chinese Acad Sci, Res Ctr Ecoenvironm Sci, Beijing 100085, Peoples R China.
+EM yjmu@rcees.ac.cn
+RI Zhang, Yuanyuan/KIA-1939-2024; Zhang, Chenglong/MGP-9341-2025; Liu,
+   Pengfei/IZD-6128-2023
+OI Liu, Pengfei/0000-0001-6237-3759
+FU National Key Research and Development of China [2017YFC0209703];
+   National Natural Science Foundation of China [41575121, 91544211,
+   21477142]
+FX This work was financially supported by the National Key Research and
+   Development of China (No. 2017YFC0209703), and the National Natural
+   Science Foundation of China (No. 41575121, 91544211, 21477142).
+NR 37
+TC 10
+Z9 14
+U1 8
+U2 219
+PU ELSEVIER
+PI AMSTERDAM
+PA RADARWEG 29, 1043 NX AMSTERDAM, NETHERLANDS
+SN 0048-9697
+EI 1879-1026
+J9 SCI TOTAL ENVIRON
+JI Sci. Total Environ.
+PD NOV 20
+PY 2019
+VL 692
+BP 82
+EP 88
+DI 10.1016/j.scitotenv.2019.07.244
+PG 7
+WC Environmental Sciences
+WE Science Citation Index Expanded (SCI-EXPANDED)
+SC Environmental Sciences & Ecology
+GA IW5BW
+UT WOS:000484994700010
+PM 31336304
+DA 2026-01-16
+ER
+
+PT J
+AU Cui, F
+   Yan, GX
+   Zhou, ZX
+   Zheng, XH
+   Deng, J
+AF Cui, Feng
+   Yan, Guangxuan
+   Zhou, Zaixing
+   Zheng, Xunhua
+   Deng, Jia
+TI Annual emissions of nitrous oxide and nitric oxide from a wheat-maize
+   cropping system on a silt loam calcareous soil in the North China Plain
+SO SOIL BIOLOGY & BIOCHEMISTRY
+LA English
+DT Article
+DE Emission factor; Nitric oxide; Nitrous oxide; Wheat; Maize; Dissolved
+   organic carbon; Nitrogen fertilization
+ID UREA HYDROLYSIS; N2O; ROTATION; FLUXES; DENITRIFICATION; FIELD; NO;
+   TEMPERATURE; FERTILIZER; LOSSES
+AB Nitrogen amendment followed by flooding irrigation is a general management practice fora wheat-maize rotation in the North China Plain, which may favor nitrification and denitrification. Consequently, high emissions of nitrous oxide (N2O) and nitric oxide (NO) are hypothesized to occur. To test this hypothesis, we performed year-round field measurements of N2O and NO fluxes from irrigated wheat-maize fields on a calcareous soil applied with all crop residues using a static, opaque chamber measuring system. To interpret the field data, laboratory experiments using intact soil cores with added carbon (glucose) and nitrogen (nitrate, ammonium) substrates were performed. Our field measurements showed that pulse emissions after fertilization and irrigation/rainfall contributed to 73% and 88% of the annual N2O and NO emissions, respectively. Soil moisture and mineral nitrogen contents significantly affected the emissions of both gases. Annual emissions from fields fertilized at the conventional rate (600 kg N ha(-1) yr(-1)) totaled 4.0 +/- 0.2 and 3.0 +/- 0.2 kg N ha(-1) yr(-1) for N2O and NO, respectively, while those from unfertilized fields were much lower (0.5 +/- 0.02 kg N ha(-1) yr(-1) and 0.4 +/- 0.05 kg N ha(-1) yr(-1), respectively). Direct emission factors (EF(d)s) of N2O and NO for the fertilizer nitrogen were estimated to be 0.59 +/- 0.04% and 0.44 +/- 0.04%, respectively. By summarizing the results of our study and others, we recommended specific EF(d)s (N2O: 0.54 +/- 0.09%; NO: 0.45 +/- 0.04%) for estimating emissions from irrigated croplands on calcareous soils with organic carbon ranging from 5 to 16 g kg(-1). Nitrification dominated the processes driving the emissions of both gases following fertilization. It was evident that insufficient available carbon limited microbial denitrification and thus N2O emission. This implicates that efforts to enhance carbon sink in calcareous soils likely increase their N2O emissions. (C) 2012 Elsevier Ltd. All rights reserved.
+C1 [Cui, Feng; Yan, Guangxuan; Zhou, Zaixing; Zheng, Xunhua; Deng, Jia] Chinese Acad Sci, Inst Atmospher Phys, State Key Lab Atmospher Boundary Layer Phys & Atm, Beijing 100029, Peoples R China.
+C3 Chinese Academy of Sciences; Institute of Atmospheric Physics, CAS
+RP Zheng, XH (corresponding author), Chinese Acad Sci, Inst Atmospher Phys, State Key Lab Atmospher Boundary Layer Phys & Atm, Beijing 100029, Peoples R China.
+EM xunhua.zheng@post.iap.ac.cn
+RI Zheng, Xunhua/D-3048-2017; Yan, Guangxuan/H-9663-2016; Deng,
+   Jia/A-8468-2018
+OI Zheng, Xunhua/0000-0002-4138-7470; 
+FU Ministry of Agriculture of China [201103039]; National Natural Science
+   Foundation of China [41021004]
+FX This study was financially supported by the Ministry of Agriculture of
+   China (grant No.: 201103039) and the National Natural Science Foundation
+   of China (grant No.: 41021004). We sincerely thank K. Butterbach-Bahl
+   for his insightful comments on an earlier draft.
+NR 58
+TC 149
+Z9 193
+U1 13
+U2 323
+PU PERGAMON-ELSEVIER SCIENCE LTD
+PI OXFORD
+PA THE BOULEVARD, LANGFORD LANE, KIDLINGTON, OXFORD OX5 1GB, ENGLAND
+SN 0038-0717
+EI 1879-3428
+J9 SOIL BIOL BIOCHEM
+JI Soil Biol. Biochem.
+PD MAY
+PY 2012
+VL 48
+BP 10
+EP 19
+DI 10.1016/j.soilbio.2012.01.007
+PG 10
+WC Soil Science
+WE Science Citation Index Expanded (SCI-EXPANDED)
+SC Agriculture
+GA 921AA
+UT WOS:000302449200002
+DA 2026-01-16
+ER
+
+PT J
+AU Wang, QG
+   Han, ZW
+   Higano, Y
+AF Wang, QG
+   Han, ZW
+   Higano, Y
+TI An inventory of nitric oxide emissions from soils in China
+SO ENVIRONMENTAL POLLUTION
+LA English
+DT Article
+DE nitrogen oxides; emission inventory; soil NO; ozone formation
+ID NO EMISSIONS; FOREST SOILS; AGRICULTURAL SOILS; FIELD-MEASUREMENTS;
+   NITROUS-OXIDE; N2O; ECOSYSTEMS; FLUXES; SPRUCE; MODEL
+AB The emission of NO was parameterized using empirical relationships with landuse type, fertilization rate and soil temperature. Eight landuse types (including four arable lands) were considered. Fertilization rates were distinguished for different regions and crops. A typical summer period of July in 1999 was chosen for detailed calculations. The total NO emission in the July is 141.1 Gg N, with 73.7% from arable lands and 22.0% from grasslands. The highest emission intensity can be more than 40 ng N m(-2) s(-1) in the heavily fertilized North China Plain, and the average of the whole lands is 6.5 ng N m(-2) s(-1). The annual emission was roughly estimated to be 657 Gg N, about 11.7% of the global total (5600 Gg N, reported by IPCC in 2000), and about 12.5% of the anthropogenic origin in China. Our results were compared with some earlier findings, and uncertainties were discussed. (C) 2004 Elsevier Ltd. All rights reserved.
+C1 Univ Tsukuba, Grad Sch Life & Environm Sci, Prof Higanos Lab, Tsukuba, Ibaraki 3058572, Japan.
+   Nanjing Univ, Sch Environm, State Key Lab Pollut Control & Resources Reuse, Nanjing 210093, Peoples R China.
+   Chinese Acad Sci, Inst Atmospher Phys, Beijing 100029, Peoples R China.
+C3 University of Tsukuba; Nanjing University; Chinese Academy of Sciences;
+   Institute of Atmospheric Physics, CAS
+RP Wang, QG (corresponding author), Univ Tsukuba, Grad Sch Life & Environm Sci, Prof Higanos Lab, Tsukuba, Ibaraki 3058572, Japan.
+EM wangqg@nju.edu.cn
+RI Higano, Yoshiro/U-2785-2019; Han, Zhiwei/AAJ-5798-2020
+NR 28
+TC 32
+Z9 36
+U1 3
+U2 50
+PU ELSEVIER SCI LTD
+PI OXFORD
+PA THE BOULEVARD, LANGFORD LANE, KIDLINGTON, OXFORD OX5 1GB, OXON, ENGLAND
+SN 0269-7491
+J9 ENVIRON POLLUT
+JI Environ. Pollut.
+PD MAY
+PY 2005
+VL 135
+IS 1
+BP 83
+EP 90
+DI 10.1016/j.envpol.2004.10.007
+PG 8
+WC Environmental Sciences
+WE Science Citation Index Expanded (SCI-EXPANDED)
+SC Environmental Sciences & Ecology
+GA 904IC
+UT WOS:000227488300009
+PM 15701395
+DA 2026-01-16
+ER
+
+PT J
+AU Yao, ZS
+   Yan, GG
+   Zheng, XH
+   Wang, R
+   Liu, CY
+   Butterbach-Bahl, K
+AF Yao, Zhisheng
+   Yan, Guangxuan
+   Zheng, Xunhua
+   Wang, Rui
+   Liu, Chunyan
+   Butterbach-Bahl, Klaus
+TI Straw return reduces yield-scaled N2O plus NO emissions from
+   annual winter wheat-based cropping systems in the North China Plain
+SO SCIENCE OF THE TOTAL ENVIRONMENT
+LA English
+DT Article
+DE Crop straw; Nitrous oxide; Nitric oxide; Emission factor; Nitrogen
+   management
+ID NITROUS-OXIDE EMISSIONS; AVAILABLE MEASUREMENT DATA; NITRIC-OXIDE;
+   INORGANIC FERTILIZER; AGRICULTURAL SOILS; VEGETABLE FIELDS; FLUXES;
+   ROTATION; RESIDUES; CH4
+AB Straw return in combination with synthetic N fertilizer is considered to be beneficial to soil fertility and crop yield. Such practice, however, can considerably modify soil microbial activity and relative C and N availability, both of which are known to regulate soil nitrous oxide (N2O) and nitric oxide (NO) emissions. Minimizing these emissions per unit of crop yield is a prerequisite to minimize the environmental footprint of agricultural production and thus, a policy objective. In our study, we quantified N2O and NO emissions and determined fertilizer-N use efficiencies (NUE) and crop yields of two double-cropping (summer maize/Welsh onion-winter wheat) systems with and without straw incorporation in the North China Plain. Relative to the fertilized treatment without straw amendments, straw incorporation showed a significant inhibitory effect on annual N2O emissions from the maize-wheat system (-31%), but no significant effect was observed for the Welsh onion-wheat system. However, straw return significantly reduced annual NO emissions by >30% for both systems. Meanwhile, straw return in both systems significantly increased the NUE and crop yields by 34-47% and 7-16%, respectively, as compared to the treatment without straw additions. Across the double-cropping systems, annual direct emission factors of N2O, NO and N2O + NO were 0.37-0.57%, 0.08-0.78% and 0.57-1.36%, respectively. Furthermore, a negative relationship between direct emission factors of N2O + NO and crop NUE was observed, highlighting the importance of optimizing NUE for reducing environmental risks of a cropping system. When expressing emissions on a yield basis, straw return significantly reduced annual yield-scaled N2O + NO emissions by 15-42% for both systems. Overall, our results show that the combined application of crop straw and synthetic N fertilizer is a promising N management strategy for maximizing crop yields while mitigating N-trace gas emissions. (C) 2017 Elsevier B.V. All rights reserved.
+C1 [Yao, Zhisheng; Zheng, Xunhua; Wang, Rui; Liu, Chunyan] Chinese Acad Sci, Inst Atmospher Phys, State Key Lab Atmospher Boundary Layer Phys & Atm, Beijing 100029, Peoples R China.
+   [Yao, Zhisheng; Butterbach-Bahl, Klaus] Karlsruhe Inst Technol, Inst Meteorol & Climate Res, Atmospher Environm Res, D-82467 Garmisch Partenkirchen, Germany.
+   [Yan, Guangxuan] Henan Normal Univ, Sch Environm, Minist Educ, Key Lab Yellow River & Huai River Water Environm, Xinxiang 453007, Peoples R China.
+   [Zheng, Xunhua] Univ Chinese Acad Sci, Coll Earth Sci, Beijing 100049, Peoples R China.
+C3 Chinese Academy of Sciences; Institute of Atmospheric Physics, CAS;
+   Helmholtz Association; Karlsruhe Institute of Technology; Henan Normal
+   University; Chinese Academy of Sciences; University of Chinese Academy
+   of Sciences, CAS
+RP Yao, ZS (corresponding author), Chinese Acad Sci, Inst Atmospher Phys, State Key Lab Atmospher Boundary Layer Phys & Atm, Beijing 100029, Peoples R China.
+EM zhishengyao@mail.iap.ac.cn
+RI Yao, Zhisheng/A-5749-2015; Zheng, Xunhua/D-3048-2017; Butterbach-Bahl,
+   Klaus/A-8081-2013; Liu, Chunyan/J-2848-2014; Rui, Wang/AAJ-6579-2020;
+   Yan, Guangxuan/H-9663-2016
+OI Yao, Zhisheng/0000-0001-6242-2426; Zheng, Xunhua/0000-0002-4138-7470;
+   Butterbach-Bahl, Klaus/0000-0001-9499-6598; Rui,
+   Wang/0000-0001-5079-1080; 
+FU National Natural Science Foundation of China [41675144]
+FX This work was funded by the National Natural Science Foundation of China
+   (41675144). We also thank Ping Li, Feng Cui, Jia Deng and Yu Xu for
+   their substantial assistance in the field and laboratory measurements.
+NR 70
+TC 94
+Z9 103
+U1 25
+U2 405
+PU ELSEVIER
+PI AMSTERDAM
+PA RADARWEG 29, 1043 NX AMSTERDAM, NETHERLANDS
+SN 0048-9697
+EI 1879-1026
+J9 SCI TOTAL ENVIRON
+JI Sci. Total Environ.
+PD JUL 15
+PY 2017
+VL 590
+BP 174
+EP 185
+DI 10.1016/j.scitotenv.2017.02.194
+PG 12
+WC Environmental Sciences
+WE Science Citation Index Expanded (SCI-EXPANDED)
+SC Environmental Sciences & Ecology
+GA ES4NK
+UT WOS:000399511800018
+PM 28262361
+DA 2026-01-16
+ER
+
+PT J
+AU Wang, RN
+   Bei, NF
+   Wu, JR
+   Li, X
+   Liu, SX
+   Yu, JY
+   Jiang, Q
+   Tie, XX
+   Li, GH
+AF Wang, Ruonan
+   Bei, Naifang
+   Wu, Jiarui
+   Li, Xia
+   Liu, Suixin
+   Yu, Jiaoyang
+   Jiang, Qian
+   Tie, Xuexi
+   Li, Guohui
+TI Cropland nitrogen dioxide emissions and effects on the ozone pollution
+   in the North China plain
+SO ENVIRONMENTAL POLLUTION
+LA English
+DT Article
+DE Croplands; Soil NOX emissions; O-3 pollution; The North China Plain
+ID NITRIC-OXIDE EMISSIONS; PEARL RIVER DELTA; SOIL NO EMISSIONS;
+   AIR-QUALITY; MEXICO-CITY; ANTHROPOGENIC EMISSIONS; GLOBAL INVENTORY;
+   MODEL; IMPACTS; TROPOMI
+AB Soil nitrogen dioxide (NOX = NO2 + NO) emissions have been measured and estimated to be the second most significant contributor to the NOX burden following the fossil fuel combustion source globally. NOX emissions from croplands are subject to being underestimated or overlooked in air pollution simulations of regional atmospheric chemistry models. With constraints of ground and space observations of NO2, the WRF-Chem model is used to investigate the cropland NOX emission and its contribution to the near-surface ozone (O-3) pollution in North China Plain (NCP) during a growing season as a case study. Model simulations have revealed that the cropland NOX emissions are underestimated by around 80% without constraints of satellite measured NO2 column densities. The biogenic NOX source is estimated to account for half of the anthropogenic NOX emissions in the NCP during the growing season. Additionally, the cropland NOX source contributes around 5.0% of the maximum daily average 8h O-3 concentration and 27.7% of NO2 concentration in the NCP. Our results suggest the agriculture NOX emission exerts non-negligible impacts on the summertime air quality and needs to be considered when designing emission abatement strategies.
+C1 [Wang, Ruonan; Wu, Jiarui; Li, Xia; Liu, Suixin; Yu, Jiaoyang; Jiang, Qian; Tie, Xuexi; Li, Guohui] Chinese Acad Sci, Inst Earth Environm, Key Lab Aerosol Chem & Phys, SKLLQG, Xian 710061, Peoples R China.
+   [Bei, Naifang] Xi An Jiao Tong Univ, Sch Human Settlements & Civil Engn, Xian 710049, Peoples R China.
+   [Li, Guohui] CAS Ctr Excellence Quaternary Sci & Global Change, Xian 710061, Peoples R China.
+   [Wang, Ruonan] Univ Chinese Acad Sci, Beijing 100049, Peoples R China.
+C3 Chinese Academy of Sciences; Institute of Earth Environment, CAS; Xi'an
+   Jiaotong University; Chinese Academy of Sciences; Institute of Earth
+   Environment, CAS; Chinese Academy of Sciences; University of Chinese
+   Academy of Sciences, CAS
+RP Li, GH (corresponding author), Chinese Acad Sci, Inst Earth Environm, Key Lab Aerosol Chem & Phys, SKLLQG, Xian 710061, Peoples R China.
+EM ligh@ieecas.cn
+RI wu, jia/LRC-1145-2024; Li, Guohui/GZH-2962-2022
+FU Strategic Priority Research Program of Chinese Academy of Sciences
+   [XDB40030203]; National Key RD Plan Grant [2017YFC0210000]
+FX This work is financially supported by the Strategic Priority Research
+   Program of Chinese Academy of Sciences Grant XDB40030203 and the
+   National Key R&D Plan Grant 2017YFC0210000.
+NR 88
+TC 29
+Z9 31
+U1 7
+U2 151
+PU ELSEVIER SCI LTD
+PI London
+PA 125 London Wall, London, ENGLAND
+SN 0269-7491
+EI 1873-6424
+J9 ENVIRON POLLUT
+JI Environ. Pollut.
+PD FEB 1
+PY 2022
+VL 294
+AR 118617
+DI 10.1016/j.envpol.2021.118617
+PG 11
+WC Environmental Sciences
+WE Science Citation Index Expanded (SCI-EXPANDED)
+SC Environmental Sciences & Ecology
+GA ZD7ZG
+UT WOS:000758414500003
+PM 34863895
+DA 2026-01-16
+ER
+
+PT J
+AU Song, YF
+   Zhang, YY
+   Tan, MH
+   Hu, YN
+   Liu, PF
+   Tian, D
+   Mu, YJ
+AF Song, Yifei
+   Zhang, Yuanyuan
+   Tan, Minhang
+   Hu, Yining
+   Liu, Pengfei
+   Tian, Di
+   Mu, Yujing
+TI Annual emissions of N2O, NO, HONO, and NH3 from
+   maize-wheat fields in the North China Plain
+SO SCIENCE OF THE TOTAL ENVIRONMENT
+LA English
+DT Article
+DE Gaseous nitrogen compounds; Annual emissions; Agriculture fields;
+   Nitrogen fertilizer; North China plain
+ID NITROUS-OXIDE N2O; CARBON-DIOXIDE; NITRIC-OXIDE; AMMONIA VOLATILIZATION;
+   AGRICULTURAL FIELDS; GENERALIZED-MODEL; DRIP FERTIGATION; CROPPING
+   SYSTEM; SOIL; FLUXES
+AB Fertilized agricultural soil is a significant source of gaseous nitrogen compounds (GNCs), including N2O, NO, HONO, and NH3. The North China Plain (NCP) is the "hot region" for the release of these GNCs due to intensive fertilization practices. However, existing research has primarily focused on N2O emissions from fertilized farmland in the NCP, lacking comprehensive observational studies on other GNCs. Therefore, a continuous cumulative sampling technique (open-top dynamic chamber system) was utilized in this study to simultaneously measure the exchange fluxes of N2O, NO, HONO, and NH3 over summer maize-winter wheat rotation fields in the NCP. Results showed that GNC emissions from the soil displayed distinct diurnal variations, with higher emissions during the day attributed to elevated soil temperature. However, N2O emissions remained consistent between day and night, potentially influenced not only by soil temperature but also by soil humidity. Annual cumulative emissions and emission factors (EFs) for four GNCs were determined, indicating that N2O, NO, and NH3 emissions during the maize season were 1.38-2.37 times higher than those during the wheat season, with 98 % of HONO emissions occurring in the maize season. Additionally, the study first presented the annual HONO EFs of 0.36 +/- 0.03 % in fertilized farmland. Furthermore, a comparison revealed that the fluxes of N2O, NO, NH3, and HONO using the conventional single-point sampling method were 26.4 %, 13.9 %, and 8.10 % lower, and 7.86 % higher compared to the continuous cumulative sampling method recommended in this study. In general, this study provided precise measurements of GNC emissions from farmland, offering essential foundational data for modeling parameters and contributing to the formulation of regional air pollution prevention and control policies.
+C1 [Song, Yifei; Zhang, Yuanyuan; Tan, Minhang; Hu, Yining; Liu, Pengfei; Mu, Yujing] Chinese Acad Sci, Res Ctr Ecoenvironm Sci, Beijing 100085, Peoples R China.
+   [Song, Yifei] SINOPEC Beijing Res Inst Chem Ind, Beijing 100013, Peoples R China.
+   [Zhang, Yuanyuan; Tan, Minhang; Liu, Pengfei; Mu, Yujing] Univ Chinese Acad Sci, Beijing 100049, Peoples R China.
+   [Hu, Yining] North China Elect Power Univ, Beijing 102206, Peoples R China.
+   [Tian, Di] Henan Normal Univ, Sch Environm, Xinxiang 453007, Peoples R China.
+C3 Chinese Academy of Sciences; Research Center for Eco-Environmental
+   Sciences (RCEES), CAS; Sinopec; Chinese Academy of Sciences; University
+   of Chinese Academy of Sciences, CAS; North China Electric Power
+   University; Henan Normal University
+RP Zhang, YY; Mu, YJ (corresponding author), Chinese Acad Sci, Res Ctr Ecoenvironm Sci, Beijing 100085, Peoples R China.
+EM yyzhang@rcees.ac.cn; yjmu@rcees.ac.cn
+RI Zhang, Yuanyuan/KIA-1939-2024; Liu, Pengfei/IZD-6128-2023
+OI Liu, Pengfei/0000-0001-6237-3759
+FU National Natural Science Foundation of China [41931287, 42130714,
+   42105105]; National Key Research and Development Program
+   [2022YFC3701103]
+FX This work was financially supported by the National Natural Science
+   Foundation of China (grant nos. 41931287, 42130714, and 42105105) and
+   the National Key Research and Development Program (grant no.
+   2022YFC3701103) .
+NR 61
+TC 4
+Z9 4
+U1 29
+U2 115
+PU ELSEVIER
+PI AMSTERDAM
+PA RADARWEG 29, 1043 NX AMSTERDAM, NETHERLANDS
+SN 0048-9697
+EI 1879-1026
+J9 SCI TOTAL ENVIRON
+JI Sci. Total Environ.
+PD DEC 1
+PY 2024
+VL 954
+AR 176602
+DI 10.1016/j.scitotenv.2024.176602
+EA OCT 2024
+PG 9
+WC Environmental Sciences
+WE Science Citation Index Expanded (SCI-EXPANDED)
+SC Environmental Sciences & Ecology
+GA I6J7N
+UT WOS:001331308400001
+PM 39349207
+DA 2026-01-16
+ER
+
+PT J
+AU Tian, D
+   Zhang, YY
+   Mu, YJ
+   Zhou, YZ
+   Zhang, CL
+   Liu, JF
+AF Tian, Di
+   Zhang, Yuanyuan
+   Mu, Yujing
+   Zhou, Yizhen
+   Zhang, Chenglong
+   Liu, Junfeng
+TI The effect of drip irrigation and drip fertigation on N2O and
+   NO emissions, water saving and grain yields in a maize field in the
+   North China Plain
+SO SCIENCE OF THE TOTAL ENVIRONMENT
+LA English
+DT Article
+DE Nitrous oxide; Nitric oxide; Drip irrigation; Water saving; Grain yields
+ID NITROUS-OXIDE EMISSIONS; NITRIC-OXIDE; CROPPING SYSTEMS; USE EFFICIENCY;
+   AGRICULTURAL FIELDS; ORGANIC FERTILIZERS; WHEAT FIELD; SOIL;
+   GROUNDWATER; NITRATE
+AB N2O and NO emissions, the water usage and grain yields of a maize field in the North China Plain (NCP) under traditional flood irrigation, drip irrigation and drip fertigation were compared. With respect to the flood irrigation treatment, N2O emissions were reduced by 13.8% in the drip irrigation treatment and 7.7% in the drip fertigation treatment. NO emissions were reduced to 16.7% in the drip irrigation treatment but increased by 21.7% in the drip fertigation treatment. The molar ratios of NO/N2O within 2 days after each fertilization event were evidently greater from the drip fertigation treatment than from the flood irrigation treatment, indicating that nitrification was more intensive in the drip fertigation treatment than in the treatment of flood irrigation. Compared with the flood irrigation treatment, evident increase of the maize yields in the drip irrigation treatment (28%) and the drip fertigation treatment (3.7%) were found. Although the drip fertigation treatment could evidently increase NO emission, the 40% water reduction in drip fertigation is of great importance for the sustainable development of agriculture in the NCP where water resources are extremely limited. To mitigate NO emissions from agricultural fields in the NCP with drip fertigation, the addition of a nitrification inhibitor combined with N or nitrate fertilizer was recommended. (C) 2016 Elsevier B.V. All rights reserved.
+C1 [Tian, Di; Zhang, Yuanyuan; Mu, Yujing; Zhou, Yizhen; Zhang, Chenglong; Liu, Junfeng] Chinese Acad Sci, Res Ctr Ecoenvironm Sci, Beijing 100085, Peoples R China.
+   [Mu, Yujing] Chinese Acad Sci, Inst Urban Environm, Ctr Excellence Urban Atmospher Environm, Xiamen 361021, Peoples R China.
+   [Tian, Di; Zhang, Yuanyuan; Mu, Yujing; Zhou, Yizhen; Zhang, Chenglong; Liu, Junfeng] Univ Chinese Acad Sci, Beijing 100049, Peoples R China.
+C3 Chinese Academy of Sciences; Research Center for Eco-Environmental
+   Sciences (RCEES), CAS; Chinese Academy of Sciences; Institute of Urban
+   Environment, CAS; Chinese Academy of Sciences; University of Chinese
+   Academy of Sciences, CAS
+RP Mu, YJ (corresponding author), Chinese Acad Sci, Res Ctr Ecoenvironm Sci, Beijing 100085, Peoples R China.
+EM yjmu@rcees.ac.cn
+RI Zhang, Chenglong/MGP-9341-2025; Zhang, Yuanyuan/KIA-1939-2024
+FU National Key Technology R&D Program of China [2013BAD11B03-3]; Chinese
+   Academy of Sciences [XDB05010100]; National Natural Science Foundation
+   of China [41575121, 91544211, 21477142]
+FX This work was supported by the National Key Technology R&D Program of
+   China (No. 2013BAD11B03-3), the Strategic Priority Research Program of
+   the Chinese Academy of Sciences (No. XDB05010100), and the National
+   Natural Science Foundation of China (Nos. 41575121, 91544211 and
+   21477142).
+NR 76
+TC 106
+Z9 129
+U1 36
+U2 432
+PU ELSEVIER
+PI AMSTERDAM
+PA RADARWEG 29, 1043 NX AMSTERDAM, NETHERLANDS
+SN 0048-9697
+EI 1879-1026
+J9 SCI TOTAL ENVIRON
+JI Sci. Total Environ.
+PD JAN 1
+PY 2017
+VL 575
+BP 1034
+EP 1040
+DI 10.1016/j.scitotenv.2016.09.166
+PG 7
+WC Environmental Sciences
+WE Science Citation Index Expanded (SCI-EXPANDED)
+SC Environmental Sciences & Ecology
+GA EF5MD
+UT WOS:000390373400104
+PM 27666474
+OA Green Submitted
+DA 2026-01-16
+ER
+
+PT J
+AU Feng, T
+   Li, GH
+   Zhao, SY
+   Bei, NF
+   Long, X
+   Pan, YP
+   Song, Y
+   Wang, RN
+   Tie, XX
+   Molina, L
+AF Feng, Tian
+   Li, Guohui
+   Zhao, Shuyu
+   Bei, Naifang
+   Long, Xin
+   Pan, Yuepeng
+   Song, Yu
+   Wang, Ruonan
+   Tie, Xuexi
+   Molina, Luisa T.
+TI Fertilization-driven pulses of atmospheric nitrogen dioxide complicate
+   air pollution in early spring over the North China Plain
+SO ATMOSPHERIC CHEMISTRY AND PHYSICS
+LA English
+DT Article
+ID NITRIC-OXIDE EMISSIONS; SOIL NO EMISSIONS; MEXICO-CITY; TROPOSPHERIC
+   OZONE; NONLINEAR RESPONSE; NITRATE FORMATION; MODEL; IMPACTS; WHEAT;
+   WINTERTIME
+AB Atmospheric nitrogen dioxide (NO2) has shown periodic conspicuous pulses in the tropospheric column in March over the North China Plain during the past two decades. However, these repetitive pulses have never been reported, and their underlying causes remain unclear. Here, we present robust evidence to demonstrate that agricultural fertilization drives the early spring NO2 column increase. The fertilization-driven soil NOx (= NO+NO2) emissions, comparable to anthropogenic sources, exert complicated influences on regional air quality. They significantly reduce nocturnal and diurnal O3 concentrations in agricultural areas in early spring, distinct from the scenarios in summer, but increase fine particulate matter (PM2.5) concentrations via strongly enhancing nitrate aerosol formation. The impact also extends to urban areas, approximately half that of agricultural areas. These findings have increasing implications for coordinated control of PM2.5 and O3 under global warming. We thus suggest that reducing NOx emissions in croplands is essential to achieve better air quality in agricultural countries and regions.
+C1 [Feng, Tian] Ningbo Univ, Dept Geog & Spatial Informat Tech, Ningbo, Peoples R China.
+   [Li, Guohui; Wang, Ruonan; Tie, Xuexi] Inst Earth Environm, Chinese Acad Sci, State Key Lab Loess & Quaternary Geol, KLACP, Xian, Peoples R China.
+   [Zhao, Shuyu] Ningbo Meteorol Bur, Ningbo, Peoples R China.
+   [Bei, Naifang] Xi'an Jiaotong Univ, Sch Human Settlements & Civil Engn, Xian, Peoples R China.
+   [Long, Xin] Chinese Acad Sci, Chongqing Inst Green & Intelligent Technol, Res Ctr Atmospher Environm, Chongqing, Peoples R China.
+   [Pan, Yuepeng] Chinese Acad Sci, Inst Atmospher Phys, State Key Lab Atmospher Boundary Layer Phys & Atmo, Beijing, Peoples R China.
+   [Song, Yu] Peking Univ, Dept Environm Sci, State Key Joint Lab Environm Simulat & Pollut Cont, Beijing, Peoples R China.
+   [Molina, Luisa T.] Molina Ctr Energy & Environm, Boston, MA USA.
+C3 Ningbo University; Chinese Academy of Sciences; Institute of Earth
+   Environment, CAS; Xi'an Jiaotong University; Chinese Academy of
+   Sciences; Chongqing Institute of Green & Intelligent Technology, CAS;
+   Chinese Academy of Sciences; Institute of Atmospheric Physics, CAS;
+   Peking University
+RP Li, GH (corresponding author), Inst Earth Environm, Chinese Acad Sci, State Key Lab Loess & Quaternary Geol, KLACP, Xian, Peoples R China.
+EM ligh@ieecas.cn
+RI ; Li, Guohui/GZH-2962-2022; Zhao, Shuyu/P-8877-2014
+OI Feng, Tian/0000-0002-9822-5632; Zhao, Shuyu/0000-0003-3433-2532
+FU National Natural Science Foundation of China
+FX We thank the two anonymous reviewers for their insightful comments,
+   which have greatly improved the quality of this paper.
+NR 86
+TC 1
+Z9 1
+U1 13
+U2 13
+PU COPERNICUS GESELLSCHAFT MBH
+PI GOTTINGEN
+PA BAHNHOFSALLEE 1E, GOTTINGEN, 37081, GERMANY
+SN 1680-7316
+EI 1680-7324
+J9 ATMOS CHEM PHYS
+JI Atmos. Chem. Phys.
+PD OCT 1
+PY 2025
+VL 25
+IS 19
+BP 11703
+EP 11718
+DI 10.5194/acp-25-11703-2025
+PG 16
+WC Environmental Sciences; Meteorology & Atmospheric Sciences
+WE Science Citation Index Expanded (SCI-EXPANDED)
+SC Environmental Sciences & Ecology; Meteorology & Atmospheric Sciences
+GA 8BG7H
+UT WOS:001584556200001
+OA Green Submitted, gold
+DA 2026-01-16
+ER
+
+PT J
+AU Cai, YJ
+   Ding, WX
+   Luo, JF
+AF Cai, Yanjiang
+   Ding, Weixin
+   Luo, Jiafa
+TI Spatial variation of nitrous oxide emission between interrow soil and
+   interrow plus row soil in a long-term maize cultivated sandy loam soil
+SO GEODERMA
+LA English
+DT Article
+DE Nitrous oxide; Inorganic N fertilizer; Organic manure; Spatial
+   variation; Peak emission
+ID AVAILABLE MEASUREMENT DATA; FLUVO-AQUIC SOIL; NITRIC-OXIDE;
+   CARBON-DIOXIDE; N2O EMISSIONS; DENITRIFICATION; FLUXES; FERTILIZER;
+   FIELDS; PLANTS
+AB There is a high spatial variation in N2O emission from agricultural fields and N2O emissions from fields cultivated with stalk-crops was generally measured in the interrow area. The aim of this study was to evaluate the difference in seasonal N2O emissions between interrow soil and interrow + row soil, and to understand the effect of different fertilizers on N2O emissions in a maize-cultivated sandy loam soil in the North China Plain. The experiment included five treatments: organic manure (OM), half-organic manure N plus half fertilizer N (HOM), fertilizer NPK (NPK), fertilizer NK (NK) and control (CK). Cumulative N2O emission from interrow + row soil during the maize growth season was 0.84-122 kg N ha(-1) with an average of 0.98 kg N ha(-1) in the N-fertilized treatments, significantly higher than the 0.30-0.49 kg N ha(-1) from interrow soil. However, no significant difference was observed in the CK treatment. The measurement in interrow soil underestimated N2O emissions by 44-67%. This difference mainly occurred at the two peak emission periods following fertilizer application probably due to discrepancy in soil denitrification potential. Manure application more efficiently increased difference in N2O emission between interrow soil and interrow + row soil than inorganic N fertilizer application. The higher NO concentration did not induce larger N2O emission from interrow soil in the NK treatment than in the NPK treatment, but did from interrow + row soil, resulting in greater difference in N2O emission between interrow soil and interrow + row soil. It is suggested that measuring N2O emission solely from interrow soil could underestimate seasonal N2O emissions, and partly mask the effect of N fertilizer application rates on N2O emission in a maize-cultivated soil in the North China Plain. (C) 2012 Elsevier B.V. All rights reserved.
+C1 [Cai, Yanjiang; Ding, Weixin] Chinese Acad Sci, Inst Soil Sci, State Key Lab Soil & Sustainable Agr, Nanjing 210008, Jiangsu, Peoples R China.
+   [Luo, Jiafa] AgResearch, Land & Environm, Hamilton 3240, New Zealand.
+   [Cai, Yanjiang] Chinese Acad Sci, Grad Sch, Beijing 100049, Peoples R China.
+C3 Chinese Academy of Sciences; Nanjing Institute of Soil Science, CAS;
+   AgResearch - New Zealand; Chinese Academy of Sciences; University of
+   Chinese Academy of Sciences, CAS
+RP Ding, WX (corresponding author), Chinese Acad Sci, Inst Soil Sci, State Key Lab Soil & Sustainable Agr, Nanjing 210008, Jiangsu, Peoples R China.
+EM wxding@issas.ac.cn
+RI 蔡, 延江/N-6694-2013; Cai, Yanjiang/N-6694-2013; Ding, WeiXin/L-8657-2013
+OI 蔡, 延江/0000-0002-5376-7884; Luo, Jiafa/0000-0001-6198-6887; 
+FU Chinese Academy of Sciences [KZCX2-YW-439]; National Basic Research
+   Program of China [2011CB100503]; Natural Science Foundation of China
+   [40725003, 40971134]; Natural Science Foundation of Jiangsu province
+   [BK2008057]
+FX The authors acknowledge the practical help provided by Prof. Shenwu Qin
+   and Mrs. Chunli Sun. Many thanks also to two anonymous referees and
+   chief editor. J. Chorover for their helpful comments and suggestions
+   that improved the manuscript greatly. This study was funded by the
+   Chinese Academy of Sciences (KZCX2-YW-439), the National Basic Research
+   Program of China (2011CB100503), the Natural Science Foundation of China
+   (40725003, 40971134), and Natural Science Foundation of Jiangsu province
+   (BK2008057).
+NR 55
+TC 28
+Z9 34
+U1 3
+U2 137
+PU ELSEVIER
+PI AMSTERDAM
+PA RADARWEG 29, 1043 NX AMSTERDAM, NETHERLANDS
+SN 0016-7061
+EI 1872-6259
+J9 GEODERMA
+JI Geoderma
+PD JUL
+PY 2012
+VL 181
+BP 2
+EP 10
+DI 10.1016/j.geoderma.2012.03.005
+PG 9
+WC Soil Science
+WE Science Citation Index Expanded (SCI-EXPANDED)
+SC Agriculture
+GA 941JC
+UT WOS:000303958500001
+DA 2026-01-16
+ER
+
+PT J
+AU Tian, D
+   Zhang, YY
+   Mu, YJ
+   Liu, JF
+   He, KB
+AF Tian, Di
+   Zhang, Yuanyuan
+   Mu, Yujing
+   Liu, Junfeng
+   He, Kebin
+TI Effect of N fertilizer types on N2O and NO emissions under
+   drip fertigation from an agricultural field in the North China Plain
+SO SCIENCE OF THE TOTAL ENVIRONMENT
+LA English
+DT Article
+DE N2O; NO; Drip fertigation; N fertilizer types; North China Plain
+ID NITROUS-OXIDE EMISSIONS; WATER-USE EFFICIENCY; NITRIC-OXIDE; NITRATE
+   ACCUMULATION; CROPPING SYSTEMS; WINTER-WHEAT; SOIL; IRRIGATION; MAIZE;
+   DENITRIFICATION
+AB N2O and NO emissions from a winter wheat-summer maize rotation field in the North China Plain were comparably investigated under three different treatments: 1) flood irrigation (A-Flood treatment) plus fertilization of NH4Cl, 2) drip fertigation (A-Drip treatment) plus fertilization of NH4Cl and 3) drip fertigation (AN-Drip treatment) plus fertilization of a mixture of Ca(NO3)(2) and NH4Cl. The annual N2O cumulative emissions from the A-Drip treatment and the A-Flood treatment were almost identical, whereas it from the AN-Drip treatment was significantly lower (33%) than that from the A-Flood treatment. Compared with the A-Flood treatment, the annual NO cumulative emission from the A-Drip treatment was significantly increased by 140% but it from the AN-Drip treatment was only slightly increased by 14%. Compared with drip fertigation with NH4Cl, drip fertigation with the mixture of Ca(NO3)(2) and NH4Cl significantly reduced the cumulative emissions of N2O (31%) and NO (52%) from the nitrification dominated fields by decreasing the supplement of NH4+ substrate. Among the three fertilization treatments, the yields of the maize from the A-Drip and AN-Drip treatments were significantly increased, while the yields of the wheat were almost the same. Considering the benefit of increasing yields and reducing N fertilizer and water input, the application of nitrate-based fertilizer instead of partial ammonium-based fertilizer through drip fertigation could be a promising method for keeping agronomic productivity and environmental sustainability. (C) 2020 Elsevier B.V. All rights reserved.
+C1 [Tian, Di; He, Kebin] Tsinghua Univ, Sch Environm, State Key Joint Lab Environm Simulat & Pollut Con, Beijing 100084, Peoples R China.
+   [Tian, Di; Zhang, Yuanyuan; Mu, Yujing; Liu, Junfeng] Chinese Acad Sci, Res Ctr Ecoenvironm Sci, Beijing 100085, Peoples R China.
+   [Zhang, Yuanyuan; Mu, Yujing; Liu, Junfeng] Chinese Acad Sci, Ctr Excellence Urban Atmospher Environm, Inst Urban Environm, Xiamen 361021, Peoples R China.
+   [Zhang, Yuanyuan; Mu, Yujing; Liu, Junfeng] Univ Chinese Acad Sci, Beijing 100049, Peoples R China.
+C3 Tsinghua University; Chinese Academy of Sciences; Research Center for
+   Eco-Environmental Sciences (RCEES), CAS; Chinese Academy of Sciences;
+   Institute of Urban Environment, CAS; Chinese Academy of Sciences;
+   University of Chinese Academy of Sciences, CAS
+RP Mu, YJ (corresponding author), Chinese Acad Sci, Res Ctr Ecoenvironm Sci, Beijing 100085, Peoples R China.
+EM yjmu@rcees.ac.cn
+RI Zhang, Yuanyuan/KIA-1939-2024; He, Kebin/ABF-5224-2020
+FU National Key Research and Development Program of China [2017YFC0209703];
+   National Natural Science Foundation of China [41931287, 21976190]
+FX This work was supported by the National Key Research and Development
+   Program of China (No. 2017YFC0209703) and the National Natural Science
+   Foundation of China (Nos. 41931287 and 21976190).
+NR 64
+TC 31
+Z9 33
+U1 19
+U2 227
+PU ELSEVIER
+PI AMSTERDAM
+PA RADARWEG 29, 1043 NX AMSTERDAM, NETHERLANDS
+SN 0048-9697
+EI 1879-1026
+J9 SCI TOTAL ENVIRON
+JI Sci. Total Environ.
+PD MAY 1
+PY 2020
+VL 715
+AR 136903
+DI 10.1016/j.scitotenv.2020.136903
+PG 9
+WC Environmental Sciences
+WE Science Citation Index Expanded (SCI-EXPANDED)
+SC Environmental Sciences & Ecology
+GA KS6IF
+UT WOS:000518409900042
+PM 32032987
+DA 2026-01-16
+ER
+
+PT J
+AU Zhang, YY
+   Liu, JF
+   Mu, YJ
+   Pei, SW
+   Lun, XX
+   Chai, FH
+AF Zhang, Yuanyuan
+   Liu, Junfeng
+   Mu, Yujing
+   Pei, Shuwei
+   Lun, Xiaoxiu
+   Chai, Fahe
+TI Emissions of nitrous oxide, nitrogen oxides and ammonia from a maize
+   field in the North China Plain
+SO ATMOSPHERIC ENVIRONMENT
+LA English
+DT Article
+DE Nitrous oxide; Nitrogen oxides; Ammonia; Fertilizers; Wheat straw
+ID NITRIC-OXIDE; VOLATILIZATION LOSS; NOX EMISSIONS; N2O EMISSIONS; SOIL;
+   UREA; NH3; FERTILIZER; ROTATION; LOSSES
+AB The exchange fluxes of nitrous oxide (N2O), nitrogen oxides (NOx) and ammonia (NH3) from a maize field with three different treatments were simultaneously measured using static and dynamic chambers in the North China Plain (NCP) from June 28 to October 11, 2009. The three treatments included control plot (CK, without crop, fertilization and irrigation), fertilizer N plot (NP) and wheat straw returning plus fertilizer N plot (SN). N-fertilizer application greatly stimulated the emissions of N2O, NOx and NH3, with durations of about 10 days for N2O and NO, and about 7 days for NH3. Fertilizer loss rates were 1.08% (NP plot) and 1.20% (SN plot) as N2O-N, were 1.93% (NP plot) and 0.76% (SN plot) as NO-N, and were 5.24% (NP plot) and 3.03% (SN plot) as NH3-N. In comparison with the NP plot, the significant low fertilizer loss rates as NO-N and NH3-N from the SN plot indicated that the wheat straw returning to the field could reduce NOx and NH3 emissions. The molar ratio of NO/N2O was greater than unity for most data during the pulse emission periods induced by fertilization, and thus, nitrification was the dominant process for N2O and NO emissions during these periods. Considering the significant amount (>80%) of N2O and NOx emissions occurred during the pulse emission periods, the emissions of NOx and N2O from the investigated field were mainly ascribed to nitrification process. (C) 2010 Elsevier Ltd. All rights reserved.
+C1 [Zhang, Yuanyuan; Liu, Junfeng; Mu, Yujing] Chinese Acad Sci, Res Ctr Ecoenvironm Sci, Beijing 100085, Peoples R China.
+   [Pei, Shuwei; Lun, Xiaoxiu] Beijing Forestry Univ, Coll Environm Sci & Engn, Beijing 100083, Peoples R China.
+   [Chai, Fahe] Chinese Res Inst Environm Sci, Beijing 100012, Peoples R China.
+C3 Chinese Academy of Sciences; Research Center for Eco-Environmental
+   Sciences (RCEES), CAS; Beijing Forestry University; Chinese Research
+   Academy of Environmental Sciences
+RP Mu, YJ (corresponding author), Chinese Acad Sci, Res Ctr Ecoenvironm Sci, Beijing 100085, Peoples R China.
+EM yjmu@rcees.ac.cn
+RI Zhang, Yuanyuan/KIA-1939-2024
+FU Special Fund for Environmental Research in the Public Interest
+   [201009001]; Chinese National Natural Science Foundation [41075094,
+   40830101, 20977097]; National Water Special Project [2008ZX07421-001,
+   2009ZX07210-009]; Chinese Academy of Sciences [KZCX2-YW-Q02-03];
+   National Basic Research and the Development Program 973 [2010CB732304]
+FX This work was financially supported by Special Fund for Environmental
+   Research in the Public Interest (201009001), the Chinese National
+   Natural Science Foundation (41075094, 40830101 and 20977097), the
+   National Water Special Project (2008ZX07421-001 and 2009ZX07210-009),
+   the Chinese Academy of Sciences (KZCX2-YW-Q02-03), and National Basic
+   Research and the Development Program 973 (2010CB732304).
+NR 42
+TC 76
+Z9 91
+U1 14
+U2 266
+PU PERGAMON-ELSEVIER SCIENCE LTD
+PI OXFORD
+PA THE BOULEVARD, LANGFORD LANE, KIDLINGTON, OXFORD OX5 1GB, ENGLAND
+SN 1352-2310
+EI 1873-2844
+J9 ATMOS ENVIRON
+JI Atmos. Environ.
+PD JUN
+PY 2011
+VL 45
+IS 17
+BP 2956
+EP 2961
+DI 10.1016/j.atmosenv.2010.10.052
+PG 6
+WC Environmental Sciences; Meteorology & Atmospheric Sciences
+WE Science Citation Index Expanded (SCI-EXPANDED)
+SC Environmental Sciences & Ecology; Meteorology & Atmospheric Sciences
+GA 770ID
+UT WOS:000291079300017
+DA 2026-01-16
+ER
+
+PT J
+AU Tan, MH
+   Hu, YN
+   Song, YF
+   Huang, ZX
+   Mu, YJ
+   Liu, JF
+   Zhang, CL
+   Liu, PF
+   Zhang, YY
+AF Tan, Minhang
+   Hu, Yining
+   Song, Yifei
+   Huang, Zixuan
+   Mu, Yujing
+   Liu, Junfeng
+   Zhang, Chenglong
+   Liu, Pengfei
+   Zhang, Yuanyuan
+TI An improved open-top dynamic chambers method for measuring the exchange
+   fluxes of N2 O, NO and NH3 from farmland
+SO JOURNAL OF ENVIRONMENTAL SCIENCES
+LA English
+DT Article
+DE Open-top dynamic chambers; Nitrogen-containing gases; Soil emissions;
+   North China Plain; Method evaluation
+ID NITROUS-OXIDE EMISSIONS; MAIZE-WHEAT FIELD; EDDY COVARIANCE;
+   AGRICULTURAL FIELDS; STATIC CHAMBER; NITRIC-OXIDE; AMMONIA
+   VOLATILIZATION; TRACE GASES; SOIL; SYSTEM
+AB The application of nitrogen fertilizers in agricultural fields can lead to the release of nitrogen-containing gases (NCGs), such as NOx , NH3 and N2 O, which can significantly impact regional atmospheric environment and contribute to global climate change. However, there remain considerable research gaps in the accurate measurement of NCGs emissions from agricultural fields, hindering the development of effective emission reduction strategies. We improved an open-top dynamic chambers (OTDCs) system and evaluated the performance by comparing the measured and given fluxes of the NCGs. The results showed that the measured fluxes of NO, N2 O and NH3 were 1 %, 2 % and 7 % lower than the given fluxes, respectively. For the determination of NH3 concentration, we employed a stripping coil-ion chromatograph (SC-IC) analytical technique, which demonstrated an absorption efficiency for atmospheric NH3 exceeding 96.1 % across sampling durations of 6 to 60 min. In the summer maize season, we utilized the OTDCs system to measure the exchange fluxes of NO, NH3 , and N2 O from the soil in the North China Plain. Substantial emissions of NO, NH3 and N2 O were recorded following fertilization, with peaks of 107, 309, 1239 ng N/(m2 <middle dot>s), respectively. Notably, significant NCGs emissions were observed following sustained heavy rainfall one month after fertilization, particularly with NH3 peak being 4.5 times higher than that observed immediately after fertilization. Our results demonstrate that the OTDCs system accurately reflects the emission characteristics of soil NCGs and meets the requirements for long-term and continuous flux observation.
+C1 [Tan, Minhang; Hu, Yining; Song, Yifei; Huang, Zixuan; Mu, Yujing; Liu, Junfeng; Zhang, Chenglong; Liu, Pengfei; Zhang, Yuanyuan] Chinese Acad Sci, Res Ctr Ecoenvironm Sci, Beijing 100085, Peoples R China.
+   [Tan, Minhang; Huang, Zixuan; Mu, Yujing; Zhang, Chenglong; Zhang, Yuanyuan] Univ Chinese Acad Sci, Beijing 100049, Peoples R China.
+   [Hu, Yining] North China Elect Power Univ, Beijing 102206, Peoples R China.
+   [Song, Yifei] SINOPEC Beijing Res Inst Chem Ind, Beijing 100013, Peoples R China.
+C3 Chinese Academy of Sciences; Research Center for Eco-Environmental
+   Sciences (RCEES), CAS; Chinese Academy of Sciences; University of
+   Chinese Academy of Sciences, CAS; North China Electric Power University;
+   Sinopec
+RP Zhang, YY (corresponding author), Chinese Acad Sci, Res Ctr Ecoenvironm Sci, Beijing 100085, Peoples R China.; Zhang, YY (corresponding author), Univ Chinese Acad Sci, Beijing 100049, Peoples R China.
+EM yyzhang@rcees.ac.cn
+RI Zhang, Chenglong/MGP-9341-2025; Liu, Pengfei/AAB-5969-2019; Zhang,
+   Yuanyuan/KIA-1939-2024
+OI Liu, Pengfei/0000-0001-6237-3759; 刘, 俊锋/0000-0001-7035-1234; 
+FU National Key Research and Develop-ment Program [2022YFC3701103];
+   National Natural Science Foundation of China [42130714, 41931287]
+FX This work was supported by the National Key Research and Develop-ment
+   Program (No. 2022YFC3701103) and the National Natural Science Foundation
+   of China (Nos. 42130714 and 41931287) .
+NR 77
+TC 0
+Z9 0
+U1 4
+U2 4
+PU SCIENCE PRESS
+PI BEIJING
+PA 16 DONGHUANGCHENGGEN NORTH ST, BEIJING 100717, PEOPLES R CHINA
+SN 1001-0742
+EI 1878-7320
+J9 J ENVIRON SCI
+JI J. Environ. Sci.
+PD JAN
+PY 2026
+VL 159
+BP 535
+EP 545
+DI 10.1016/j.jes.2025.03.021
+EA AUG 2025
+PG 11
+WC Environmental Sciences
+WE Science Citation Index Expanded (SCI-EXPANDED)
+SC Environmental Sciences & Ecology
+GA 7YX7D
+UT WOS:001582961900002
+PM 41005910
+OA hybrid
+DA 2026-01-16
+ER
+
+PT J
+AU Yao, ZS
+   Yan, GX
+   Zheng, XH
+   Wang, R
+   Liu, CY
+   Butterbach-Bahl, K
+AF Yao, Zhisheng
+   Yan, Guangxuan
+   Zheng, Xunhua
+   Wang, Rui
+   Liu, Chunyan
+   Butterbach-Bahl, Klaus
+TI Reducing N2O and NO emissions while sustaining crop
+   productivity in a Chinese vegetable-cereal double cropping system
+SO ENVIRONMENTAL POLLUTION
+LA English
+DT Article
+DE Nitrous oxide; Nitric oxide; Yield-scaled emission; Fertilizer-N
+   management; Emission factor; North China Plain
+ID NITROUS-OXIDE EMISSIONS; NITRIC-OXIDE; FERTILIZER APPLICATION; NONLINEAR
+   RESPONSE; ARABLE SOILS; FLUXES; ROTATION; MANAGEMENT; TILLAGE; RATES
+AB High nitrogen (N) inputs in Chinese vegetable and cereal productions played key roles in increasing crop yields. However, emissions of the potent greenhouse gas nitrous oxide (N2O) and atmospheric pollutant nitric oxide (NO) increased too. For lowering the environmental costs of crop production, it is essential to optimize N strategies to maintain high crop productivity, while reducing the associated N losses. We performed a 2 year-round field study regarding the effect of different combinations of poultry manure and chemical N fertilizers on crop yields, N use efficiency (NUE) and N2O and NO fluxes from a Welsh onion-winter wheat system in the North China Plain. Annual N2O and NO emissions averaged 1.14-3.82 kg N ha(-1) yr(-1) (or 5.54-13.06 g N kg(-1) N uptake) and 0.57-1.87 kg N ha(-1) yr(-1) (or 2.78-6.38 g N kg(-1) N uptake) over all treatments, respectively. Both N2O and NO emissions increased linearly with increasing total N inputs, and the mean annual direct emission factors (EFd) were 0.39% for N2O and 0.19% for NO. Interestingly, the EFd for chemical N fertilizers (N2O: 0.42-0.48%; NO: 0.07-0.11%) was significantly lower than for manure N (N2O: 1.35%; NO: 0.76%). Besides, a negative power relationship between yield-scaled N2O, NO or N2O + NO emissions and NUE was observed, suggesting that improving NUE in crop production is crucial for increasing crop yields while decreasing nitrogenous gas release. Compared to the current farmers' fertilization rate, alternative practices with reduced chemical N fertilizers increased NUE and decreased annual N2O + NO emissions substantially, while crop yields remained unaffected. As a result, annual yield-scaled N2O + NO emissions were reduced by > 20%. Our study shows that a reduction of current application rates of chemical N fertilizers by 30-50% does not affect crop productivity, while at the same time N2O and NO emissions would be reduced significantly. (C) 2017 Elsevier Ltd. All rights reserved.
+C1 [Yao, Zhisheng; Zheng, Xunhua; Wang, Rui; Liu, Chunyan] Chinese Acad Sci, Inst Atmospher Phys, State Key Lab Atmospher Boundary Layer Phys & Atm, Beijing 100029, Peoples R China.
+   [Yao, Zhisheng; Butterbach-Bahl, Klaus] Karlsruhe Inst Technol, Atmospher Environm Res, Inst Meteorol & Climate Res, D-82467 Garmisch Partenkirchen, Germany.
+   [Yan, Guangxuan] Henan Normal Univ, Sch Environm, Minist Educ, Key Lab Yellow River & Huai River Water Environm, Xinxiang 453007, Peoples R China.
+   [Zheng, Xunhua] Univ Chinese Acad Sci, Coll Earth Sci, Beijing 100049, Peoples R China.
+C3 Chinese Academy of Sciences; Institute of Atmospheric Physics, CAS;
+   Helmholtz Association; Karlsruhe Institute of Technology; Henan Normal
+   University; Chinese Academy of Sciences; University of Chinese Academy
+   of Sciences, CAS
+RP Yao, ZS (corresponding author), Chinese Acad Sci, Inst Atmospher Phys, State Key Lab Atmospher Boundary Layer Phys & Atm, Beijing 100029, Peoples R China.
+EM zhishengyao@mail.iap.ac.cn
+RI Zheng, Xunhua/AAH-8172-2019; Rui, Wang/AAJ-6579-2020; Yao,
+   Zhisheng/A-5749-2015; Butterbach-Bahl, Klaus/A-8081-2013; Liu,
+   Chunyan/J-2848-2014; Yan, Guangxuan/H-9663-2016
+OI Zheng, Xunhua/0000-0002-4138-7470; Rui, Wang/0000-0001-5079-1080; Yao,
+   Zhisheng/0000-0001-6242-2426; Butterbach-Bahl,
+   Klaus/0000-0001-9499-6598; 
+FU National Natural Science Foundation of China [41675144, 41021004];
+   Ministry of Agriculture of China [200803036]
+FX This study was jointly funded by the National Natural Science Foundation
+   of China (grant No.: 41675144, 41021004) and the Ministry of Agriculture
+   of China (grant No.: 200803036). We wish to thank Jing Zhang, Zaixing
+   Zhou, Shenghui Han, Feng Cui and Yu Xu for their substantial and
+   excellent assistance in the field and laboratory measurements.
+NR 72
+TC 52
+Z9 60
+U1 13
+U2 224
+PU ELSEVIER SCI LTD
+PI OXFORD
+PA THE BOULEVARD, LANGFORD LANE, KIDLINGTON, OXFORD OX5 1GB, OXON, ENGLAND
+SN 0269-7491
+EI 1873-6424
+J9 ENVIRON POLLUT
+JI Environ. Pollut.
+PD DEC
+PY 2017
+VL 231
+BP 929
+EP 941
+DI 10.1016/j.envpol.2017.08.108
+PN 1
+PG 13
+WC Environmental Sciences
+WE Science Citation Index Expanded (SCI-EXPANDED)
+SC Environmental Sciences & Ecology
+GA FM3CD
+UT WOS:000414881000095
+PM 28888212
+DA 2026-01-16
+ER
+
+PT J
+AU Tian, D
+   Zhang, YY
+   Zhou, YZ
+   Mu, YJ
+   Liu, JF
+   Zhang, CL
+   Liu, PF
+AF Tian, Di
+   Zhang, Yuanyuan
+   Zhou, Yizhen
+   Mu, Yujing
+   Liu, Junfeng
+   Zhang, Chenglong
+   Liu, Pengfei
+TI Effect of nitrification inhibitors on mitigating N2O and NO
+   emissions from an agricultural field under drip fertigation in the North
+   China Plain
+SO SCIENCE OF THE TOTAL ENVIRONMENT
+LA English
+DT Article
+DE N2O; NO; Flood irrigation; Drip fertigation; DCD; Nitrapyrin
+ID NITROUS-OXIDE EMISSIONS; NITRIC-OXIDE; CROPPING SYSTEMS; MAIZE; WHEAT;
+   SOIL; DENITRIFICATION; GROUNDWATER; IRRIGATION; AMMONIA
+AB N2O and NO emissions from a winter wheat-summer maize rotation field with five different treatments in the North China Plain (NCP) were comparably investigated from 8 October 2014 to 11 October 2015. Compared with the treatments with only flood or drip irrigation, evident emission peaks of N2O and NO from the fertilization treatments with flood irrigation (A-Flood) and with drip fertigation (A-Drip) were observed after each fertilization event, whereas their emissions from the fertilization treatments with nitrification inhibitors under drip fertigation (A + DCD-Drip and A + Nitrapyrin-Drip) were greatly suppressed. The reduction effect of the nitrification inhibitors on N2O and NO emissions was found to be more conspicuous during the maize season than during the wheat season, implying that the soil temperature could play an important role in the reduction effect. Compared with the A-Flood treatment, the annual cumulative emission from the A-Drip treatment reduced by 22% for N2O and increased by 18% for NO, whereas the reductions of N2O and NO from the treatments with nitrification inhibitors could achieve as high as 66% and 95%, respectively. The yields of the maize were significantly greater from the A-Drip and A + Nitrapyrin-Drip treatments than from the A-Flood treatment, and the yields of the wheat were almost same among the treatments of A-Flood, A-Drip and A + DCD-Drip. Considering the yields, the water saving and the reduction of N2O and NO emissions, the application of nitrification inhibitor combined with drip fertigation is recommended in the NCP. (C) 2017 Elsevier B.V. All rights reserved.
+C1 [Tian, Di; Zhang, Yuanyuan; Zhou, Yizhen; Mu, Yujing; Liu, Junfeng; Zhang, Chenglong; Liu, Pengfei] Chinese Acad Sci, Res Ctr Ecoenvironm Sci, Beijing 100085, Peoples R China.
+   [Mu, Yujing] Chinese Acad Sci, Inst Urban Environm, Ctr Excellence Urban Atmospher Environm, Xiamen 361021, Peoples R China.
+   [Tian, Di; Zhang, Yuanyuan; Zhou, Yizhen; Mu, Yujing; Liu, Junfeng; Zhang, Chenglong; Liu, Pengfei] Univ Chinese Acad Sci, Beijing 100049, Peoples R China.
+C3 Chinese Academy of Sciences; Research Center for Eco-Environmental
+   Sciences (RCEES), CAS; Chinese Academy of Sciences; Institute of Urban
+   Environment, CAS; Chinese Academy of Sciences; University of Chinese
+   Academy of Sciences, CAS
+RP Mu, YJ (corresponding author), Chinese Acad Sci, Res Ctr Ecoenvironm Sci, Beijing 100085, Peoples R China.; Mu, YJ (corresponding author), Chinese Acad Sci, Inst Urban Environm, Ctr Excellence Urban Atmospher Environm, Xiamen 361021, Peoples R China.; Mu, YJ (corresponding author), Univ Chinese Acad Sci, Beijing 100049, Peoples R China.
+EM yjmu@rcees.ac.cn
+RI Zhang, Yuanyuan/KIA-1939-2024; Zhang, Chenglong/MGP-9341-2025; Liu,
+   Pengfei/IZD-6128-2023
+OI Liu, Pengfei/0000-0001-6237-3759
+FU National Key Technology R&D Program of China [2013BAD11B03-3]; Strategic
+   Priority Research Program of the Chinese Academy of Sciences
+   [XDB05010100]; National Natural Science Foundation of China [41575121,
+   91544211]
+FX This work was supported by the National Key Technology R&D Program of
+   China (no. 2013BAD11B03-3), the Strategic Priority Research Program of
+   the Chinese Academy of Sciences (no. XDB05010100), and the National
+   Natural Science Foundation of China (nos. 41575121 and 91544211).
+NR 45
+TC 40
+Z9 47
+U1 21
+U2 328
+PU ELSEVIER
+PI AMSTERDAM
+PA RADARWEG 29, 1043 NX AMSTERDAM, NETHERLANDS
+SN 0048-9697
+EI 1879-1026
+J9 SCI TOTAL ENVIRON
+JI Sci. Total Environ.
+PD NOV 15
+PY 2017
+VL 598
+BP 87
+EP 96
+DI 10.1016/j.scitotenv.2017.03.220
+PG 10
+WC Environmental Sciences
+WE Science Citation Index Expanded (SCI-EXPANDED)
+SC Environmental Sciences & Ecology
+GA EZ1XL
+UT WOS:000404504000011
+PM 28437775
+DA 2026-01-16
+ER
+
+PT J
+AU Yan, GX
+   Zheng, XH
+   Cui, F
+   Yao, ZS
+   Zhou, ZX
+   Deng, J
+   Xu, Y
+AF Yan, Guangxuan
+   Zheng, Xunhua
+   Cui, Feng
+   Yao, Zhisheng
+   Zhou, Zaixing
+   Deng, Jia
+   Xu, Yu
+TI Two-year simultaneous records of N2O and NO fluxes from a
+   farmed cropland in the northern China plain with a reduced nitrogen
+   addition rate by one-third
+SO AGRICULTURE ECOSYSTEMS & ENVIRONMENT
+LA English
+DT Article
+DE Nitrous oxide (N2O); Nitric oxide (NO); Nitrogen use efficiency; Direct
+   emission factor; Arrhenius kinetics; Michaelis-Menten kinetics
+ID MAIZE CROPPING SYSTEM; NITRIC-OXIDE EMISSION; RICE-WHEAT ROTATION;
+   AMMONIA VOLATILIZATION; AGRICULTURAL SYSTEMS; ORGANIC-MATTER; YANGTZE
+   DELTA; SOIL; DENITRIFICATION; TEMPERATURE
+AB Given the common problem of fertilizer overuse, agronomists are calling for a reduction of the high nitrogen dose by 1/3. We carried out a field experiment over two full winter wheat-summer maize rotations in the North China Plain (NCP) to determine whether this degree of nitrogen reduction will significantly reduce the emissions of nitrous oxide (N2O) and nitric oxide (NO). Three treatments were investigated in the field trial: a control with no nitrogen application, the conventional practice with nitrogen over-application and the optimal practice with a reduced dose of nitrogen by 1/3. Our observations across all treatments over the experimental period reveal significant correlations of the fluxes of either gas with soil temperature and moisture as well as the concentrations of soil ammonium, nitrate and dissolvable organic carbon. There were strong correlations within the functions of the dual Arrhenius and Michaelis-Menten kinetics, giving apparent activation energy values of 40-97 and 59-92 kJ mol(-1) for N2O and NO fluxes, respectively. Our results provide annual direct emission factors of 0.48-0.96% for N2O and 0.15-0.47% for NO and demonstrate a significant correlation between N2O emission induced by fertilization and fertilizer nitrogen use efficiency (NUE). The correlation indicates a significant potential of N2O mitigation via enhancing NUEs. A reduction in the nitrogen dose did not obviously mitigate either the annual NO emission in both rotations or the annual N2O emission in the second one. However, nitrogen reduction significantly decreased the annual total N2O emission by 38% during the first rotation. These inconsistencies in the responses of N2O emission to the reduced nitrogen dose can be attributed to improper fertilization practices, such as broadcasting urea prior to heavy rainfalls or irrigation events during the maize season, which implies a need for further fertilization practice options/techniques in addition to the reduction of nitrogen doses. (c) 2013 Elsevier B.V. All rights reserved.
+C1 [Yan, Guangxuan; Zheng, Xunhua; Cui, Feng; Yao, Zhisheng; Zhou, Zaixing; Deng, Jia] Chinese Acad Sci, State Key Lab Atmospher Boundary Layer Phys & Atm, Inst Atmospher Phys, Beijing 100029, Peoples R China.
+   [Xu, Yu] Shandong Acad Agr Sci, Inst Resources & Environm, Jinan 250100, Peoples R China.
+C3 Chinese Academy of Sciences; Institute of Atmospheric Physics, CAS;
+   Shandong Academy of Agricultural Sciences
+RP Zheng, XH (corresponding author), Chinese Acad Sci, State Key Lab Atmospher Boundary Layer Phys & Atm, Inst Atmospher Phys, Beijing 100029, Peoples R China.
+EM xunhua.zheng@post.iap.ac.cn
+RI Deng, Jia/A-8468-2018; Yao, Zhisheng/A-5749-2015; Yan,
+   Guangxuan/H-9663-2016; Zheng, Xunhua/D-3048-2017
+OI Yao, Zhisheng/0000-0001-6242-2426; Zheng, Xunhua/0000-0002-4138-7470
+FU Ministry of Agriculture of China [201103039]; Ministry of Science and
+   Technology of China [2012CB417106]; National Natural Science Foundation
+   of China [41021004]
+FX This study was financially supported by the Ministry of Agriculture of
+   China (grant no.: 201103039), the Ministry of Science and Technology of
+   China (grant no.: 2012CB417106) and the National Natural Science
+   Foundation of China (grant no.: 41021004).
+NR 55
+TC 59
+Z9 74
+U1 9
+U2 250
+PU ELSEVIER SCIENCE BV
+PI AMSTERDAM
+PA PO BOX 211, 1000 AE AMSTERDAM, NETHERLANDS
+SN 0167-8809
+EI 1873-2305
+J9 AGR ECOSYST ENVIRON
+JI Agric. Ecosyst. Environ.
+PD SEP 15
+PY 2013
+VL 178
+BP 39
+EP 50
+DI 10.1016/j.agee.2013.06.016
+PG 12
+WC Agriculture, Multidisciplinary; Ecology; Environmental Sciences
+WE Science Citation Index Expanded (SCI-EXPANDED)
+SC Agriculture; Environmental Sciences & Ecology
+GA 233UU
+UT WOS:000325595800005
+DA 2026-01-16
+ER
+
+PT J
+AU Niu, YH
+   Cai, YJ
+   Chen, ZM
+   Luo, JF
+   Di, HJ
+   Yu, HY
+   Zhu, AN
+   Ding, WX
+AF Niu, Yuhui
+   Cai, Yanjiang
+   Chen, Zengming
+   Luo, Jiafa
+   Di, Hong J.
+   Yu, Hongyan
+   Zhu, Anning
+   Ding, Weixin
+TI No-tillage did not increase organic carbon storage but stimulated
+   N2O emissions in an intensively cultivated sandy loam soil: A
+   negative climate effect
+SO SOIL & TILLAGE RESEARCH
+LA English
+DT Article
+DE Denitrification; Nitric oxide; Nitrous oxide; No-tillage; SOC; Surface
+   aggregation
+ID NITROUS-OXIDE EMISSIONS; GREENHOUSE-GAS EMISSIONS; AGGREGATE-ASSOCIATED
+   CARBON; MAIZE CROPPING SYSTEM; NORTH CHINA PLAIN; NITRIC-OXIDE;
+   CONVENTIONAL-TILLAGE; CONSERVATION TILLAGE; RESIDUE MANAGEMENT; FARMING
+   PRACTICES
+AB Although numerous studies have been conducted on the effects of no-tillage on carbon (C) sequestration in agricultural systems, there is still no consensus on the balance between the potential of C sequestration and nitrous oxide (N2O) or nitric oxide (NO) emissions. A no-tillage field experiment in the North China Plain was established in 2006 and the influence of no-tillage on N2O and NO emissions was monitored under an annual wheat-maize cropping system. The study included four treatments: no-tillage (NT) and conventional tillage (CT) soils amended with N fertilizer at a rate of 225 kg N ha(-1) for wheat and 195 kg N ha(-1) for maize (NTN and CTN) and without N fertilizer (NT0 and CT0). Three years of no-tillage significantly (p < 0.05) increased soil organic C (SOC) content by 12.2% in the 0-5 cm soil layer, possibly due to the surface aggregation of organic C derived from crop roots and exudates, but did not alter SOC pool in the 0-30 an profile. Annual N2O emissions in the NT0 and CT0 treatments were 0.53 and 0.57 kg N2O-N ha(-1), respectively, and were significantly (p < 0.05) increased to 0.96 kg N2O-N ha(-1) in CTN and to 1.23 kg N2O-N ha(-1) in NTN. Remarkable differences in N20 emissions between CTN and NTN were observed during the maize growing season. In contrast, NO emissions were not affected by the tillage regimes regardless of N fertilization. The mean ratios of NO/N2O fluxes in N-unfertilized plots were 0.26-0.29 and 1.79-2.11 for the maize and wheat season, respectively, indicating that both NO and N2O were primarily derived from denitrification during the maize growing season and from nitrification under wheat cultivation. Under N-fertilized plots, the ratios increased to 1.44-2.02 and 5.00-6.03 for the maize and wheat season, respectively, with significantly (p < 0.05) lower values in NTN plots than in CTN plots. The N2O emission factors for N applied in the wheat-maize rotation system were 0.16% and 0.09% for NTN and CTN, respectively, which was far lower than the IPCC Tier 1 default value (1.0%), primarily due to the absence of irrigation after fertilization in maize season and low temperature in wheat season. The results suggest that the 3-year no-tillage regime with residue removal did not substantially increase C storage in the 0-30 cm profile, but stimulated N2O emissions primarily by increasing denitrification.
+C1 [Niu, Yuhui; Cai, Yanjiang; Chen, Zengming; Yu, Hongyan; Zhu, Anning; Ding, Weixin] Chinese Acad Sci, Inst Soil Sci, State Key Lab Soil & Sustainable Agr, Nanjing 210008, Jiangsu, Peoples R China.
+   [Cai, Yanjiang] Zhejiang A&F Univ, State Key Lab Subtrop Silviculture, Hangzhou 311300, Zhejiang, Peoples R China.
+   [Niu, Yuhui] Univ Chinese Acad Sci, Beijing 100049, Peoples R China.
+   [Luo, Jiafa] AgResearch, Land & Environm, Hamilton 3240, New Zealand.
+   [Di, Hong J.] Lincoln Univ, Fac Agr & Life Sci, Christchurch 7646, New Zealand.
+C3 Chinese Academy of Sciences; Nanjing Institute of Soil Science, CAS;
+   Zhejiang A&F University; Chinese Academy of Sciences; University of
+   Chinese Academy of Sciences, CAS; AgResearch - New Zealand; Lincoln
+   University - New Zealand
+RP Ding, WX (corresponding author), Chinese Acad Sci, Inst Soil Sci, State Key Lab Soil & Sustainable Agr, Nanjing 210008, Jiangsu, Peoples R China.
+EM wxding@issas.ac.cn
+RI Chen, Zengming/M-4618-2017; Cai, Yanjiang/JCE-5465-2023; Di, Hong
+   Jie/G-5583-2010; 蔡, 延江/N-6694-2013
+OI Chen, Zengming/0000-0001-5017-4939; Luo, Jiafa/0000-0001-6198-6887; 蔡,
+   延江/0000-0002-5376-7884
+FU National Key Research and Development Program of China [2016YFD0200309];
+   Natural Science Foundation of China [41730753]; Jiangsu Agriculture
+   Science and Technology Innovation Fund [CX(17)1001]
+FX This study was funded by the National Key Research and Development
+   Program of China (2016YFD0200309), Natural Science Foundation of China
+   (41730753) and Jiangsu Agriculture Science and Technology Innovation
+   Fund (CX(17)1001).
+NR 99
+TC 30
+Z9 40
+U1 4
+U2 174
+PU ELSEVIER
+PI AMSTERDAM
+PA RADARWEG 29, 1043 NX AMSTERDAM, NETHERLANDS
+SN 0167-1987
+EI 1879-3444
+J9 SOIL TILL RES
+JI Soil Tillage Res.
+PD DEC
+PY 2019
+VL 195
+AR 104419
+DI 10.1016/j.still.2019.104419
+PG 11
+WC Soil Science
+WE Science Citation Index Expanded (SCI-EXPANDED)
+SC Agriculture
+GA JJ3IA
+UT WOS:000494053700043
+DA 2026-01-16
+ER
+
+PT J
+AU Huang, JX
+   Sui, P
+   Gao, WS
+   Chen, YQ
+AF Huang Jianxiong
+   Sui Peng
+   Gao Wansheng
+   Chen Yuanquan
+TI Effects of Maize-Soybean Intercropping on Nitrous Oxide Emissions from a
+   Silt Loam Soil in the North China Plain
+SO PEDOSPHERE
+LA English
+DT Article
+DE climate change; denitrification; intercropping system; land equivalent
+   ratio; nitrification; nitrous oxide flux; soil temperature; soil
+   water-filled pore space
+ID N2O EMISSIONS; CROPPING SYSTEM; YIELD ADVANTAGE; NITRIC-OXIDE; WATER;
+   CO2; TILLAGE; COMPACTION; QUALITY; NITRATE
+AB Maize (Zea mays L.), a staple crop in the North China Plain, contributing substantially to agricultural nitrous oxide (N2O) emissions in this region. Many studies have focused on various agricultural management measures to reduce N2O emissions. However, few have investigated soil N2O emissions in intercropping systems. In the current study, we investigate whether maize-soybean intercropping treatments could reduce N2O emission rates. Two differently configured maize-soybean intercropping treatments, 2:2 intercropping (two rows of maize and two rows of soybean, 2M2S) and 2:1 intercropping (two rows of maize and one row of soybean, 2M1S), and monocultured maize (M) and soybean (S) treatments were performed using a static chamber method. The results showed no distinct yield advantage for the intercropping systems. The total N2O production from the various treatments was 0.15 +/- 0.04-113.85 +/- 12.75 mu g m(-2) min(-1). The cumulative N2O emission from the M treatment was 16.9 +/- 2.3 kg ha(-1) over the entire growing season (three and a half months), which was significantly higher (P < 0.05) than that of the 2M2S and 2M1S treatments by 36.6% and 32.2%, respectively. Two applications of nitrogen (N) fertilizer (as urea) at 240 kg N ha(-1) each induced considerable soil N2O fluxes. Short-term N2O emissions (within one week after each of the two N applications) accounted for 74.4%-83.3% of the total emissions. Soil moisture, temperature, and inorganic N were significantly correlated with soil N2O emissions (R-2 = 0.246-0.365, n = 192, P < 0.001). Soil nitrate (NO3-) and moisture decreased in the intercropping treatments during the growing season. These results indicate that maize-soybean intercropping can reduce soil N-2O emissions relative to monocultured maize.
+C1 [Huang Jianxiong; Sui Peng; Gao Wansheng; Chen Yuanquan] China Agr Univ, Coll Agr & Biotechnol, 2 Yuanmingyuan West Rd, Beijing 100193, Peoples R China.
+   [Huang Jianxiong] Chinese Acad Trop Agr Sci, Rubber Res Inst, Danzhou 571737, Peoples R China.
+C3 China Agricultural University; Chinese Academy of Tropical Agricultural
+   Sciences
+RP Chen, YQ (corresponding author), China Agr Univ, Coll Agr & Biotechnol, 2 Yuanmingyuan West Rd, Beijing 100193, Peoples R China.
+EM rardc@163.com
+RI Chen, Yuanquan/AAU-9492-2020
+FU National Key Technology R&D Program of China [2011BAD16B15,
+   2012BAD14B03]; Fundamental Research Funds for Rubber Research Institute,
+   Chinese Academy of Tropical Agricultural Sciences [1630022014019]
+FX This research was supported by the National Key Technology R&D Program
+   of China (Nos. 2011BAD16B15 and 2012BAD14B03) and the Fundamental
+   Research Funds for Rubber Research Institute, Chinese Academy of
+   Tropical Agricultural Sciences (No. 1630022014019).
+NR 40
+TC 17
+Z9 18
+U1 9
+U2 131
+PU SCIENCE PRESS
+PI BEIJING
+PA 16 DONGHUANGCHENGGEN NORTH ST, BEIJING 100717, PEOPLES R CHINA
+SN 1002-0160
+EI 2210-5107
+J9 PEDOSPHERE
+JI Pedosphere
+PD DEC
+PY 2019
+VL 29
+IS 6
+BP 764
+EP 772
+DI 10.1016/S1002-0160(17)60389-8
+PG 9
+WC Soil Science
+WE Science Citation Index Expanded (SCI-EXPANDED)
+SC Agriculture
+GA JU0BO
+UT WOS:000501345500006
+DA 2026-01-16
+ER
+
+PT J
+AU Chi, YB
+   Wei, CC
+   Zheng, Q
+   Yang, PL
+   Ren, SM
+AF Chi, Yanbing
+   Wei, Chenchen
+   Zheng, Qiang
+   Yang, Peiling
+   Ren, Shumei
+TI Potential risk of soil reactive gaseous nitrogen emissions under
+   reclaimed water irrigation in a wheat-maize rotation system
+SO AGRICULTURAL WATER MANAGEMENT
+LA English
+DT Article
+DE Reactive gaseous nitrogen; Reclaimed water; Nitrogen fertilizer; Soil
+   properties; Emission risk
+ID TREATED WASTE-WATER; NORTH CHINA PLAIN; N2O EMISSIONS; MICROBIAL
+   COMMUNITY; CHEMICAL-PROPERTIES; DRIP IRRIGATION; NO EMISSIONS;
+   FERTILIZER; DENITRIFICATION; NITRIFICATION
+AB Reactive nitrogen gas (Nr) originating from the soil is highly susceptible to the influence of agricultural water and fertilizer management practices, making it a critical gas that can substantially contribute to atmospheric pollution. Understanding the emission patterns of Nr in the surface soil under reclaimed water (RW) irrigation is essential for guiding RW irrigation practices and informing policies aimed at reducing Nr emissions. In this study conducted in Beijing, North China, field sites were selected with different irrigation management strategies and corresponding fertilizer application methods. The two types of irrigation water quality comprised RW irrigation and groundwater (UW) irrigation, whereas the two fertilizer types utilized were calcium ammonium nitrate with a high nitrate nitrogen content and ammonium sulfate with ammonium nitrogen. Nr emissions and concentrations in the soil profile (0-30 cm depth) were monitored throughout key agricultural events, including cultivation, irrigation, fertilization, and harvest, spanning the period from 2020 to 2021. It is observed that RW irrigation effectively reduces cumulative ammonia (NH3) emissions compared to groundwater (UW) treatment. However, it results in increased concentrations of nitrous oxide (N2O) (12.33%-73.82%) and nitric oxide (NO) (13.74%-36.59%) in the soil within the depth range of 0-30 cm. Of particular importance is the notable increase in the abundance of soil denitrifying and ammonia-oxidizing archaea (AOA-amoA) genes due to RW irrigation, indicating the potential for elevated N2O and NO emissions. Furthermore, it is noteworthy that the soil Nr emissions and concentrations are more strongly affected by nitrogen type rather than water quality. Conversely, the inclusion of nitrate has proven to be effective in mitigating N2O and NO emissions in RW-irrigated farmland.
+C1 [Chi, Yanbing] Zhejiang Univ Water Resources & Elect Power, Sch Water Conservancy & Environm Engn, Hangzhou, Peoples R China.
+   [Wei, Chenchen] Changjiang River Sci Res Inst, Agr Water Conservancy Dept, Wuhan, Peoples R China.
+   [Chi, Yanbing; Wei, Chenchen; Zheng, Qiang; Yang, Peiling; Ren, Shumei] China Agr Univ, Coll Water Resources & Civil Engn, Wuhan, Peoples R China.
+C3 Zhejiang University of Water Resources and Electric Power; Yangtze River
+   Water Resources Protection Bureau; China Agricultural University
+RP Yang, PL (corresponding author), China Agr Univ, Coll Water Resources & Civil Engn, Wuhan, Peoples R China.
+EM yangpeiling@126.com
+RI Yang, Pei-Ling/KIG-5763-2024; Chi, Yanbing/GYA-3036-2022
+FU Nanxun Young Scholars Project; National Key Research and Development
+   Project of China [2019YFC0408703]
+FX This research was funded by Nanxun Young Scholars Project, and National
+   Key Research and Development Project of China, grant number (No.
+   2019YFC0408703) .
+NR 43
+TC 5
+Z9 5
+U1 19
+U2 100
+PU ELSEVIER
+PI AMSTERDAM
+PA RADARWEG 29, 1043 NX AMSTERDAM, NETHERLANDS
+SN 0378-3774
+EI 1873-2283
+J9 AGR WATER MANAGE
+JI Agric. Water Manage.
+PD OCT 1
+PY 2023
+VL 288
+AR 108486
+DI 10.1016/j.agwat.2023.108486
+EA AUG 2023
+PG 10
+WC Agronomy; Water Resources
+WE Science Citation Index Expanded (SCI-EXPANDED)
+SC Agriculture; Water Resources
+GA R9GS6
+UT WOS:001067370000001
+OA Green Submitted, gold
+DA 2026-01-16
+ER
+
+PT J
+AU Liu, DY
+   Sun, HY
+   Liao, X
+   Luo, JF
+   Lindsey, S
+   Yuan, JJ
+   He, TH
+   Zaman, M
+   Ding, WX
+AF Liu, Deyan
+   Sun, Heyang
+   Liao, Xia
+   Luo, Jiafa
+   Lindsey, Stuart
+   Yuan, Junji
+   He, Tiehu
+   Zaman, Mohammad
+   Ding, Weixin
+TI N2O and NO Emissions as Affected by the Continuous Combined
+   Application of Organic and Mineral N Fertilizer to a Soil on the North
+   China Plain
+SO AGRONOMY-BASEL
+LA English
+DT Article
+DE nitrous oxide; nitric oxide; emission factor; organic manure
+ID NITROUS-OXIDE EMISSIONS; SANDY LOAM SOIL; WHEAT ROTATION; USE
+   EFFICIENCY; INORGANIC FERTILIZERS; MICROBIAL COMMUNITY; WATER
+   MANAGEMENT; CO2 EMISSIONS; CROP RESIDUES; GAS EMISSIONS
+AB A field experiment was conducted to evaluate the influence of the continuous application of organic and mineral N fertilizer on N2O and NO emissions under maize and wheat rotation on the North China Plain. This study included eight treatments: no fertilizer (control); mineral N fertilizer (Nmin) at a rate of 200 kg N ha(-1) per season; 50% mineral fertilizer N plus 50% cattle manure N (50% CM), 50% chicken manure N (50% FC) or 50% pig manure N (50% FP); 75% mineral fertilizer N plus 25% cattle manure N (25% CM), 25% chicken manure N (25% FC) or 25% pig manure N (25% FP). The annual N2O and NO emissions were 2.71 and 0.39 kg N ha(-1), respectively, under the Nmin treatment, with an emission factor of 0.50% for N2O and 0.07% for NO. Compared with the Nmin treatment, N2O emissions did not differ when 50% of the mineral N was replaced with manure N (50% CM, 50% FC and 50% FP), while annual NO emissions were significantly reduced by 49.0% and 27.8% under 50% FC and 50% FP, respectively. In contrast, annual N2O emissions decreased by 21-38% compared to the Nmin treatment when 25% of the mineral N was replaced with manure N (25% CM, 25% FC and 25% FP). Most of the reduction occurred during the maize season. The 25% CM, 25% FC and 25% FP treatments had no effect on NO emissions compared to the Nmin treatment. There was no obvious difference in annual N2O and NO emissions among the organic manures at the same application rate, probably due to their similar C/N ratio. Replacing a portion of the mineral fertilizer N with organic fertilizer N did not significantly affect crop grain yield, except for the 50% FC treatment in the wheat season. Overall, the results suggest that the combined application of 25% organic manure N plus 75% mineral fertilizer N had the most potential to mitigate N2O emissions while not affecting crop yield in the maize and wheat rotation system in this area of China.
+C1 [Liu, Deyan; Sun, Heyang; Liao, Xia; Yuan, Junji; He, Tiehu; Ding, Weixin] Chinese Acad Sci, Inst Soil Sci, State Key Lab Soil & Sustainable Agr, Nanjing 210008, Peoples R China.
+   [Sun, Heyang] Jilin Univ, Coll Earth Sci, Changchun 130061, Peoples R China.
+   [Liao, Xia] Univ Chinese Acad Sci, Beijing 100049, Peoples R China.
+   [Luo, Jiafa; Lindsey, Stuart] AgResearch Ltd, Ruakura Res Ctr, Hamilton 3240, New Zealand.
+   [Zaman, Mohammad] IAEA, Joint FAO IAEA Div, Soil & Water Management & Crop Nutr Sect, A-1400 Vienna, Austria.
+C3 Chinese Academy of Sciences; Nanjing Institute of Soil Science, CAS;
+   Jilin University; Chinese Academy of Sciences; University of Chinese
+   Academy of Sciences, CAS; AgResearch - New Zealand; International Atomic
+   Energy Agency; Food & Agriculture Organization of the United Nations
+   (FAO)
+RP Ding, WX (corresponding author), Chinese Acad Sci, Inst Soil Sci, State Key Lab Soil & Sustainable Agr, Nanjing 210008, Peoples R China.
+EM dyliu@issas.ac.cn; heyang20@mails.jlu.edu.cn; xliao@issas.ac.cn;
+   Jiafa.Luo@agresearch.co.nz; Stuart.Lindsey@agresearch.co.nz;
+   jjyuan@issas.ac.cn; thhe@issas.ac.cn; m.zaman@iaea.org;
+   wxding@mail.issas.ac.cn
+RI ; Deyan, Liu/AAZ-2671-2020
+OI He, Tiehu/0000-0001-8902-5412; Ding, Weixin/0000-0003-3610-7611
+FU National Natural Science Foundation of China [41977049, 41730753];
+   National Key Research and Development Program of China [2016YFD0200309]
+FX This research was funded by the National Natural Science Foundation of
+   China (41977049, 41730753), and the National Key Research and
+   Development Program of China (2016YFD0200309). Acknowledgments: We
+   acknowledge all the field staff at Fengqiu National Station for
+   Agroecological
+NR 62
+TC 19
+Z9 20
+U1 16
+U2 164
+PU MDPI
+PI BASEL
+PA MDPI AG, Grosspeteranlage 5, CH-4052 BASEL, SWITZERLAND
+EI 2073-4395
+J9 AGRONOMY-BASEL
+JI Agronomy-Basel
+PD DEC
+PY 2020
+VL 10
+IS 12
+AR 1965
+DI 10.3390/agronomy10121965
+PG 18
+WC Agronomy; Plant Sciences
+WE Science Citation Index Expanded (SCI-EXPANDED)
+SC Agriculture; Plant Sciences
+GA PJ4WR
+UT WOS:000601770500001
+OA Green Submitted, gold
+DA 2026-01-16
+ER
+
+PT S
+AU Zhang, YY
+   Fang, SX
+   Liu, JF
+   Mu, YJ
+AF Zhang, Yuanyuan
+   Fang, Shuangxi
+   Liu, Junfeng
+   Mu, Yujing
+BE Guo, L
+   Gunasekara, AS
+   McConnell, LL
+TI Exchange Fluxes of NOx, NH3, and N2O
+   from Typical Wheat, Paddy, and Maize Fields in the Yangtze River Delta
+   and North China Plain
+SO UNDERSTANDING GREENHOUSE GAS EMISSIONS FROM AGRICULTURAL MANAGEMENT
+SE ACS Symposium Series
+LA English
+DT Article; Book Chapter
+ID NITROUS-OXIDE EMISSIONS; NITRIC-OXIDE; AMMONIA VOLATILIZATION;
+   FERTILIZER APPLICATION; SOIL; ROTATION; INVENTORY; QUALITY; LOSSES;
+   LANDS
+AB The exchange fluxes of NOx, NH3 and N2O between two typical agricultural fields and the atmosphere were investigated in the Yangtze River Delta (YRD) and North China Plain (NCP). The average fluxes of NO and NH3 from the wheat field in the YRD were 79 and -5.1 ng N m(-2) s(-1), and from the paddy field were 3.7 and 34.8 ng N m(-2) s(-1), respectively. The fertilize-induced emission factors (EFs) as NO-N and NH3-N from the wheat field were 2.3% and 1%, and from the paddy field were 0.09% and 3.5%, respectively. Remarkable yearly variation of N2O emissions from the investigated NCP maize field was observed, with average fluxes of 72.1 ng N m(-2) s(-1) in 2008 and 30 ng N m(-2) s(-1) in 2009 and with EFs of 3.78% in 2008 and 1.08% in 2009. The average NO and NH3 fluxes from the maize field in 2009 were 36.5 ng N m(-2) s(-1) and 94.0 ng N m(-2) s(-1), respectively. Based on the molar ratios of NO/N2O, the emissions of NOx and N2O from the maize field were mainly ascribed to nitrification processes. Returning wheat straw back into the maize field could significantly reduce NOx and NH3 emissions.
+C1 [Zhang, Yuanyuan; Fang, Shuangxi; Liu, Junfeng; Mu, Yujing] Chinese Acad Sci, Ecoenvironm Sci Res Ctr, Beijing 100085, Peoples R China.
+C3 Chinese Academy of Sciences; Research Center for Eco-Environmental
+   Sciences (RCEES), CAS
+RP Zhang, YY (corresponding author), Chinese Acad Sci, Ecoenvironm Sci Res Ctr, Beijing 100085, Peoples R China.
+EM yjmu@rcees.ac.cn
+RI Fang, Shuangxi/GRN-9269-2022; Zhang, Yuanyuan/KIA-1939-2024
+NR 77
+TC 1
+Z9 8
+U1 0
+U2 14
+PU AMER CHEMICAL SOC
+PI WASHINGTON
+PA 1155 SIXTEENTH ST NW, WASHINGTON, DC 20036 USA
+SN 0097-6156
+EI 1947-5918
+BN 978-0-8412-2654-8
+J9 ACS SYM SER
+JI ACS Symp. Ser.
+PY 2011
+VL 1072
+BP 51
+EP 65
+D2 10.1021/bk-2011-1072
+PG 15
+WC Agricultural Engineering; Soil Science
+WE Book Citation Index – Science (BKCI-S)
+SC Agriculture
+GA BDD07
+UT WOS:000312746300004
+DA 2026-01-16
+ER
+
+PT J
+AU Yan, GX
+   Yao, ZS
+   Zheng, XH
+   Liu, CY
+AF Yan, Guangxuan
+   Yao, Zhisheng
+   Zheng, Xunhua
+   Liu, Chunyan
+TI Characteristics of annual nitrous and nitric oxide emissions from major
+   cereal crops in the North China Plain under alternative fertilizer
+   management
+SO AGRICULTURE ECOSYSTEMS & ENVIRONMENT
+LA English
+DT Article
+ID GREENHOUSE-GAS FLUXES; LONG-TERM APPLICATION; N2O EMISSIONS;
+   WINTER-WHEAT; AGRICULTURAL SOILS; CROPPING SYSTEM; ROTATION SYSTEM;
+   ORGANIC-MATTER; ANDISOL FIELD; NO EMISSIONS
+AB Although nitrogen fertilizer is crucially important for China's crop production, the overuses in the intensive cereal cropping systems of the North China Plain has caused extensive concern for its environmental consequences on nitrous oxide (N2O) and nitric oxide (NO) fluxes. To characterize the integration of environmental and agronomic aspects of fertilizer management, we conducted two annual winter wheat (Triticum aestivum L.)-summer maize (Zea mays L.) rotation cycles under five fertilization treatments, including the farmers' conventional practice (CP) amended with synthetic nitrogen, three alternative managements of reduced nitrogen inputs with synthetic fertilizers alone (UA), synthetic fertilizers combined with poultry manure (UA + PM) or controlled-release urea combined with poultry manure (CU + PM), and the control without nitrogen fertilization (CK). The N2O and NO fluxes and direct emission factors varied seasonally and annually. These variations could be interpreted mechanically by a revised "hole-in-the-pipe" model and dual Michaelis-Menten and Arrhenius kinetics. The CM, CP, UA, UA + PM, and CU + PM treatments released N2O at 0.65, 4.64, 3.66, 2.88, and 2.40 kg N ha(-1) yr(-1), respectively, and NO at least 0.42, 2.35, 2.24, 1.30, and 1.18 kg N ha(-1) yr(-1), respectively. The annual direct emission factors of N2O and NO were 0.41-0.67% and 0.18-0.32%, respectively. The three alternative managements decreased both N2O and NO emissions, expressed either on an area basis or relative to grain yield, without sacrificing crop yields compared to CP. However, their mitigation effects on each gas emission were different. The UA treatment reduced only N2O emission, while UA + PM and CU + PM showed significant mitigation effects on both gases as compared to CP or UA. Overall, our results provide insight into environmental aspect of fertilizer management in major cereal crops and suggest that reducing nitrogen input coupled with organic manure incorporation could be beneficial for simultaneously mitigating nitrogen-containing trace gas fluxes and sustaining cereal grain yields. (C) 2015 Elsevier B.V. All rights reserved.
+C1 [Yan, Guangxuan; Yao, Zhisheng; Zheng, Xunhua; Liu, Chunyan] Chinese Acad Sci, Inst Atmospher Phys, State Key Lab Atmospher Boundary Layer Phys & Atm, Beijing 100029, Peoples R China.
+C3 Chinese Academy of Sciences; Institute of Atmospheric Physics, CAS
+RP Yao, ZS (corresponding author), Chinese Acad Sci, Inst Atmospher Phys, State Key Lab Atmospher Boundary Layer Phys & Atm, Beijing 100029, Peoples R China.
+EM zhishengyao@mail.iap.ac.cn
+RI Yao, Zhisheng/A-5749-2015; Zheng, Xunhua/D-3048-2017; Liu,
+   Chunyan/J-2848-2014; Yan, Guangxuan/H-9663-2016
+OI Yao, Zhisheng/0000-0001-6242-2426; Zheng, Xunhua/0000-0002-4138-7470; 
+FU Ministry of Agriculture of China [201103039]; Ministry of Science and
+   Technology [2012CB417106]; National Natural Science Foundation of China
+   [41305129, 41321064]
+FX This study was financially supported by the Ministry of Agriculture of
+   China (grant No.: 201103039), the Ministry of Science and Technology
+   (2012CB417106) and the National Natural Science Foundation of China
+   (grant Nos.: 41305129, 41321064). We also thank the assistance of Ms.
+   Ping Li, Dr. Zaixing Zhou, Dr. Feng Cui Dr. Yu Xu, Dr. Jia Deng and Ms.
+   Qi Feng for soil sample analysis, crop yield measurement and other
+   relevant help.
+NR 75
+TC 64
+Z9 69
+U1 17
+U2 256
+PU ELSEVIER
+PI AMSTERDAM
+PA RADARWEG 29, 1043 NX AMSTERDAM, NETHERLANDS
+SN 0167-8809
+EI 1873-2305
+J9 AGR ECOSYST ENVIRON
+JI Agric. Ecosyst. Environ.
+PD SEP 1
+PY 2015
+VL 207
+BP 67
+EP 78
+DI 10.1016/j.agee.2015.03.030
+PG 12
+WC Agriculture, Multidisciplinary; Ecology; Environmental Sciences
+WE Science Citation Index Expanded (SCI-EXPANDED)
+SC Agriculture; Environmental Sciences & Ecology
+GA CK4KC
+UT WOS:000356191700008
+DA 2026-01-16
+ER
+
+PT J
+AU Sha, ZP
+   Ma, X
+   Loick, N
+   Lv, TT
+   Cardenas, LM
+   Ma, Y
+   Liu, XJ
+   Misselbrook, T
+AF Sha, Zhipeng
+   Ma, Xin
+   Loick, Nadine
+   Lv, Tiantian
+   Cardenas, Laura M.
+   Ma, Yan
+   Liu, Xuejun
+   Misselbrook, Tom
+TI Nitrogen stabilizers mitigate reactive N and greenhouse gas emissions
+   from an arable soil in North China Plain: Field and laboratory
+   investigation
+SO JOURNAL OF CLEANER PRODUCTION
+LA English
+DT Article
+DE Urease inhibitor; Nitrification inhibitor; NH3 volatilization; NO
+   emission; N2O emission
+ID ENHANCED-EFFICIENCY FERTILIZERS; SURFACE-APPLIED UREA; NITRIFICATION
+   INHIBITORS; AMMONIA VOLATILIZATION; AGRICULTURAL SOILS; N2O EMISSIONS;
+   NITRIC-OXIDE; GASEOUS EMISSIONS; CROPPING SYSTEMS; HENAN PROVINCE
+AB Nitrogen (N) stabilizers such as urease inhibitors (UI) and nitrification inhibitors (NI) are promising tools to mitigate N losses from fertilized soils. To better understand the efficacy of UI and NI, a 2-year field trial was carried out in the North China Plain (NCP) to analyze the impact of UI and NI on NH3 loss and N transformations following urea fertilizer application. Additionally, a laboratory study using an automated continuous-flow incubation system was conducted under controlled conditions, using the same soil, to evaluate the mitigation potential of the N stabilizers on NO, N2O and CO2 emission. The results showed that a novel UI product, Limus (R) (BASF, Germany), containing active ingredients N-(n-butyl) thiophosphoric triamide (NBPT) and N-(n-propyl) thiophosphoric triamide (NPPT), limited ammonium formation rate and reduced NH3 loss in both maize (by 85 and 96% for year 1 and 2, respectively) and wheat (by 41 and 64%, for year 1 and 2, respectively) seasons. The 3, 4-dimethypyrazole phosphate (DMPP) amendment significantly retarded nitrate formation rate but the effectiveness was compromised by high ambient temperature; additionally, the NI amendment increased NH3 emission (by 16 and 24% for maize and wheat year 2, respectively). In the laboratory incubation experiment, addition of the UI reduced emissions of NO, N2O and CO2 by 89, 73 and 19%, respectively, while the addition of the NI reduced the respective emissions by 95, 83 and 24% over the 16 d incubation period. These results suggest that N stabilizers can play a significant role in the mitigation of the environmental impacts of intensive agriculture, and, in particular, that the UI amendment may have the better potential to reduce N losses in the climatic and soil conditions of the NCP, and that the NI should be avoided under high ambient temperatures. (C) 2020 Elsevier Ltd. All rights reserved.
+C1 [Sha, Zhipeng; Ma, Xin; Lv, Tiantian; Liu, Xuejun] China Agr Univ, Natl Acad Agr Green Dev, Coll Resources & Environm Sci,Key Lab Soil Plant, Beijing Key Lab Farmland Soil Pollut Prevent & Re, Beijing 100193, Peoples R China.
+   [Loick, Nadine; Cardenas, Laura M.; Misselbrook, Tom] Rothamsted Res, North Wyke EX20 2SB, Devon, England.
+   [Ma, Yan] Bangor Univ, Sch Environm Nat Resources & Geog, Bangor, Gwynedd, Wales.
+C3 China Agricultural University; UK Research & Innovation (UKRI);
+   Biotechnology and Biological Sciences Research Council (BBSRC);
+   Rothamsted Research; Bangor University
+RP Liu, XJ (corresponding author), China Agr Univ, Natl Acad Agr Green Dev, Coll Resources & Environm Sci,Key Lab Soil Plant, Beijing Key Lab Farmland Soil Pollut Prevent & Re, Beijing 100193, Peoples R China.
+EM liu310@cau.edu.cn
+RI Liu, Xuejun/AAA-7412-2022; sha, zhipeng/MSY-0605-2025; Cardenas,
+   Laura/HHC-2953-2022; Loick, Nadine/M-4313-2019; Misselbrook,
+   Tom/N-2385-2014
+OI Misselbrook, Tom/0000-0002-4594-3606; MA, YAN/0000-0002-0922-0611
+FU National Natural Science Foundation of China [41425007]; Chinese State
+   Key RD Programme [2017YFD0200101, 2018YFC0213301-03]; Chinese State Key
+   Special Program on Severe Air Pollution Mitigation "Agricultural
+   Emission Status and Enhanced Control Plan" [DQGG0208]; Chinese
+   Ten-Thousand Talent Program; Newton Fund through the BBSRC project
+   UK-China Virtual Joint Centre for Improved N Agronomy (CINAg)
+   [BB/N013468/1]; Beijing Advanced Discipline; BBSRC Soils to Nutrition
+   project [BBS/E/C/000I0320]; Biotechnology and Biological Sciences
+   Research Council [BB/K001051/1, BBS/E/C/000I0320, BB/N013468/1] Funding
+   Source: researchfish; BBSRC [BBS/E/C/000I0320, BB/N013468/1] Funding
+   Source: UKRI
+FX This work was financially supported by the National Natural Science
+   Foundation of China (41425007), Chinese State Key R&D Programme
+   (2017YFD0200101, 2018YFC0213301-03), the Chinese State Key Special
+   Program on Severe Air Pollution Mitigation "Agricultural Emission Status
+   and Enhanced Control Plan" (DQGG0208), the Chinese Ten-Thousand Talent
+   Program, the Newton Fund through the BBSRC project UK-China Virtual
+   Joint Centre for Improved N Agronomy (CINAg) (BB/N013468/1), Beijing
+   Advanced Discipline and the BBSRC Soils to Nutrition project
+   (BBS/E/C/000I0320). We thank BASF SE for providing the UI and NI
+   products.
+NR 74
+TC 47
+Z9 53
+U1 19
+U2 216
+PU ELSEVIER SCI LTD
+PI OXFORD
+PA THE BOULEVARD, LANGFORD LANE, KIDLINGTON, OXFORD OX5 1GB, OXON, ENGLAND
+SN 0959-6526
+EI 1879-1786
+J9 J CLEAN PROD
+JI J. Clean Prod.
+PD JUN 10
+PY 2020
+VL 258
+AR 121025
+DI 10.1016/j.jclepro.2020.121025
+PG 11
+WC Green & Sustainable Science & Technology; Engineering, Environmental;
+   Environmental Sciences
+WE Science Citation Index Expanded (SCI-EXPANDED)
+SC Science & Technology - Other Topics; Engineering; Environmental Sciences
+   & Ecology
+GA LC4VJ
+UT WOS:000525323600121
+DA 2026-01-16
+ER
+
+PT J
+AU Ding, WH
+   Chang, NJ
+   Zhang, J
+   Li, GC
+   Zhang, JF
+   Ju, XH
+   Zhang, GL
+   Li, H
+AF Ding, Wuhan
+   Chang, Naijie
+   Zhang, Jing
+   Li, Guichun
+   Zhang, Jianfeng
+   Ju, Xuehai
+   Zhang, Guilong
+   Li, Hu
+TI Optimized fertigation mitigates N2O and NO emissions and
+   enhances NH3 volatilizations in an intensified greenhouse
+   vegetable system br
+SO AGRICULTURAL WATER MANAGEMENT
+LA English
+DT Article
+DE N -oxide emissions; NH3 volatilization; Greenhouse cucumber -tomato
+   field; Drip fertigation; N fertilization; North China Plain
+ID NITROUS-OXIDE EMISSIONS; THROUGH CHAMBER SYSTEM; CROPPING SYSTEMS; DRIP
+   IRRIGATION; GAS EMISSIONS; AMMONIA VOLATILIZATION; BIOCHAR AMENDMENT;
+   REACTIVE NITROGEN; NITRIC-OXIDE; SOIL N2O
+AB Gaseous reactive nitrogen (GNr) losses (N2O, NO emissions and NH3 volatilization, etc.) in greenhouse vegetable fields (GVF) have received considerable critical attention. Much uncertainty still exists about GNr losses reduction under increasing vegetables demand and environmental policies in China. An experiment spanning four greenhouse vegetable growing seasons (cucumber and tomato) was conducted in North China Plain (NCP). It included four treatments, i.e., flood irrigation with no urea-N application (FU0), flood irrigation with conventional urea-N application (FUN), drip fertigation with conventional urea-N application (DUN), and drip fertigation with 50% reduction of urea-N application (DRUN). Obvious emission peaks of N2O, NO and NH3 flux were captured in the GVF after each fertilization and irrigation event. For FUN treatment, the mean annual area-scaled emissions of N2O, NO, and NH3 were 11.48, 1.66, and 44.90 kg N ha-1 yr-1, respectively; and the mean annual yield-scaled emissions of N2O, NO, and NH3 were 181.86, 23.04, and 800.07 g N t-1 yr- 1, respectively. On the mean annual area-scaled and yield-scaled, the N2O emissions were significantly (P < 0.05) lower by 40.1 % and 32.3 %, and the NO emissions were lower by 23.5 % and 28.5 %, but the NH3 volatilization were significantly (P < 0.05) higher by 31.7 % and 49.0 %, respectively, for the DUN treatment than FUN. Also compared with FUN, in DRUN treatment, the mean annual area-scaled N2O emissions, NO emissions and NH3 volatilization were significantly reduced by 46.7 %, 52.4 % and 22.0 %, respectively; and the mean annual yield-scaled N2O emissions, NO emissions and NH3 volatilization were significantly reduced by 40.7 %, 57.1 % and 24.5 %, respectively. Moreover, compared with FUN treatment, DUN and DRUN treatment both alleviated the global temperature potential (GTP) at 20- and 100-year timescales. Overall, compared with conventional water and fertilizer regimes, only changing irrigation mode reduced N2O and NO emissions but increased NH3 volatilization losses in greenhouse cucumber-tomato cultivation system; reducing N application while changing irrigation methods had significant emission reduction effects on N2O, NO and NH3 at both the area-scaled and yield-scaled, and which is an effective water and fertilizer managements for greenhouse cucumber-tomato cultivation system.
+C1 [Ding, Wuhan; Zhang, Guilong] Minist Agr & Rural Affairs, Agroenvironm Protect Inst, Tianjin 300191, Peoples R China.
+   [Ding, Wuhan; Chang, Naijie; Zhang, Jianfeng; Li, Hu] Chinese Acad Agr Sci, Inst Agr Resources & Reg Planning, Beijing 100081, Peoples R China.
+   [Zhang, Jing] Zhongkai Univ Agr & Engn, Guangdong Higher Educ Inst, Coll Resources & Environm Sci, Engn & Technol Res Ctr Agr Land Pollut Prevent & C, Guangzhou 510225, Peoples R China.
+   [Li, Guichun] Chinese Acad Agr Sci, Inst Environm & Sustainable Dev Agr, Beijing 100081, Peoples R China.
+   [Ju, Xuehai] Minist Agr & Rural Affairs, Rural Energy & Environm Agcy, Beijing 100125, Peoples R China.
+C3 Chinese Academy of Agricultural Sciences; Agro-Environmental Protection
+   Institute, CAAS; Chinese Academy of Agricultural Sciences; Institute of
+   Agricultural Resources & Regional Planning, CAAS; Zhongkai University of
+   Agriculture & Engineering; Chinese Academy of Agricultural Sciences;
+   Institute of Environment & Sustainable Development in Agriculture, CAAS
+RP Zhang, GL (corresponding author), Minist Agr & Rural Affairs, Agroenvironm Protect Inst, Tianjin 300191, Peoples R China.; Li, H (corresponding author), Chinese Acad Agr Sci, Inst Agr Resources & Reg Planning, Beijing 100081, Peoples R China.
+EM zhangguilong@caas.cn; lihu0728@sina.com
+OI CHANG, NAIJIE/0000-0003-0727-8075; DING, Wuhan/0000-0003-4425-5497
+FU earmarked fund for China Agriculture Research System, China [CARS
+   -23-B18]; National Nat- ural Science Foundation of China, China
+   [41671303]; National Key Research & Development Plan of China, China
+   [2018YFD0800400]
+FX Acknowledgements This study was gratefully supported by the earmarked
+   fund for China Agriculture Research System, China (CARS -23-B18) , the
+   National Nat- ural Science Foundation of China, China (Grant No.
+   41671303) , and the National Key Research & Development Plan of China,
+   China (2018YFD0800400) .
+NR 86
+TC 20
+Z9 24
+U1 8
+U2 174
+PU ELSEVIER
+PI AMSTERDAM
+PA RADARWEG 29, 1043 NX AMSTERDAM, NETHERLANDS
+SN 0378-3774
+EI 1873-2283
+J9 AGR WATER MANAGE
+JI Agric. Water Manage.
+PD OCT 1
+PY 2022
+VL 272
+AR 107797
+DI 10.1016/j.agwat.2022.107797
+EA AUG 2022
+PG 12
+WC Agronomy; Water Resources
+WE Science Citation Index Expanded (SCI-EXPANDED)
+SC Agriculture; Water Resources
+GA 4Y0IG
+UT WOS:000861217600007
+DA 2026-01-16
+ER
+
+PT J
+AU Liao, X
+   Niu, YH
+   Liu, DY
+   Chen, ZM
+   He, TH
+   Luo, JF
+   Lindsey, S
+   Ding, WX
+AF Liao, Xia
+   Niu, Yuhui
+   Liu, Deyan
+   Chen, Zengming
+   He, Tiehu
+   Luo, Jiafa
+   Lindsey, Stuart
+   Ding, Weixin
+TI Four-year continuous residual effects of biochar application to a sandy
+   loam soil on crop yield and N2O and NO emissions under
+   maize-wheat rotation
+SO AGRICULTURE ECOSYSTEMS & ENVIRONMENT
+LA English
+DT Article
+DE Residual effect; Biochar; Crop yield; Nitrous oxide; Nitric oxide
+ID NITROUS-OXIDE EMISSIONS; GREENHOUSE-GAS EMISSIONS; MANAGED VEGETABLE
+   FIELD; NITRIFICATION INHIBITOR; SHORT-TERM; GREENWASTE BIOCHAR;
+   ORGANIC-CARBON; AMENDMENT; NITRATE; CHINA
+AB Biochar application has been reported to effectively mitigate N2O emissions and increase crop yield; however, its long-term residual effects remain largely unknown. A four-year field experiment was designed in the North China Plain (NCP) to evaluate the residual effect of biochar on N2O and NO emissions and crop yield under maize-wheat rotation. The study included five treatments: no N fertilization (Control), N fertilizer application (CN), and N fertilizer plus maize-straw biochar application at 3 (NB3), 6 (NB6) and 12 t ha(-1) (NB12). Biochar amendment had no effect on maize yield during the four-year rotation, but increased maize grain N uptake by 12.9 - 14.1 % and fertilizer N use efficiency by 13.8 % in the fourth year. Meanwhile, NB12 treatment decreased wheat yield by 11.7 - 15.5 % in each year, except the second, while decreased average wheat yield. Biochar application significantly reduced N2O emissions by 31.5 - 42.4 % during the first maize season, and by 6.9 - 21.3 % in the third and fourth years primarily due to reduction in NH4+ availability for nitrification. Furthermore, this mitigation effect was positively related to soil moisture content and decreased with time after biochar application. Cumulative N2O emissions during the four wheat seasons were 0.25 - 0.85 kg N2O-N ha(-1), and only decreased by 8.9 - 9.9 % under biochar amendment in the third and fourth years probably because low soil temperature suppressed N2O production. Biochar addition in the third and fourth years significantly reduced NO emissions by 9.0 - 20.1 % during the maize growing seasons and 10.5 - 19.1 % during the wheat growing seasons, especially under NB6 treatment. The average yield-scaled N2O and NO emissions were lowest in the NB6 treatment during the maize and wheat season. Overall, these findings suggest that 6 t ha(-1) is the optimal biochar application rate for reducing N2O/NO emissions and yield-scaled N2O/NO emission under four-year maize-wheat rotation in the NCP.
+C1 [Liao, Xia; Niu, Yuhui; Liu, Deyan; Chen, Zengming; He, Tiehu; Ding, Weixin] Chinese Acad Sci, Inst Soil Sci, State Key Lab Soil & Sustainable Agr, Nanjing 210008, Peoples R China.
+   [Liao, Xia] Univ Chinese Acad Sci, Beijing 100049, Peoples R China.
+   [Luo, Jiafa; Lindsey, Stuart] AgResearch, Ruakura Res Ctr, Hamilton 3240, New Zealand.
+C3 Chinese Academy of Sciences; Nanjing Institute of Soil Science, CAS;
+   Chinese Academy of Sciences; University of Chinese Academy of Sciences,
+   CAS; AgResearch - New Zealand
+RP Ding, WX (corresponding author), Chinese Acad Sci, Inst Soil Sci, State Key Lab Soil & Sustainable Agr, Nanjing 210008, Peoples R China.
+EM wxding@issas.ac.cn
+RI Deyan, Liu/AAZ-2671-2020; Liao, Xia/GLU-9067-2022; Chen,
+   Zengming/M-4618-2017
+OI Luo, Jiafa/0000-0001-6198-6887; He, Tiehu/0000-0001-8902-5412; Chen,
+   Zengming/0000-0001-5017-4939; Ding, Weixin/0000-0003-3610-7611
+FU National Natural Science Foundation of China [31561143011, 41730753,
+   41701297]; Frontier Project from the Institute of Soil Science, Chinese
+   Academy of Sciences [ISSASIP1607]; Natural Science Foundation of Jiangsu
+   Province of China [BK20171105]; IAEA coordinated research project [RAS
+   45083]
+FX Funding for this work was provided by the National Natural Science
+   Foundation of China (31561143011, 41730753, 41701297), the Frontier
+   Project from the Institute of Soil Science, Chinese Academy of Sciences
+   (ISSASIP1607), the Natural Science Foundation of Jiangsu Province of
+   China (BK20171105) and IAEA coordinated research project (RAS 45083).
+NR 98
+TC 62
+Z9 71
+U1 26
+U2 307
+PU ELSEVIER
+PI AMSTERDAM
+PA RADARWEG 29, 1043 NX AMSTERDAM, NETHERLANDS
+SN 0167-8809
+EI 1873-2305
+J9 AGR ECOSYST ENVIRON
+JI Agric. Ecosyst. Environ.
+PD OCT 15
+PY 2020
+VL 302
+AR 107109
+DI 10.1016/j.agee.2020.107109
+PG 13
+WC Agriculture, Multidisciplinary; Ecology; Environmental Sciences
+WE Science Citation Index Expanded (SCI-EXPANDED)
+SC Agriculture; Environmental Sciences & Ecology
+GA NH3EI
+UT WOS:000564556600012
+DA 2026-01-16
+ER
+
+PT J
+AU Ding, H
+   Zheng, XZ
+   Zhang, YS
+   Zhang, J
+   Chen, DL
+AF Ding, Hong
+   Zheng, Xiangzhou
+   Zhang, Yushu
+   Zhang, Jing
+   Chen, Deli
+TI Gaseous losses of fertilizer nitrogen from a citrus orchard in the red
+   soil hilly region of Southeast China
+SO SOIL SCIENCE AND PLANT NUTRITION
+LA English
+DT Article
+DE Ammonia volatilization; denitrification; nitrous oxide; hilly citrus
+   orchard
+ID NITRIC-OXIDE EMISSIONS; NORTH CHINA; DENITRIFICATION LOSSES;
+   ENVIRONMENTAL RISK; CENTRAL SPAIN; NITRIFICATION; UREA; AMMONIA; PLAIN;
+   VOLATILIZATION
+AB The gaseous losses of fertilizer nitrogen (N) applied to agroecosystems are a major contributor to a host of environmental problems, inefficient production systems, and decreased N-use efficiency. These losses lead to the wastage of resources, increasing the greenhouse effect and harming human health. The red soil hilly region of Southeast China houses the biggest orchard area of the world, and nitrogen fertilizers are usually heavily applied to the orchard systems in China. Therefore, this study aimed to measure the gaseous losses of the fertilizer N by ammonia (NH3) volatilization and denitrification losses using the venting method and acetylene inhibition method respectively, and to assess the potential environmental risk of NH3 and nitrous oxide (N2O) emission from this orchard system based on the recent orchard management practices. An experiment was conducted in an Ougan citrus (Citrus reticulata Blanco 'Suavissima') orchard in the red soil hilly region of Southeast China. Three fertilization treatments, including the control (no N fertilizer, CK), poultry manure (at a rate of 6.3 t/ha, OM), and conventional fertilization (OM 6.3 t/ha + chemical fertilizer 393 kg N/ha, CF), were used. In all treatments, the fertilizers were incorporated into the soil after application. The test results, which were continuously determined within one year, indicated that the NH3 volatilization losses accounted for 4.5% of the OM nitrogen (OM-N) and 2.9% of the CF nitrogen (CF-N), whereas the denitrification N losses accounted for 2.1% of the OM-N and 2.9% of the CF-N. Overall, the total gaseous N losses (including NH3 volatilization losses and denitrification N losses) were 5.8% in the CF treatment. A relatively higher N2O flux, accounting for 1.8% of the CF-N, emitted from the CF treatment.
+C1 [Ding, Hong; Zheng, Xiangzhou; Zhang, Yushu; Zhang, Jing] Fujian Acad Agr Sci, Inst Soil & Fertilizer, Fuzhou 350013, Fujian, Peoples R China.
+   [Ding, Hong; Chen, Deli] Univ Melbourne, Fac Vet & Agr Sci, Parkville, Vic, Australia.
+C3 Fujian Academy of Agricultural Sciences; University of Melbourne
+RP Ding, H (corresponding author), Fujian Acad Agr Sci, Inst Soil & Fertilizer, Fuzhou 350013, Fujian, Peoples R China.
+EM cnhongding@126.com
+RI Chen, Deli/LTF-5854-2024
+FU National Natural Science Foundation of China [31270556, 41401339]
+FX This work was supported by grants from the National Natural Science
+   Foundation of China (grant no. 31270556, 41401339).
+NR 43
+TC 12
+Z9 16
+U1 7
+U2 117
+PU TAYLOR & FRANCIS LTD
+PI ABINGDON
+PA 2-4 PARK SQUARE, MILTON PARK, ABINGDON OR14 4RN, OXON, ENGLAND
+SN 0038-0768
+EI 1747-0765
+J9 SOIL SCI PLANT NUTR
+JI Soil Sci. Plant Nutr.
+PY 2017
+VL 63
+IS 5
+BP 419
+EP 425
+DI 10.1080/00380768.2017.1381572
+PG 7
+WC Plant Sciences; Environmental Sciences; Soil Science
+WE Science Citation Index Expanded (SCI-EXPANDED)
+SC Plant Sciences; Environmental Sciences & Ecology; Agriculture
+GA FO1WB
+UT WOS:000416557900002
+OA Bronze
+DA 2026-01-16
+ER
+
+PT J
+AU Ding, WH
+   Zhang, GL
+   Xie, HK
+   Chang, NJ
+   Zhang, J
+   Zhang, JF
+   Li, GC
+   Li, H
+AF Ding, Wuhan
+   Zhang, Guilong
+   Xie, Haikuan
+   Chang, Naijie
+   Zhang, Jing
+   Zhang, Jianfeng
+   Li, Guichun
+   Li, Hu
+TI Balancing high yields and low N2O emissions from greenhouse
+   vegetable fields with large water and fertilizer input: a case study of
+   multiple-year irrigation and nitrogen fertilizer regimes
+SO PLANT AND SOIL
+LA English
+DT Article
+DE N2O emissions; Water use efficiency; N use efficiency; Vegetable fields;
+   Drip fertigation; N fertilization
+ID OXIDE EMISSIONS; USE EFFICIENCY; DRIP IRRIGATION; NO EMISSIONS; CROPPING
+   SYSTEMS; NITRIC-OXIDE; SANDY SOIL; WHEAT; MAIZE; METAANALYSIS
+AB Background and aims Greenhouse vegetable production is commonly associated with substantial nitrous oxide (N2O) emissions, low nitrogen (N)and irrigation water use efficiency (NUE and IWUE) due to excess N input and frequent flooding irrigation, so it is crucial to develop irrigation and fertilization strategies to alleviate N2O emissions while ensuring vegetable productivity.
+   Methods An experiment spanning three crop rotations of cucumber and celery in a greenhouse was conducted in North China Plain (NCP). It included four treatments, i.e., no N fertilizer (CK), farmers' conventional fertilization (FP), conventional fertilization rate with drip fertigation (FPD), and reduced N fertilizer rate with drip fertigation (RFPD).
+   Results The mean annual area-scaled, yield-scaled N2O emissions and direct N2O emission factors (EFd) of FP were 36 kg N ha(-1), 175 g N t(-1) and 1.3%, respectively. FPD significantly reduced N2O emissions by over 25% (both in area- and yield-scaled), enhanced IWUE by 37%, and had no significant negative effects on vegetable yield or NUE. RFPD also significantly mitigated both area- and yield-scaled N2O emissions by about 45%, improved IWUE by 40% and NUE by 25%, while maintaining vegetable yield. Quadratic curves were fitted to the boundary points of ln-transformed N2O emissions against soil temperature and water-filled pore space (WFPS), with the maximum N2O losses occurring at 19.5 celcius or 68%. N2O emissions responded to IWUE and NUEs following an exponential (R-2 = 0.71, P < 0.001) and a linear-plateau model (R-2 = 0.67, P < 0.001), respectively.
+   Conclusions Drip irrigation with reduced N fertilizer rate is a suitable agronomic practice to simultaneously mitigate N2O emissions and improve both IWUE and NUE while maintaining vegetable yield from typical greenhouse cucumber-celery fields in NCP.
+C1 [Ding, Wuhan; Zhang, Guilong] Minist Agr & Rural Affairs, Agroenvironm Protect Inst, Tianjin 300191, Peoples R China.
+   [Ding, Wuhan; Xie, Haikuan; Chang, Naijie; Zhang, Jing; Zhang, Jianfeng; Li, Hu] Chinese Acad Agr Sci, Inst Agr Resources & Reg Planning, Beijing 100081, Peoples R China.
+   [Zhang, Jing] Zhongkai Univ Agr & Engn, Coll Resources & Environm Sci, Engn & Technol Res Ctr Agr Land Pollut Prevent &, Guangzhou 510225, Peoples R China.
+   [Li, Guichun] Chinese Acad Agr Sci, Inst Environm & Sustainable Dev Agr, Beijing 100081, Peoples R China.
+C3 Chinese Academy of Agricultural Sciences; Agro-Environmental Protection
+   Institute, CAAS; Chinese Academy of Agricultural Sciences; Institute of
+   Agricultural Resources & Regional Planning, CAAS; Zhongkai University of
+   Agriculture & Engineering; Chinese Academy of Agricultural Sciences;
+   Institute of Environment & Sustainable Development in Agriculture, CAAS
+RP Li, H (corresponding author), Chinese Acad Agr Sci, Inst Agr Resources & Reg Planning, Beijing 100081, Peoples R China.; Li, GC (corresponding author), Chinese Acad Agr Sci, Inst Environm & Sustainable Dev Agr, Beijing 100081, Peoples R China.
+EM liguichun@caas.cn; lihu0728@sina.com
+OI DING, Wuhan/0000-0003-4425-5497; CHANG, NAIJIE/0000-0003-0727-8075
+FU earmarked fund for China Agriculture Research System [CARS-23-B18];
+   National Natural Science Foundation of China [41671303]; National Key
+   Research & Development Plan [2018YFD0800402, 2016YFD0800101,
+   2016YFD0201204, 2016YFD0201201]
+FX This study was gratefully supported by the earmarked fund for China
+   Agriculture Research System (No. CARS-23-B18), and the National Natural
+   Science Foundation of China (Grant No. 41671303), the National Key
+   Research & Development Plan (Grant No.: 2018YFD0800402, 2016YFD0800101,
+   2016YFD0201204, 2016YFD0201201). We give many thanks to a large number
+   of Chinese and Australian researchers who participated in the
+   decades-long collaborative efforts by joining the field campaigns,
+   mega-data collection and analysis.
+NR 95
+TC 11
+Z9 12
+U1 19
+U2 138
+PU SPRINGER
+PI DORDRECHT
+PA VAN GODEWIJCKSTRAAT 30, 3311 GZ DORDRECHT, NETHERLANDS
+SN 0032-079X
+EI 1573-5036
+J9 PLANT SOIL
+JI Plant Soil
+PD FEB
+PY 2023
+VL 483
+IS 1-2
+BP 131
+EP 152
+DI 10.1007/s11104-022-05730-9
+EA OCT 2022
+PG 22
+WC Agronomy; Plant Sciences; Soil Science
+WE Science Citation Index Expanded (SCI-EXPANDED)
+SC Agriculture; Plant Sciences
+GA 9D7HM
+UT WOS:000866386800003
+DA 2026-01-16
+ER
+
+PT J
+AU Gao, ZZ
+   Wang, YX
+   Feng, YP
+   Laraib, I
+   Wang, C
+   Zhao, JC
+   Chu, QQ
+AF Gao, Zhenzhen
+   Wang, Yixuan
+   Feng, Yupeng
+   Laraib, Iqra
+   Wang, Chong
+   Zhao, Jiongchao
+   Chu, Qingquan
+TI Optimized irrigation management mitigates reactive nitrogen loss and
+   shapes nitrogen fate in wheat production
+SO FIELD CROPS RESEARCH
+LA English
+DT Article
+DE Irrigation regimes; Nitrogen use efficiency; Nitrogen cycle; Reactive
+   nitrogen loss; Wheat production
+ID NORTH CHINA; WINTER-WHEAT; SUPPLEMENTAL IRRIGATION; AMMONIA
+   VOLATILIZATION; MANAGING NITROGEN; CROPPING SYSTEMS; OXIDE EMISSIONS;
+   USE EFFICIENCY; ROOT-GROWTH; WATER
+AB Context: Optimized irrigation management plays a pivotal role in wheat production in the North China Plain (NCP). However, there exists limited research on the potential impact of different irrigation regimes on the loss of reactive nitrogen (Nr) and the fate of nitrogen (N) within the wheat-soil system. Objective: Our study involved an irrigation experiment aimed at quantifying nitrogen-reducing (Nr) while tracing the N fate. Our primary objective was to glean insights into improving nitrogen use efficiency (NUE) and reducing N surplus, thereby enhancing crop yields and minimizing environmental risks. Methods: A two-year field experiment involving winter wheat (Triticum aestivum L.) was conducted in the NCP, employing four distinct irrigation management strategies: I0, pre-planting irrigation; I1, pre-planting + jointing irrigation; I2, pre-planting + anthesis irrigation; I3, pre-planting + jointing + anthesis irrigation. Throughout the wheat growth stages, we measured soil NH3 and N2O emissions alongside yield assessments. The Nr loss, N surplus, NUE and Nr footprint were evaluated. Results: Among the components contributing to Nr loss, ammonia (NH3) volatilization was the most significant, accounting for 53.1-58.9%, followed by nitrate (NO3-) leaching (18.9-23.2%), indirect Nr loss (10.9-12.7%), nitric oxide (NO) emission (4.90-6.02%), nitrous oxide (N2O) emission (2.52-3.55%), and ammonium (NH4+) leaching (2.10-2.58%). NH3 emission and Nr loss demonstrated a close association with soil moisture levels influenced by irrigation management. Across all treatments, the primary fate of the N input was N uptake, representing 42.7-59.4%, and N surplus, accounting for 28.4-46.0%. Furthermore, NH3 volatilization, as the leading contributor to total N loss (11.4-12.9% of N input), accounted for 5.70-6.80% of N input. Compared to over-irrigation (I3), the I1 treatment, characterized by supplemental irrigation during the jointing stage, exhibited a remarkable 29.0% (P < 0.05) reduction in N surplus, achieved a higher NUE of 59.4%, and sustained wheat yield, thereby minimizing the Nr footprint. Conclusions: Our findings highlight that supplementary irrigation at the jointing stage effectively mitigates Nr loss and shapes the N fate, resulting in both high NUE and increased wheat yields, while simultaneously reducing the Nr footprint.
+C1 [Gao, Zhenzhen; Wang, Yixuan; Laraib, Iqra; Zhao, Jiongchao; Chu, Qingquan] China Agr Univ, Coll Agron & Biotechnol, Beijing 100193, Peoples R China.
+   [Gao, Zhenzhen; Wang, Yixuan; Laraib, Iqra; Zhao, Jiongchao; Chu, Qingquan] Minist Agr & Rural Affairs, Key Lab Farming Syst, Beijing 100193, Peoples R China.
+   [Feng, Yupeng] Natl Agr Technol Extens & Serv Ctr, Beijing 100125, Peoples R China.
+   [Wang, Chong] Peking Univ, Coll Environm Sci & Engn, Beijing 100871, Peoples R China.
+C3 China Agricultural University; Peking University
+RP Chu, QQ (corresponding author), China Agr Univ, Coll Agron & Biotechnol, Beijing 100193, Peoples R China.
+EM cauchu@cau.edu.cn
+RI Gao, zhenzhen/ABG-4227-2020; Feng, Yupeng/HTM-0676-2023
+FU National Key Research and Devel- opment Program of China
+   [2016YFD0300201]; National Natural Science Foundation of China
+   [31871581]
+FX This study was financed by the National Key Research and Devel- opment
+   Program of China (2016YFD0300201) and the National Natural Science
+   Foundation of China (31871581) .
+NR 93
+TC 13
+Z9 14
+U1 43
+U2 169
+PU ELSEVIER
+PI AMSTERDAM
+PA RADARWEG 29, 1043 NX AMSTERDAM, NETHERLANDS
+SN 0378-4290
+EI 1872-6852
+J9 FIELD CROP RES
+JI Field Crop. Res.
+PD MAR 15
+PY 2024
+VL 308
+AR 109269
+DI 10.1016/j.fcr.2024.109269
+EA FEB 2024
+PG 12
+WC Agronomy
+WE Science Citation Index Expanded (SCI-EXPANDED)
+SC Agriculture
+GA KW9A1
+UT WOS:001183105100001
+DA 2026-01-16
+ER
+
+EF

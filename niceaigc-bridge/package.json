@@ -1,0 +1,25 @@
+{
+  "name": "niceaigc-bridge",
+  "version": "0.1.0",
+  "description": "NiceAIGC 桥接插件 - Node.js 版本",
+  "main": "bridge.js",
+  "type": "module",
+  "scripts": {
+    "test": "node test.js",
+    "serve": "node server.js",
+    "example": "node examples.js"
+  },
+  "keywords": [
+    "niceaigc",
+    "ai",
+    "bridge",
+    "automation"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "express": "^4.18.2",
+    "node-fetch": "^3.3.2",
+    "cors": "^2.8.5"
+  }
+}

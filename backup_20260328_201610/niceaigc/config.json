@@ -1,0 +1,14 @@
+{
+  "mode": "browser",
+  "niceaigc": {
+    "chat_url": "https://node8.nice188.com/"
+  },
+  "local": {
+    "output_file": "E:/AI_projects/scholar-claw-feishu -1.0.0.5/data/niceaigc_response.txt"
+  },
+  "browser": {
+    "profile": "chrome",
+    "timeout_ms": 70000,
+    "wait_for_response_ms": 15000
+  }
+}

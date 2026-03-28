@@ -1,0 +1,53 @@
+[INFO] ScholarClaw running at http://localhost:18789 (Model: qwen3.5-plus)
+
+========================================
+     ScholarClaw - 论文写作助手
+========================================
+ 打开浏览器访问：http://localhost:18789
+ AI 模型：qwen3.5-plus
+========================================
+
+[INFO] [Chat] User: web-user, Message: ?..., API: https://openrouter.ai/api/v1/chat/completions
+[INFO] [Memory] Loaded 2 memory entries for user: web-user
+[INFO] [Upload Debug] Single file summary: count=1000, years=46, content length=2240623
+[INFO] [Upload Debug] Final summary: count=1000, years=46, total content length=2240625
+[INFO] [Parse] Parsed 1000 papers
+[INFO] [Upload] Saved literature.json with 1000 papers
+[INFO] [Upload] User final2 uploaded 1 files, 1000 papers
+[INFO] [Chat] AI decision: lit=false(), web=false, task=其他, reason=用户问题为'?'，内容模糊，无法确定具体研究问题或写作任务，因此不需要搜索文献或联网。
+[INFO] [Memory] Extracting key info from conversation...
+[WARN] [Memory] API call failed, using fallback extraction
+[INFO] [Memory] Extraction failed, building summary from conversation...
+[INFO] [Memory] Data extraction failed, building from conversation...
+[INFO] [Memory] Merging experiment_summary with existing memory...
+[WARN] [Memory] Merge API failed with status: 400 - {"error":{"message":"Provider returned error","code":400,"metadata":{"raw":"ERROR","provider_name":"Stealth","is_byok":false}},"user_id":"user_38POGdNWDLDo67DUc2DhFooQ3ar"}
+[INFO] [Memory] Merging data_summary with existing memory...
+[WARN] [Memory] Merge API failed with status: 400 - {"error":{"message":"Provider returned error","code":400,"metadata":{"raw":"ERROR","provider_name":"Stealth","is_byok":false}},"user_id":"user_38POGdNWDLDo67DUc2DhFooQ3ar"}
+[INFO] [Memory] experiment_summary final length: 480
+[INFO] [Memory] data_summary final length: 1
+[INFO] [Memory] writing_progress: 未提取
+[INFO] [Memory] completed_chapters: 未提取
+[INFO] [Memory] research_topic: isValid=undefined, length=0
+[INFO] [Memory] target_journal: isValid=undefined, length=0
+[INFO] [Memory] key_concepts: isValid=undefined, length=0
+[INFO] [Memory] important_findings: isValid=undefined, length=0
+[INFO] [Memory] experimental_design: isValid=undefined, length=0
+[INFO] [Memory] data_status: isValid=undefined, length=0
+[INFO] [Memory] user_preferences: isValid=undefined, length=0
+[INFO] [Memory] experiment_summary: MUST SAVE, length=480
+[INFO] [Memory] Updated existing entry: experiment_summary
+[INFO] [Memory] data_summary: MUST SAVE, length=1
+[INFO] [Memory] Updated existing entry: data_summary
+[INFO] [Memory] writing_progress: isValid=undefined, length=0
+[INFO] [Memory] completed_chapters: isValid=undefined, length=0
+[INFO] [Memory] pending_chapters: isValid=undefined, length=0
+[INFO] [Memory] Final entries count: 2
+[INFO] [Memory] Entry keys: [ 'experiment_summary', 'data_summary' ]
+[INFO] [Memory] Saved full conversation to file: conv-1773764449692
+[INFO] [Memory] Memory update completed for user: web-user
+[INFO] [Upload Debug] Single file summary: count=3, years=3, content length=914
+[INFO] [Upload Debug] Single file summary: count=1000, years=23, content length=2144893
+[INFO] [Upload Debug] Final summary: count=1000, years=23, total content length=2145811
+[INFO] [Parse] Parsed 1000 papers
+[INFO] [Upload] Saved literature.json with 1000 papers
+[INFO] [Upload] User web-user uploaded 2 files, 1003 papers

@@ -1,0 +1,1336 @@
+﻿FN Clarivate Analytics Web of Science
+VR 1.0
+PT J
+AU Wang, J
+   Liu, Q
+   Zhao, SY
+   He, SY
+   Yang, B
+   Wang, N
+   Hou, PF
+   Xue, LH
+   Yang, LZ
+AF Wang, Jing
+   Liu, Qiang
+   Zhao, Suya
+   He, Shiying
+   Yang, Bei
+   Wang, Ning
+   Hou, Pengfu
+   Xue, Lihong
+   Yang, Linzhang
+TI Heavy rainfall stimulates more N2O emissions from wheat
+   fields during basal and overwintering fertilization phases
+SO AGRICULTURE ECOSYSTEMS & ENVIRONMENT
+LA English
+DT Article
+DE Rainfall; Nitrous oxide; Nitrogen transformation; Functional
+   microorganisms
+ID NITROUS-OXIDE EMISSIONS; SOIL
+AB Extreme precipitation events have become increasingly prevalent globally. Runoff and leaching losses of nitrogen (N) are commonly observed after heavy rainfall, while post-rainfall N losses, particularly nitrous oxide (N2O) emissions, are often overlooked. In this study, a field-simulated rainfall experiment was conducted under two conditions: with (CF) and without (CK) N fertilizer application, to examine the impact of precipitation on post-rainfall N2O emissions over a continuous 10-day period. Heavy rainfall (90 mm) was simulated on the 7th day after fertilization at basal (BFS), overwintering (WFS), and jointing (JFS) stages, based on CF treatment fertilization timing. Results showed a significant increase in soil nitrate N content after fertilization (F), leading to elevated N loss through runoff and leaching due to precipitation (P). Both P and F had significant effects on post-rainfall N2O emissions, though their interaction was not statistically significant. Average N2O emission intensity (NEI) in the CF treatment increased by 72.73 % relative to CK control, attributed to fertilization. Additionally, rainfall substantially intensified NEI during BFS and WFS stages (P<0.05 or 0.001), while it tended to decrease NEI during the JFS stage. Consequently, average NEI under rainfall conditions doubled compared to no-rainfall controls. Correlation analysis indicated that N2O emissions were primarily influenced by soil nitrate N content, nirS gene abundance, and denitrification potential in middle-lower layers (5-15 cm). Overall, the stimulating effect of heavy rainfall in the early growing period on post-rainfall N2O emissions in fertilized wheat fields warrants attention.
+C1 [Wang, Jing; Liu, Qiang] Nanjing Forestry Univ, Coinnovat Ctr Sustainable Forestry Southern China, Nanjing 210037, Peoples R China.
+   [Liu, Qiang; Zhao, Suya; He, Shiying; Yang, Bei; Wang, Ning; Hou, Pengfu; Xue, Lihong; Yang, Linzhang] Jiangsu Acad Agr Sci, Minist Agr & Rural Affairs China, Key Lab Agroenvironm Downstream Yangze Plain, Nanjing 210014, Peoples R China.
+   [Zhao, Suya; He, Shiying; Wang, Ning; Hou, Pengfu; Xue, Lihong] Nanjing Agr Univ, Coll Resources & Environm Sci, Nanjing 210095, Peoples R China.
+C3 Nanjing Forestry University; Jiangsu Academy of Agricultural Sciences;
+   Nanjing Agricultural University
+RP Hou, PF (corresponding author), Jiangsu Acad Agr Sci, 50 Zhongling St, Nanjing 210014, Peoples R China.
+EM pengfuhou100smby@163.com
+FU National Key Research and Develop-ment Program of China [2021YFD1700801,
+   D21YFD17008]; Jiangsu Carbon Peak Carbon Neutrality Science and
+   Technology Inno-vation Fund [BE2022308]
+FX Funding was provided by the National Key Research and Develop-ment
+   Program of China (2021YFD1700801; D21YFD17008) , and Jiangsu Carbon Peak
+   Carbon Neutrality Science and Technology Inno-vation Fund (BE2022308) .
+NR 45
+TC 5
+Z9 6
+U1 18
+U2 73
+PU ELSEVIER
+PI AMSTERDAM
+PA RADARWEG 29, 1043 NX AMSTERDAM, NETHERLANDS
+SN 0167-8809
+EI 1873-2305
+J9 AGR ECOSYST ENVIRON
+JI Agric. Ecosyst. Environ.
+PD DEC 1
+PY 2024
+VL 376
+AR 109227
+DI 10.1016/j.agee.2024.109227
+EA AUG 2024
+PG 8
+WC Agriculture, Multidisciplinary; Ecology; Environmental Sciences
+WE Science Citation Index Expanded (SCI-EXPANDED)
+SC Agriculture; Environmental Sciences & Ecology
+GA C8T9O
+UT WOS:001292047900001
+DA 2026-01-16
+ER
+
+PT J
+AU Li, Z
+   Zhang, QY
+   Du, K
+   Liu, SB
+   Li, FD
+   Chen, G
+   Peng, JY
+   Bai, YW
+AF Li, Zhao
+   Zhang, Qiuying
+   Du, Kun
+   Liu, Shanbao
+   Li, Fadong
+   Chen, Gang
+   Peng, Jiayu
+   Bai, Yangwei
+TI Nitrous oxide emissions from rivers in agricultural area under different
+   rainfall scenarios: the effect of typhoons in intensifying the release
+SO ENVIRONMENTAL POLLUTION
+LA English
+DT Article
+DE Agricultural rivers; Rainfall events; Typhoon period;
+   Hydrometeorological factors; Nitrous oxide (N2O) emission
+ID CARBON-DIOXIDE; GAS-EXCHANGE; VARIABILITY; ESTUARIES; SHANGHAI; SURFACE;
+   OXYGEN; CHINA; WATER; N2O
+AB In agricultural regions, the chronic enrichment of nitrogen coupled with episodic hydrological disturbances can synergistically amplify riverine Nitrous oxide (N2O) fluxes through synchronized biogeochemical perturbations. This dual forcing mechanism underscores the critical role of agricultural watersheds as major contributors to terrestrial N2O budgets. Notably, rainfall events have important impacts on river nitrogen cycle and hydrological processes, indirectly perturb river N2O emission. However, the impacts of rainfall-particularly under extreme weather conditions-on riverine N2O dynamics remain poorly understood due to limited empirical data. In this study, we collected data of river environmental factors and associated N2O concentration and flux in the western part of Guangdong Province, China from 2021 to 2023 under various precipitation scenarios, including non--precipitation (NP), small precipitation (SP), initial rainfall-runoff (IRR), moderate precipitation (MP), heavy precipitation (HP), typhoon (DT), and post-typhoon (PT). Results revealed that N2O concentration and flux during DT were 12 and 617 times higher than those of NP in Luojiang River. Although typhoon events only accounted for only 1.3 %, 2 %, and 2 % of the total days in 2021, 2022, and 2023, they contributed 21 %, 12 %, and 34 % of the CO2-equivalent fluxes in these years. N2O concentration and flux also increased with rainfall, which was, however, not statistically significant. According to variable importance measurements from random forests (RFs) and redundancy analysis (RDA), hydrometeorological factors emerged as the dominant factor influencing N2O flux (73 %), followed by NO3- concentration (23 %)-the key substrate for denitrification-highlighting its critical role in determining N2O concentration. Our findings address the knowledge gap of river N2O emissions in agricultural areas during typhoons, providing essential data to support more accurate estimates of waterborne N2O emissions.
+C1 [Li, Zhao; Zhang, Qiuying; Liu, Shanbao; Peng, Jiayu; Bai, Yangwei] Chinese Res Inst Environm Sci, Key Lab Estuarine & Coastal Environm, Minist Ecol & Environm, Beijing 100012, Peoples R China.
+   [Li, Zhao; Li, Fadong] Chinese Acad Sci, Shandong Yucheng Agroecosyst Natl Observat & Res S, Yucheng Comprehens Expt Stn, IGSNRR, Beijing 100101, Peoples R China.
+   [Li, Zhao; Li, Fadong] Univ Chinese Acad Sci, Beijing 100101, Peoples R China.
+   [Du, Kun] Linyi Univ, Coll Resources & Environm, Shandong Prov Key Lab Water & Soil Conservat & Env, Linyi 276000, Peoples R China.
+   [Chen, Gang] Florida A&M Univ FAMU Florida State Univ FSU Joint, Dept Civil & Environm Engn, Tallahassee, FL 32310 USA.
+C3 Chinese Research Academy of Environmental Sciences; Chinese Academy of
+   Sciences; Chinese Academy of Sciences; University of Chinese Academy of
+   Sciences, CAS; Linyi University; State University System of Florida;
+   Florida State University
+RP Zhang, QY (corresponding author), Chinese Res Inst Environm Sci, Key Lab Estuarine & Coastal Environm, Minist Ecol & Environm, Beijing 100012, Peoples R China.
+EM zhangqy@craes.org.cn
+OI Li, Fadong/0000-0002-6930-3419
+FU Fundamental Research Funds for the Central Public-interest Scientific
+   Institution [2024YSKY-04]
+FX Funding: This work was supported by the Fundamental Research Funds for
+   the Central Public-interest Scientific Institution (2024YSKY-04) .
+NR 61
+TC 1
+Z9 1
+U1 12
+U2 19
+PU ELSEVIER SCI LTD
+PI London
+PA 125 London Wall, London, ENGLAND
+SN 0269-7491
+EI 1873-6424
+J9 ENVIRON POLLUT
+JI Environ. Pollut.
+PD JUL 1
+PY 2025
+VL 376
+AR 126449
+DI 10.1016/j.envpol.2025.126449
+EA MAY 2025
+PG 10
+WC Environmental Sciences
+WE Science Citation Index Expanded (SCI-EXPANDED)
+SC Environmental Sciences & Ecology
+GA 2ZR4S
+UT WOS:001495147800004
+PM 40373855
+DA 2026-01-16
+ER
+
+PT J
+AU Zhang, KC
+   Qiu, YP
+   Zhao, YF
+   Wang, SH
+   Deng, J
+   Chen, MF
+   Xu, XY
+   Wang, H
+   Bai, TS
+   He, TQ
+   Zhang, Y
+   Chen, HH
+   Wang, Y
+   Hu, SJ
+AF Zhang, Kangcheng
+   Qiu, Yunpeng
+   Zhao, Yunfeng
+   Wang, Shuhong
+   Deng, Jun
+   Chen, Mengfei
+   Xu, Xinyu
+   Wang, Hao
+   Bai, Tongshuo
+   He, Tangqing
+   Zhang, Yi
+   Chen, Huaihai
+   Wang, Yi
+   Hu, Shuijin
+TI Moderate precipitation reduction enhances nitrogen cycling and soil
+   nitrous oxide emissions in a semi-arid grassland
+SO GLOBAL CHANGE BIOLOGY
+LA English
+DT Article
+DE legacy effect; N-cycling microorganisms; precipitation reduction;
+   semi-arid ecosystems; soil nitrous oxide emissions
+ID LOESS PLATEAU; COMPLETE NITRIFICATION; AMMONIA OXIDIZERS;
+   CARBON-DIOXIDE; N2O EMISSIONS; DROUGHT; RESPONSES; MINERALIZATION;
+   DIVERSITY; COMMUNITIES
+AB The ongoing climate change is predicted to induce more weather extremes such as frequent drought and high-intensity precipitation events, causing more severe drying-rewetting cycles in soil. However, it remains largely unknown how these changes will affect soil nitrogen (N)-cycling microbes and the emissions of potent greenhouse gas nitrous oxide (N2O). Utilizing a field precipitation manipulation in a semi-arid grassland on the Loess Plateau, we examined how precipitation reduction (ca. -30%) influenced soil N2O and carbon dioxide (CO2) emissions in field, and in a complementary lab-incubation with simulated drying-rewetting cycles. Results obtained showed that precipitation reduction stimulated plant root turnover and N-cycling processes, enhancing soil N2O and CO2 emissions in field, particularly after each rainfall event. Also, high-resolution isotopic analyses revealed that field soil N2O emissions primarily originated from nitrification process. The incubation experiment further showed that in field soils under precipitation reduction, drying-rewetting stimulated N mineralization and ammonia-oxidizing bacteria in favor of genera Nitrosospira and Nitrosovibrio, increasing nitrification and N2O emissions. These findings suggest that moderate precipitation reduction, accompanied with changes in drying-rewetting cycles under future precipitation scenarios, may enhance N cycling processes and soil N2O emissions in semi-arid ecosystems, feeding positively back to the ongoing climate change.
+C1 [Zhang, Kangcheng; Qiu, Yunpeng; Zhao, Yunfeng; Chen, Mengfei; Xu, Xinyu; Wang, Hao; Bai, Tongshuo; He, Tangqing; Zhang, Yi] Nanjing Agr Univ, Coll Resources & Environm Sci, Nanjing 210095, Peoples R China.
+   [Wang, Shuhong; Deng, Jun] Ningxia Yunwu Mt Grassland Nat Reserve Adm, Guyuan 756000, Peoples R China.
+   [Chen, Huaihai] Sun Yat Sen Univ, Sch Ecol, Guangzhou 510006, Peoples R China.
+   [Wang, Yi] Chinese Acad Sci, Inst Earth Environm, State Key Lab Loess & Quaternary Geol, Xian, Peoples R China.
+   [Hu, Shuijin] North Carolina State Univ, Dept Entomol & Plant Pathol, Raleigh, NC 27695 USA.
+C3 Nanjing Agricultural University; Sun Yat Sen University; Chinese Academy
+   of Sciences; Institute of Earth Environment, CAS; North Carolina State
+   University
+RP Qiu, YP (corresponding author), Nanjing Agr Univ, Coll Resources & Environm Sci, Nanjing 210095, Peoples R China.; Hu, SJ (corresponding author), North Carolina State Univ, Dept Entomol & Plant Pathol, Raleigh, NC 27695 USA.
+EM yunpeng_qiu@njau.edu.cn; shuijin_hu@ncsu.edu
+RI ; Xu, Xinyu/JVO-7906-2024; Chen, Huaihai/G-4462-2015; Qiu,
+   Yunpeng/IUM-4181-2023; Zhao, Yunfeng/IZX-0700-2023; Chen,
+   Mengfei/T-7020-2018
+OI Zhang, Kangcheng/0000-0002-4305-5058; Xu, Xinyu/0000-0001-8888-0775; Hu,
+   Shuijin/0000-0002-3225-5126; Chen, Huaihai/0000-0002-2121-1822; 
+FU National Natural Science Foundation of China (NSFC) [32001140,
+   32171553]; China Postdoctoral Science Foundation [2022?T150325]
+FX ACKNOWLEDGMENTS We thank Qilai Yang, Zhen Li, Fuwei Wang, Luyao Zhou,
+   and Shijie Li for their assistance with this project in field. We thank
+   the Ningxia Yunwu Mountains Grassland Natural Reserve Administration for
+   providing logistical support. This research was supported by National
+   Natural Science Foundation of China (NSFC) (No. 32001140 and No.
+   32171553) and China Postdoctoral Science Foundation (2022?T150325).
+NR 88
+TC 45
+Z9 50
+U1 53
+U2 395
+PU WILEY
+PI HOBOKEN
+PA 111 RIVER ST, HOBOKEN 07030-5774, NJ USA
+SN 1354-1013
+EI 1365-2486
+J9 GLOBAL CHANGE BIOL
+JI Glob. Change Biol.
+PD JUN
+PY 2023
+VL 29
+IS 11
+BP 3114
+EP 3129
+DI 10.1111/gcb.16672
+EA MAR 2023
+PG 16
+WC Biodiversity Conservation; Ecology; Environmental Sciences
+WE Science Citation Index Expanded (SCI-EXPANDED)
+SC Biodiversity & Conservation; Environmental Sciences & Ecology
+GA E5RY7
+UT WOS:000950724800001
+PM 36892227
+DA 2026-01-16
+ER
+
+PT J
+AU Yue, P
+   Cui, XQ
+   Wu, WC
+   Gong, YM
+   Li, KH
+   Misselbrook, T
+   Liu, XJ
+AF Yue, Ping
+   Cui, Xiaoqing
+   Wu, Wenchao
+   Gong, Yanming
+   Li, Kaihui
+   Misselbrook, Tom
+   Liu, Xuejun
+TI Are annual nitrous oxide fluxes sensitive to warming and increasing
+   precipitation in the Gurbantunggut Desert?
+SO LAND DEGRADATION & DEVELOPMENT
+LA English
+DT Article
+DE increasing precipitation; N2O flux; nitrogen deposition; temperate
+   desert; warming
+ID COMMUNITY STRUCTURE; MICROBIAL BIOMASS; SOIL RESPIRATION; N2O
+   PRODUCTION; GAS FLUXES; EMISSIONS; DEPOSITION; DENITRIFICATION;
+   TEMPERATURE; FERTILIZER
+AB Temperate desert soils are an important source of atmospheric nitrous oxide (N2O). However, it is uncertain how N2O emissions respond to warming, increased rainfall and nitrogen (N) addition in such soils. A multifactorial field manipulation study was carried out in the Gurbantunggut Desert, China's second largest desert, to investigate how these factors influence desert soil N2O emissions and to assess inter-year variation. In our 3-year study, under current climatic conditions, the annual flux of N2O in this temperate desert soil was 0.13 +/- 0.02 kg N ha(-1)yr(-1), with the period of no plant growth contributing 43% of the annual emission. Surprisingly, there was no significant change in annual N2O flux under warming (+1 degrees C) or increased precipitation (30%, +60 mm yr(-1)). In contrast, N2O emissions were significantly affected by extreme drought followed by precipitation. Additional N input, at 30 or 60 kg N ha(-1)yr(-1), greatly elevated annual N2O emission by 55-133%. The combined impact of N deposition and increasing rainfall on N2O emission was greater than that of any single factor, except for N deposition. This suggests that N2O emissions in this desert are driven primarily by soil available N content and are less sensitive to variations in soil temperature and moisture.
+C1 [Yue, Ping] Chinese Acad Sci, Northwest Inst Ecoenvironm & Resources, Urat Desert Grassland Res Stn, Lanzhou, Peoples R China.
+   [Yue, Ping] Chinese Acad Sci, Northwest Inst Ecoenvironm & Resources, Naiman Desertificat Res Stn, Lanzhou, Peoples R China.
+   [Yue, Ping; Wu, Wenchao; Gong, Yanming; Li, Kaihui] Chinese Acad Sci, Xinjiang Inst Ecol & Geog, State Key Lab Desert & Oasis Ecol, Urumqi, Peoples R China.
+   [Cui, Xiaoqing; Liu, Xuejun] China Agr Univ, Coll Resources & Environm Sci, Beijing 100193, Peoples R China.
+   [Misselbrook, Tom] Rothamsted Res, Dept Sustainable Soils & Grassland Syst, North Wyke, England.
+C3 Chinese Academy of Sciences; Chinese Academy of Sciences; Chinese
+   Academy of Sciences; Xinjiang Institute of Ecology & Geography, CAS;
+   China Agricultural University; UK Research & Innovation (UKRI);
+   Biotechnology and Biological Sciences Research Council (BBSRC);
+   Rothamsted Research
+RP Liu, XJ (corresponding author), China Agr Univ, Coll Resources & Environm Sci, Beijing 100193, Peoples R China.
+EM liu310@cau.edu.cn
+RI Liu, Xuejun/AAA-7412-2022; Cui, Xiaoqing/KRP-0554-2024; Misselbrook,
+   Tom/N-2385-2014
+OI Cui, Xiaoqing/0000-0002-1970-5145; Misselbrook, Tom/0000-0002-4594-3606
+FU National Natural Science Foundation of China [41703131, 42071140,
+   41673079]; Biotechnology and Biological Sciences Research Council
+   [BBS/E/C/000I0320, BB/N013468/1]; Youth Innovation Promotion Association
+   CAS [1100000]; BBSRC [BBS/E/C/000I0320, BB/N013468/1] Funding Source:
+   UKRI; Biotechnology and Biological Sciences Research Council
+   [BB/N013468/1, BBS/E/C/000I0320] Funding Source: researchfish; National
+   Health and Medical Research Council (NHMRC) [1100000] Funding Source:
+   National Health and Medical Research Council (NHMRC)
+FX the National Natural Science Foundation of China, Grant/Award Numbers:
+   41703131, 42071140, 41673079; Biotechnology and Biological Sciences
+   Research Council, Grant/Award Numbers: BBS/E/C/000I0320, BB/N013468/1;
+   Youth Innovation Promotion Association CAS, Grant/Award Number: 1100000
+NR 52
+TC 13
+Z9 14
+U1 13
+U2 133
+PU WILEY
+PI HOBOKEN
+PA 111 RIVER ST, HOBOKEN 07030-5774, NJ USA
+SN 1085-3278
+EI 1099-145X
+J9 LAND DEGRAD DEV
+JI Land Degrad. Dev.
+PD FEB 15
+PY 2021
+VL 32
+IS 3
+BP 1213
+EP 1223
+DI 10.1002/ldr.3636
+EA OCT 2020
+PG 11
+WC Environmental Sciences; Soil Science
+WE Science Citation Index Expanded (SCI-EXPANDED)
+SC Environmental Sciences & Ecology; Agriculture
+GA QB0BN
+UT WOS:000579066100001
+DA 2026-01-16
+ER
+
+PT J
+AU Yang, C
+   Liu, DY
+   Li, Y
+   Li, JJ
+   Zheng, HJ
+   Dong, YH
+   Yuan, JJ
+   Chen, ZM
+   Chen, L
+   Ding, WX
+AF Yang, Cong
+   Liu, Deyan
+   Li, Ye
+   Li, Junjie
+   Zheng, Huijie
+   Dong, Yanhong
+   Yuan, Junji
+   Chen, Zengming
+   Chen, Lei
+   Ding, Weixin
+TI Dairy effluent mitigates N2O missions while extreme
+   precipitation stimulates N2O losses in a sandy soil
+SO FRONTIERS IN ENVIRONMENTAL SCIENCE
+LA English
+DT Article
+DE livestock slurry; greenhouse gas; urease inhibitors; temperate sandy
+   soil; climate change
+ID NITROUS-OXIDE EMISSIONS; VOLATILE FATTY-ACIDS; ENHANCED-EFFICIENCY
+   FERTILIZERS; LONG-TERM APPLICATION; NITRIFICATION INHIBITORS; UREASE
+   INHIBITOR; NO EMISSIONS; GASEOUS EMISSIONS; ORGANIC MANURE; GAS
+   EMISSIONS
+AB Dairy effluents instead of mineral fertilizer can realize nutrients recycling while urease inhibitors have been proposed as fertilizer amendments to maximize nutrients utilization and reduce negative environmental effects. However, studies on the impacts of dairy effluent combined with urease inhibitors on nitrous oxide (N2O) and nitric oxide (NO) emissions remain limited. Here, a 2-year field trail with maize was conducted in a sandy soil with four treatments: no nitrogen (N) fertilizer (Control), mineral N fertilizer urea (NPK), fermented dairy effluent as liquid fertilizer (LF), and LF plus urease inhibitor hydroquinone (LFHQ). Cumulative N2O emission in the NPK treatment was 0.44 kg N ha-1 during the 2021 maize season while drastically increased to 5.21 kg N ha-1 during the 2022 maize season with extreme precipitation occurred, while NO emission reduced from 0.65 to 0.17 kg N ha-1. Compared with the NPK treatment, N2O and NO emissions in the LF treatment decreased by 38.6% and 29.2%, and by 38.8% and 6.4% during the 2021 and 2022 maize seasons, respectively. Compared with the LF treatment, the LFHQ treatment increased N2O emissions by 40.7% and 21.7% during the 2021 and 2022 maize seasons, respectively. The N2O emission factors (EF-N2O) of applied N was 0.90-1.71% during the 2022 maize season, which was ten times greater than the 2021 maize season. We further evaluated correlation between EF-N2O of mineral N fertilizer and annual precipitation in temperate sandy soils by compiling published literature, suggesting that there was a quadratic relationship between EF-N2O and precipitation, with the highest EF-N2O occurring at similar to 690 mm of precipitation. Accordingly, extreme precipitation would induce explosive N2O emissions at optimal scenario. Overall, our results suggest that replacing mineral fertilizers with dairy effluent mitigated N2O and NO emissions while heavy rainfall could cause N2O paroxysmal emission. Thus, rational water management in temperate farms is particularly required to avoid N2O surge emission after heavy rainfall events, and urease inhibitors co-application with nitrification inhibitors are recommended under dairy effluent application.
+C1 [Yang, Cong; Li, Ye; Li, Junjie; Zheng, Huijie; Dong, Yanhong; Yuan, Junji; Chen, Zengming; Ding, Weixin] Chinese Acad Sci, Inst Soil Sci, State Key Lab Soil & Sustainable Agr, Nanjing, Peoples R China.
+   [Yang, Cong; Li, Junjie; Zheng, Huijie; Dong, Yanhong] Univ Chinese Acad Sci, Beijing, Peoples R China.
+   [Liu, Deyan] Nanjing Forestry Univ, Coinnovat Ctr Sustainable Forestry Southern China, Nanjing, Peoples R China.
+   [Chen, Lei] Inner Mongolia Youran Dairy Grp Ltd, Hohhot, Peoples R China.
+   [Ding, Weixin] Univ Chinese Acad Sci, Nanjing, Peoples R China.
+C3 Chinese Academy of Sciences; Nanjing Institute of Soil Science, CAS;
+   Chinese Academy of Sciences; University of Chinese Academy of Sciences,
+   CAS; Nanjing Forestry University; Chinese Academy of Sciences;
+   University of Chinese Academy of Sciences, CAS
+RP Ding, WX (corresponding author), Chinese Acad Sci, Inst Soil Sci, State Key Lab Soil & Sustainable Agr, Nanjing, Peoples R China.; Liu, DY (corresponding author), Nanjing Forestry Univ, Coinnovat Ctr Sustainable Forestry Southern China, Nanjing, Peoples R China.; Ding, WX (corresponding author), Univ Chinese Acad Sci, Nanjing, Peoples R China.
+EM wxding@issas.ac.cn; deyanliu@njfu.edu.cn
+RI Deyan, Liu/AAZ-2671-2020; Chen, Zengming/M-4618-2017
+FU National Key Research and Development Program of China [2022YFD1500303];
+   Strategic Priority Research Program of Chinese Academy of Sciences
+   [XDA28010302]; Natural Sciences Foundation [BK20230050]; Carbon Peak &
+   Carbon Neutral Science and Technology Innovation Project of Jiangsu
+   Province [BK20220020]; Frontier Project Institute of Soil Science,
+   Chinese Academy of Sciences [ISSASIP2212]; International Atomic Energy
+   Agency Coordinated Research Project [D15020]
+FX The author(s) declare that financial support was received for the
+   research and/or publication of this article. This work was supported by
+   National Key Research and Development Program of China (2022YFD1500303),
+   Strategic Priority Research Program of Chinese Academy of Sciences
+   (XDA28010302), the Natural Sciences Foundation (BK20230050) and Carbon
+   Peak & Carbon Neutral Science and Technology Innovation Project of
+   Jiangsu Province (BK20220020), Frontier Project from the Institute of
+   Soil Science, Chinese Academy of Sciences (ISSASIP2212), and
+   International Atomic Energy Agency Coordinated Research Project
+   (D15020).
+NR 84
+TC 0
+Z9 0
+U1 8
+U2 14
+PU FRONTIERS MEDIA SA
+PI LAUSANNE
+PA AVENUE DU TRIBUNAL FEDERAL 34, LAUSANNE, CH-1015, SWITZERLAND
+EI 2296-665X
+J9 FRONT ENV SCI-SWITZ
+JI Front. Environ. Sci.
+PD MAR 25
+PY 2025
+VL 13
+AR 1558934
+DI 10.3389/fenvs.2025.1558934
+PG 14
+WC Environmental Sciences
+WE Science Citation Index Expanded (SCI-EXPANDED)
+SC Environmental Sciences & Ecology
+GA 1BG2T
+UT WOS:001460908500001
+OA gold
+DA 2026-01-16
+ER
+
+PT J
+AU Kaur, N
+   Hui, D
+   Riccuito, DM
+   Mayes, MA
+   Tian, H
+AF Kaur, Navneet
+   Hui, Dafeng
+   Riccuito, Daniel M.
+   Mayes, Melanie A.
+   Tian, Hanqin
+TI Response patterns of simulated corn yield and soil nitrous oxide
+   emission to precipitation change
+SO ECOLOGICAL PROCESSES
+LA English
+DT Article
+DE Background precipitation; DNDC model; Precipitation change; Response
+   pattern; Yield; Soil N2O emission
+ID TERRESTRIAL ECOSYSTEMS; DRIP IRRIGATION; RAINFALL EVENTS; N2O EMISSIONS;
+   CROP; MODEL; DNDC; TEMPERATURE; CLIMATE; PRODUCTIVITY
+AB BackgroundPrecipitation plays an important role in crop production and soil greenhouse gas emissions. However, how crop yield and soil nitrous oxide (N2O) emission respond to precipitation change, particularly with different background precipitations (dry, normal, and wet years), has not been well investigated. In this study, we examined the impacts of precipitation changes on corn yield and soil N2O emission using a long-term (1981-2020, 40 years) climate dataset as well as seven manipulated precipitation treatments with different background precipitations using the DeNitrification-DeComposition (DNDC) model.ResultsResults showed large variations of corn yield and precipitation but small variation of soil N2O emission among 40 years. Both corn yield and soil N2O emission showed near linear relationships with precipitation based on the long-term precipitation data, but with different response patters of corn yield and soil N2O emission to precipitation manipulations. Corn yield showed a positive linear response to precipitation manipulations in the dry year, but no response to increases in precipitation in the normal year, and a trend of decrease in the wet year. The extreme drought treatments reduced corn yield sharply in both normal and wet years. In contrast, soil N2O emission mostly responded linearly to precipitation manipulations. Decreases in precipitation in the dry year reduced more soil N2O emission than those in the normal and wet years, while increases in precipitation increased more soil N2O emission in the normal and wet years than in the dry year.ConclusionsThis study revealed different response patterns of corn yield and soil N2O emission to precipitation and highlights that mitigation strategy for soil N2O emission reduction should consider different background climate conditions.
+C1 [Kaur, Navneet; Hui, Dafeng] Tennessee State Univ, Dept Biol Sci, Nashville, TN 37209 USA.
+   [Riccuito, Daniel M.; Mayes, Melanie A.] Oak Ridge Natl Lab, Environm Sci Div, Oak Ridge, TN USA.
+   [Riccuito, Daniel M.; Mayes, Melanie A.] Oak Ridge Natl Lab, Climate Change Sci Inst, Oak Ridge, TN USA.
+   [Tian, Hanqin] Schiller Inst Integrated Sci, Boston Coll, Dept Earth & Environm Sci & Soc, Chestnut Hill, MA USA.
+C3 Tennessee State University; United States Department of Energy (DOE);
+   Oak Ridge National Laboratory; United States Department of Energy (DOE);
+   Oak Ridge National Laboratory; Boston College
+RP Hui, D (corresponding author), Tennessee State Univ, Dept Biol Sci, Nashville, TN 37209 USA.
+EM dhui@tnstate.edu
+RI Hui, Dafeng/D-9954-2017; Tian, Hanqin/A-6484-2012
+OI Hui, Dafeng/0000-0002-5284-2897; Tian, Hanqin/0000-0002-1806-4091
+FU Department of Energy (DOE); Department of Energy (DOE) RDPP project;
+   National Science Foundation (NSF); U.S. Department of Agriculture
+   (USDA); Tennessee State University (TSU) RSP Seed grant; U.S. DOE Office
+   of Biological and Environmental Research through the Terrestrial
+   Ecosystem Science Scientific Focus Area at Oak Ridge National Laboratory
+   (ORNL); U.S. DOE [DE-AC05-00OR22725]
+FX This research was supported by the Department of Energy (DOE) RDPP
+   project, National Science Foundation (NSF) MRI and EiR projects, U.S.
+   Department of Agriculture (USDA) projects, and Tennessee State
+   University (TSU) RSP Seed grant. MAM was financially supported by the
+   U.S. DOE Office of Biological and Environmental Research through the
+   Terrestrial Ecosystem Science Scientific Focus Area at Oak Ridge
+   National Laboratory (ORNL). ORNL is managed by UT-Battelle, LLC, under
+   contract DE-AC05-00OR22725 with the U.S. DOE. We thank the editors and
+   two anonymous reviewers for their constructive comments and suggestions.
+NR 60
+TC 3
+Z9 4
+U1 8
+U2 87
+PU SPRINGER
+PI NEW YORK
+PA ONE NEW YORK PLAZA, SUITE 4600, NEW YORK, NY, UNITED STATES
+EI 2192-1709
+J9 ECOL PROCESS
+JI Ecol. Process.
+PD APR 7
+PY 2023
+VL 12
+IS 1
+AR 17
+DI 10.1186/s13717-023-00429-w
+PG 13
+WC Ecology; Environmental Sciences
+WE Science Citation Index Expanded (SCI-EXPANDED)
+SC Environmental Sciences & Ecology
+GA C8FX1
+UT WOS:000964222500001
+OA Green Submitted, gold
+DA 2026-01-16
+ER
+
+PT J
+AU Chen, ZM
+   Ding, WX
+   Xu, YH
+   Müller, C
+   Yu, HY
+   Fan, JL
+AF Chen, Zengming
+   Ding, Weixin
+   Xu, Yehong
+   Mueller, Christoph
+   Yu, Hongyan
+   Fan, Jianling
+TI Increased N2O emissions during soil drying after waterlogging
+   and spring thaw in a record wet year
+SO SOIL BIOLOGY & BIOCHEMISTRY
+LA English
+DT Article
+DE Climate change; Extreme rainfall; Manure application; Nitrous oxide;
+   Soil drying; Spring thaw
+ID NITROUS-OXIDE EMISSIONS; GREENHOUSE-GAS EMISSIONS; CULTIVATED BLACK
+   SOIL; SEASONAL VARIABILITY; CHEMICAL-COMPOSITION; WATER MANAGEMENT;
+   NORTHEAST CHINA; GRASSLAND SOIL; N-2 EMISSIONS; SNOW COVER
+AB Global climate change is expected to increase the frequency and intensity of extreme precipitation events, which can dramatically alter soil nitrous oxide (N2O) emissions. However, our ability to predict this effect is limited due to the lack of studies under real-world conditions. We conducted a field experiment in a maize-cultivated black soil in northeast China with six treatments: control without nitrogen (N) application (CK) and N-fertilized treatments with the ratio of urea N to manure N at 100:0 (NPK), 75:25 (OM1), 50:50 (OM2), 25:75 (OM3) and 0:100 (OM4). The experimental year was the wettest on record with an extreme rainfall event of 178 mm occurring in summer 2013. Annual N2O emissions from CK and NPK were increased by 168% and 171%, respectively, relative to normal wet years. Extreme rainfall saturated soils, resulted in low N2O fluxes (<20 mu g N m(-2) h(-1)) lasting for 25 d. However, N2O flux peaked (169-264 mu g N m(-2) h(-1)) in all treatments as the soil dried. Total N2O emissions were 0.43 -0.74 kg N ha(-1) over the drying period, accounting for 47.5-51.2% of the annual budget. High N2O fluxes occurred when the ratio of soil nitrate (NO3-) to dissolved organic carbon was 0.07-0.10 mg N mg(-1) C, NOT concentration was >3 mg N kg(-1) and water-filled pore space was 67-76%. Distinctly higher N2O fluxes were also identified during the spring thaw period, accumulating to 20.1-49.4% of the non growing season emissions. Emissions upon thawing were likely related to denitrification induced by high moisture conditions as a result of lag effect of the extreme rainfall. Annual N2O emissions progressively reduced as the ratio, of urea N:manure N shifted towards manure, which was also the case during soil drying after waterlogging. Total N2O emissions were reduced by 25.6% for OM4 than NPK. Overall, our results suggest that soil N2O emissions were increased in the record wet year but a shift from urea towards manure with more N applied as starter N can minimize the N2O losses. (C) 2016 Elsevier Ltd. All rights reserved.
+C1 [Chen, Zengming; Ding, Weixin; Xu, Yehong; Yu, Hongyan; Fan, Jianling] Chinese Acad Sci, Inst Soil Sci, State Key Lab Soil & Sustainable Agr, Nanjing 210008, Jiangsu, Peoples R China.
+   [Chen, Zengming; Xu, Yehong] Univ Chinese Acad Sci, Beijing 100049, Peoples R China.
+   [Mueller, Christoph] Univ Coll Dublin, Sch Biol & Environm Sci, Dublin 4, Ireland.
+   [Mueller, Christoph] Univ Giessen, Dept Plant Ecol, Heinrich Buff Ring 26, D-35392 Giessen, Germany.
+C3 Chinese Academy of Sciences; Nanjing Institute of Soil Science, CAS;
+   Chinese Academy of Sciences; University of Chinese Academy of Sciences,
+   CAS; University College Dublin; Justus Liebig University Giessen
+RP Ding, WX (corresponding author), Chinese Acad Sci, Inst Soil Sci, State Key Lab Soil & Sustainable Agr, Nanjing 210008, Jiangsu, Peoples R China.
+EM wxding@issas.ac.cn
+RI Chen, Zengming/M-4618-2017; Fan, Jianling/AAQ-2614-2021; Müller,
+   Christoph/F-9521-2010
+OI Chen, Zengming/0000-0001-5017-4939; Fan, Jianling/0000-0003-3048-2621;
+   Xu, Yehong/0000-0002-7633-7115; 
+FU Chinese Academy of Sciences [XDB15020100, XDA05050507]; National Natural
+   Science Foundation of China [41171190, 41471207]
+FX This study was financed by the Chinese Academy of Sciences (XDB15020100,
+   XDA05050507) and the National Natural Science Foundation of China
+   (41171190, 41471207). We would like to gratefully acknowledge Prof.
+   Michael J. Castellano (Iowa State University, USA) and Prof. Joshua
+   Schimel (University of California, Santa Barbara, USA) for helpful
+   comments and suggestions in preparation of this paper. We thank the
+   Hailun National Agro-ecological Experimental Station, Chinese Academy of
+   Sciences, for providing the study site and assistance in field
+   experiment. Many thanks also to Prof. Jeanette Norton (Utah State
+   University, USA), Dr. Xia Zhu (University of California Davis, USA) and
+   Dr. Kun Zhu (University of Copenhagen, Denmark) for helpful discussions
+   in N<INF>2</INF>O production mechanisms. The Chief Editor Prof. Tim J.
+   Clough and two anonymous reviewers are appreciated for their valuable
+   comments and suggestions. This study was also carried out in
+   collaboration with the LOEWE excellence cluster FACE2FACE and the DFG
+   research unit DASIM.
+NR 85
+TC 49
+Z9 55
+U1 8
+U2 190
+PU PERGAMON-ELSEVIER SCIENCE LTD
+PI OXFORD
+PA THE BOULEVARD, LANGFORD LANE, KIDLINGTON, OXFORD OX5 1GB, ENGLAND
+SN 0038-0717
+EI 1879-3428
+J9 SOIL BIOL BIOCHEM
+JI Soil Biol. Biochem.
+PD OCT
+PY 2016
+VL 101
+BP 152
+EP 164
+DI 10.1016/j.soilbio.2016.07.016
+PG 13
+WC Soil Science
+WE Science Citation Index Expanded (SCI-EXPANDED)
+SC Agriculture
+GA DV9ZH
+UT WOS:000383300200017
+DA 2026-01-16
+ER
+
+PT J
+AU Li, LF
+   Hao, YB
+   Wang, WJ
+   Biederman, JA
+   Zheng, ZZ
+   Wang, YF
+   Tudi, M
+   Qian, RY
+   Zhang, B
+   Che, RX
+   Song, XN
+   Cui, XY
+   Xu, ZH
+AF Li, Linfeng
+   Hao, Yanbin
+   Wang, Weijin
+   Biederman, Joel A.
+   Zheng, Zhenzhen
+   Wang, Yanfen
+   Tudi, Muyesaier
+   Qian, Ruyan
+   Zhang, Biao
+   Che, Rongxiao
+   Song, Xiaoning
+   Cui, Xiaoyong
+   Xu, Zhihong
+TI Effects of extra-extreme precipitation variability on multi-year
+   cumulative nitrous oxide emission in a semiarid grassland
+SO AGRICULTURAL AND FOREST METEOROLOGY
+LA English
+DT Article
+DE Climate change; greenhouse gas; N cycling; N 2 O; soil functional genes
+ID GREENHOUSE-GAS EMISSIONS; CARBON-DIOXIDE; INNER-MONGOLIA; SOIL-MOISTURE;
+   N2O; FREQUENCY; FLUXES; CH4; DENITRIFICATION; COMMUNITIES
+AB High temporal precipitation variability, characterized by less frequent but larger-magnitude precipitation events, is increasing. However, how precipitation variability affects N2O emissions and the underlying mechanisms remain unclear, especially at multiple-year scales. We conducted a 3-year manipulative experiment in which the same long-term mean growing season precipitation total was repackaged into events of inversely varying magnitude and frequency to simulate four levels of precipitation variability (extra-extreme, extreme, medium, and normal) in a semiarid grassland. Cumulative N2O emissions was the smallest under the extra-extreme pre-cipitation variability scenario (6 very large rainfall events), 26% less than emission under the other three treatments (10, 16, and 24 rainfall events) over the three growing seasons. However, this difference was almost entirely due to three sampling events in the third year. Plant community (biomass and biodiversity), soil abiotic properties (water, dissolved organic carbon and pH), soil microbial biomass (carbon, nitrogen and the ratio), and soil functional genes (archaeal and bacterial amoA, nirS, nirK, narG, and nosZ) explained 61% of the variation in N2O emissions in response to the precipitation variability. Structural equation modelling indicated that the precipitation variability had direct positive effects, and indirect negative effects via soil abiotic properties, on soil functional genes that ultimately had positive effects on N2O emissions. The reduction in N2O emission in the extra-extreme precipitation variability scenario in the third year was due to low levels of soil water content, soil pH, aboveground biomass, and microbial biomass carbon simultaneously. Our results suggest that at the multi -year timescale, semiarid grasslands may have negative feedbacks to future precipitation regimes with higher variability.
+C1 [Li, Linfeng; Wang, Yanfen; Zhang, Biao; Song, Xiaoning] Univ Chinese Acad Sci, Coll Resources & Environm, Beijing 100049, Peoples R China.
+   [Hao, Yanbin; Zheng, Zhenzhen; Qian, Ruyan; Cui, Xiaoyong] Univ Chinese Acad Sci, Coll Life Sci, Beijing 100049, Peoples R China.
+   [Hao, Yanbin; Wang, Yanfen; Cui, Xiaoyong] Chinese Acad Sci, Univ Chinese Acad Sci, Yanshan Earth Crit Zone & Surface Fluxes Res Stn, Beijing, Peoples R China.
+   [Wang, Weijin; Xu, Zhihong] Griffith Univ, Ctr Planetary Hlth & Food Secur, Sch Environm & Sci, Brisbane 4111, Australia.
+   [Wang, Weijin] Dept Environm & Sci, Brisbane, Qld 4102, Australia.
+   [Wang, Weijin] Univ Queensland, Sch Agr & Food Sci, Brisbane, Qld 4072, Australia.
+   [Biederman, Joel A.] ARS, Southwest Watershed Res Ctr, Tucson, AZ 85719 USA.
+   [Tudi, Muyesaier] Queensland Micro & Nanotechnol Ctr, Brisbane, Qld 4111, Australia.
+   [Che, Rongxiao] Yunnan Univ, Inst Int Rivers & Ecosecur, Kunming 650091, Yunnan, Peoples R China.
+C3 Chinese Academy of Sciences; University of Chinese Academy of Sciences,
+   CAS; Chinese Academy of Sciences; University of Chinese Academy of
+   Sciences, CAS; Chinese Academy of Sciences; University of Chinese
+   Academy of Sciences, CAS; Griffith University; University of Queensland;
+   Yunnan University
+RP Hao, YB (corresponding author), Univ Chinese Acad Sci, Coll Life Sci, Beijing 100049, Peoples R China.; Hao, YB (corresponding author), Chinese Acad Sci, Univ Chinese Acad Sci, Yanshan Earth Crit Zone & Surface Fluxes Res Stn, Beijing, Peoples R China.
+EM ybhao@ucas.ac.cn
+RI ; Biederman, Joel/AAQ-2435-2020; Wang, Weijin/AAE-9848-2020; Xu,
+   Zhihong/B-3223-2009; Che, Rongxiao/AAU-8452-2021; Song,
+   Xiaoning/AAB-4899-2022; Cui, Xiaoyong/B-3669-2016
+OI Li, Linfeng/0000-0001-5831-8837; Biederman, Joel/0000-0002-1831-461X;
+   Wang, Weijin/0000-0002-5209-9300; 
+FU National Natural Science Foundation of China [31761123001, 32101313];
+   China Postdoctoral Science Foundation [2021M693138]; Fundamental
+   Research Funds for the Central Universities [E1E40607, E1E40511]
+FX <BOLD>Acknowledgements</BOLD> This project was funded by National
+   Natural Science Foundation of China (Grant No. 31761123001 and 32101313)
+   , China Postdoctoral Science Foundation (2021M693138) and Fundamental
+   Research Funds for the Central Universities (E1E40607, E1E40511) .
+NR 57
+TC 13
+Z9 13
+U1 15
+U2 114
+PU ELSEVIER
+PI AMSTERDAM
+PA RADARWEG 29, 1043 NX AMSTERDAM, NETHERLANDS
+SN 0168-1923
+EI 1873-2240
+J9 AGR FOREST METEOROL
+JI Agric. For. Meteorol.
+PD DEC 15
+PY 2023
+VL 343
+AR 109761
+DI 10.1016/j.agrformet.2023.109761
+EA OCT 2023
+PG 9
+WC Agronomy; Forestry; Meteorology & Atmospheric Sciences
+WE Science Citation Index Expanded (SCI-EXPANDED)
+SC Agriculture; Forestry; Meteorology & Atmospheric Sciences
+GA W5AH0
+UT WOS:001091745500001
+OA Green Submitted
+DA 2026-01-16
+ER
+
+PT J
+AU Wu, JQ
+   Wang, HY
+   Li, G
+   Wu, JH
+   Gong, Y
+   Wei, XX
+AF Wu, Jiangqi
+   Wang, Haiyan
+   Li, Guang
+   Wu, Jianghua
+   Gong, Yu
+   Wei, Xingxing
+TI Unimodal response of N2O flux to changing rainfall amount and
+   frequency in a wet meadow in the Tibetan Plateau
+SO ECOLOGICAL ENGINEERING
+LA English
+DT Article
+DE Rainfall amount and frequency; Qinghai-Tibetan Plateau; Wet meadow; N2O
+   flux; Nitrogen components; nirK type functional gene diversity
+ID NITROUS-OXIDE EMISSIONS; GREENHOUSE-GAS EMISSIONS; REDUCTASE GENES NIRK;
+   SOIL-MOISTURE; CLIMATE-CHANGE; DENITRIFIER COMMUNITIES;
+   HYDROGEN-PRODUCTION; DRYING CYCLES; ALPINE MEADOW; NITRITE
+AB The rainfall amount and the frequency of extreme rainfall events have been predicted to increase in the Qinghai-Tibetan Plateau during the growing season. These changes will likely affect ecosystem processes, including those that control nitrogen (N) cycling and storage; however, the direction of the changes remains unclear. In this study, we experimentally altered the amount and frequency of precipitation events during the growing season (May through October) at an alpine wetland in the Qinghai-Tibetan Plateau. The treatments included ambient rain (CK) plus 25 mm of extra water for each irrigation event but with different irrigation frequency, i.e., weekly (DF1), biweekly (DF2), every three weeks (DF3) and every four weeks (DF4). During the growing season, the N2O flux showed a large seasonal variation. Compared with the treatment of natural rainfall events, the increase in the rainfall amount promoted the N2O emission flux. As the frequency of rainfall events increased, the above-ground biomass increased significantly from 85.82 g.m(-2) to 245.79 g.m(-2), and the accumulated N2O emissions first increased and then decreased; we observed the peak of the N2O flux at the DF2 rainfall frequency. We also found the significant linear relationships between soil N2O flux, nitrate nitrogen, and microbial biomass nitrogen content. Furthermore, among the soil microbial factors, higher rainfall frequency (DF1) significantly reduced the relative abundance of the original dominant species (Alphcproteobacteria) in the studied wetland soil. Our results indicate that alpine wetlands are highly sensitive to increased precipitation variability and high frequencies of extreme rainfall events could significantly reduce N2O emission. Future precipitation patterns could weaken the contribution rate of wetland N2O emission to the global warming.
+C1 [Wu, Jiangqi; Wang, Haiyan; Li, Guang; Wei, Xingxing] Gansu Agr Univ, Coll Forestry, Lanzhou 730070, Peoples R China.
+   [Wu, Jianghua; Gong, Yu] Mem Univ Newfoundland, Sch Sci & Environm, 20 Univ Dr, Corner Brook, NF A2H 5G4, Canada.
+C3 Gansu Agricultural University; Memorial University Newfoundland
+RP Li, G (corresponding author), Gansu Agr Univ, Coll Forestry, Lanzhou 730070, Peoples R China.; Wu, JH (corresponding author), Mem Univ Newfoundland, Sch Sci & Environm, 20 Univ Dr, Corner Brook, NF A2H 5G4, Canada.
+EM liggsau@foxmail.com; jwu@grenfell.mun.ca
+RI Wu, Jiangqi/NVM-7892-2025
+FU Gansu Agricultural University, Excellent Doctoral Dissertation
+   Cultivation Project [YB2018004]; Collaborative Innovation Team Project
+   of Higher Education Institutions in Gansu Province, China [2018C-16];
+   Natural Science Foundation of China [31860143]; Primary Research and
+   Development Plan of Gansu Province, China [18YF1NA070]; Special
+   Financial Gansu Province, China [GSCZZ-20160909]
+FX We would like to thank all the people who were involved in the field and
+   laboratory work. This work was supported by the Gansu Agricul-tural
+   University, Excellent Doctoral Dissertation Cultivation Project
+   (YB2018004) , the Collaborative Innovation Team Project of Higher
+   Education Institutions in Gansu Province, China (2018C-16) , the Natural
+   Science Foundation of China (31860143) , the Primary Research and
+   Development Plan of Gansu Province, China (18YF1NA070) , and Special
+   Financial Gansu Province, China (GSCZZ-20160909) .
+NR 82
+TC 18
+Z9 19
+U1 7
+U2 131
+PU ELSEVIER
+PI AMSTERDAM
+PA RADARWEG 29, 1043 NX AMSTERDAM, NETHERLANDS
+SN 0925-8574
+EI 1872-6992
+J9 ECOL ENG
+JI Ecol. Eng.
+PD JAN
+PY 2022
+VL 174
+AR 106461
+DI 10.1016/j.ecoleng.2021.106461
+EA OCT 2021
+PG 11
+WC Ecology; Engineering, Environmental; Environmental Sciences
+WE Science Citation Index Expanded (SCI-EXPANDED)
+SC Environmental Sciences & Ecology; Engineering
+GA WR8HF
+UT WOS:000714735500002
+DA 2026-01-16
+ER
+
+PT J
+AU Krichels, AH
+   Jenerette, GD
+   Shulman, H
+   Piper, S
+   Greene, AC
+   Andrews, HM
+   Botthoff, J
+   Sickman, JO
+   Aronson, EL
+   Homyak, PM
+AF Krichels, Alexander H.
+   Jenerette, G. Darrel
+   Shulman, Hannah
+   Piper, Stephanie
+   Greene, Aral C.
+   Andrews, Holly M.
+   Botthoff, Jon
+   Sickman, James O.
+   Aronson, Emma L.
+   Homyak, Peter M.
+TI Bacterial denitrification drives elevated N2O emissions in
+   arid southern California drylands
+SO SCIENCE ADVANCES
+LA English
+DT Article
+ID ABIOTIC NITRATE INCORPORATION; NITRIC-OXIDE; SOIL; NITROGEN; ECOSYSTEMS;
+   METABOLISM; ABUNDANCES; DEPOSITION; FOREST; CARBON
+AB Soils are the largest source of atmospheric nitrous oxide (N2O), a powerful greenhouse gas. Dry soils rarely harbor anoxic conditions to favor denitrification, the predominant N2O-producing process, yet, among the largest N2O emissions have been measured after wetting summer-dry desert soils, raising the question: Can denitrifiers endure extreme drought and produce N2O immediately after rainfall? Using isotopic and molecular approaches in a California desert, we found that denitrifiers produced N2O within 15 minutes of wetting dry soils (site preference = 12.8 +/- 3.92 per mil, delta N-15(bulk) = 18.6 +/- 11.1 per mil). Consistent with this finding, we detected nitrate-reducing transcripts in dry soils and found that inhibiting microbial activity decreased N2O emissions by 59%. Our results suggest that despite extreme environmental conditions-months without precipitation, soil temperatures of >= 40 degrees C, and gravimetric soil water content of <1%-bacterial denitrifiers can account for most of the N2O emitted when dry soils are wetted.
+C1 [Krichels, Alexander H.; Greene, Aral C.; Sickman, James O.; Homyak, Peter M.] Univ Calif Riverside, Environm Sci, Riverside, CA 92521 USA.
+   [Krichels, Alexander H.; Jenerette, G. Darrel; Botthoff, Jon] Univ Calif Riverside, Ctr Conservat Biol, Riverside, CA 92521 USA.
+   [Krichels, Alexander H.] USDA, Rocky Mountain Res Stn, Albuquerque, NM 87102 USA.
+   [Jenerette, G. Darrel; Piper, Stephanie] Univ Calif Riverside, Bot & Plant Sci, Riverside, CA USA.
+   [Shulman, Hannah] Univ Tennessee, Ecol & Evolutionary Biol, Knoxville, TN USA.
+   [Shulman, Hannah; Aronson, Emma L.] Univ Calif Riverside, Microbiol & Plant Pathol, Riverside, CA USA.
+   [Piper, Stephanie] Houston Adv Res Ctr, The Woodlands, TX USA.
+   [Andrews, Holly M.] Univ Calif Riverside, Evolut Ecol & Organismal Biol, Riverside, CA USA.
+   [Andrews, Holly M.] Univ Arizona, Geog Dev & Environm, Tucson, AZ USA.
+C3 University of California System; University of California Riverside;
+   University of California System; University of California Riverside;
+   United States Department of Agriculture (USDA); University of California
+   System; University of California Riverside; University of Tennessee
+   System; University of Tennessee Knoxville; University of California
+   System; University of California Riverside; University of California
+   System; University of California Riverside; University of Arizona
+RP Krichels, AH (corresponding author), Univ Calif Riverside, Environm Sci, Riverside, CA 92521 USA.; Krichels, AH (corresponding author), Univ Calif Riverside, Ctr Conservat Biol, Riverside, CA 92521 USA.; Krichels, AH (corresponding author), USDA, Rocky Mountain Res Stn, Albuquerque, NM 87102 USA.
+EM alexander.krichels@ucr.edu
+RI Piper, Stephanie/NXB-8324-2025; Anews, Holly/AFV-6591-2022; Krichels,
+   Alexander/V-7705-2019; Aronson, Emma/I-3277-2012; Homyak,
+   Peter/C-3162-2013
+OI Shulman, Hannah/0000-0002-9959-9417; Jenerette, G
+   Darrel/0000-0003-2387-7537; Anews, Holly/0000-0002-5173-0826; Krichels,
+   Alexander/0000-0002-6922-6476; Aronson, Emma/0000-0002-5018-2688;
+   Greene, Aral/0000-0003-1009-5165; Homyak, Peter/0000-0003-0671-8358
+FU National Science Foundation [DEB 1916622, DEB 1656062]; USDA Forest
+   Service Rocky Mountain Research Station
+FX This work was funded by the National Science Foundation (DEB 1916622 and
+   DEB 1656062).This study was supported in part by the USDA Forest Service
+   Rocky Mountain Research Station. The findings and conclusions in this
+   publication are those of the author and should not be construed to
+   represent any official USDA or U.S. government determination or policy
+NR 73
+TC 24
+Z9 25
+U1 16
+U2 96
+PU AMER ASSOC ADVANCEMENT SCIENCE
+PI WASHINGTON
+PA 1200 NEW YORK AVE, NW, WASHINGTON, DC 20005 USA
+SN 2375-2548
+J9 SCI ADV
+JI Sci. Adv.
+PD DEC 8
+PY 2023
+VL 9
+IS 49
+AR eadj1989
+DI 10.1126/sciadv.adj1989
+PG 11
+WC Multidisciplinary Sciences
+WE Science Citation Index Expanded (SCI-EXPANDED)
+SC Science & Technology - Other Topics
+GA AD4T5
+UT WOS:001116516600013
+PM 38055826
+OA Green Submitted, gold
+DA 2026-01-16
+ER
+
+PT J
+AU Hopkins, A
+   Del Prado, A
+AF Hopkins, A.
+   Del Prado, A.
+TI Implications of climate change for grassland in Europe: impacts,
+   adaptations and mitigation options: a review
+SO GRASS AND FORAGE SCIENCE
+LA English
+DT Review
+DE climate; grassland; Europe; carbon dioxide; methane; nitrous oxide
+ID TRACE GAS FLUXES; NITROUS-OXIDE; N2O EMISSIONS; NITRIFICATION INHIBITOR;
+   CARBON SEQUESTRATION; AGRICULTURAL SOILS; METHANE PRODUCTION;
+   NITRIC-OXIDE; SLURRY; FERMENTATION
+AB Climate change associated with greenhouse gas (GHG) emissions may have important implications for Europe's grasslands. Projected scenarios indicate that increased temperatures and CO2 concentrations have the potential to increase herbage growth and to favour legumes more than grasses, but changes in seasonal precipitation would reduce these benefits particularly in areas with low summer rainfall. Further implications for grasslands may arise from increased frequency of droughts, storms and other extreme events. Potential farm-scale adaptive responses to climate change are identified. Grassland agriculture also contributes to GHG emissions, particularly methane and nitrous oxide, and management of grassland affects net carbon balances and carbon sequestration. Management options are identified for mitigating grassland's contribution to GHG emissions which need to be developed in a holistic way that also considers other pressures.
+C1 Inst Grassland & Environm Res, Okehampton, Devon, England.
+RP Hopkins, A (corresponding author), Univ Exeter, Ctr Rural Policy Res, Lafrowda House, Exeter EX4 6TL, Devon, England.
+EM a.hopkins@exeter.ac.uk
+RI del Prado, Agustin/B-4675-2010
+OI del Prado, Agustin/0000-0003-3895-4478
+NR 67
+TC 125
+Z9 148
+U1 3
+U2 184
+PU WILEY
+PI HOBOKEN
+PA 111 RIVER ST, HOBOKEN 07030-5774, NJ USA
+SN 0142-5242
+EI 1365-2494
+J9 GRASS FORAGE SCI
+JI Grass Forage Sci.
+PD JUN
+PY 2007
+VL 62
+IS 2
+BP 118
+EP 126
+DI 10.1111/j.1365-2494.2007.00575.x
+PG 9
+WC Agronomy
+WE Science Citation Index Expanded (SCI-EXPANDED)
+SC Agriculture
+GA 180EZ
+UT WOS:000247346400003
+DA 2026-01-16
+ER
+
+PT J
+AU Zou, JL
+   Zhang, Y
+   Tobin, B
+   Saunders, M
+   Cacciotti, E
+   Benanti, G
+   Osborne, B
+AF Zou, Junliang
+   Zhang, Yun
+   Tobin, Brian
+   Saunders, Matthew
+   Cacciotti, Erica
+   Benanti, Giuseppi
+   Osborne, Bruce
+TI Contrasting effects of water deficits and rewetting on greenhouse gas
+   emissions in two grassland and forest ecosystems
+SO AGRICULTURAL AND FOREST METEOROLOGY
+LA English
+DT Article
+DE Climate change; Drought; Rewetting; Warming; Greenhouse gas emission
+ID SOIL N2O EMISSIONS; CARBON-DIOXIDE; NITROUS-OXIDE; RAINFALL VARIABILITY;
+   N2O/(N2O+N-2) RATIO; WETTING INTENSITY; ORGANIC-MATTER; RESPIRATION;
+   CO2; METHANE
+AB Climate change is expected to increase the frequency and intensity of water deficits and extreme rainfall events in temperate regions, with significant effects on greenhouse gas (GHG) emissions. In this study, we investigated the impact of water deficits and drying and rewetting events on GHG fluxes in two Irish sites with adjacent forest and grassland ecosystems. We deployed rain-out shelters to simulate drought and applied water to mimic the extreme precipitation events. The effects of warming on these events were also examined using soil cores collected from the field. Water deficits increased carbon dioxide (CO2) emissions at the evergreen coniferous forest site but decreased it at the broadleaf deciduous forest site, likely due to differences in the prevailing soil moisture contents and the availability of oxygen for microbial activity. Rewetting triggered pulses of CO2 (1.1 - 7.2 fold), methane (CH4) (> 20 fold), and nitrous oxide (N2O) (3.3 - 71.7 fold) emissions in both ecosystems. Warming amplified the effects of water additions, leading to a 1.9 - 3.4-fold increase in CO2 and N2O fluxes, compared to the pre-wetting levels and a 1.2 - 1.5-fold increase compared to the controls. Cumulative CO2 emissions over 24 hours showed a negative response to increasing soil moisture and a positive response to the changes in soil moisture (difference between the initial value before water addition and the final soil moisture after water addition). CH4 fluxes exhibited an opposite trend. Multiple linear regression revealed that at higher soil carbon concentrations CO2 emissions were reduced but CH4 emissions increased, for the same change in soil moisture. Given that future climate scenarios predict an increase in extreme rainfall events a better understanding of the influence of soil drying-rewetting events on GHG emissions is required that accounts for multiple influencing factors, including differences in regional and site characteristics.
+C1 [Zou, Junliang; Cacciotti, Erica; Benanti, Giuseppi] Univ Coll Dublin, UCD Sch Biol & Environm Sci, Dublin, Ireland.
+   [Zhang, Yun] Beijing Acad Agr & Forestry Sci, Inst Grassland Flowers & Ecol, Beijing 100097, Peoples R China.
+   [Tobin, Brian; Osborne, Bruce] Univ Coll Dublin, UCD Sch Agr & Food Sci, Dublin, Ireland.
+   [Tobin, Brian; Osborne, Bruce] Univ Coll Dublin, UCD Earth Inst, Dublin, Ireland.
+   [Saunders, Matthew] Trinity Coll Dublin, Sch Nat Sci, Bot Discipline, D2, Dublin, Ireland.
+   [Zou, Junliang] Teagasc, Forestry Dev Dept, Johnstown Castle Co, Wexford Y35TC97, Ireland.
+   [Zou, Junliang] Teagasc, Climate Ctr, Johnstown Castle Co, Wexford Y35TC97, Ireland.
+C3 University College Dublin; Beijing Academy of Agriculture & Forestry
+   Sciences (BAAFS); University College Dublin; University College Dublin;
+   Trinity College Dublin; Teagasc; Teagasc
+RP Zou, JL (corresponding author), Univ Coll Dublin, UCD Sch Biol & Environm Sci, Dublin, Ireland.; Zhang, Y (corresponding author), Beijing Acad Agr & Forestry Sci, Inst Grassland Flowers & Ecol, Beijing 100097, Peoples R China.; Zou, JL (corresponding author), Teagasc, Forestry Dev Dept, Johnstown Castle Co, Wexford Y35TC97, Ireland.; Zou, JL (corresponding author), Teagasc, Climate Ctr, Johnstown Castle Co, Wexford Y35TC97, Ireland.
+EM jlzou@nwafu.edu.cn; zyzhangyunzy@163.com; brian.tobin@ucd.ie;
+   SAUNDEM@tcd.ie; cacciotti@gmail.com; benanti2020@gmail.com;
+   bruce.osborne@ucd.ie
+RI ; Zou, Junliang/HNS-0402-2023; Tobin, Brian/ABC-9939-2021
+OI zhang, yun/0000-0002-9657-2446; Zou, Junliang/0000-0001-9635-0686;
+   Tobin, Brian/0000-0001-6697-3858
+FU National Council for Forest Research and Development (COFORD) as part of
+   the CARBiFOR II project; China Scholarship Council (CSC) [201206300050];
+   University College Dublin (UCD)
+FX This research was financially supported by the National Council for
+   Forest Research and Development (COFORD) as part of the CARBiFOR II
+   project. This research was also financially supported by a joint PhD
+   programme grant (201206300050) from the China Scholarship Council (CSC)
+   and University College Dublin (UCD) . Thanks to Coillte Teoranta for
+   granting permission to conduct research at Dooary Forest, to Mr Darragh
+   Headon for the use of the grassland at Dooary and to Mrs Muireann
+   Collins for the use of the Mount Lucas Forest and grassland. Special
+   thanks to Mr. David Farrell and Mr. Eugene Sherry for field support and
+   technical assistance.
+NR 85
+TC 2
+Z9 2
+U1 22
+U2 67
+PU ELSEVIER
+PI AMSTERDAM
+PA RADARWEG 29, 1043 NX AMSTERDAM, NETHERLANDS
+SN 0168-1923
+EI 1873-2240
+J9 AGR FOREST METEOROL
+JI Agric. For. Meteorol.
+PD MAR 1
+PY 2025
+VL 362
+AR 110396
+DI 10.1016/j.agrformet.2025.110396
+EA JAN 2025
+PG 16
+WC Agronomy; Forestry; Meteorology & Atmospheric Sciences
+WE Science Citation Index Expanded (SCI-EXPANDED)
+SC Agriculture; Forestry; Meteorology & Atmospheric Sciences
+GA T0N8E
+UT WOS:001402089500001
+DA 2026-01-16
+ER
+
+PT J
+AU Song, XT
+   Wei, HN
+   Rees, RM
+   Ju, XT
+AF Song, Xiaotong
+   Wei, Huanhuan
+   Rees, Robert M.
+   Ju, Xiaotang
+TI Soil oxygen depletion and corresponding nitrous oxide production at hot
+   moments in an agricultural soil
+SO ENVIRONMENTAL POLLUTION
+LA English
+DT Article
+DE Nitrous oxide; Oxygen; Rewetting; Extreme weather; Management;
+   Spatial-temporal heterogeneity
+ID GREENHOUSE-GAS INTENSITY; N2O EMISSIONS; NORTH CHINA; NITRIFIER
+   DENITRIFICATION; FERTILIZER NITROGEN; CROPPING SYSTEMS; NITRIFICATION;
+   MANAGEMENT; FLUXES; DYNAMICS
+AB Hot moments of nitrous oxide (N2O) emissions induced by interactions between weather and management make a major contribution to annual N2O budgets in agricultural soils. The causes of N2O production during hot moments are not well understood under field conditions, but emerging evidence suggests that short-term fluctuations in soil oxygen (O-2) concentration can be critically important. We conducted high time-resolution field observations of O-2 and N2O concentrations during hot moments in a dryland agricultural soil in Northern China. Three typical management and weather events, including irrigation (Irr.), fertilization coupled with irrigation (Fer.+Irr.) or with extreme precipitation (Fer.+Pre.), were observed. Soil O-2 and N2O concentrations were measured hourly for 24 h immediately following events and measured daily for at least one week before and after the events. Soil moisture, temperature, and mineral N were simultaneously measured. Soil O-2 concentrations decreased rapidly within 4 h following irrigation in both the Irr. and Fer.+Irr. events. In the Fer.+Pre. event, soil O-2 depletion did not occur immediately following fertilization but began following subsequent continuous rainfall. The soil O-2 concentration dropped to as low as 0.2% (with the highest soil N2O concentration of up to 180 ppmv) following the Fer.+Pre. event, but only fell to 11.7% and 13.6% after the Fer.+Irr. and Irr. events, which were associated with soil N2O concentrations of 27 ppmv and 3 ppmv, respectively. During the hot moments of all three events, soil N2O concentrations were negatively correlated with soil O-2 concentrations (r = -0.5, P < 0.01), showing a quadratic increase as soil O-2 concentrations declined. Our results provide new understanding of the rapid short response of N2O production to O-2 dynamics driven by changes in soil environmental factors during hot moments. Such understanding helps improve soil management to avoid transitory O-2 depletion and reduce the risk of N2O production.
+C1 [Song, Xiaotong; Ju, Xiaotang] Hainan Univ, Coll Trop Crops, Hainan Key Lab Sustainable Utilizat Trop Bioresou, Haikou 570228, Hainan, Peoples R China.
+   [Wei, Huanhuan] China Agr Univ, Coll Resources & Environm Sci, Beijing 100193, Peoples R China.
+   [Rees, Robert M.] SRUC, West Mains Rd, Edinburgh EH9 3JG, Midlothian, Scotland.
+C3 Hainan University; China Agricultural University
+RP Ju, XT (corresponding author), Hainan Univ, Coll Trop Crops, Hainan Key Lab Sustainable Utilizat Trop Bioresou, Haikou 570228, Hainan, Peoples R China.
+EM juxt@cau.edu.cn
+RI Rees, Robert/L-8103-2013
+OI Song, Xiaotong/0000-0003-3831-8818; Wei, Huanhuan/0000-0002-6058-3186;
+   Ju, Xiaotang/0000-0003-2593-9500
+NR 76
+TC 34
+Z9 35
+U1 11
+U2 144
+PU ELSEVIER SCI LTD
+PI London
+PA 125 London Wall, London, ENGLAND
+SN 0269-7491
+EI 1873-6424
+J9 ENVIRON POLLUT
+JI Environ. Pollut.
+PD JAN 1
+PY 2022
+VL 292
+AR 118345
+DI 10.1016/j.envpol.2021.118345
+EA OCT 2021
+PN A
+PG 12
+WC Environmental Sciences
+WE Science Citation Index Expanded (SCI-EXPANDED)
+SC Environmental Sciences & Ecology
+GA WN3SZ
+UT WOS:000711693100007
+PM 34648834
+DA 2026-01-16
+ER
+
+PT J
+AU Leite, EA
+   da Silva, EHFM
+   Fattori , IM Jr
+   Marin, FR
+AF Leite, Emily Aquino
+   da Silva, Evandro H. Figueiredo Moura
+   Fattori Junior, Izael Martins
+   Marin, Fabio R.
+TI Assessing climate change impacts on sugarcane yield, crop water
+   productivity, and nitrous oxide emissions across Brazil's bioenergy
+   using the CSM-SAMUCA-sugarcane model
+SO AGRICULTURAL SYSTEMS
+LA English
+DT Article
+DE Greenhouse gas emissions; Process-based crop model; Soil nitrogen
+   dynamics; Water use efficiency; Agroclimatic zones
+ID N2O EMISSIONS; PRECIPITATION; ENVIRONMENTS; UNCERTAINTY; PERFORMANCE;
+   SYSTEM; GROWTH
+AB Context: Sugarcane-based bioenergy systems are critical in Brazil's renewable energy sector, contributing significantly to global efforts to reduce fossil fuel dependence. However, climate change introduces uncertainties related to sugarcane yield, water use efficiency, and greenhouse gas emissions. Rising atmospheric carbon dioxide (CO2) levels, increasing temperatures, and shifts in precipitation patterns are expected to impact Brazil's bioenergy cultivated areas, necessitating a comprehensive evaluation of their effects on sugarcane production and environmental sustainability. Objective: This study assessed the effects of rising CO2, temperature increases, and altered precipitation on sugarcane yield, crop water productivity (WP), and nitrous oxide (N2O) emissions across Brazil's bioenergy cultivation areas under future climate scenarios. Methods: We integrated the CSM-SAMUCA-Sugarcane model with the DSSAT-GHG module to simulate sugarcane systems across nine agroclimatic zones. Future projections (2040-2070) were based on 20 CMIP6 Global Climate Models (GCMs) under three Shared Socioeconomic Pathways (SSP1-2.6, SSP3-7.0, SSP5-8.5). Results and conclusions: SSP1-2.6 (low-emission scenario) showed minor yield changes, with some CO2 fertilization gains. SSP3-7.0 (intermediate/high-emission scenario) may increase yield by up to 10 % due to warming and CO2 effects. However, SSP5-8.5 (most extreme warming) and rainfall reductions increased yield variability. N2O emissions may rise by 5-30 %, with intensities up to 40 % higher, driven by warmer soils and faster residue decomposition. WP responses varied: some regions gained from CO2-induced efficiency, others declined due to soil moisture limits. Significance: Balancing yield improvements with N2O mitigation under climate change remains a challenge. Climate-resilient nitrogen and residue management strategies are essential to ensure sustainable bioenergy production in Brazil.
+C1 [Leite, Emily Aquino; Fattori Junior, Izael Martins; Marin, Fabio R.] Univ Sao Paulo, Luiz de Queiroz Coll Agr, Dept Biosyst Engn, Piracicaba, SP, Brazil.
+   [da Silva, Evandro H. Figueiredo Moura] Univ Sao Paulo, Luiz de Queiroz Coll Agr, Dept Soil Sci, Piracicaba, SP, Brazil.
+   [Marin, Fabio R.] Univ Sao Paulo, Luiz de Queiroz Coll Agr, Ctr Carbon Res Trop Agr CCARBON, Piracicaba, SP, Brazil.
+C3 Universidade de Sao Paulo; Universidade de Sao Paulo; Universidade de
+   Sao Paulo
+RP da Silva, EHFM (corresponding author), Univ Sao Paulo, Luiz de Queiroz Coll Agr, Dept Soil Sci, Piracicaba, SP, Brazil.
+EM ehfmsilva@usp.br
+RI Fattori, Izael/AAC-5105-2020; Figueiredo Moura da Silva,
+   Evandro/AAQ-5886-2021; MARIN, FABIO/E-3816-2012
+FU Sao Paulo Research Foundation (FAPESP) [2021/00720-0, 2022/16715-8,
+   2022/02396-8]; Brazilian Research Council [CNPq 302597/2021-2,
+   2021/10573-4]; Center for Carbon Research in Tropical Agriculture
+   (CCARBON) at the University of Sao Paulo - Sao Paulo Research Foundation
+   (FAPESP) [2021/10573-4]; Swedish Research Council [2022-02396] Funding
+   Source: Swedish Research Council
+FX We thank the Sao Paulo Research Foundation (FAPESP, grants 2021/00720-0,
+   2022/16715-8, 2022/02396-8) and Brazilian Research Council (CNPq
+   302597/2021-2) and Brazilian Coordination for the Improvement of Higher
+   Education (CAPES) . We thank the support from the Center for Carbon
+   Research in Tropical Agriculture (CCARBON) at the University of Sao
+   Paulo, sponsored by the Sao Paulo Research Foundation (FAPESP) under
+   grant 2021/10573-4.
+NR 66
+TC 0
+Z9 0
+U1 13
+U2 13
+PU ELSEVIER SCI LTD
+PI London
+PA 125 London Wall, London, ENGLAND
+SN 0308-521X
+EI 1873-2267
+J9 AGR SYST
+JI Agric. Syst.
+PD JAN
+PY 2026
+VL 231
+AR 104494
+DI 10.1016/j.agsy.2025.104494
+EA SEP 2025
+PG 10
+WC Agriculture, Multidisciplinary
+WE Science Citation Index Expanded (SCI-EXPANDED)
+SC Agriculture
+GA 7LU8M
+UT WOS:001574073100002
+OA hybrid
+DA 2026-01-16
+ER
+
+PT J
+AU Zhao, GH
+   Wang, DQ
+   Sun, TH
+   Ding, Y
+   Chen, S
+   Li, YZ
+   Sun, HC
+   Wu, CY
+   Yu, ZJ
+   Chen, ZL
+AF Zhao, Guanghui
+   Wang, Dongqi
+   Sun, Taihu
+   Ding, Yan
+   Chen, Shu
+   Li, Yizhe
+   Sun, Hechen
+   Wu, Chenyang
+   Yu, Zhongjie
+   Chen, Zhenlou
+TI Emission of greenhouse gas from urban polluted river during different
+   rainfall events: Typhoon and storm will promote stronger evasions
+SO JOURNAL OF HYDROLOGY
+LA English
+DT Article
+DE Greenhouse gas; Rainfall; Typhoon; Municipal drainage; Urban river
+ID NITROUS-OXIDE EMISSIONS; CARBON-DIOXIDE; SUBTROPICAL ESTUARY; CH4
+   CONCENTRATIONS; DISSOLVED METHANE; WATER-QUALITY; CO2 EMISSIONS; CHINA
+   SEA; DYNAMICS; FLUXES
+AB Urban rivers have been recognized as significant hotspots for greenhouse gas (GHG) emissions. However, the impact of storms or typhoons on GHG emissions from urban rivers is not well understood. Suzhou Creek located in the highly developed urban area of Shanghai was selected to investigate of changes in CO2, CH4, and N2O concentrations and diffusive fluxes during different rainfall events from May to October 2021. The findings showed that urban rivers were sources of GHG emissions during various events. The average diffusive fluxes of CO2, CH4, and N2O during typhoon events were 1 to 2 orders of magnitude higher than those during non-typhoon period, revealing that typhoon greatly promote GHG evasion. GHG CO2-equivalents were ranked as follows: during typhoon (3.93 g m(-2)h(-1)) > post-typhoon (0.89 g m(-2)h(- 1)) > high precipitation (0.33 g m(-2)h(- 1)) > non-precipitation (0.29 g m(-2)h(- 1)) > small precipitation (0.25 g m(-2)h(- 1)). Rainfall dilution, pump station drainage, sediment disturbance, and a high gas transfer coefficient induced by typhoons were the main factors affecting GHG emissions. Nutrients, chlorophyll-a, and dissolved oxygen in river water were important control parameters for GHG production. Overall, typhoon would release large amounts of GHG from urban rivers. Given the projected increase in the frequency and complexity of extreme weather events, this study highlights the importance of better understanding the dynamic response of urban river GHG to rainfall and typhoons.
+C1 [Zhao, Guanghui; Wang, Dongqi; Sun, Taihu; Ding, Yan; Chen, Shu; Li, Yizhe; Sun, Hechen; Wu, Chenyang; Chen, Zhenlou] East China Normal Univ, Sch Geog Sci, Key Lab Geog Informat Sci, Minist Educ, Shanghai 200241, Peoples R China.
+   [Wang, Dongqi] Shanghai Key Lab Urban Ecol Proc & Ecorestorat, Shanghai 200241, Peoples R China.
+   [Chen, Shu] Shanghai Jiao Tong Univ, Coll Smart Energy, Shanghai 200240, Peoples R China.
+   [Chen, Shu] Shanghai Jiao Tong Univ, Res Inst Carbon Neutral, Shanghai 200240, Peoples R China.
+   [Yu, Zhongjie] Univ Illinois Champaign Urbana, Dept Nat Resources & Environm Sci, Urbana, IL 61801 USA.
+   [Wang, Dongqi; Chen, Zhenlou] East China Normal Univ, Estuary & Coast Bldg,500 Dongchuan Rd, Shanghai 200241, Peoples R China.
+C3 East China Normal University; Shanghai Jiao Tong University; Shanghai
+   Jiao Tong University; University of Illinois System; University of
+   Illinois Urbana-Champaign; East China Normal University
+RP Wang, DQ; Chen, ZL (corresponding author), East China Normal Univ, Estuary & Coast Bldg,500 Dongchuan Rd, Shanghai 200241, Peoples R China.
+EM dqwang@geo.ecnu.edu.cn
+OI Zhao, Guanghui/0000-0002-0769-7459; Chen, Shu/0000-0001-9656-5249
+FU National Natural Science Foundation of China [42077338, 42177350];
+   Shanghai Key Lab for Urban Ecological Processes and Eco-Restoration
+   [SHUES2021C03]; Fundamental Research Funds for the Central Universities
+   [40500-20104-222357]
+FX This study was jointly supported by the National Natural Science
+   Foundation of China (Grant No. 42077338 and No. 42177350) , Shanghai Key
+   Lab for Urban Ecological Processes and Eco-Restoration (Grant
+   SHUES2021C03) , and the Fundamental Research Funds for the Central
+   Universities (40500-20104-222357) .
+NR 76
+TC 17
+Z9 18
+U1 13
+U2 116
+PU ELSEVIER
+PI AMSTERDAM
+PA RADARWEG 29, 1043 NX AMSTERDAM, NETHERLANDS
+SN 0022-1694
+EI 1879-2707
+J9 J HYDROL
+JI J. Hydrol.
+PD OCT
+PY 2023
+VL 625
+AR 130166
+DI 10.1016/j.jhydrol.2023.130166
+EA SEP 2023
+PN B
+PG 10
+WC Engineering, Civil; Geosciences, Multidisciplinary; Water Resources
+WE Science Citation Index Expanded (SCI-EXPANDED)
+SC Engineering; Geology; Water Resources
+GA U0TS0
+UT WOS:001082023700001
+DA 2026-01-16
+ER
+
+PT J
+AU Lawrence, NC
+   Hall, SJ
+AF Lawrence, Nathaniel C.
+   Hall, Steven J.
+TI Capturing temporal heterogeneity in soil nitrous oxide fluxes with a
+   robust and low-cost automated chamber apparatus
+SO ATMOSPHERIC MEASUREMENT TECHNIQUES
+LA English
+DT Article
+ID CARBON-ISOTOPE CONTENT; FREQUENCY MEASUREMENTS; FOREST SOILS; GAS
+   FLUXES; N2O; EMISSIONS; DIOXIDE; DENITRIFICATION; RESPIRATION; FIELDS
+AB Soils play an important role in Earth's climate system through their regulation of trace greenhouse gases. Despite decades of soil gas flux measurements using manual chamber methods, limited temporal coverage has led to high uncertainty in flux magnitude and variability, particularly during peak emission events. Automated chamber measurement systems can collect high-frequency (subdaily) measurements across various spatial scales but may be prohibitively expensive or incompatible with field conditions. Here we describe the construction and operational details for a robust, relatively inexpensive, and adaptable automated dynamic (steady-state) chamber measurement system modified from previously published methods, using relatively low cost analyzers to measure nitrous oxide (N2O) and carbon dioxide (CO2). The system was robust to intermittent flooding of chambers, long tubing runs (> 100 m), and operational temperature extremes (-12 to 39 degrees C) and was entirely powered by solar energy. Using data collected between 2017 and 2019 we tested the underlying principles of chamber operation and examined N2O did variation and rain-pulse timing that would be difficult to characterize using infrequent manual measurements. Stable steady-state flux dynamics were achieved during 29 min chamber closure periods at a relatively low flow rate (2 L min(-1)). Instrument performance and calculated fluxes were minimally impacted by variation in air temperature and water vapor. Measurements between 08:00 and 12:00 LT were closest to the daily mean N2O and CO2 emission. Afternoon fluxes (12:00-16:00 LT) were 28 % higher than the daily mean for N2O (4.04 vs. 3.15 nmol m(-2) s(-1)) and were 22 % higher for CO2 (4.38 vs. 3.60 mu mol m(-2) s(-1)). High rates of N2O emission are frequently observed after precipitation. Following four discrete rainfall events, we found a 12-26 h delay before peak N2O flux, which would be difficult to capture with manual measurements. Our observation of substantial and variable diel trends and rapid but variable onset of high N2O emissions following rainfall supports the need for high-frequency measurements.
+C1 [Lawrence, Nathaniel C.; Hall, Steven J.] Iowa State Univ, Dept Ecol Evolut & Organismal Biol, Ames, IA 50011 USA.
+C3 Iowa State University
+RP Hall, SJ (corresponding author), Iowa State Univ, Dept Ecol Evolut & Organismal Biol, Ames, IA 50011 USA.
+EM stevenjh@iastate.edu
+RI ; Hall, Steven/AFM-6451-2022
+OI Lawrence, Nathaniel/0000-0001-6775-514X; Hall,
+   Steven/0000-0002-7841-2019
+FU USDA [2018-67019-27886]; Leopold Center for Sustainable Agriculture
+   [E2017-02]; Iowa Nutrient Research Center [109-47-03-39-3650]
+FX This research has been supported by the USDA (award no.
+   2018-67019-27886), the Leopold Center for Sustainable Agriculture (award
+   no. E2017-02), and the Iowa Nutrient Research Center (award no.
+   109-47-03-39-3650).
+NR 45
+TC 5
+Z9 7
+U1 3
+U2 21
+PU COPERNICUS GESELLSCHAFT MBH
+PI GOTTINGEN
+PA BAHNHOFSALLEE 1E, GOTTINGEN, 37081, GERMANY
+SN 1867-1381
+EI 1867-8548
+J9 ATMOS MEAS TECH
+JI Atmos. Meas. Tech.
+PD JUL 29
+PY 2020
+VL 13
+IS 7
+BP 4065
+EP 4078
+DI 10.5194/amt-13-4065-2020
+PG 14
+WC Meteorology & Atmospheric Sciences
+WE Science Citation Index Expanded (SCI-EXPANDED)
+SC Meteorology & Atmospheric Sciences
+GA MX5VW
+UT WOS:000557791500001
+OA Green Submitted, gold
+DA 2026-01-16
+ER
+
+PT J
+AU Chen, WW
+   Zheng, XH
+   Wolf, B
+   Yao, ZS
+   Liu, CY
+   Butterbach-Bahl, K
+   Brüggemann, N
+AF Chen, Weiwei
+   Zheng, Xunhua
+   Wolf, Benjamin
+   Yao, Zhisheng
+   Liu, Chunyan
+   Butterbach-Bahl, Klaus
+   Brueggemann, Nicolas
+TI Long-term grazing effects on soil-atmosphere exchanges of
+   CO2, CH4 and N2O at different
+   grasslands in Inner Mongolia: A soil core study
+SO ECOLOGICAL INDICATORS
+LA English
+DT Article
+DE Greenhouse gas; Semiarid grassland; Grazing; Freeze-thaw; Dry-wet;
+   Intense rainfall; Inner Mongolia
+ID NITROUS-OXIDE; CARBON-DIOXIDE; ECOSYSTEM RESPIRATION; WATER-CONTENT;
+   FLUXES; METHANE; STEPPE; PRECIPITATION; TEMPERATURE; LANDSCAPE
+AB Regional greenhouse gas (GHG) budgets in vast grasslands may be changing due to overgrazing and grassland types. However, the comprehensive effects of grazing patterns, environmental factors and grassland types on soil carbon dioxide (CO2), methane (CH4) and nitrous oxide (N2O) exchanges have been poorly studied. This study investigates the effects of long-term grazing on the soil-atmosphere exchanges of CO2, CH4 and N2O in important processes within different grasslands in Inner Mongolia, China. Using manual static chamber and gas chromatography, we measured the fluxes of CO2, CH4 and N2O from intact soil cores of paired grazed/ungrazed sites collected from two typical steppes (Stipa grandis and Leymus chinensis): one wetland in a flood plain and one desert steppe in the region of the Xilin River catchment, Inner Mongolia. Soil gas flux and concentration measurements were conducted in four simulated conditions (Le., drought, dry-wet, intense rainfall and freeze-thaw), which represent important processes in annual GHG exchanges. Extreme drought significantly inhibited CO2 and N2O emissions in all plots but did not change the CH4 uptake by typical steppes. Dry-wet transition and intense rainfall could remarkably promote soil CO2 emission pulses at different types, significantly decrease CH4 uptake by typical steppes, and arouse N2O emission pulses at all plots with different times of occurrence. During the freeze-thaw simulation, temperature-induced soil CO2 emission and CH4 uptake/emission presented a clear alternative variation, while soil thaw only slightly increased ( < 15 mu g N m(-2) h(-1)) in the steppes and sand dunes and was significantly higher in the wetland (11-96 mu g N m(-2) h(-1)). Long-term grazing significantly inhibited soil respiration rates at all grassland types, significantly decreased CH4 uptake by the Leymus chinensis steppes, and did not show significant influence on N2O emission due to large spatial variations for all types. Compared to the ungrazed Leymus steppes, Stipa steppes, sand dune and wetland, continuously grazed sites were significantly reduced by 22%, 38%, 48% and 47% in total GHG emissions, respectively. Our results indicate that the potential of the steppe soil CH4 sink function can be offset by N2O emission, especially in over-grazed plots. Furthermore, N2O emissions should be considered in wetland rangelands with significantly higher N2O emission potential (range: 0-343 mu g N m(-2) h(-1)) more than steppes (range: 0-132 mu g N m(-2) h(-1)) and sand dunes (range: 0-49 mu g N m(-2) h(-1)). Nevertheless, comprehensive evaluation of the grazing effect on ecosystem GHG emissions merits consider in both field observation and incubation experiments because soil properties and environmental factors could be changed by vegetation growth in different grazing practices.
+C1 [Chen, Weiwei; Zheng, Xunhua; Yao, Zhisheng; Liu, Chunyan] Chinese Acad Sci, Inst Atmospher Phys, State Key Lab Atmospher Boundary Layer Phys & Atm, Beijing 100029, Peoples R China.
+   [Chen, Weiwei; Wolf, Benjamin; Butterbach-Bahl, Klaus; Brueggemann, Nicolas] Karlsruhe Inst Technol, Inst Meteorol & Climate Res, Atmospher Environm Res IMK IFU, D-82467 Garmisch Partenkirchen, Germany.
+   [Zheng, Xunhua; Liu, Chunyan] Univ Chinese Acad Sci, Coll Earth Sci, Beijing 100049, Peoples R China.
+   [Chen, Weiwei] Chinese Acad Sci, Northeast Inst Geog & Agroecol, Key Lab Wetland Ecol & Environm, Changchun 130102, Jilin, Peoples R China.
+   [Brueggemann, Nicolas] Forschungszentrum Julich, Inst Bio & Geosci, Agrosphere IBG 3, Leo Brandt Str, D-52425 Julich, Germany.
+C3 Chinese Academy of Sciences; Institute of Atmospheric Physics, CAS;
+   Helmholtz Association; Karlsruhe Institute of Technology; Chinese
+   Academy of Sciences; University of Chinese Academy of Sciences, CAS;
+   Chinese Academy of Sciences; Northeast Institute of Geography &
+   Agroecology, CAS; Helmholtz Association; Julich Research Centre
+RP Zheng, XH (corresponding author), Chinese Acad Sci, Inst Atmospher Phys, State Key Lab Atmospher Boundary Layer Phys & Atm, Beijing 100029, Peoples R China.
+EM chenweiwei@iga.ac.cn; xunhua.zheng@post.iap.ac.cn
+RI Brüggemann, Nicolas/C-4263-2014; Butterbach-Bahl, Klaus/A-8081-2013;
+   Yao, Zhisheng/A-5749-2015; Zheng, Xunhua/D-3048-2017; Liu,
+   Chunyan/J-2848-2014
+OI Brüggemann, Nicolas/0000-0003-3851-2418; Butterbach-Bahl,
+   Klaus/0000-0001-9499-6598; Yao, Zhisheng/0000-0001-6242-2426; Zheng,
+   Xunhua/0000-0002-4138-7470; Wolf, Benjamin/0000-0002-2636-1897
+FU National Natural Science Foundation of China [41375152, 41775116]; MAGIM
+   project of the German Research Foundation (DFG) [536]; Chinese Ministry
+   of Science and Technology [2010CB951801]; Helmholtz-CSC (China
+   Scholarship Council) program; Helmholtz-CAS joint laboratory project
+   (ENTRANCE)
+FX This work was supported by the National Natural Science Foundation of
+   China (41375152, 41775116), the MAGIM project of the German Research
+   Foundation (DFG, Research Unit No. 536), and the Chinese Ministry of
+   Science and Technology (2010CB951801). Additional supports were provided
+   by the Helmholtz-CSC (China Scholarship Council) program and the
+   Helmholtz-CAS joint laboratory project (ENTRANCE). We also thank the
+   staff of IAP, IB, IMK-IFU, and MAGIM for their support in field
+   experiments.
+NR 35
+TC 29
+Z9 33
+U1 14
+U2 239
+PU ELSEVIER
+PI AMSTERDAM
+PA RADARWEG 29, 1043 NX AMSTERDAM, NETHERLANDS
+SN 1470-160X
+EI 1872-7034
+J9 ECOL INDIC
+JI Ecol. Indic.
+PD OCT
+PY 2019
+VL 105
+BP 316
+EP 328
+DI 10.1016/j.ecolind.2017.09.035
+PG 13
+WC Biodiversity Conservation; Environmental Sciences
+WE Science Citation Index Expanded (SCI-EXPANDED)
+SC Biodiversity & Conservation; Environmental Sciences & Ecology
+GA JE3DM
+UT WOS:000490574200028
+DA 2026-01-16
+ER
+
+PT J
+AU Lascano, CE
+   Cárdenas, E
+AF Lascano, Carlos E.
+   Cardenas, Edgar
+TI Alternatives for methane emission mitigation in livestock systems
+SO REVISTA BRASILEIRA DE ZOOTECNIA-BRAZILIAN JOURNAL OF ANIMAL SCIENCE
+LA English
+DT Article
+DE climate change; defaunation; feed chemical additives; genetic
+   transformation of bacteria; greenhouse gases; immunization; saponins;
+   tannins
+AB Human activities are contributing to Global Climate Change through the production of Green House Gases (GHG), which result in increased air, land and ocean temperatures and extreme changes in precipitation in regions of low and high rainfall. The most important GHG's are carbon dioxide (CO2), methane (CH4) and nitrous oxide (N2O). It is estimated that 18 % of the annual GHG emissions come from different types of livestock and that 37% of CH4, with higher global warming potential (23) relative to CO2 (1), comes from fermentation processes in ruminants. It is possible that in the future beef and milk exports from producing countries is subject to bans if cattle systems do not comply with measures to reduce GHG. There are several alternatives available and being researched to reduce enteric CH4 emissions from cattle that range from manipulating diet composition, supplementing feed additives (i.e. ionophores, organic acids, halogenated compounds, oils) and selection of forage plants of high quality and containing secondary metabolites (i.e. tannins and saponins) to animal breeding, immunization and genetic transformation of rumen microorganisms. Results show that inhibition of enteric CH4 emission is possible through the use of ionophores, organic acids and oils. The use of ionophores can result in resistance of rumen microbes and as a result the effect is short term. The high cost of organic acids makes it unlikely that there direct supplementation in ruminant diets is economically viable. However, organic acids are present at relatively high concentrations in the leaf tissue of plants and attempts should be made to select and breed forages with higher levels of these compounds. It is argued that a more efficient strategy to reduce enteric CH4 in ruminants is through selection of grasses of high quality (i. e. high concentration of water soluble carbohydrates), of forage legumes containing secondary metabolites like tannins and of fruits/plants containing saponins, provided that they do not affect intake and digestibility. Improved nutrition of cattle through feeding high quality forages can result in high animal performance and in reductions of CH4 emitted per unit of dry matter intake and per unit of product.
+C1 [Lascano, Carlos E.; Cardenas, Edgar] Univ Nacl Colombia, Bogota, Colombia.
+C3 Universidad Nacional de Colombia
+RP Lascano, CE (corresponding author), Univ Nacl Colombia, Bogota, Colombia.
+EM c.lascano@cgiar.org; eacardenasr@unal.edu.co
+NR 56
+TC 40
+Z9 49
+U1 4
+U2 25
+PU REVISTA BRASILEIRA ZOOTECNIA BRAZILIAN JOURNAL ANIMAL SCI
+PI VICOSA-MG
+PA UNIVERSIDADE FEDERAL VICOSA,, 36571-000 VICOSA-MG, BRAZIL
+SN 1516-3598
+EI 1806-9290
+J9 REV BRAS ZOOTECN
+JI Rev. Bras. Zootecn.
+PY 2010
+VL 39
+SU S
+SI SI
+BP 175
+EP 182
+DI 10.1590/S1516-35982010001300020
+PG 8
+WC Agriculture, Dairy & Animal Science; Veterinary Sciences
+WE Science Citation Index Expanded (SCI-EXPANDED)
+SC Agriculture; Veterinary Sciences
+GA VM1XG
+UT WOS:000969694700020
+OA Green Submitted, gold
+DA 2026-01-16
+ER
+
+EF

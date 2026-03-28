@@ -1,0 +1,65 @@
+{
+  "parsing": {
+    "wos": {
+      "supportedVersions": ["v1", "v2"],
+      "fieldMapping": {
+        "PT": "documentType",
+        "AU": "authors",
+        "TI": "title",
+        "AB": "abstract",
+        "DE": "keywords",
+        "SO": "journal",
+        "PY": "year",
+        "VL": "volume",
+        "IS": "issue",
+        "BP": "beginPage",
+        "EP": "endPage",
+        "AR": "articleNumber",
+        "DI": "doi",
+        "WC": "categories",
+        "CR": "references"
+      }
+    },
+    "cnki": {
+      "supportedFormats": ["custom", "gb7714", "auto"],
+      "encoding": "UTF-8"
+    }
+  },
+  "retrieval": {
+    "bm25": {
+      "topN": 50,
+      "k1": 1.5,
+      "b": 0.75,
+      "fieldWeights": {
+        "title": 3.0,
+        "keywords": 2.5,
+        "abstract": 1.5,
+        "authors": 0.5,
+        "journal": 0.3
+      }
+    },
+    "vector": {
+      "topN": 50,
+      "model": "text-embedding-3-small",
+      "dimensions": 1536,
+      "similarity": "cosine"
+    },
+    "reranker": {
+      "enabled": false,
+      "topN": 20,
+      "model": "gpt-4o-mini"
+    }
+  },
+  "generation": {
+    "maxCitationsPerParagraph": 3,
+    "defaultCitationStyle": "numeric",
+    "defaultReferenceStyle": "gbt7714",
+    "requireEvidence": true,
+    "allowParaphrasing": true
+  },
+  "logging": {
+    "enabled": true,
+    "logDir": "./logs/retrieval",
+    "retainDays": 30
+  }
+}

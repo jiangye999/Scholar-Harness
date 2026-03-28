@@ -1,0 +1,26 @@
+[INFO] ScholarClaw running at http://localhost:18789 (Model: qwen3.5-plus)
+
+========================================
+     ScholarClaw - 论文写作助手
+========================================
+ 打开浏览器访问：http://localhost:18789
+ AI 模型：qwen3.5-plus
+========================================
+
+[INFO] [Feishu] WebSocket not enabled (missing FEISHU_APP_ID or FEISHU_APP_SECRET)
+[INFO] [FeishuWS] Starting WebSocket connection...
+[info]: [ 'event-dispatch is ready' ]
+[info]: [
+  '[ws]',
+  'receive events or callbacks through persistent connection only available in self-build & Feishu app, Configured in:\n' +
+    '        Developer Console(开发者后台) \n' +
+    '          ->\n' +
+    '        Events and Callbacks(事件与回调)\n' +
+    '          -> \n' +
+    '        Mode of event/callback subscription(订阅方式)\n' +
+    '          -> \n' +
+    '        Receive events/callbacks through persistent connection(使用 长连接 接收事件/回调)'
+]
+[INFO] [FeishuWS] WebSocket connected successfully
+[INFO] [Feishu] WebSocket client restarted with new config
+[info]: [ '[ws]', 'ws client ready' ]

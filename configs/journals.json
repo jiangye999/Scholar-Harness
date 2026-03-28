@@ -1,0 +1,134 @@
+{
+  "journals": {
+    "nature_climate_change": {
+      "name": "Nature Climate Change",
+      "impactFactor": 27.3,
+      "citationStyle": "nature",
+      "wordLimits": {
+        "abstract": 150,
+        "introduction": 1500,
+        "methods": 2500,
+        "results": 3000,
+        "discussion": 2500,
+        "conclusion": 400
+      }
+    },
+    "global_change_biology": {
+      "name": "Global Change Biology",
+      "impactFactor": 13.2,
+      "citationStyle": "apa",
+      "wordLimits": {
+        "abstract": 350,
+        "introduction": 2000,
+        "methods": 3000,
+        "results": 4000,
+        "discussion": 2500,
+        "conclusion": 500
+      }
+    },
+    "science": {
+      "name": "Science",
+      "impactFactor": 63.7,
+      "citationStyle": "science",
+      "wordLimits": {
+        "abstract": 125,
+        "introduction": 1000,
+        "methods": 2000,
+        "results": 2500,
+        "discussion": 1500,
+        "conclusion": 250
+      }
+    },
+    "nature": {
+      "name": "Nature",
+      "impactFactor": 69.5,
+      "citationStyle": "nature",
+      "wordLimits": {
+        "abstract": 150,
+        "introduction": 1500,
+        "methods": 2500,
+        "results": 3000,
+        "discussion": 2000,
+        "conclusion": 400
+      }
+    },
+    "pnas": {
+      "name": "Proceedings of the National Academy of Sciences",
+      "impactFactor": 11.1,
+      "citationStyle": "pnas",
+      "wordLimits": {
+        "abstract": 250,
+        "introduction": 1500,
+        "methods": 2500,
+        "results": 3500,
+        "discussion": 2000,
+        "conclusion": 400
+      }
+    },
+    "ecology_letters": {
+      "name": "Ecology Letters",
+      "impactFactor": 11.3,
+      "citationStyle": "apa",
+      "wordLimits": {
+        "abstract": 300,
+        "introduction": 2000,
+        "methods": 3000,
+        "results": 4000,
+        "discussion": 2500,
+        "conclusion": 500
+      }
+    },
+    "environmental_science_technology": {
+      "name": "Environmental Science & Technology",
+      "impactFactor": 11.4,
+      "citationStyle": "acs",
+      "wordLimits": {
+        "abstract": 250,
+        "introduction": 1500,
+        "methods": 2500,
+        "results": 3000,
+        "discussion": 2000,
+        "conclusion": 400
+      }
+    },
+    "isprs_journal": {
+      "name": "ISPRS Journal of Photogrammetry and Remote Sensing",
+      "impactFactor": 8.5,
+      "citationStyle": "elsevier",
+      "wordLimits": {
+        "abstract": 300,
+        "introduction": 2000,
+        "methods": 3000,
+        "results": 4000,
+        "discussion": 2000,
+        "composition": 500
+      }
+    },
+    "remote_sensing_environment": {
+      "name": "Remote Sensing of Environment",
+      "impactFactor": 13.5,
+      "citationStyle": "elsevier",
+      "wordLimits": {
+        "abstract": 250,
+        "introduction": 2000,
+        "methods": 3000,
+        "results": 4000,
+        "discussion": 2500,
+        "conclusion": 500
+      }
+    },
+    "agricultural_and_forest_meteorology": {
+      "name": "Agricultural and Forest Meteorology",
+      "impactFactor": 6.0,
+      "citationStyle": "elsevier",
+      "wordLimits": {
+        "abstract": 250,
+        "introduction": 2000,
+        "methods": 3000,
+        "results": 3500,
+        "discussion": 2000,
+        "conclusion": 400
+      }
+    }
+  }
+}

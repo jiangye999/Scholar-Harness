@@ -1,0 +1,174 @@
+{
+  "cookies": [
+    {
+      "name": "__Secure-next-auth.session-token",
+      "value": "ysqhrr01vkcvaqdheb81w6480la6g4tf",
+      "domain": "node8.nice188.com",
+      "path": "/",
+      "expires": 1779874345.934678,
+      "httpOnly": true,
+      "secure": true,
+      "sameSite": "None"
+    },
+    {
+      "name": "cw_conversation",
+      "value": "eyJhbGciOiJIUzI1NiJ9.eyJzb3VyY2VfaWQiOiI4MmU0MDgxNy1jN2VlLTQxMWQtYTEzYy0yMGUxOTYzNjI1YjUiLCJpbmJveF9pZCI6MSwiZXhwIjoxNzkwMjQyNTMyLCJpYXQiOjE3NzQ2OTA1MzJ9.iT0vezc7pFedUmNaX3vdXerbbxP8ZuEcIhidZCL8Q5Q",
+      "domain": "node8.nice188.com",
+      "path": "/",
+      "expires": 1806226535,
+      "httpOnly": false,
+      "secure": false,
+      "sameSite": "Lax"
+    },
+    {
+      "name": "cw_user_ZRAa6tfs39gTE5Mn3R3KDHVj",
+      "value": "3ee26760386a5a5eba00510be62ec66a",
+      "domain": "node8.nice188.com",
+      "path": "/",
+      "expires": 1806226535,
+      "httpOnly": false,
+      "secure": false,
+      "sameSite": "Lax"
+    },
+    {
+      "name": "xuserid",
+      "value": "4881",
+      "domain": "node8.nice188.com",
+      "path": "/",
+      "expires": 1775900143,
+      "httpOnly": false,
+      "secure": false,
+      "sameSite": "Lax"
+    },
+    {
+      "name": "xuserid",
+      "value": "4881",
+      "domain": ".nice188.com",
+      "path": "/",
+      "expires": 1775900143,
+      "httpOnly": false,
+      "secure": false,
+      "sameSite": "Lax"
+    },
+    {
+      "name": "xtoken",
+      "value": "7b210e28-ef79-41f1-bd44-2ab0e8255afb",
+      "domain": "node8.nice188.com",
+      "path": "/",
+      "expires": 1775900143,
+      "httpOnly": false,
+      "secure": false,
+      "sameSite": "Lax"
+    },
+    {
+      "name": "xtoken",
+      "value": "7b210e28-ef79-41f1-bd44-2ab0e8255afb",
+      "domain": ".nice188.com",
+      "path": "/",
+      "expires": 1775900143,
+      "httpOnly": false,
+      "secure": false,
+      "sameSite": "Lax"
+    },
+    {
+      "name": "xy_uuid_token",
+      "value": "e24e788f-7580-448d-b2c7-7daea9ceaa9e",
+      "domain": "node8.nice188.com",
+      "path": "/",
+      "expires": 1775900143,
+      "httpOnly": false,
+      "secure": false,
+      "sameSite": "Lax"
+    },
+    {
+      "name": "xy_uuid_token",
+      "value": "e24e788f-7580-448d-b2c7-7daea9ceaa9e",
+      "domain": ".nice188.com",
+      "path": "/",
+      "expires": 1775900143,
+      "httpOnly": false,
+      "secure": false,
+      "sameSite": "Lax"
+    },
+    {
+      "name": "oai-gn",
+      "value": "",
+      "domain": "node8.nice188.com",
+      "path": "/",
+      "expires": 1779884058.723194,
+      "httpOnly": true,
+      "secure": true,
+      "sameSite": "None"
+    },
+    {
+      "name": "oai-did",
+      "value": "9680435a-ff02-420f-897f-dd2e87b22b83",
+      "domain": "node8.nice188.com",
+      "path": "/",
+      "expires": 1805794721.114616,
+      "httpOnly": false,
+      "secure": false,
+      "sameSite": "Lax"
+    }
+  ],
+  "origins": [
+    {
+      "origin": "https://node8.nice188.com",
+      "localStorage": [
+        {
+          "name": "oai/apps/connectorsExternalNuxBannerDismissed",
+          "value": "true"
+        },
+        {
+          "name": "oai-did",
+          "value": "\"9680435a-ff02-420f-897f-dd2e87b22b83\""
+        },
+        {
+          "name": "chatwoot_guest_identifier",
+          "value": "guest_eceab08a-df49-4780-ba2c-f5bf758c4b51"
+        },
+        {
+          "name": "oai/apps/capExpiresAt",
+          "value": "{\"state\":{\"isoDate\":\"\"},\"version\":0}"
+        },
+        {
+          "name": "oai/apps/hasDismissedAuraAnnouncementBanner",
+          "value": "true"
+        },
+        {
+          "name": "oai/apps/debugSettings",
+          "value": "{\"state\":{\"fConversationEndpoint\":\"default\",\"jsonViewerFilters\":{},\"recordRendering\":false,\"recordTransformedConvoJson\":false,\"showDebugConversationTurns\":false,\"showPerformanceOverlay\":false},\"version\":0}"
+        },
+        {
+          "name": "search.attributions-settings",
+          "value": "{\"state\":{\"debugMode\":false,\"viewModelPredictedFallback\":false,\"disableSegmentReplacement\":false,\"useSigmoid\":true,\"influenceTemperature\":0.2,\"probThreshold\":0.45,\"probBaseline\":0.02},\"version\":8}"
+        },
+        {
+          "name": "oai/apps/voiceSeparateMode",
+          "value": "true"
+        }
+      ]
+    },
+    {
+      "origin": "https://chatwoot.foxaigc.com",
+      "localStorage": [
+        {
+          "name": "chatwoot_available_agents_ZRAa6tfs39gTE5Mn3R3KDHVj:ts",
+          "value": "1774690532551"
+        },
+        {
+          "name": "chatwoot_available_agents_ZRAa6tfs39gTE5Mn3R3KDHVj",
+          "value": "{\"data\":[{\"id\":2,\"name\":\"Nice\",\"avatar_url\":\"\",\"availability_status\":\"offline\"}],\"timestamp\":1774690532551}"
+        },
+        {
+          "name": "chatwoot_campaigns_ZRAa6tfs39gTE5Mn3R3KDHVj",
+          "value": "{\"data\":[],\"timestamp\":1774690532547}"
+        },
+        {
+          "name": "chatwoot_campaigns_ZRAa6tfs39gTE5Mn3R3KDHVj:ts",
+          "value": "1774690532547"
+        }
+      ]
+    }
+  ]
+}

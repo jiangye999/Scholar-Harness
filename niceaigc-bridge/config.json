@@ -1,0 +1,14 @@
+{
+  "mode": "browser",
+  "niceaigc": {
+    "chat_url": "https://niceaigc.com/chat"
+  },
+  "local": {
+    "output_file": "/tmp/niceaigc_response.txt"
+  },
+  "browser": {
+    "profile": "chrome",
+    "timeout_ms": 30000,
+    "wait_for_response_ms": 5000
+  }
+}

@@ -1,0 +1,49 @@
+{
+  "primary": {
+    "model": "claude-sonnet-4-5",
+    "temperature": 0.7,
+    "maxTokens": 4000
+  },
+  "secondary": {
+    "introduction": {
+      "model": "gpt-4o",
+      "temperature": 0.7,
+      "maxTokens": 4000,
+      "description": "结构化写作，逻辑清晰"
+    },
+    "methods": {
+      "model": "gpt-4o",
+      "temperature": 0.7,
+      "maxTokens": 4000,
+      "description": "精确描述技术细节"
+    },
+    "results": {
+      "model": "gpt-4o",
+      "temperature": 0.7,
+      "maxTokens": 6000,
+      "description": "数据呈现准确"
+    },
+    "discussion": {
+      "model": "claude-sonnet-4-5",
+      "temperature": 0.7,
+      "maxTokens": 5000,
+      "description": "深度分析批判性思维"
+    },
+    "abstract": {
+      "model": "gpt-4o",
+      "temperature": 0.5,
+      "maxTokens": 1000,
+      "description": "简洁精确概括"
+    },
+    "conclusion": {
+      "model": "claude-sonnet-4-5",
+      "temperature": 0.7,
+      "maxTokens": 1500,
+      "description": "总结升华前瞻性"
+    }
+  },
+  "fallback": {
+    "model": "gpt-4o",
+    "temperature": 0.7
+  }
+}

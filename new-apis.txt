@@ -1,0 +1,210 @@
+// ============ 长文本专用存储 API（独立于对话） ============
+// 这三个接口使用用户配置的 API 密钥
+
+// 1. 保存实验资料总结（专用接口）
+app.post("/api/research-material/save", async (req: Request, res: Response) => {
+  const { content, append = true, apiKey, apiUrl } = req.body;
+  const userId = "web-user";
+  
+  const useApiKey = apiKey || process.env.API_KEY || "";
+  const useApiUrl = apiUrl || process.env.API_URL || "https://modelgate.cn/v1";
+  
+  if (!content) {
+    res.json({ success: false, error: "内容为空" });
+    return;
+  }
+  
+  const memory = loadUserMemory(userId);
+  let existingEntry = memory.entries.find(e => e.key === 'experiment_summary');
+  
+  if (!existingEntry) {
+    existingEntry = {
+      key: 'experiment_summary',
+      value: '',
+      source: 'user-updated',
+      timestamp: new Date().toISOString()
+    };
+    memory.entries.push(existingEntry);
+  }
+  
+  let finalContent = content;
+  if (append && existingEntry.value) {
+    try {
+      const mergedResponse = await fetch(useApiUrl + "/chat/completions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: "Bearer " + useApiKey,
+        },
+        body: JSON.stringify({
+          model: "qwen3.5-plus",
+          messages: [
+            { role: "system", content: "You are a research data management expert. Merge new experimental content with existing content. Remove duplicates, organize logically, and output the complete merged document without explanations or markers like '新增' or '补充'." },
+            { role: "user", content: `Existing content:\n${existingEntry.value.substring(0, 28000)}\n\nNew content:\n${content.substring(0, 8000)}\n\nPlease merge these two experimental materials into a coherent document.` }
+          ],
+          temperature: 0.2,
+          max_tokens: 32000,
+        }),
+      });
+      
+      if (mergedResponse.ok) {
+        const data = await mergedResponse.json() as { choices?: Array<{ message?: { content?: string } }> };
+        const merged = data.choices?.[0]?.message?.content;
+        if (merged && merged.length > 10) {
+          finalContent = merged.trim();
+        }
+      }
+    } catch (e) {
+      finalContent = existingEntry.value + "\n\n---\n\n" + content;
+    }
+  }
+  
+  existingEntry.value = finalContent;
+  existingEntry.timestamp = new Date().toISOString();
+  saveUserMemory(memory);
+  
+  res.json({ 
+    success: true, 
+    length: finalContent.length,
+    characters: finalContent.length
+  });
+});
+
+// 2. 保存数据详细总结（专用接口）
+app.post("/api/data-summary/save", async (req: Request, res: Response) => {
+  const { content, append = true, apiKey, apiUrl } = req.body;
+  const userId = "web-user";
+  
+  const useApiKey = apiKey || process.env.API_KEY || "";
+  const useApiUrl = apiUrl || process.env.API_URL || "https://modelgate.cn/v1";
+  
+  if (!content) {
+    res.json({ success: false, error: "内容为空" });
+    return;
+  }
+  
+  const memory = loadUserMemory(userId);
+  let existingEntry = memory.entries.find(e => e.key === 'data_summary');
+  
+  if (!existingEntry) {
+    existingEntry = {
+      key: 'data_summary',
+      value: '',
+      source: 'user-updated',
+      timestamp: new Date().toISOString()
+    };
+    memory.entries.push(existingEntry);
+  }
+  
+  let finalContent = content;
+  if (append && existingEntry.value) {
+    try {
+      const mergedResponse = await fetch(useApiUrl + "/chat/completions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: "Bearer " + useApiKey,
+        },
+        body: JSON.stringify({
+          model: "qwen3.5-plus",
+          messages: [
+            { role: "system", content: "You are a research data management expert. Merge new data analysis with existing data. Preserve all numerical values, statistics, and results. Remove duplicates, organize logically, and output the complete merged document without explanations." },
+            { role: "user", content: `Existing data:\n${existingEntry.value.substring(0, 28000)}\n\nNew data:\n${content.substring(0, 8000)}\n\nPlease merge these data analyses into a coherent document.` }
+          ],
+          temperature: 0.2,
+          max_tokens: 32000,
+        }),
+      });
+      
+      if (mergedResponse.ok) {
+        const data = await mergedResponse.json() as { choices?: Array<{ message?: { content?: string } }> };
+        const merged = data.choices?.[0]?.message?.content;
+        if (merged && merged.length > 10) {
+          finalContent = merged.trim();
+        }
+      }
+    } catch (e) {
+      finalContent = existingEntry.value + "\n\n---\n\n" + content;
+    }
+  }
+  
+  existingEntry.value = finalContent;
+  existingEntry.timestamp = new Date().toISOString();
+  saveUserMemory(memory);
+  
+  res.json({ 
+    success: true, 
+    length: finalContent.length,
+    characters: finalContent.length
+  });
+});
+
+// 3. 保存论文草稿（专用接口）
+app.post("/api/paper-draft/save", async (req: Request, res: Response) => {
+  const { content, append = true, apiKey, apiUrl, section = "main" } = req.body;
+  const userId = "web-user";
+  
+  const useApiKey = apiKey || process.env.API_KEY || "";
+  const useApiUrl = apiUrl || process.env.API_URL || "https://modelgate.cn/v1";
+  
+  if (!content) {
+    res.json({ success: false, error: "内容为空" });
+    return;
+  }
+  
+  const memory = loadUserMemory(userId);
+  let existingEntry = memory.entries.find(e => e.key === 'draft_progress');
+  
+  if (!existingEntry) {
+    existingEntry = {
+      key: 'draft_progress',
+      value: '',
+      source: 'ai-extracted',
+      timestamp: new Date().toISOString()
+    };
+    memory.entries.push(existingEntry);
+  }
+  
+  let finalContent = content;
+  if (append && existingEntry.value) {
+    try {
+      const mergedResponse = await fetch(useApiUrl + "/chat/completions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: "Bearer " + useApiKey,
+        },
+        body: JSON.stringify({
+          model: "qwen3.5-plus",
+          messages: [
+            { role: "system", content: "You are an academic writing expert. Merge new draft content with existing draft. Maintain coherence, consistent style and terminology. Insert new content at appropriate positions, not just at the end. Output the complete merged academic paper without explanations." },
+            { role: "user", content: `Existing draft:\n${existingEntry.value.substring(0, 28000)}\n\nNew content:\n${content.substring(0, 8000)}\n\nPlease merge these into a coherent academic paper draft.` }
+          ],
+          temperature: 0.2,
+          max_tokens: 32000,
+        }),
+      });
+      
+      if (mergedResponse.ok) {
+        const data = await mergedResponse.json() as { choices?: Array<{ message?: { content?: string } }> };
+        const merged = data.choices?.[0]?.message?.content;
+        if (merged && merged.length > 10) {
+          finalContent = merged.trim();
+        }
+      }
+    } catch (e) {
+      finalContent = existingEntry.value + "\n\n---\n\n" + content;
+    }
+  }
+  
+  existingEntry.value = finalContent;
+  existingEntry.timestamp = new Date().toISOString();
+  saveUserMemory(memory);
+  
+  res.json({ 
+    success: true, 
+    length: finalContent.length,
+    characters: finalContent.length,
+    section: section
+  });
+});
