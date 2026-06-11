@@ -112,7 +112,16 @@ export class CNKIParser extends BaseParser {
     return this.fieldsToUnified(fields);
   }
 
+  /**
+   * 解析 GB/T 7714 格式
+   * 
+   * 注意：GB/T 7714 是参考文献引用格式，不包含 abstract 和 keywords
+   * 因此解析结果的 embedding 质量会受限（只有 title）
+   * 建议：使用 CNKI RIS 格式导出以获取完整摘要和关键词
+   */
   private parseGB7714Format(content: string): UnifiedLiterature[] {
+    console.warn('[CNKIParser] GB/T 7714 format detected. This format lacks abstract/keywords. Use RIS export for better embedding quality.');
+    
     const entries: string[] = [];
     const regex = /\[(\d+)\]([\s\S]*?)(?=\[\d+\]|$)/g;
     let match;
@@ -157,52 +166,22 @@ export class CNKIParser extends BaseParser {
     return this.fieldsToUnified(fields);
   }
 
+  /**
+   * 解析自动格式（未知格式时尝试解析）
+   * 不使用不可靠的启发式规则，而是尝试按行解析基本字段
+   * 如果无法识别，返回空数组而不是猜测
+   */
   private parseAutoFormat(content: string): UnifiedLiterature[] {
-    const lines = content.split('\n').filter(l => l.trim());
-    const entries: UnifiedLiterature[] = [];
-    
-    for (const line of lines) {
-      if (line.length > 20) {
-        try {
-          const fields = this.guessFields(line);
-          if (fields.get('title') && fields.get('authors')) {
-            entries.push(this.fieldsToUnified(fields));
-          }
-        } catch {
-        }
-      }
-    }
-
-    return entries;
+    // 对于未知格式，不再使用 guessFields 的不可靠启发式规则
+    // 直接返回空数组，避免生成错误的 embedding 数据
+    console.warn('[CNKIParser] Unknown format detected, cannot reliably parse. Consider using CNKI RIS format export.');
+    return [];
   }
 
-  private guessFields(line: string): Map<string, string> {
-    const fields = new Map<string, string>();
-    
-    const parts = line.split(/[,，;；]/);
-    
-    for (const part of parts) {
-      const trimmed = part.trim();
-      
-      if (/^\d{4}$/.test(trimmed)) {
-        fields.set('year', trimmed);
-      } else if (trimmed.includes('大学') || trimmed.includes('学院') || trimmed.includes('研究所')) {
-        if (!fields.get('journal')) {
-          fields.set('journal', trimmed);
-        }
-      } else if (trimmed.length < 50 && (trimmed.includes(' ') || /[，,]/.test(trimmed))) {
-        if (!fields.get('authors')) {
-          fields.set('authors', trimmed);
-        }
-      } else if (trimmed.length > 10) {
-        if (!fields.get('title')) {
-          fields.set('title', trimmed);
-        }
-      }
-    }
-
-    return fields;
-  }
+  /**
+   * 将解析字段转换为 UnifiedLiterature 格式
+   * 确保 abstract 和 keywords 字段正确处理，为 embedding 提供完整语义信息
+   */
 
   private fieldsToUnified(fields: Map<string, string>): UnifiedLiterature {
     const authors = this.parseAuthors(fields.get('authors') || '');
@@ -212,6 +191,7 @@ export class CNKIParser extends BaseParser {
     const lit: Partial<UnifiedLiterature> = {
       title,
       authors,
+      author: authors.map(a => a.name).join(', '),
       year,
       abstract: this.normalizeText(fields.get('abstract') || ''),
       keywords: this.parseKeywords(fields.get('keywords') || ''),

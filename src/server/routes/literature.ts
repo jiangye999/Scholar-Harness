@@ -2,9 +2,10 @@ import { Router } from 'express';
 import multer from 'multer';
 import * as path from 'path';
 import * as fs from 'fs/promises';
-import { ParserFactory } from '../../literature/parsers';
+import { ParserFactory, type ParserSource } from '../../literature/parsers';
 import { HybridRetrievalEngine } from '../../literature/retrieval';
 import { ParagraphGenerator } from '../../literature/generation';
+import { getUserUploadDir, getIndexCacheDir, getUserLiteraturePath } from '../../utils/paths';
 import type {
   ImportResponse,
   RetrievalResult,
@@ -16,8 +17,9 @@ const router = Router();
 
 const storage = multer.diskStorage({
   destination: async (req, file, cb) => {
-    const uploadDir = path.join(process.cwd(), 'uploads', 'literature');
-    await fs.mkdir(uploadDir, { recursive: true });
+    // 使用统一的路径管理模块获取用户上传目录
+    const userId = req.body.userId || 'web-user';
+    const uploadDir = getUserUploadDir(userId);
     cb(null, uploadDir);
   },
   filename: (req, file, cb) => {
@@ -42,13 +44,22 @@ const upload = multer({
 });
 
 const literatureIndex = new Map<string, UnifiedLiterature>();
-const retrievalEngine = new HybridRetrievalEngine();
 
-// 允许外部设置检索引擎实例（用于全局共享）
+// 全局检索引擎实例 - 由 local-server.ts 通过 setRetrievalEngine 设置
+let globalRetrievalEngine: HybridRetrievalEngine | null = null;
+
+// 本地检索引擎 - 作为后备
+const localRetrievalEngine = new HybridRetrievalEngine();
+
+// 设置全局检索引擎（由 local-server.ts 调用）
 export function setRetrievalEngine(engine: HybridRetrievalEngine): void {
-  // 将全局引擎的配置同步到本地 engine
-  // 注意：这里实际上需要替换 engine 实例，但为了类型安全，我们只同步配置
-  // 真正的共享是通过 local-server.ts 中的 globalRetrievalEngine 实现的
+  globalRetrievalEngine = engine;
+  console.log('[Literature] Global retrieval engine set');
+}
+
+// 获取当前使用的检索引擎
+export function getRetrievalEngine(): HybridRetrievalEngine {
+  return globalRetrievalEngine || localRetrievalEngine;
 }
 
 const apiConfig = {
@@ -58,8 +69,9 @@ const apiConfig = {
 
 router.post('/import', upload.single('file'), async (req, res) => {
   try {
-    const source = req.body.source as 'wos' | 'cnki';
+    const source = req.body.source as string | undefined;
     const filePath = req.file?.path;
+    const confirmLegalSource = req.body.confirmLegalSource; // 用户确认来源合法性
 
     if (!filePath) {
       return res.status(400).json({
@@ -70,19 +82,31 @@ router.post('/import', upload.single('file'), async (req, res) => {
       });
     }
 
-    if (!source || !['wos', 'cnki'].includes(source)) {
+    if (source && !['wos', 'cnki', 'ris', 'bib', 'auto'].includes(source)) {
       return res.status(400).json({
         success: false,
         count: 0,
         sample: [],
-        error: 'Invalid source. Must be "wos" or "cnki"',
+        error: 'Invalid source. Must be one of "auto", "wos", "cnki", "ris", or "bib"',
       });
     }
 
-    const parser = ParserFactory.create(source);
-    const literatures = await parser.parse(filePath);
+    // 合规验证：必须确认文献来源合法性
+    if (!confirmLegalSource || confirmLegalSource !== 'true') {
+      return res.status(400).json({
+        success: false,
+        count: 0,
+        sample: [],
+        error: '必须确认文献来源合法性。请确保您上传的文献来自合法授权渠道（如机构订阅、个人购买等），不得上传未经授权获取的文献。',
+        code: 'LEGAL_SOURCE_NOT_CONFIRMED',
+      });
+    }
 
-    await retrievalEngine.index(literatures);
+    const literatures = source && source !== 'auto'
+      ? await ParserFactory.create(source as ParserSource).parse(filePath)
+      : await ParserFactory.parseFile(filePath);
+
+    await getRetrievalEngine().addDocuments(literatures);
 
     for (const lit of literatures) {
       literatureIndex.set(lit.id, lit);
@@ -96,6 +120,12 @@ router.post('/import', upload.single('file'), async (req, res) => {
         authors: l.authors.map(a => a.name),
         year: l.year,
       })),
+      // 返回合规确认信息
+      compliance: {
+        legal_source_confirmed: true,
+        confirmed_at: new Date().toISOString(),
+        disclaimer: '用户已确认文献来源合法性。请遵守版权法规定，不得用于非法用途。',
+      },
     };
 
     res.json(response);
@@ -125,7 +155,7 @@ router.post('/search', async (req, res) => {
       });
     }
 
-    const result: RetrievalResult = await retrievalEngine.retrieve({
+    const result: RetrievalResult = await getRetrievalEngine().retrieve({
       query,
       filters,
       topK,
@@ -169,7 +199,7 @@ router.post('/write', async (req, res) => {
       });
     }
 
-    const retrieved = await retrievalEngine.retrieve({
+    const retrieved = await getRetrievalEngine().retrieve({
       query: topic,
       filters,
       topK: 50,
@@ -207,7 +237,7 @@ router.post('/write', async (req, res) => {
 });
 
 router.get('/stats', (req, res) => {
-  const stats = retrievalEngine.getStatistics();
+  const stats = getRetrievalEngine().getStatistics();
   res.json({
     success: true,
     data: {
@@ -221,8 +251,8 @@ router.get('/stats', (req, res) => {
 router.get('/:userId', async (req, res) => {
   try {
     const userId = req.params.userId;
-    const dataDir = path.join(process.cwd(), 'dist', 'data', 'uploads', userId);
-    const literatureFile = path.join(dataDir, 'literature.json');
+    // 使用统一的路径管理模块获取文献路径
+    const literatureFile = getUserLiteraturePath(userId);
     
     const exists = await fs.access(literatureFile).then(() => true).catch(() => false);
     
@@ -266,7 +296,7 @@ router.get('/:userId', async (req, res) => {
 
 router.delete('/clear', (req, res) => {
   literatureIndex.clear();
-  retrievalEngine.clear();
+  getRetrievalEngine().clear();
   res.json({
     success: true,
     message: 'Literature index cleared',

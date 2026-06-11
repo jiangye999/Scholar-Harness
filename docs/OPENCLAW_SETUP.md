@@ -77,7 +77,7 @@ openclaw browser --action open --url "https://node8.nice188.com/"
 ### 2. 启动 ScholarClaw
 
 ```bash
-cd scholar-claw-feishu-1.0.0.5
+cd scholar-harness-1.0.0
 pnpm start
 ```
 
@@ -146,7 +146,7 @@ pnpm start
 
 ```
 E:\AI_projects\
-├── scholar-claw-feishu-1.0.0.5\    # ScholarClaw 项目
+├── scholar-harness-1.0.0\    # ScholarClaw 项目
 │   ├── src\bridge\niceaigc\
 │   │   └── config.json               # 已配置你的 URL
 │   └── ...

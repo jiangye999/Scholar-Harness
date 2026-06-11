@@ -1,0 +1,44 @@
+@import "tailwindcss";
+
+:root {
+  --background: #f7f8f5;
+  --foreground: #151815;
+  --muted-background: #eef2ee;
+  --panel-background: #ffffff;
+  --border-color: #dfe5df;
+  --accent-color: #0b6b5c;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: "PingFang SC", "Microsoft YaHei", "Helvetica Neue", Helvetica, Arial, sans-serif;
+  text-rendering: optimizeLegibility;
+}
+
+.brand-roman {
+  font-family: "Times New Roman", Times, serif;
+}
+
+code, pre, .font-mono {
+  font-family: "SF Mono", "Fira Code", "Consolas", monospace !important;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+::selection {
+  background: rgba(11, 107, 92, 0.18);
+}
+
+img {
+  max-width: 100%;
+}

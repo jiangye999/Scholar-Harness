@@ -1,0 +1,477 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Scholar Harness - 登录</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    :root {
+      --bg-primary: #ffffff;
+      --bg-secondary: #f7f7f8;
+      --bg-muted: #f3f4f6;
+      --text-primary: #1f2937;
+      --text-secondary: #6b7280;
+      --border-color: #e5e7eb;
+      --input-border: #d1d5db;
+      --accent-color: #00886e;
+      --accent-hover: #006f5a;
+      --success-bg: #ecfdf5;
+      --success-border: #a7f3d0;
+      --success-text: #047857;
+      --danger-bg: #fef2f2;
+      --danger-border: #fecaca;
+      --danger-text: #b91c1c;
+    }
+    
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+      background: var(--bg-primary);
+      color: var(--text-primary);
+      min-height: 100vh;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      padding: 20px;
+    }
+    
+    .container {
+      background: var(--bg-primary);
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      box-shadow: 0 10px 32px rgba(17, 24, 39, 0.08);
+      width: 100%;
+      max-width: 420px;
+      overflow: hidden;
+    }
+    
+    .header {
+      background: var(--bg-secondary);
+      color: var(--text-primary);
+      border-bottom: 1px solid var(--border-color);
+      padding: 30px;
+      text-align: center;
+    }
+    
+    .header h1 {
+      font-size: 28px;
+      margin-bottom: 8px;
+    }
+    
+    .header p {
+      color: var(--text-secondary);
+      font-size: 14px;
+    }
+    
+    .tabs {
+      display: flex;
+      border-bottom: 1px solid var(--border-color);
+    }
+    
+    .tab {
+      flex: 1;
+      padding: 16px;
+      text-align: center;
+      cursor: pointer;
+      font-weight: 500;
+      color: var(--text-secondary);
+      transition: all 0.3s;
+      border-bottom: 2px solid transparent;
+    }
+    
+    .tab.active {
+      color: var(--accent-color);
+      border-bottom-color: var(--accent-color);
+    }
+    
+    .form-container {
+      padding: 30px;
+    }
+    
+    .form {
+      display: none;
+    }
+    
+    .form.active {
+      display: block;
+    }
+    
+    .form-group {
+      margin-bottom: 20px;
+    }
+    
+    .form-group label {
+      display: block;
+      margin-bottom: 8px;
+      font-weight: 500;
+      color: var(--text-primary);
+      font-size: 14px;
+    }
+    
+    .form-group input {
+      width: 100%;
+      padding: 12px 16px;
+      background: var(--bg-secondary);
+      border: 1px solid var(--input-border);
+      border-radius: 6px;
+      color: var(--text-primary);
+      font-size: 15px;
+      transition: border-color 0.3s;
+    }
+    
+    .form-group input:focus {
+      outline: none;
+      border-color: var(--accent-color);
+      box-shadow: 0 0 0 3px rgba(0, 136, 110, 0.12);
+    }
+    
+    .form-group input.error {
+      border-color: var(--danger-text);
+    }
+    
+    .error-message {
+      color: var(--danger-text);
+      font-size: 13px;
+      margin-top: 6px;
+    }
+    
+    .btn {
+      width: 100%;
+      padding: 14px;
+      border: none;
+      border-radius: 6px;
+      font-size: 16px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.3s;
+    }
+    
+    .btn-primary {
+      background: var(--accent-color);
+      color: #ffffff;
+      border: 1px solid var(--accent-color);
+    }
+    
+    .btn-primary:hover {
+      background: var(--accent-hover);
+      border-color: var(--accent-hover);
+      box-shadow: 0 8px 18px rgba(0, 136, 110, 0.16);
+    }
+    
+    .btn-primary:disabled {
+      opacity: 0.7;
+      cursor: not-allowed;
+      transform: none;
+    }
+    
+    .divider {
+      display: flex;
+      align-items: center;
+      margin: 24px 0;
+      color: var(--text-secondary);
+      font-size: 13px;
+    }
+    
+    .divider::before, .divider::after {
+      content: '';
+      flex: 1;
+      height: 1px;
+      background: var(--border-color);
+    }
+    
+    .divider span {
+      padding: 0 16px;
+    }
+    
+    .social-login {
+      display: flex;
+      gap: 12px;
+    }
+    
+    .btn-social {
+      flex: 1;
+      padding: 12px;
+      border: 1px solid var(--border-color);
+      border-radius: 6px;
+      background: var(--bg-secondary);
+      color: var(--text-primary);
+      cursor: pointer;
+      font-size: 14px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      transition: all 0.3s;
+    }
+    
+    .btn-social:hover {
+      border-color: var(--accent-color);
+      background: var(--bg-primary);
+    }
+    
+    .footer {
+      padding: 20px 30px;
+      background: var(--bg-secondary);
+      text-align: center;
+      font-size: 13px;
+      color: var(--text-secondary);
+    }
+    
+    .footer a {
+      color: var(--accent-color);
+      text-decoration: none;
+    }
+    
+    .referral-input {
+      margin-top: 16px;
+    }
+    
+    .referral-input input {
+      background: var(--bg-secondary);
+    }
+    
+    .success-message {
+      background: var(--success-bg);
+      border: 1px solid var(--success-border);
+      color: var(--success-text);
+      padding: 12px 16px;
+      border-radius: 6px;
+      margin-bottom: 16px;
+      font-size: 14px;
+    }
+    
+    .alert {
+      padding: 12px 16px;
+      border-radius: 6px;
+      margin-bottom: 16px;
+      font-size: 14px;
+    }
+    
+    .alert-error {
+      background: var(--danger-bg);
+      border: 1px solid var(--danger-border);
+      color: var(--danger-text);
+    }
+    
+    .alert-success {
+      background: var(--success-bg);
+      border: 1px solid var(--success-border);
+      color: var(--success-text);
+    }
+    
+    .loading {
+      display: inline-block;
+      width: 16px;
+      height: 16px;
+      border: 2px solid #fff;
+      border-radius: 50%;
+      border-top-color: transparent;
+      animation: spin 1s linear infinite;
+      margin-right: 8px;
+    }
+    
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <h1>Scholar Harness</h1>
+      <p>对话式学术论文写作助手</p>
+    </div>
+    
+    <div class="tabs">
+      <div class="tab active" data-tab="login">登录</div>
+      <div class="tab" data-tab="register">注册</div>
+    </div>
+    
+    <div class="form-container">
+      <form id="login-form" class="form active">
+        <div id="login-alert"></div>
+        
+        <div class="form-group">
+          <label for="login-email">邮箱</label>
+          <input type="email" id="login-email" placeholder="请输入邮箱" required>
+        </div>
+        
+        <div class="form-group">
+          <label for="login-password">密码</label>
+          <input type="password" id="login-password" placeholder="请输入密码" required>
+        </div>
+        
+        <button type="submit" class="btn btn-primary" id="login-btn">登录</button>
+        
+        <div class="divider"><span>或</span></div>
+        
+        <div class="social-login">
+          <button type="button" class="btn-social" id="wechat-login">
+            <span>微信登录</span>
+          </button>
+        </div>
+      </form>
+      
+      <form id="register-form" class="form">
+        <div id="register-alert"></div>
+        
+        <div class="form-group">
+          <label for="register-email">邮箱</label>
+          <input type="email" id="register-email" placeholder="请输入邮箱" required>
+        </div>
+        
+        <div class="form-group">
+          <label for="register-password">密码</label>
+          <input type="password" id="register-password" placeholder="至少8位字符" required minlength="8">
+        </div>
+        
+        <div class="form-group">
+          <label for="register-confirm">确认密码</label>
+          <input type="password" id="register-confirm" placeholder="再次输入密码" required>
+        </div>
+        
+        <div class="form-group referral-input">
+          <label for="register-referral">邀请码（选填）</label>
+          <input type="text" id="register-referral" placeholder="有邀请码可获返利">
+        </div>
+        
+        <button type="submit" class="btn btn-primary" id="register-btn">注册</button>
+      </form>
+    </div>
+    
+    <div class="footer">
+      注册即表示同意 <a href="/terms">服务条款</a> 和 <a href="/privacy">隐私政策</a>
+    </div>
+  </div>
+
+  <script>
+    const API_BASE = window.location.origin + '/api/v1';
+    
+    document.querySelectorAll('.tab').forEach(tab => {
+      tab.addEventListener('click', () => {
+        document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+        document.querySelectorAll('.form').forEach(f => f.classList.remove('active'));
+        
+        tab.classList.add('active');
+        document.getElementById(tab.dataset.tab + '-form').classList.add('active');
+        
+        clearAlerts();
+      });
+    });
+    
+    document.getElementById('login-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      
+      const email = document.getElementById('login-email').value;
+      const password = document.getElementById('login-password').value;
+      const btn = document.getElementById('login-btn');
+      
+      btn.disabled = true;
+      btn.innerHTML = '<span class="loading"></span>登录中...';
+      clearAlerts();
+      
+      try {
+        const response = await fetch(API_BASE + '/auth/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email, password })
+        });
+        
+        const data = await response.json();
+        
+        if (response.ok) {
+          localStorage.setItem('accessToken', data.tokens.accessToken);
+          localStorage.setItem('refreshToken', data.tokens.refreshToken);
+          localStorage.setItem('user', JSON.stringify(data.user));
+          
+          showAlert('login', '登录成功，正在跳转...', 'success');
+          
+          setTimeout(() => {
+            window.location.href = '/app';
+          }, 1000);
+        } else {
+          showAlert('login', data.message || '登录失败', 'error');
+        }
+      } catch (error) {
+        showAlert('login', '网络错误，请稍后重试', 'error');
+      } finally {
+        btn.disabled = false;
+        btn.textContent = '登录';
+      }
+    });
+    
+    document.getElementById('register-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      
+      const email = document.getElementById('register-email').value;
+      const password = document.getElementById('register-password').value;
+      const confirm = document.getElementById('register-confirm').value;
+      const referral = document.getElementById('register-referral').value;
+      const btn = document.getElementById('register-btn');
+      
+      if (password !== confirm) {
+        showAlert('register', '两次输入的密码不一致', 'error');
+        return;
+      }
+      
+      btn.disabled = true;
+      btn.innerHTML = '<span class="loading"></span>注册中...';
+      clearAlerts();
+      
+      try {
+        const response = await fetch(API_BASE + '/auth/register', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ 
+            email, 
+            password,
+            referral_code: referral || undefined,
+            source: 'cloud'
+          })
+        });
+        
+        const data = await response.json();
+        
+        if (response.ok) {
+          localStorage.setItem('accessToken', data.tokens.accessToken);
+          localStorage.setItem('refreshToken', data.tokens.refreshToken);
+          localStorage.setItem('user', JSON.stringify(data.user));
+          
+          showAlert('register', '注册成功，正在跳转...', 'success');
+          
+          setTimeout(() => {
+            window.location.href = '/app';
+          }, 1000);
+        } else {
+          showAlert('register', data.message || '注册失败', 'error');
+        }
+      } catch (error) {
+        showAlert('register', '网络错误，请稍后重试', 'error');
+      } finally {
+        btn.disabled = false;
+        btn.textContent = '注册';
+      }
+    });
+    
+    function showAlert(form, message, type) {
+      const alert = document.getElementById(form + '-alert');
+      alert.innerHTML = '<div class="alert alert-' + type + '">' + message + '</div>';
+    }
+    
+    function clearAlerts() {
+      document.getElementById('login-alert').innerHTML = '';
+      document.getElementById('register-alert').innerHTML = '';
+    }
+    
+    const token = localStorage.getItem('accessToken');
+    if (token) {
+      fetch(API_BASE + '/auth/me', {
+        headers: { 'Authorization': 'Bearer ' + token }
+      })
+      .then(res => res.ok ? window.location.href = '/app' : null)
+      .catch(() => {});
+    }
+  </script>
+</body>
+</html>

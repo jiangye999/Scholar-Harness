@@ -77,7 +77,7 @@ export class SentencePlanner {
     return sentencePlans.map(plan => {
       // 根据关键词匹配度为每个句子分配文献
       const relevantDocs = allDocs.filter(doc => {
-        const docText = `${doc.title} ${doc.abstract} ${doc.keywords.join(' ')}`.toLowerCase();
+        const docText = `${doc.title || ''} ${doc.abstract || ''} ${Array.isArray(doc.keywords) ? doc.keywords.join(' ') : (doc.keywords || '')}`.toLowerCase();
         const matchScore = plan.keywords.reduce((score, keyword) => {
           return score + (docText.includes(keyword.toLowerCase()) ? 1 : 0);
         }, 0);
@@ -142,7 +142,7 @@ export class SentencePlanner {
    * 计算文档与关键词的匹配分数
    */
   private calculateMatchScore(doc: RetrievedDocument, keywords: string[]): number {
-    const docText = `${doc.title} ${doc.abstract} ${doc.keywords.join(' ')}`.toLowerCase();
+    const docText = `${doc.title || ''} ${doc.abstract || ''} ${Array.isArray(doc.keywords) ? doc.keywords.join(' ') : (doc.keywords || '')}`.toLowerCase();
     return keywords.reduce((score, keyword) => {
       return score + (docText.includes(keyword.toLowerCase()) ? 1 : 0);
     }, 0);

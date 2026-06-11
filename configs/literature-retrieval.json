@@ -40,7 +40,7 @@
     },
     "vector": {
       "topN": 50,
-      "model": "text-embedding-3-small",
+      "model": "text-embedding-v4",
       "dimensions": 1536,
       "similarity": "cosine"
     },

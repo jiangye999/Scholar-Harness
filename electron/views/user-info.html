@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Scholar Harness - 个人中心</title>
+  <link rel="stylesheet" href="user-info.css">
+</head>
+<body>
+  <div class="user-center-container">
+    <!-- 页面标题 -->
+    <div class="page-header">
+      <div class="header-left">
+        <a href="#" id="back-link" class="back-link">← 返回主页</a>
+        <h1>个人中心</h1>
+        <p class="header-desc">管理您的账号信息和订阅套餐</p>
+      </div>
+      <button id="logout-btn" class="logout-btn">退出登录</button>
+    </div>
+    
+    <!-- 用户信息卡片 -->
+    <div class="card user-card">
+      <div class="card-header">
+        <h2>用户信息</h2>
+        <div class="card-icon user-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"/>
+          </svg>
+        </div>
+      </div>
+      <div class="card-content">
+        <div class="info-row">
+          <span class="info-label">邮箱</span>
+          <span class="info-value" id="user-email">-</span>
+        </div>
+        <div class="info-row">
+          <span class="info-label">用户名</span>
+          <span class="info-value" id="user-name">-</span>
+        </div>
+        <div class="info-row">
+          <span class="info-label">角色</span>
+          <span class="info-value" id="user-role">普通用户</span>
+        </div>
+      </div>
+    </div>
+    
+    <!-- 邀请奖励卡片 -->
+    <div class="card referral-card">
+      <div class="card-header">
+        <h2>邀请奖励</h2>
+        <div class="card-icon referral-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a4 4 0 00-4-4h-1M9 20H4v-2a4 4 0 014-4h1m8-4a4 4 0 10-8 0 4 4 0 008 0zm6 2a3 3 0 10-6 0m-8 0a3 3 0 10-6 0"/>
+          </svg>
+        </div>
+      </div>
+      <div class="card-content">
+        <div class="referral-note">好友通过您的邀请码注册可获得10天免费试用；成功邀请3人后，您可获得30天免费使用时长。</div>
+        <div class="referral-row">
+          <span class="info-label">我的邀请码</span>
+          <div class="referral-copy-group">
+            <span class="referral-value" id="referral-code">-</span>
+            <button id="copy-referral-code" class="copy-btn" type="button">复制</button>
+          </div>
+        </div>
+        <div class="referral-row">
+          <span class="info-label">邀请链接</span>
+          <div class="referral-copy-group">
+            <span class="referral-value referral-link" id="referral-link">-</span>
+            <button id="copy-referral-link" class="copy-btn" type="button">复制</button>
+          </div>
+        </div>
+        <div class="referral-status" id="referral-status"></div>
+      </div>
+    </div>
+    
+    <!-- 订阅状态卡片 -->
+    <div class="card subscription-card">
+      <div class="card-header">
+        <h2>订阅状态</h2>
+        <div class="card-icon subscription-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
+          </svg>
+        </div>
+      </div>
+      <div class="card-content">
+        <div id="subscription-active" style="display: none;">
+          <div class="info-row">
+            <span class="info-label">套餐类型</span>
+            <span class="info-value plan-type" id="plan-type">-</span>
+          </div>
+          <div class="info-row">
+            <span class="info-label">状态</span>
+            <span class="info-value status-active" id="plan-status">✓ 活跃</span>
+          </div>
+          <div class="info-row">
+            <span class="info-label">有效期至</span>
+            <span class="info-value" id="end-date">-</span>
+          </div>
+          <div class="info-row remaining-row">
+            <span class="info-label">剩余天数</span>
+            <span class="info-value remaining-days" id="remaining-days">-</span>
+          </div>
+        </div>
+        <div id="subscription-none" class="no-subscription">
+          <p class="no-sub-text">尚未购买套餐</p>
+          <a href="#" id="purchase-link" class="purchase-btn">立即购买</a>
+        </div>
+      </div>
+    </div>
+    
+    <!-- 快捷操作卡片 -->
+    <div class="card actions-card">
+      <div class="card-header">
+        <h2>快捷操作</h2>
+      </div>
+      <div class="card-content">
+        <div class="actions-grid">
+          <a href="#" id="action-purchase" class="action-item">
+            <div class="action-icon purchase-icon">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1h-2m5 0H12"/>
+              </svg>
+            </div>
+            <span class="action-label">购买套餐</span>
+          </a>
+          <a href="#" id="action-settings" class="action-item">
+            <div class="action-icon settings-icon">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/>
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/>
+              </svg>
+            </div>
+            <span class="action-label">账户设置</span>
+          </a>
+        </div>
+      </div>
+    </div>
+    
+    <!-- 错误提示 -->
+    <div id="error-message" class="error-message" style="display: none;"></div>
+    
+    <!-- 加载指示器 -->
+    <div id="loading-overlay" class="loading-overlay">
+      <div class="loading-spinner"></div>
+      <p>加载中...</p>
+    </div>
+  </div>
+  
+  <script src="user-info.js"></script>
+</body>
+</html>

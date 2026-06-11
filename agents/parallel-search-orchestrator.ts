@@ -20,7 +20,7 @@ export interface ParallelSearchResult {
   totalSentences: number;
   results: SentenceSearchResult[];
   totalTime: number;
-  uniquePapers: Map<number, SearchResult>;
+  uniquePapers: Map<string, SearchResult>;
 }
 
 export class ParallelSearchOrchestrator {
@@ -49,7 +49,7 @@ export class ParallelSearchOrchestrator {
     logger.info(`[Orchestrator] Starting parallel search for ${sentences.length} sentences with max concurrency ${this.maxConcurrency}`);
 
     const results: SentenceSearchResult[] = [];
-    const uniquePapers = new Map<number, SearchResult>();
+    const uniquePapers = new Map<string, SearchResult>();
 
     for (let i = 0; i < sentences.length; i += this.maxConcurrency) {
       const batch = sentences.slice(i, i + this.maxConcurrency);
@@ -62,7 +62,9 @@ export class ParallelSearchOrchestrator {
         results.push(result);
         
         for (const paper of result.papers) {
-          const paperId = paper.paper.citationId || 0;
+          const paperId = paper.paper.citationId
+            ? String(paper.paper.citationId)
+            : `${paper.paper.doi || ''}|${paper.paper.title || ''}|${paper.paper.year || ''}`.toLowerCase();
           if (!uniquePapers.has(paperId)) {
             uniquePapers.set(paperId, paper);
           }

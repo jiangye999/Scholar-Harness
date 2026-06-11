@@ -19,6 +19,13 @@ import NiceAIGCBridge from './bridge.js';
 const app = express();
 const PORT = process.env.PORT || 8765;
 
+/**
+ * 获取默认输出路径（跨平台兼容）
+ */
+function getDefaultOutputPath() {
+  return 'data/niceaigc_response.txt';
+}
+
 // 中间件
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
@@ -87,13 +94,13 @@ app.post('/chat', async (req, res) => {
  * 请求体：
  * {
  *   "message": "请帮我润色...",
- *   "outputPath": "/tmp/response.txt"  // 可选
+ *   "outputPath": "data/response.txt"  // 可选，相对路径
  * }
  * 
  * 响应：
  * {
  *   "response": "AI 的回复内容",
- *   "savedTo": "/tmp/response.txt",
+ *   "savedTo": "data/response.txt",
  *   "success": true
  * }
  */
@@ -115,7 +122,7 @@ app.post('/chat/file', async (req, res) => {
     res.json({
       success: true,
       response,
-      savedTo: outputPath || '/tmp/niceaigc_response.txt',
+      savedTo: outputPath || getDefaultOutputPath(),
       timestamp: new Date().toISOString()
     });
     

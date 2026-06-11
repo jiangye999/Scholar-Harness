@@ -2,24 +2,55 @@
 // 管理整个论文写作的对话流程
 
 import { logger } from '../src/utils/logger';
+import { callChatCompletion, createLLMApiClient } from '../src/utils/llm-client';
 import { SessionStore } from '../src/storage/session-store';
-import type { MessageHandler, UserState as UserStateType, ChapterPlan as ChapterPlanType, SectionProgress as SectionProgressType } from '../src/types';
+import { loadUserMemory, saveUserMemory, isKeyDeleted } from '../src/server/routes/memory';
+import { getUserUploadDir } from '../src/utils/paths';
+import type { MessageHandler, UserState as UserStateType, ChapterPlan as ChapterPlanType, SectionProgress as SectionProgressType, ChatOptions, APIClient } from '../src/types';
 import type { RetrievedDocument, UnifiedLiterature } from '../src/types/literature';
-import { SecondaryAgent } from '../agents/secondary-agent-v2';
+import { AgentCollaborationWorkflow } from '../agents/agent-collaboration-workflow';
 import { HybridRetrievalEngine } from '../src/literature/retrieval';
 import { ParagraphGenerator } from '../src/literature/generation';
 import { SentenceLevelRetriever } from '../src/literature/retrieval/sentence-retriever';
+import type { PromptClient } from '../src/utils/cloud-prompt-client';
 import * as fs from 'fs';
 import * as path from 'path';
+
+// 期刊风格配置接口
+interface JournalStyleConfig {
+  journal?: string;
+  citation_format?: {
+    reference_style?: string;
+    in_text_style?: string;
+    reference_example?: string;
+  };
+  word_count?: Record<string, number>;
+  structure?: Record<string, string>;
+  writing_style?: {
+    tone?: string;
+    sentence_length?: string;
+    paragraph_structure?: string;
+    transition_words?: string[];
+  };
+  key_phrases?: Record<string, string[]>;
+  author_guidelines?: Record<string, unknown>;
+  cover_letter_requirements?: Record<string, unknown>;
+  submission_materials?: Record<string, unknown>;
+}
 
 // 对话阶段
 export type ConversationPhase = 
   | 'greeting'      // 问候
   | 'topic'         // 了解主题
+  | 'research'      // 深度研究/检索规划
   | 'journal'       // 确认期刊
   | 'upload'        // 上传材料
   | 'planning'      // 章节规划
   | 'writing'       // 写作执行
+  | 'integrity'     // 引用与主张真实性审计
+  | 'review'        // 多审稿人质量检查
+  | 'revision'      // 修订
+  | 'final'         // 定稿
   | 'complete';     // 完成
 
 // 使用类型别名
@@ -36,11 +67,15 @@ export class ConversationFlow {
   private embeddingModel: string;
   private maxConcurrency: number;
   private retrievalEngine: HybridRetrievalEngine;
+  private collaborationWorkflow: AgentCollaborationWorkflow | null = null;
+  private apiClient: APIClient | null = null;
+  private promptClient?: PromptClient;
+  private useCloudPrompt: boolean;
 
   constructor(
     messageHandler: MessageHandler,
     sessionStore?: SessionStore,
-    apiConfig?: { apiUrl: string; apiKey: string; embeddingModel?: string; maxConcurrency?: number },
+    apiConfig?: { apiUrl: string; apiKey: string; embeddingModel?: string; maxConcurrency?: number; promptClient?: PromptClient; useCloudPrompt?: boolean },
     retrievalEngine?: HybridRetrievalEngine
   ) {
     this.messageHandler = messageHandler;
@@ -48,9 +83,158 @@ export class ConversationFlow {
     this.sessionStore = sessionStore || new SessionStore('./data/sessions');
     this.apiUrl = apiConfig?.apiUrl || process.env.API_URL || '';
     this.apiKey = apiConfig?.apiKey || process.env.API_KEY || '';
-    this.embeddingModel = apiConfig?.embeddingModel || process.env.EMBEDDING_MODEL || 'text-embedding-3-small';
+    this.embeddingModel = apiConfig?.embeddingModel || process.env.EMBEDDING_MODEL || 'text-embedding-v4';
     this.maxConcurrency = apiConfig?.maxConcurrency || 5;
+    this.promptClient = apiConfig?.promptClient;
+    this.useCloudPrompt = apiConfig?.useCloudPrompt !== false;
     this.retrievalEngine = retrievalEngine || new HybridRetrievalEngine({}, { url: this.apiUrl, key: this.apiKey });
+    
+    // 初始化 API Client（用于 Agent 系统）
+    this.initApiClient();
+  }
+
+  /**
+   * 初始化 API Client
+   */
+  private initApiClient(): void {
+    if (!this.apiUrl || !this.apiKey) {
+      logger.warn('[Flow] API config missing, AgentCollaborationWorkflow will not be initialized');
+      return;
+    }
+    
+    this.apiClient = createLLMApiClient({
+      apiUrl: this.apiUrl,
+      apiKey: this.apiKey,
+      defaultModel: 'gpt-4o',
+      defaultTemperature: 0.7,
+      label: 'ConversationFlow',
+    });
+  }
+
+  /**
+   * 动态更新 API 配置（用户在前端修改设置后调用）
+   */
+  updateApiConfig(apiUrl: string, apiKey: string): void {
+    this.apiUrl = apiUrl;
+    this.apiKey = apiKey;
+    this.initApiClient();  // 重新初始化 API Client
+    logger.info(`[Flow] API config updated: url=${apiUrl ? '已配置' : '空'}, key=${apiKey ? '已配置' : '空'}`);
+  }
+
+  setRetrievalEngine(retrievalEngine: HybridRetrievalEngine): void {
+    this.retrievalEngine = retrievalEngine;
+    if (this.collaborationWorkflow) {
+      this.collaborationWorkflow = null;
+    }
+    logger.info(`[Flow] Retrieval engine updated (${retrievalEngine.getDocumentCount()} documents)`);
+  }
+
+  /**
+   * 从用户上传的期刊风格文件中读取风格配置
+   * @param userId 用户ID
+   * @returns 期刊风格配置，如果不存在返回null
+   */
+  private getJournalStyleConfig(userId: string): JournalStyleConfig | null {
+    try {
+      const userDir = getUserUploadDir(userId);
+      const journalStyleDir = path.join(userDir, 'journal-styles');
+      
+      if (!fs.existsSync(journalStyleDir)) {
+        logger.info(`[Flow] No journal style directory found for user ${userId}`);
+        return null;
+      }
+      
+      const styleFolders = fs.readdirSync(journalStyleDir);
+      if (styleFolders.length === 0) {
+        logger.info(`[Flow] No journal style folders found for user ${userId}`);
+        return null;
+      }
+      
+      // 读取第一个期刊风格文件夹中的配置
+      const styleFile = path.join(journalStyleDir, styleFolders[0], 'style.json');
+      if (!fs.existsSync(styleFile)) {
+        logger.warn(`[Flow] Style file not found: ${styleFile}`);
+        return null;
+      }
+      
+      const styleContent = fs.readFileSync(styleFile, 'utf-8');
+      const styles: JournalStyleConfig[] = JSON.parse(styleContent);
+      
+      // 合并所有论文的风格配置（取第一个有效的）
+      const mergedStyle: JournalStyleConfig = {};
+      for (const style of styles) {
+        if (style.citation_format && !mergedStyle.citation_format) {
+          mergedStyle.citation_format = style.citation_format;
+        }
+        if (style.word_count && !mergedStyle.word_count) {
+          mergedStyle.word_count = style.word_count;
+        }
+        if (style.writing_style && !mergedStyle.writing_style) {
+          mergedStyle.writing_style = style.writing_style;
+        }
+        if (style.journal && !mergedStyle.journal) {
+          mergedStyle.journal = style.journal;
+        }
+        if (style.author_guidelines && !mergedStyle.author_guidelines) {
+          mergedStyle.author_guidelines = style.author_guidelines;
+        }
+        if (style.cover_letter_requirements && !mergedStyle.cover_letter_requirements) {
+          mergedStyle.cover_letter_requirements = style.cover_letter_requirements;
+        }
+        if (style.submission_materials && !mergedStyle.submission_materials) {
+          mergedStyle.submission_materials = style.submission_materials;
+        }
+      }
+      
+      logger.info(`[Flow] Loaded journal style config for ${mergedStyle.journal || 'unknown journal'}`);
+      return mergedStyle;
+    } catch (error) {
+      logger.error(`[Flow] Failed to load journal style config:`, error);
+      return null;
+    }
+  }
+
+  /**
+   * 根据期刊风格配置获取引用风格
+   * @param styleConfig 期刊风格配置
+   * @returns 引用风格标识符 ('numeric' | 'author-year')
+   */
+  private getCitationStyle(styleConfig: JournalStyleConfig | null): 'numeric' | 'author-year' {
+    if (!styleConfig?.citation_format?.reference_style) {
+      return 'numeric'; // 默认使用数字引用
+    }
+    
+    const refStyle = styleConfig.citation_format.reference_style;
+    const inTextStyle = styleConfig.citation_format.in_text_style || '';
+    
+    // 优先根据文内引用风格判断
+    if (inTextStyle.includes('作者') || inTextStyle.includes('年份') || inTextStyle.includes('Author')) {
+      return 'author-year';
+    }
+    if (inTextStyle.includes('数字') || inTextStyle.includes('Number')) {
+      return 'numeric';
+    }
+    
+    // 根据参考文献风格判断
+    // APA, Chicago, GB/T 7714 通常是作者-年份制
+    // IEEE, Nature 通常是数字制
+    const authorYearStyles = ['APA', 'apa', 'Chicago', 'chicago', 'GB/T 7714', 'GB/T7714', '国标'];
+    const numericStyles = ['IEEE', 'ieee', 'Nature', 'nature', '数字制'];
+    
+    for (const style of authorYearStyles) {
+      if (refStyle.includes(style)) {
+        return 'author-year';
+      }
+    }
+    
+    for (const style of numericStyles) {
+      if (refStyle.includes(style)) {
+        return 'numeric';
+      }
+    }
+    
+    // 默认
+    return 'numeric';
   }
 
   async getSession(userId: string): Promise<UserStateType> {
@@ -73,6 +257,11 @@ export class ConversationFlow {
     return this.sessions.get(userId)!;
   }
 
+  async resetUserSession(userId: string): Promise<void> {
+    this.sessions.delete(userId);
+    await this.sessionStore.delete(userId);
+  }
+
   async processMessage(userId: string, message: string): Promise<string> {
     const session = await this.getSession(userId);
     logger.info(`[Flow] Processing message in phase: ${session.phase}`);
@@ -82,12 +271,9 @@ export class ConversationFlow {
     if (isDirectWritingRequest && session.phase !== 'writing') {
       logger.info(`[Flow] Detected direct writing request: ${isDirectWritingRequest}`);
       // 初始化写作阶段所需的上下文
-      if (!session.paperTopic) {
-        session.paperTopic = '未指定主题';
-      }
-      if (!session.targetJournal) {
-        session.targetJournal = '未指定期刊';
-      }
+      // Bug fix: 不再设置默认占位值，避免删除记忆后自动恢复
+      // 如果用户删除了 memory 中的 paper_topic/target_journal，不应自动填充占位值
+      // 这样用户删除后就不会被"未指定主题"等占位值自动恢复
       session.phase = 'writing';
       
       // 解析用户请求中的章节信息
@@ -102,6 +288,9 @@ export class ConversationFlow {
         session.currentChapter = chapterInfo.chapter;
       }
       
+      // 同步关键信息到长期记忆
+      await this.syncKeyInfoToMemory(session);
+      
       // 直接进入写作阶段
       return await this.handleWriting(message, session);
     }
@@ -110,9 +299,9 @@ export class ConversationFlow {
       case 'greeting':
         return this.handleGreeting(message, session);
       case 'topic':
-        return this.handleTopic(message, session);
+        return await this.handleTopic(message, session);
       case 'journal':
-        return this.handleJournal(message, session);
+        return await this.handleJournal(message, session);
       case 'upload':
         return this.handleUpload(message, session);
       case 'planning':
@@ -201,9 +390,10 @@ export class ConversationFlow {
   }
 
   // 主题阶段
-  private handleTopic(message: string, session: UserState): string {
+  private async handleTopic(message: string, session: UserState): Promise<string> {
     session.paperTopic = message;
     session.phase = 'journal';
+    await this.syncKeyInfoToMemory(session);
     return `很好！主题是：**${message}**
 
 接下来请问：
@@ -213,9 +403,10 @@ export class ConversationFlow {
   }
 
   // 期刊阶段
-  private handleJournal(message: string, session: UserState): string {
+  private async handleJournal(message: string, session: UserState): Promise<string> {
     session.targetJournal = message;
     session.phase = 'upload';
+    await this.syncKeyInfoToMemory(session);
     return `收到！你希望发表在 **${message}**
 
 现在我需要一些材料来开始写作：
@@ -278,13 +469,79 @@ export class ConversationFlow {
 
   // 写作阶段
   private async handleWriting(message: string, session: UserState): Promise<string> {
-    if (message.includes('确认') || message.includes('开始')) {
+    // 检查是否是明确的开始写作指令
+    if (message.includes('确认') || message.includes('开始写作') || message.includes('开始写')) {
       return await this.startWriting(session);
     }
-    return `好的，请问你想：
+    
+    // 检查是否是简单的写作请求（短消息，仅包含章节关键词）
+    const isSimpleWriteRequest = /^(写|帮我写|开始写)(引言|方法|结果|讨论|结论|摘要)[：:]?\s*$/i.test(message.trim());
+    if (isSimpleWriteRequest) {
+      // 短写作请求，询问确认
+      return `好的，请问你想：
 1. 查看某个章节的内容？
 2. 修改某个章节的规划？
-3. 开始/继续写作？`;
+3. 确认开始写作？（回复"确认开始"）`;
+    }
+    
+    // 长文本或复杂请求：直接调用 API 处理，不要返回固定模版
+    // 这是修复长文本走模版的关键改动
+    logger.info('[Flow] Complex writing request, delegating to API...');
+    return await this.processWithAPI(message, session);
+  }
+  
+  /**
+   * 直接调用 API 处理复杂请求（不走固定模版）
+   */
+  private async processWithAPI(message: string, session: UserState): Promise<string> {
+    if (!this.apiKey || !this.apiUrl) {
+      return '错误：未配置 API 密钥。请先设置 API_URL 和 API_KEY。';
+    }
+    
+    try {
+      // 构建消息
+      const messages: ChatOptions['messages'] = [
+        {
+          role: 'system',
+          content: `你是一个专业的学术论文写作助手。
+${session.paperTopic ? `论文主题：${session.paperTopic}` : ''}
+${session.targetJournal ? `目标期刊：${session.targetJournal}` : ''}
+${session.researchContent ? `研究内容：${session.researchContent}` : ''}
+
+请根据用户的需求提供帮助。如果用户提供了文献或材料，请引用它们。`
+        }
+      ];
+      
+      // 添加历史
+      if (session.chapterPlans && session.chapterPlans.size > 0) {
+        let historyText = '当前章节规划：\n';
+        for (const [name, plan] of session.chapterPlans) {
+          historyText += `- ${name}: ${plan.writingFocus}\n`;
+        }
+        messages.push({ role: 'assistant', content: historyText });
+      }
+      
+      messages.push({ role: 'user', content: message });
+      
+      return await callChatCompletion(
+        {
+          apiUrl: this.apiUrl,
+          apiKey: this.apiKey,
+          label: 'ConversationFlow',
+          defaultModel: 'gpt-4o',
+        },
+        {
+          model: 'gpt-4o',
+          messages,
+          temperature: 0.7,
+          maxTokens: 16384,
+        }
+      );
+      
+    } catch (error) {
+      logger.error('[Flow] API call failed:', error);
+      return `处理请求时出错：${(error as Error).message}`;
+    }
   }
 
   private async handleComplete(message: string, session: UserState): Promise<string> {
@@ -353,7 +610,7 @@ export class ConversationFlow {
     return planText;
   }
 
-  // 开始写作
+  // 开始写作 - 使用大牛马-小牛马协作流程
   private async startWriting(session: UserState): Promise<string> {
     if (!this.apiKey || !this.apiUrl) {
       return '错误：未配置 API 密钥。请先设置 API_URL 和 API_KEY。';
@@ -368,35 +625,50 @@ export class ConversationFlow {
     
     logger.info(`[Flow] Using retrieval system with ${stats.totalCount} papers`);
 
-    // 创建 API 客户端
-    const apiClient = {
-      chat: async (options: { model: string; messages: Array<{ role: string; content: string }>; temperature?: number; maxTokens?: number }) => {
-        const response = await fetch(`${this.apiUrl}/chat/completions`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${this.apiKey}`,
-          },
-          body: JSON.stringify({
-            model: options.model,
-            messages: options.messages,
-            temperature: options.temperature || 0.2,
-            max_tokens: options.maxTokens || 4000,
-          }),
-        });
-        
-        if (!response.ok) {
-          throw new Error(`API error: ${response.status}`);
+    // 确保 API Client 已初始化
+    if (!this.apiClient) {
+      this.initApiClient();
+    }
+
+    // 初始化 AgentCollaborationWorkflow（使用大牛马-小牛马协作）
+    if (!this.collaborationWorkflow && this.apiClient) {
+      this.collaborationWorkflow = new AgentCollaborationWorkflow(
+        this.apiClient,
+        this.retrievalEngine,
+        {
+          apiUrl: this.apiUrl,
+          apiKey: this.apiKey,
+          embeddingModel: this.embeddingModel,
+          promptClient: this.promptClient,
+          useCloudPrompt: this.useCloudPrompt,
         }
-        
-        const data = await response.json() as { choices?: Array<{ message?: { content?: string } }> };
-        return data.choices?.[0]?.message?.content || '';
-      },
-    };
+      );
+      logger.info('[Flow] AgentCollaborationWorkflow initialized');
+    }
+
+    if (!this.collaborationWorkflow) {
+      return '错误：Agent 系统初始化失败。';
+    }
+
+    // 加载长期记忆
+    let longTermMemory = '';
+    try {
+      const userMemory = await loadUserMemory(session.id);
+      if (userMemory.entries && userMemory.entries.length > 0) {
+        const memoryLines = userMemory.entries.map(e => `- ${e.key}: ${e.value}`).join('\n');
+        longTermMemory = `## 用户跨会话记忆\n${memoryLines}\n`;
+      }
+    } catch (error) {
+      logger.warn(`[Flow] Failed to load long-term memory for ${session.id}:`, error);
+    }
+
+    // 加载期刊风格配置
+    const journalStyleConfig = this.getJournalStyleConfig(session.id);
+    logger.info(`[Flow] Journal style config loaded: ${journalStyleConfig?.journal || 'none'}`);
 
     // 准备写作任务
     const chapters = Array.from(session.chapterPlans.entries());
-    let output = '好的！开始写作。\n\n';
+    let output = '好的！开始大牛马-小牛马协作写作。\n\n';
     
     for (const [chapterName, chapterPlan] of chapters) {
       output += `\n📝 正在写作：${chapterName}\n`;
@@ -404,98 +676,84 @@ export class ConversationFlow {
       output += `   关键要点：${chapterPlan.keyPoints?.length || 0} 个\n\n`;
 
       try {
-        output += `\n🔍 正在分析并生成检索策略...\n`;
-        
-        // 1. AI生成多个检索词
-        const searchQueries = await this.generateSearchQueries(apiClient, chapterPlan, session);
-        logger.info(`[Flow] Generated ${searchQueries.length} search queries for ${chapterName}: ${searchQueries.join(', ')}`);
-        output += `   生成 ${searchQueries.length} 个检索词: ${searchQueries.slice(0, 3).join(', ')}${searchQueries.length > 3 ? '...' : ''}\n`;
-        
-        // 2. 使用多个检索词分次检索
-        const allRetrievedDocs: RetrievedDocument[] = [];
-        const seenDocIds = new Set<string>();
-        
-        for (const query of searchQueries) {
-          const queryResults = await this.retrievalEngine.retrieve({
-            query,
-            topK: 10,
-            searchMode: 'hybrid',
-          });
+        // 调用 AgentCollaborationWorkflow（大牛马生成检索词 → 小牛马检索 → 大牛马生成 Skill → 小牛马写作）
+        const result = await this.collaborationWorkflow.execute({
+          userId: session.id,
+          chapterName,
+          chapterPlan,
+          researchContext: session.researchContent || '',
+          longTermMemory,
+          userSkillContent: undefined,  // 可从文件加载
+          targetJournal: session.targetJournal,
+          journalStyleConfig: journalStyleConfig || undefined,
+          apiUrl: this.apiUrl,
+          apiKey: this.apiKey,
+          embeddingModel: this.embeddingModel,
+        });
+
+        // 检查是否有写作输出
+        if (result.writtenContent) {
+          const content = result.writtenContent;
           
-          // 合并结果，去重
-          for (const doc of queryResults.results) {
-            if (!seenDocIds.has(doc.id)) {
-              seenDocIds.add(doc.id);
-              allRetrievedDocs.push(doc);
+          output += `✅ ${chapterName} 写作完成！\n`;
+          output += `   内容长度：${content.length} 字符\n`;
+          output += `   检索文献：${result.searchResults.reduce((s, r) => s + r.selectedCount, 0)} 篇\n\n`;
+          if (result.arsReports) {
+            const arsCompleted = [
+              result.arsReports.pipelineGate ? `pipeline-gate(${result.arsReports.pipelineGate.provider})` : '',
+              result.arsReports.researchPlan ? `research-plan(${result.arsReports.researchPlan.provider})` : '',
+              result.arsReports.citationIntegrity ? `citation-integrity(${result.arsReports.citationIntegrity.provider})` : '',
+            ].filter(Boolean);
+            if (arsCompleted.length > 0) {
+              output += `   ARS 默认检查：${arsCompleted.join(', ')}\n\n`;
             }
           }
           
-          logger.info(`[Flow] Query "${query}" retrieved ${queryResults.results.length} papers`);
-        }
-        
-        // 按综合分数排序
-        allRetrievedDocs.sort((a: RetrievedDocument, b: RetrievedDocument) => (b.combinedScore || 0) - (a.combinedScore || 0));
-        
-        // 限制总数
-        const finalDocs = allRetrievedDocs.slice(0, 30);
-        
-        logger.info(`[Flow] Total unique papers retrieved for ${chapterName}: ${finalDocs.length}`);
-        output += `   共检索到 ${finalDocs.length} 篇相关文献\n\n`;
-
-        // 创建段落生成器
-        const generator = new ParagraphGenerator(apiClient, {
-          maxCitationsPerParagraph: 3,
-          citationStyle: 'numeric',
-          referenceStyle: 'gbt7714',
-          requireEvidence: true,
-          allowParaphrasing: true,
-        });
-
-        // 设置文献映射
-        const literatureMap = new Map<string, UnifiedLiterature>(finalDocs.map((r: RetrievedDocument) => [r.id, r as UnifiedLiterature]));
-        generator.setLiteratures(literatureMap);
-
-        // 生成段落
-        const writingOutput = await generator.generate(
-          chapterPlan.writingFocus,
-          finalDocs,
-          chapterPlan.keyPoints?.length || 3
-        );
-
-        // 构建完整内容
-        let content = writingOutput.generatedText;
-        
-        // 添加参考文献
-        if (writingOutput.references.length > 0) {
-          content += '\n\n## 参考文献\n\n';
-          writingOutput.references.forEach((ref, idx) => {
-            content += `[${idx + 1}] ${ref.formatted}\n`;
+          // 显示内容摘要
+          const previewLines = content.split('\n').slice(0, 5).join('\n');
+          output += `---\n${previewLines}\n...\n---\n\n`;
+          
+          // 保存到 session
+          if (!session.writingProgress) {
+            session.writingProgress = new Map();
+          }
+          session.writingProgress.set(chapterName, {
+            status: 'completed',
+            skillGenerated: true,
+            content,
+            wordCount: content.length,
+          });
+        } else {
+          // 没有写作输出（可能是文献不足或 API 配置缺失）
+          output += `⚠️ ${chapterName} 未生成内容：${result.finalPrompt ? '请检查 API 配置' : '未找到相关文献'}\n\n`;
+          
+          if (!session.writingProgress) {
+            session.writingProgress = new Map();
+          }
+          session.writingProgress.set(chapterName, {
+            status: 'failed',
+            skillGenerated: true,
+            error: result.writtenContent || '写作失败',
           });
         }
-
-        output += `✅ ${chapterName} 写作完成！\n`;
-        output += `   内容长度：${content.length} 字符\n`;
-        output += `   引用文献：${writingOutput.statistics.uniqueReferences} 篇\n\n`;
-        
-        // 保存到 session
-        if (!session.writingProgress) {
-          session.writingProgress = new Map();
-        }
-        session.writingProgress.set(chapterName, {
-          status: 'completed',
-          skillGenerated: true,
-          content,
-          wordCount: content.length,
-        });
 
       } catch (error) {
         logger.error(`[Flow] Writing failed for ${chapterName}:`, error);
         output += `❌ ${chapterName} 写作失败：${(error as Error).message}\n\n`;
+        
+        if (!session.writingProgress) {
+          session.writingProgress = new Map();
+        }
+        session.writingProgress.set(chapterName, {
+          status: 'failed',
+          skillGenerated: false,
+          error: (error as Error).message,
+        });
       }
     }
 
     output += '\n🎉 写作完成！\n';
-    output += `共完成 ${chapters.length} 个章节\n`;
+    output += `共处理 ${chapters.length} 个章节\n`;
     output += '所有引用均来自您的文献库，确保真实性和准确性。\n';
 
     session.phase = 'complete';
@@ -507,20 +765,32 @@ export class ConversationFlow {
   private async generateSearchQueries(
     apiClient: { chat: (options: { model: string; messages: Array<{ role: string; content: string }>; temperature?: number; maxTokens?: number }) => Promise<string> },
     chapterPlan: ChapterPlan,
-    session: UserState
+    session: UserState,
+    userId: string
   ): Promise<string[]> {
+    let longTermMemory = '';
+    try {
+      const userMemory = await loadUserMemory(userId);
+      if (userMemory.entries && userMemory.entries.length > 0) {
+        const memoryLines = userMemory.entries.map(e => `- ${e.key}: ${e.value}`).join('\n');
+        longTermMemory = `\n## 用户跨会话记忆\n${memoryLines}\n`;
+      }
+    } catch (error) {
+      logger.warn(`[Flow] Failed to load long-term memory for ${userId}:`, error);
+    }
+
     const prompt = `你是一位专业的学术文献检索专家。请根据以下章节写作规划，生成3-5个最优的英文检索词/短语，用于在文献数据库中检索相关文献。
 
 ## 章节信息
 - 章节名称: ${chapterPlan.chapterName}
 - 写作重点: ${chapterPlan.writingFocus}
 - 关键要点: ${chapterPlan.keyPoints?.join(', ') || '未指定'}
-
+${longTermMemory}
 ## 论文主题
 ${session.paperTopic || '未指定'}
 
 ## 研究内容摘要
-${session.researchContent?.slice(0, 500) || '未提供'}
+${session.researchContent?.slice(0, 1000) || '未提供'}
 
 ## 要求
 1. 每个检索词应该是3-5个英文单词组成的短语
@@ -558,6 +828,102 @@ greenhouse gas mitigation strategy
     } catch (error) {
       logger.error('[Flow] Failed to generate search queries:', error);
       return [chapterPlan.writingFocus];
+    }
+  }
+
+  /**
+   * 将 session 中的关键元信息（论文主题、目标期刊）同步到长期记忆
+   * 修复：确保自由聊天路径也能读取到这些信息
+   * Bug fix: 跳过默认占位值，避免用户删除记忆后被自动恢复
+   * Bug fix #2: 检查 deletedKeys，防止用户删除后被自动恢复
+   */
+  private async syncKeyInfoToMemory(session: UserState): Promise<void> {
+    try {
+      const memory = await loadUserMemory(session.id);
+      let changed = false;
+
+      // Bug fix: 定义默认占位值列表，这些值不应同步到 memory
+      const PLACEHOLDER_VALUES = [
+        '未指定主题',
+        '未指定期刊',
+        '未指定',
+        '暂无',
+        '无',
+        'none',
+        'unknown',
+        'not specified',
+        'paper topic',
+        'research topic',
+        'target journal',
+        '论文主题',
+        '研究主题',
+        '目标期刊',
+      ];
+
+      if (session.paperTopic) {
+        // ========== Bug fix #2: 检查 deletedKeys ==========
+        if (isKeyDeleted(memory, 'paper_topic')) {
+          logger.info(`[Flow] SKIP syncing "paper_topic" - user has deleted this key`);
+        } else {
+          // Bug fix: 跳过默认占位值，不写入 memory
+          const isPlaceholder = PLACEHOLDER_VALUES.some(p => 
+            session.paperTopic!.toLowerCase().includes(p.toLowerCase())
+          );
+          if (!isPlaceholder) {
+            const idx = memory.entries.findIndex(e => e.key === 'paper_topic');
+            const entry = {
+              key: 'paper_topic',
+              value: session.paperTopic,
+              source: 'conversation-flow',
+              timestamp: new Date().toISOString(),
+            };
+            if (idx >= 0) {
+              memory.entries[idx] = entry;
+            } else {
+              memory.entries.push(entry);
+            }
+            changed = true;
+          } else {
+            logger.info(`[Flow] Skip syncing placeholder value for paper_topic: "${session.paperTopic}"`);
+          }
+        }
+      }
+
+      if (session.targetJournal) {
+        // ========== Bug fix #2: 检查 deletedKeys ==========
+        if (isKeyDeleted(memory, 'target_journal')) {
+          logger.info(`[Flow] SKIP syncing "target_journal" - user has deleted this key`);
+        } else {
+          // Bug fix: 跳过默认占位值，不写入 memory
+          const isPlaceholder = PLACEHOLDER_VALUES.some(p => 
+            session.targetJournal!.toLowerCase().includes(p.toLowerCase())
+          );
+          if (!isPlaceholder) {
+            const idx = memory.entries.findIndex(e => e.key === 'target_journal');
+            const entry = {
+              key: 'target_journal',
+              value: session.targetJournal,
+              source: 'conversation-flow',
+              timestamp: new Date().toISOString(),
+            };
+            if (idx >= 0) {
+              memory.entries[idx] = entry;
+            } else {
+              memory.entries.push(entry);
+            }
+            changed = true;
+          } else {
+            logger.info(`[Flow] Skip syncing placeholder value for target_journal: "${session.targetJournal}"`);
+          }
+        }
+      }
+
+      if (changed) {
+        await saveUserMemory(memory);
+        logger.info(`[Flow] Synced key info to memory for ${session.id}: topic=${session.paperTopic}, journal=${session.targetJournal}`);
+      }
+    } catch (e) {
+      logger.warn(`[Flow] Failed to sync key info to memory for ${session.id}:`, e);
     }
   }
 

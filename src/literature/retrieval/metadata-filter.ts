@@ -6,6 +6,7 @@ interface IndexedDocument {
   authors: string[];
   journal: string;
   categories: string[];
+  aiKeywords: string[];
   documentType: string;
 }
 
@@ -20,6 +21,7 @@ export class MetadataFilter {
         authors: lit.authors.map(a => a.name.toLowerCase()),
         journal: lit.journal.toLowerCase(),
         categories: (lit.categories || []).map(c => c.toLowerCase()),
+        aiKeywords: [...(lit.keywords || []), ...(lit.aiKeywords || [])].map(k => k.toLowerCase()),
         documentType: lit.documentType,
       });
     }
@@ -32,6 +34,7 @@ export class MetadataFilter {
       authors: lit.authors.map(a => a.name.toLowerCase()),
       journal: lit.journal.toLowerCase(),
       categories: (lit.categories || []).map(c => c.toLowerCase()),
+      aiKeywords: [...(lit.keywords || []), ...(lit.aiKeywords || [])].map(k => k.toLowerCase()),
       documentType: lit.documentType,
     });
   }
@@ -84,6 +87,13 @@ export class MetadataFilter {
         doc.categories.some(c => c.includes(category.toLowerCase()))
       );
       if (!categoryMatch) return false;
+    }
+
+    if (filters.aiKeywords && filters.aiKeywords.length > 0) {
+      const keywordMatch = filters.aiKeywords.some(keyword =>
+        doc.aiKeywords.some(k => k.includes(keyword.toLowerCase()))
+      );
+      if (!keywordMatch) return false;
     }
 
     if (filters.documentTypes && filters.documentTypes.length > 0) {

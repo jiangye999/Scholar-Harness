@@ -153,7 +153,7 @@ export class ParagraphGenerator {
     const evidence = evidenceIds.map(id => {
       const lit = this.literatures.get(id);
       if (!lit) return '';
-      return `标题: ${lit.title}\n作者: ${lit.authors.map(a => a.name).join(', ')}\n年份: ${lit.year}\n期刊: ${lit.journal}\nDOI: ${lit.doi || 'N/A'}\n关键词: ${lit.keywords.join(', ')}\n摘要: ${lit.abstract}`;
+      return `标题: ${lit.title || ''}\n作者: ${(lit.authors || []).map(a => a.name).join(', ')}\n年份: ${lit.year || ''}\n期刊: ${lit.journal || ''}\nDOI: ${lit.doi || 'N/A'}\n关键词: ${Array.isArray(lit.keywords) ? lit.keywords.join(', ') : (lit.keywords || '')}\n摘要: ${lit.abstract || ''}`;
     }).filter(Boolean).join('\n\n');
 
     const prompt = `Write an academic paragraph about "${topic}" based on the following evidence:
@@ -237,7 +237,7 @@ Write the paragraph:`;
     allDocs: RetrievedDocument[]
   ): RetrievedDocument[] {
     return allDocs.filter(doc => {
-      const docText = `${doc.title} ${doc.abstract} ${doc.keywords.join(' ')}`.toLowerCase();
+      const docText = `${doc.title || ''} ${doc.abstract || ''} ${Array.isArray(doc.keywords) ? doc.keywords.join(' ') : (doc.keywords || '')}`.toLowerCase();
       const matchCount = plan.keywords.reduce((count, keyword) => {
         return count + (docText.includes(keyword.toLowerCase()) ? 1 : 0);
       }, 0);
@@ -250,7 +250,7 @@ Write the paragraph:`;
   }
 
   private calculateSentenceMatchScore(doc: RetrievedDocument, keywords: string[]): number {
-    const docText = `${doc.title} ${doc.abstract} ${doc.keywords.join(' ')}`.toLowerCase();
+    const docText = `${doc.title || ''} ${doc.abstract || ''} ${Array.isArray(doc.keywords) ? doc.keywords.join(' ') : (doc.keywords || '')}`.toLowerCase();
     return keywords.reduce((score, keyword) => {
       return score + (docText.includes(keyword.toLowerCase()) ? 1 : 0);
     }, 0);
@@ -292,10 +292,10 @@ Write the paragraph:`;
 标题: ${doc.title}
 作者: ${doc.authors.map(a => a.name).join(', ')}
 年份: ${doc.year}
-期刊: ${doc.journal}
+期刊: ${doc.journal || ''}
 DOI: ${doc.doi || 'N/A'}
-关键词: ${doc.keywords.join(', ')}
-摘要: ${doc.abstract}
+关键词: ${Array.isArray(doc.keywords) ? doc.keywords.join(', ') : (doc.keywords || '')}
+摘要: ${doc.abstract || ''}
 
 `;
     }).join('');

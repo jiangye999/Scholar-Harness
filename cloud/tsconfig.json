@@ -1,0 +1,49 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "CommonJS",
+    "lib": ["ES2022"],
+    "outDir": "./dist",
+    "rootDir": ".",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "declaration": false,
+    "declarationMap": false,
+    "sourceMap": false,
+    "moduleResolution": "node",
+    "types": ["node"],
+    "allowSyntheticDefaultImports": true,
+    "emitDecoratorMetadata": true,
+    "experimentalDecorators": true,
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["./*"],
+      "@database/*": ["./database/*"],
+      "@server/*": ["./server/*"],
+      "@storage/*": ["./storage/*"],
+      "@auth/*": ["./auth/*"],
+      "@payment/*": ["./payment/*"]
+    }
+  },
+  "include": [
+    "database/**/*.ts",
+    "server/**/*.ts",
+    "storage/**/*.ts",
+    "auth/**/*.ts",
+    "payment/**/*.ts",
+    "cloud-storage/**/*.ts",
+    "exe/**/*.ts",
+    "utils/**/*.ts",
+    "prompts/**/*.ts",
+    "scripts/**/*.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist",
+    "**/*.test.ts",
+    "**/*.spec.ts"
+  ]
+}

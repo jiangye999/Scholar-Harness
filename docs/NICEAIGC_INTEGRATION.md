@@ -52,7 +52,7 @@ ScholarClaw 现已支持通过 NiceAIGC Bridge 接入 NiceAIGC 会员 AI，实�
 
 ```
 E:\AI_projects\
-├── scholar-claw-feishu-1.0.0.5\    # ScholarClaw 项目
+├── scholar-harness-1.0.0\    # ScholarClaw 项目
 │   ├── src\bridge\niceaigc\
 │   │   ├── niceaigc-bridge.ts       # TypeScript 适配器
 │   │   └── config.json               # 配置文件
@@ -115,7 +115,7 @@ openclaw browser --action open --url "https://node8.nice188.com/"
 ### 步骤 4: 启动 ScholarClaw
 
 ```bash
-cd E:\AI_projects\scholar-claw-feishu-1.0.0.5
+cd E:\AI_projects\scholar-harness-1.0.0
 pnpm build
 pnpm start
 ```

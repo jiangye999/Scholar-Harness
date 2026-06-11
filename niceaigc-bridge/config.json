@@ -4,7 +4,7 @@
     "chat_url": "https://niceaigc.com/chat"
   },
   "local": {
-    "output_file": "/tmp/niceaigc_response.txt"
+    "output_file": "data/niceaigc_response.txt"
   },
   "browser": {
     "profile": "chrome",

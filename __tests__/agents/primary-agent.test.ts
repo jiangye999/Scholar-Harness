@@ -1,6 +1,13 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { PrimaryAgent } from '../../agents/primary-agent';
 
+vi.mock('../../src/server/services/academic-research-skills', () => ({
+  runAcademicResearchSkill: vi.fn().mockResolvedValue({
+    provider: 'mock',
+    content: 'Mock multi-review report',
+  }),
+}));
+
 describe('PrimaryAgent', () => {
   let agent: PrimaryAgent;
 const mockApiClient = {

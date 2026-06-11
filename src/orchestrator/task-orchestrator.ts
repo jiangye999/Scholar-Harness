@@ -1,15 +1,16 @@
 /**
  * ScholarClaw 智能任务协调器
- * 负责整合 NiceAIGC (大脑) 和 API Flow (手脚)
+ * 负责整合 ChatBridge (大脑) 和 API Flow (手脚)
  */
 
 import { logger } from '../utils/logger';
-import { NiceAIGCBridgeAdapter } from '../bridge/niceaigc/niceaigc-bridge';
+import { anchorPromptWithCurrentRequest, getPromptAnchorDiagnostics } from '../utils/prompt-request-anchor';
+import { ChatBridgeAdapter } from '../bridge/chat-bridge/chat-bridge';
 
 export enum ProcessingMode {
-  NICEAIGC_ONLY = 'niceaigc_only',      // 仅使用 NiceAIGC
+  CHATBRIDGE_ONLY = 'chatbridge_only',      // 仅使用 ChatBridge
   API_ONLY = 'api_only',                // 仅使用 API
-  HYBRID = 'hybrid',                    // 混合模式：API准备 + NiceAIGC生成
+  HYBRID = 'hybrid',                    // 混合模式：API准备 + ChatBridge生成
   SMART = 'smart',                      // 智能选择
 }
 
@@ -32,16 +33,16 @@ export interface HybridContext {
   writingProgress?: string;
   userPreferences?: Record<string, string>;
   
-  // NiceAIGC 配置
+  // ChatBridge 配置
   targetModel?: string;
   temperature?: number;
 }
 
 export class ScholarClawOrchestrator {
-  private niceaigcAdapter: NiceAIGCBridgeAdapter;
+  private chatBridgeAdapter: ChatBridgeAdapter;
   
-  constructor(niceaigcAdapter: NiceAIGCBridgeAdapter) {
-    this.niceaigcAdapter = niceaigcAdapter;
+  constructor(chatBridgeAdapter: ChatBridgeAdapter) {
+    this.chatBridgeAdapter = chatBridgeAdapter;
   }
   
   /**
@@ -79,7 +80,7 @@ export class ScholarClawOrchestrator {
         requiresCreativity: hasWritingKeywords,
         complexity,
         estimatedTime: 30,
-        reason: '复杂任务，需要 API 准备上下文 + NiceAIGC 深度处理'
+        reason: '复杂任务，需要 API 准备上下文 + ChatBridge 深度处理'
       };
     }
     
@@ -98,14 +99,14 @@ export class ScholarClawOrchestrator {
     
     if (hasWritingKeywords && complexity > 0.6) {
       return {
-        mode: ProcessingMode.NICEAIGC_ONLY,
+        mode: ProcessingMode.CHATBRIDGE_ONLY,
         requiresWebSearch: false,
         requiresLiterature: true,
         requiresMemory: true,
         requiresCreativity: true,
         complexity,
         estimatedTime: 25,
-        reason: '创意写作任务，使用 NiceAIGC 高质量模型'
+        reason: '创意写作任务，使用 ChatBridge 高质量模型'
       };
     }
     
@@ -125,7 +126,7 @@ export class ScholarClawOrchestrator {
   /**
    * 执行混合模式处理
    * 1. API Flow 准备上下文
-   * 2. NiceAIGC 生成高质量响应
+   * 2. ChatBridge 生成高质量响应
    * 3. API Flow 后处理
    */
   async processHybrid(
@@ -150,17 +151,17 @@ export class ScholarClawOrchestrator {
     const preparationTime = Date.now() - prepStart;
     logger.info(`[Orchestrator] Context preparation took ${preparationTime}ms`);
     
-    // 步骤 2: NiceAIGC 生成（大脑层）
+    // 步骤 2: ChatBridge 生成（大脑层）
     const genStart = Date.now();
-    const niceaigcResponse = await this.niceaigcAdapter.chat({
+    const chatBridgeResponse = await this.chatBridgeAdapter.chat({
       messages: [{ role: 'user', content: enrichedPrompt }],
     });
     const generationTime = Date.now() - genStart;
-    logger.info(`[Orchestrator] NiceAIGC generation took ${generationTime}ms`);
+    logger.info(`[Orchestrator] ChatBridge generation took ${generationTime}ms`);
     
-    // 步骤 3: API Flow 后处理（手脚层）
+    // 步骤 3: 后处理
     const postStart = Date.now();
-    const processedResponse = await this.postProcess(niceaigcResponse, context);
+    const processedResponse = await this.postProcess(chatBridgeResponse, context);
     const postProcessingTime = Date.now() - postStart;
     logger.info(`[Orchestrator] Post-processing took ${postProcessingTime}ms`);
     
@@ -182,7 +183,7 @@ export class ScholarClawOrchestrator {
    * 构建增强提示词
    * 整合所有上下文信息
    */
-  private buildEnrichedPrompt(message: string, context: HybridContext): string {
+  buildEnrichedPrompt(message: string, context: HybridContext): string {
     let enrichedPrompt = '';
     
     // 添加写作进度上下文
@@ -216,11 +217,15 @@ export class ScholarClawOrchestrator {
     // 添加用户消息
     enrichedPrompt += `\n## 💬 用户请求\n${message}`;
     
-    return enrichedPrompt;
+    const anchoredPrompt = anchorPromptWithCurrentRequest(enrichedPrompt, message, {
+      source: 'task-orchestrator-hybrid'
+    });
+    logger.info(`[Orchestrator] Current request anchor: ${JSON.stringify(getPromptAnchorDiagnostics(anchoredPrompt, message))}`);
+    return anchoredPrompt;
   }
   
   /**
-   * 后处理 NiceAIGC 响应
+   * 后处理 ChatBridge 响应
    */
   private async postProcess(response: string, context: HybridContext): Promise<string> {
     let processed = response;

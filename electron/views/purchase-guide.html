@@ -1,0 +1,736 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Scholar Harness - 购买套餐</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    :root {
+      --bg-primary: #ffffff;
+      --bg-secondary: #f7f7f8;
+      --bg-muted: #f3f4f6;
+      --text-primary: #1f2937;
+      --text-secondary: #6b7280;
+      --border-color: #e5e7eb;
+      --input-border: #d1d5db;
+      --accent-color: #00886e;
+      --accent-hover: #006f5a;
+      --warning-bg: #fffbeb;
+      --warning-border: #fde68a;
+      --warning-text: #92400e;
+      --success-bg: #ecfdf5;
+      --success-border: #a7f3d0;
+      --success-text: #047857;
+      --danger-bg: #fef2f2;
+      --danger-border: #fecaca;
+      --danger-text: #b91c1c;
+    }
+    
+    body {
+      font-family: 'Times New Roman', 'Source Han Sans SC', 'Noto Sans CJK SC', 'PingFang SC', 'Microsoft YaHei UI', 'Microsoft YaHei', serif;
+      background: var(--bg-primary);
+      color: var(--text-primary);
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+    }
+    
+    button, input, textarea, select {
+      font-family: inherit;
+    }
+    
+    .container {
+      width: 480px;
+      background: var(--bg-primary);
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      padding: 32px;
+      box-shadow: 0 10px 32px rgba(17, 24, 39, 0.08);
+    }
+    
+    .logo-section {
+      text-align: center;
+      margin-bottom: 24px;
+    }
+    
+    .logo-icon {
+      margin-bottom: 8px;
+      color: var(--text-primary);
+    }
+    
+    .logo-icon svg {
+      width: 48px;
+      height: 48px;
+    }
+    
+    .logo-title {
+      font-size: 24px;
+      color: var(--text-primary);
+      margin-bottom: 4px;
+    }
+    
+    .logo-subtitle {
+      font-size: 14px;
+      color: var(--text-secondary);
+    }
+    
+    .alert-box {
+      background: var(--warning-bg);
+      border: 1px solid var(--warning-border);
+      border-radius: 6px;
+      padding: 16px;
+      margin-bottom: 24px;
+      text-align: center;
+    }
+    
+    .alert-icon {
+      margin-bottom: 8px;
+      color: var(--warning-text);
+    }
+    
+    .alert-icon svg {
+      width: 24px;
+      height: 24px;
+    }
+    
+    .alert-title {
+      font-size: 16px;
+      color: var(--warning-text);
+      margin-bottom: 4px;
+    }
+    
+    .alert-detail {
+      font-size: 14px;
+      color: var(--warning-text);
+    }
+    
+    .plans-section {
+      margin-bottom: 24px;
+    }
+    
+    .plans-title {
+      font-size: 16px;
+      color: var(--text-primary);
+      margin-bottom: 16px;
+      text-align: center;
+    }
+    
+    .plan-card {
+      background: var(--bg-secondary);
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      padding: 16px;
+      margin-bottom: 12px;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    
+    .plan-card:hover {
+      border-color: var(--accent-color);
+      background: var(--bg-primary);
+    }
+    
+    .plan-card.recommended {
+      border-color: rgba(0, 136, 110, 0.34);
+      background: rgba(0, 136, 110, 0.06);
+    }
+    
+    .plan-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 8px;
+    }
+    
+    .plan-name {
+      font-size: 16px;
+      font-weight: 600;
+      color: var(--text-primary);
+    }
+    
+    .plan-price {
+      font-size: 20px;
+      font-weight: 700;
+      color: var(--accent-color);
+    }
+    
+    .plan-price span {
+      font-size: 12px;
+      color: var(--text-secondary);
+    }
+    
+    .plan-badge {
+      background: var(--accent-color);
+      color: #ffffff;
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-size: 12px;
+    }
+    
+    .plan-features {
+      font-size: 13px;
+      color: var(--text-secondary);
+    }
+    
+    .plan-features li {
+      margin-bottom: 4px;
+      list-style: none;
+      padding-left: 16px;
+      position: relative;
+    }
+    
+    .plan-features li::before {
+      content: '✓';
+      position: absolute;
+      left: 0;
+      color: var(--accent-color);
+    }
+    
+    .plan-buy-btn {
+      width: 100%;
+      padding: 10px;
+      margin-top: 12px;
+      background: var(--bg-primary);
+      color: var(--accent-color);
+      border: 1px solid rgba(0, 136, 110, 0.34);
+      border-radius: 6px;
+      font-size: 14px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    
+    .plan-buy-btn:hover {
+      background: rgba(0, 136, 110, 0.08);
+      color: var(--accent-hover);
+    }
+    
+    .plan-buy-btn.recommended {
+      background: var(--accent-color);
+      color: #ffffff;
+    }
+    
+    .plan-buy-btn.recommended:hover {
+      background: var(--accent-hover);
+      border-color: var(--accent-hover);
+    }
+    
+    .purchase-btn {
+      width: 100%;
+      padding: 14px;
+      background: var(--accent-color);
+      color: #ffffff;
+      border: 1px solid var(--accent-color);
+      border-radius: 6px;
+      font-size: 16px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s;
+      margin-bottom: 16px;
+    }
+    
+    .purchase-btn:hover {
+      background: var(--accent-hover);
+      border-color: var(--accent-hover);
+      box-shadow: 0 8px 18px rgba(0, 136, 110, 0.16);
+    }
+    
+    .purchase-btn:disabled {
+      background: #d1d5db;
+      border-color: #d1d5db;
+      cursor: not-allowed;
+      transform: none;
+    }
+    
+    .footer-links {
+      text-align: center;
+      font-size: 14px;
+      color: var(--text-secondary);
+    }
+    
+    .footer-links a {
+      color: var(--accent-color);
+      text-decoration: none;
+    }
+    
+    .footer-links a:hover {
+      text-decoration: underline;
+    }
+    
+    .separator {
+      margin: 0 8px;
+      color: #cbd5e1;
+    }
+    
+    #purchase-result {
+      margin-top: 16px;
+      padding: 12px;
+      border-radius: 8px;
+      text-align: center;
+      display: none;
+    }
+    
+    #purchase-result.success {
+      background: var(--success-bg);
+      border: 1px solid var(--success-border);
+      color: var(--success-text);
+    }
+    
+    #purchase-result.error {
+      background: var(--danger-bg);
+      border: 1px solid var(--danger-border);
+      color: var(--danger-text);
+    }
+    
+    /* 内测码输入样式 */
+    .beta-code-section {
+      margin-bottom: 24px;
+      padding: 16px;
+      background: var(--bg-secondary);
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+    }
+    
+    .beta-code-section label {
+      display: block;
+      font-size: 14px;
+      font-weight: 500;
+      color: var(--text-primary);
+      margin-bottom: 8px;
+    }
+    
+    .optional-label {
+      color: var(--text-secondary);
+      font-size: 12px;
+    }
+    
+    .beta-code-input-wrapper {
+      display: flex;
+      gap: 8px;
+    }
+    
+    .beta-code-input {
+      flex: 1;
+      padding: 12px 16px;
+      font-size: 14px;
+      border: 1px solid var(--input-border);
+      border-radius: 6px;
+      background: var(--bg-primary);
+      color: var(--text-primary);
+      outline: none;
+      font-family: inherit;
+      text-transform: uppercase;
+    }
+    
+    .beta-code-input:focus {
+      border-color: var(--accent-color);
+      box-shadow: 0 0 0 3px rgba(0, 136, 110, 0.12);
+    }
+    
+    .beta-code-input::placeholder {
+      color: #9ca3af;
+      text-transform: none;
+    }
+    
+    .validate-beta-btn {
+      padding: 12px 16px;
+      font-size: 14px;
+      font-weight: 500;
+      color: var(--text-primary);
+      background: var(--bg-primary);
+      border: 1px solid var(--input-border);
+      border-radius: 6px;
+      cursor: pointer;
+      transition: all 0.3s ease;
+    }
+    
+    .validate-beta-btn:hover {
+      background: var(--bg-primary);
+      color: var(--accent-color);
+      border-color: var(--accent-color);
+    }
+    
+    .validate-beta-btn:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+    }
+    
+    .beta-code-result {
+      margin-top: 8px;
+      padding: 8px 12px;
+      border-radius: 6px;
+      font-size: 13px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    
+    .beta-code-result.valid {
+      background: var(--success-bg);
+      border: 1px solid var(--success-border);
+      color: var(--success-text);
+    }
+    
+    .beta-code-result.invalid {
+      background: var(--danger-bg);
+      border: 1px solid var(--danger-border);
+      color: var(--danger-text);
+    }
+    
+    .result-icon {
+      font-weight: bold;
+    }
+    
+    .beta-code-hint {
+      margin-top: 6px;
+      font-size: 12px;
+      color: var(--text-secondary);
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <!-- Logo区域 -->
+    <div class="logo-section">
+      <div class="logo-icon">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M2 4.5A2.5 2.5 0 0 1 4.5 2H11v18H4.5A2.5 2.5 0 0 0 2 22z"></path>
+          <path d="M22 4.5A2.5 2.5 0 0 0 19.5 2H13v18h6.5A2.5 2.5 0 0 1 22 22z"></path>
+        </svg>
+      </div>
+      <h1 class="logo-title">Scholar Harness</h1>
+      <p class="logo-subtitle">学术论文写作助手</p>
+    </div>
+    
+    <!-- 提示框 -->
+    <div class="alert-box">
+      <div class="alert-icon">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"></path>
+          <path d="M12 9v4"></path>
+          <path d="M12 17h.01"></path>
+        </svg>
+      </div>
+      <div class="alert-title">需要购买套餐</div>
+      <div class="alert-detail" id="alert-reason">您尚未购买套餐，请选择套餐购买后使用</div>
+    </div>
+    
+    <!-- 内测码输入 (可选) -->
+    <div class="beta-code-section">
+      <label for="beta-code">内测码 <span class="optional-label">(可选)</span></label>
+      <div class="beta-code-input-wrapper">
+        <input 
+          type="text" 
+          id="beta-code" 
+          name="beta-code" 
+          placeholder="输入内测码"
+          maxlength="20"
+          autocomplete="off"
+          class="beta-code-input"
+        >
+        <button type="button" id="validate-beta-btn" class="validate-beta-btn">验证</button>
+      </div>
+      <div id="beta-code-result" class="beta-code-result" style="display: none;"></div>
+      <p class="beta-code-hint">已有账号但未激活试用？填写内测码可激活试用权限</p>
+    </div>
+    
+    <!-- 套餐选择 -->
+    <div class="plans-section">
+      <div class="plans-title">选择套餐</div>
+      
+      <div class="plan-card" data-plan="monthly">
+        <div class="plan-header">
+          <span class="plan-name">月度套餐</span>
+          <span class="plan-price">¥39<span>/30天</span></span>
+        </div>
+        <ul class="plan-features">
+          <li>EXE 完整功能使用权</li>
+          <li>访问所有 AI 模型</li>
+          <li>有效期内无限使用</li>
+        </ul>
+        <button class="plan-buy-btn" data-plan="monthly">立即购买 →</button>
+      </div>
+      
+      <div class="plan-card recommended" data-plan="quarterly">
+        <div class="plan-header">
+          <span class="plan-name">季度套餐</span>
+          <span class="plan-badge">推荐</span>
+          <span class="plan-price">¥80<span>/90天</span></span>
+        </div>
+        <ul class="plan-features">
+          <li>EXE 完整功能使用权</li>
+          <li>访问所有 AI 模型</li>
+          <li>有效期内无限使用</li>
+          <li>推荐优惠</li>
+        </ul>
+        <button class="plan-buy-btn recommended" data-plan="quarterly">立即购买 →</button>
+      </div>
+      
+      <div class="plan-card" data-plan="yearly">
+        <div class="plan-header">
+          <span class="plan-name">年度套餐</span>
+          <span class="plan-price">¥299<span>/365天</span></span>
+        </div>
+        <ul class="plan-features">
+          <li>EXE 完整功能使用权</li>
+          <li>访问所有 AI 模型</li>
+          <li>有效期内无限使用</li>
+          <li>年度折扣</li>
+        </ul>
+        <button class="plan-buy-btn" data-plan="yearly">立即购买 →</button>
+      </div>
+    </div>
+    
+    <!-- 购买按钮 -->
+    <button id="purchase-btn" class="purchase-btn">前往官网购买</button>
+    
+    <!-- 结果提示 -->
+    <div id="purchase-result"></div>
+    
+    <!-- 底部链接 -->
+    <div class="footer-links">
+      <a href="#" id="refresh-btn">刷新验证状态</a>
+      <span class="separator">|</span>
+      <a href="#" id="logout-btn">退出登录</a>
+    </div>
+  </div>
+  
+  <script>
+    // 使用 preload.js 提供的 electronAPI
+    let selectedPlan = 'quarterly';
+    
+    // 内测码验证状态
+    let betaCodeValidationResult = null;
+    
+    // DOM元素
+    const betaCodeInput = document.getElementById('beta-code');
+    const validateBetaBtn = document.getElementById('validate-beta-btn');
+    const betaCodeResult = document.getElementById('beta-code-result');
+    
+    /**
+     * 验证内测码并激活
+     */
+    async function handleBetaCodeValidation() {
+      const code = betaCodeInput.value.trim().toUpperCase();
+      
+      if (!code) {
+        betaCodeResult.style.display = 'none';
+        betaCodeValidationResult = null;
+        return;
+      }
+      
+      // 显示验证中状态
+      validateBetaBtn.textContent = '验证中...';
+      validateBetaBtn.disabled = true;
+      
+      try {
+        // 调用云服务器内测码验证 API
+        const apiUrl = 'https://scholarharness.com/api/v1/beta-codes/validate';
+        
+        const response = await fetch(apiUrl, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ code }),
+        });
+        
+        const data = await response.json();
+        
+        betaCodeValidationResult = data;
+        
+        // 显示验证结果
+        betaCodeResult.style.display = 'block';
+        
+        if (data.valid) {
+          betaCodeResult.className = 'beta-code-result valid';
+          const message = data.message || (data.access_type === 'lifetime'
+            ? '有效 - 限时永久内测码'
+            : `有效 - ${data.validity_days}天免费试用`);
+          betaCodeResult.innerHTML = `<span class="result-icon">✓</span> ${message}，正在激活...`;
+          
+          // 验证成功后直接激活并跳转
+          await activateBetaCode(code);
+        } else {
+          betaCodeResult.className = 'beta-code-result invalid';
+          betaCodeResult.innerHTML = `<span class="result-icon">✗</span> ${data.reason || '内测码无效'}`;
+        }
+        
+      } catch (error) {
+        console.error('[BetaCode] Validation error:', error);
+        betaCodeResult.style.display = 'block';
+        betaCodeResult.className = 'beta-code-result invalid';
+        betaCodeResult.innerHTML = `<span class="result-icon">✗</span> 验证失败，请检查网络连接`;
+        betaCodeValidationResult = { valid: false };
+      } finally {
+        validateBetaBtn.textContent = '验证';
+        validateBetaBtn.disabled = false;
+      }
+    }
+    
+    /**
+     * 使用内测码激活试用（通过 Electron IPC 调用云服务器）
+     */
+    async function activateBetaCode(code) {
+      const activationCode = code || betaCodeInput.value.trim().toUpperCase();
+      
+      if (!activationCode) return;
+      
+      try {
+        // 通过 Electron IPC 调用云服务器激活 API
+        // 因为需要携带用户的 session 认证
+        const result = await window.electronAPI.activateBetaCode(activationCode);
+        
+        if (result.success) {
+          betaCodeResult.innerHTML = `<span class="result-icon">✓</span> ${result.message || '内测码激活成功！'} 正在启动应用...`;
+          
+          // 1.5秒后关闭窗口并启动主应用
+          setTimeout(async () => {
+            await window.electronAPI.subscriptionValidated();
+          }, 1500);
+        } else {
+          betaCodeResult.className = 'beta-code-result invalid';
+          betaCodeResult.innerHTML = `<span class="result-icon">✗</span> ${result.reason || '内测码激活失败'}`;
+        }
+      } catch (error) {
+        console.error('[BetaCode] Activation error:', error);
+        betaCodeResult.className = 'beta-code-result invalid';
+        betaCodeResult.innerHTML = `<span class="result-icon">✗</span> 激活失败：${error.message || '请检查网络连接'}`;
+      }
+    }
+    
+    // 内测码验证按钮点击
+    if (validateBetaBtn) {
+      validateBetaBtn.addEventListener('click', handleBetaCodeValidation);
+    }
+    
+    // 内测码输入框自动转大写
+    if (betaCodeInput) {
+      betaCodeInput.addEventListener('input', (e) => {
+        e.target.value = e.target.value.toUpperCase();
+        // 清除之前的验证结果
+        betaCodeResult.style.display = 'none';
+        betaCodeValidationResult = null;
+      });
+      
+      // 输入框回车触发验证
+      betaCodeInput.addEventListener('keypress', (e) => {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          handleBetaCodeValidation();
+        }
+      });
+    }
+    
+    // 套餐卡片点击选择
+    document.querySelectorAll('.plan-card').forEach(card => {
+      card.addEventListener('click', (e) => {
+        // 如果点击的是按钮，不处理卡片选择
+        if (e.target.classList.contains('plan-buy-btn')) return;
+        
+        selectedPlan = card.dataset.plan;
+        document.querySelectorAll('.plan-card').forEach(c => c.classList.remove('selected'));
+        card.classList.add('selected');
+      });
+    });
+    
+    // 套餐购买按钮点击 - 直接跳转官网
+    document.querySelectorAll('.plan-buy-btn').forEach(btn => {
+      btn.addEventListener('click', async (e) => {
+        e.stopPropagation(); // 阻止触发卡片点击
+        
+        const plan = btn.dataset.plan;
+        const pricingUrl = 'https://scholarharness.com/register/';
+        
+        await window.electronAPI.openExternal(pricingUrl);
+        
+        // 显示提示
+        const resultDiv = document.getElementById('purchase-result');
+        resultDiv.style.display = 'block';
+        resultDiv.className = '';
+        resultDiv.innerHTML = '已打开购买页面（' + getPlanName(plan) + '），请完成支付后点击"刷新验证状态"';
+      });
+    });
+    
+    function getPlanName(plan) {
+      const names = {
+        'monthly': '月度套餐 ¥39',
+        'quarterly': '季度套餐 ¥80',
+        'yearly': '年度套餐 ¥299'
+      };
+      return names[plan] || plan;
+    }
+    
+    // 接收原因消息
+    window.electronAPI.onPurchaseReason((reason) => {
+      document.getElementById('alert-reason').textContent = reason;
+    });
+    
+    // 底部购买按钮
+    document.getElementById('purchase-btn').addEventListener('click', async () => {
+      const pricingUrl = 'https://scholarharness.com/register/';
+      await window.electronAPI.openExternal(pricingUrl);
+      
+      // 显示提示
+      const resultDiv = document.getElementById('purchase-result');
+      resultDiv.style.display = 'block';
+      resultDiv.className = '';
+      resultDiv.innerHTML = '已打开购买页面，请在官网完成支付后点击"刷新验证状态"';
+    });
+    
+    // 刷新验证状态
+    document.getElementById('refresh-btn').addEventListener('click', async () => {
+      const resultDiv = document.getElementById('purchase-result');
+      resultDiv.style.display = 'block';
+      resultDiv.className = '';
+      resultDiv.innerHTML = '验证中...';
+      
+      // 如果有验证过的有效内测码，先尝试激活
+      const betaCode = betaCodeInput.value.trim().toUpperCase();
+      if (betaCode && betaCodeValidationResult && betaCodeValidationResult.valid) {
+        resultDiv.innerHTML = '正在激活内测码...';
+        await activateBetaCode();
+        return;
+      }
+      
+      // 否则正常刷新订阅状态
+      try {
+        const result = await window.electronAPI.refreshSubscription();
+        
+        if (result.valid) {
+          resultDiv.className = 'success';
+          resultDiv.innerHTML = '套餐验证成功！正在启动应用...';
+          
+          // 1.5秒后关闭窗口并启动主应用
+          setTimeout(async () => {
+            await window.electronAPI.subscriptionValidated();
+          }, 1500);
+        } else {
+          resultDiv.className = 'error';
+          resultDiv.innerHTML = result.reason || '验证失败，请确保已购买套餐';
+        }
+      } catch (error) {
+        resultDiv.className = 'error';
+        resultDiv.innerHTML = '验证请求失败：' + error.message;
+      }
+    });
+    
+    // 退出登录
+    document.getElementById('logout-btn').addEventListener('click', async () => {
+      try {
+        await window.electronAPI.logout();
+      } catch (error) {
+        console.error('Logout failed:', error);
+      }
+    });
+  </script>
+</body>
+</html>

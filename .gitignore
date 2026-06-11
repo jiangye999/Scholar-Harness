@@ -1,25 +1,42 @@
 # 依赖
 node_modules/
 pnpm-lock.yaml
-package-lock.json
 yarn.lock
 
 # 环境变量（包含敏感信息）
 .env
+.env.*
+!.env.example
+!**/.env.example
+**/.env
+**/.env.*
+!**/.env.example
 
 # 构建产物
 dist/
+dist-electron/
+temp-dist/
+scholarharness-website/.next/
+scholarharness-website/out/
+scholarharness-website/public/downloads/*.exe
+scholarharness-website/public/downloads/*.exe.blockmap
+scholarharness-website/*.tar.gz
 
 # 运行时数据（用户数据、上传文件、记忆等）
 data/
 
 # 日志文件
 logs/
+*.log
+*.err.log
+*.out.log
+.codex-*.log
 
 # 系统文件
 .DS_Store
 Thumbs.db
 desktop.ini
+nul
 
 # IDE 配置
 .vscode/
@@ -33,9 +50,80 @@ desktop.ini
 *.temp
 tmp/
 temp/
+tmp_deploy/
+deployed-code/
+deployed-code-temp/
+.codex-*.json
+.codex-*.txt
+.codex-*.zip
+.playwright-mcp/
+.ruff_cache/
+__pycache__/
+scripts/__pycache__/
+*.tsbuildinfo
 
 # 测试覆盖率
 coverage/
 
 # TypeScript 缓存
 *.tsbuildinfo
+
+# 本地样例、截图、打包包体和一次性调试文件
+sample-pdf/
+AI_projectswindirstat/
+backup/
+backup_*/
+backup_*.tar.gz
+*.zip
+/*.png
+/*.jpg
+/*.jpeg
+/*.pdf
+-/
+admin-page-current.tsx
+admin_beta_codes.tsx
+add_beta_ui.py
+clean_admin.js
+fix-imports.js
+fix_import*.js
+server_auth.ts
+server_types.ts
+server_user-store.ts
+temp_*.ts
+temp_*.tsx
+update_admin*.js
+update_admin*.py
+verify-modifications.js
+test-*.js
+test-*.mjs
+test-package-config.bat
+beta-*.txt
+beta-code-store.ts
+beta-codes.b64
+
+# OpenClaw 下载缓存和浏览器运行状态
+openclaw/browser-data/
+openclaw/browsers/
+openclaw/node_modules/
+openclaw/browser-info.json
+openclaw/browser-state.json
+openclaw/stdout.txt
+openclaw/stderr.txt
+openclaw/test_msg.txt
+openclaw/Advanced
+openclaw/Edit
+openclaw/OK
+
+# TypeScript 编译到源码目录时产生的副产物
+src/types/*.js
+src/types/*.js.map
+src/types/*.d.ts
+src/types/*.d.ts.map
+src/utils/*.js
+src/utils/*.js.map
+src/utils/*.d.ts
+src/utils/*.d.ts.map
+agents/*.js
+agents/*.js.map
+agents/*.d.ts
+agents/*.d.ts.map

@@ -15,7 +15,14 @@ describe('Parallel Search Architecture', () => {
     const litFile = path.join(process.cwd(), 'data/uploads/web-user/literature.json');
     if (fs.existsSync(litFile)) {
       const data = fs.readFileSync(litFile, 'utf-8');
-      literaturePapers = JSON.parse(data);
+      const parsed = JSON.parse(data);
+      const rawPapers = Array.isArray(parsed) ? parsed : (Array.isArray(parsed.papers) ? parsed.papers : []);
+      literaturePapers = rawPapers.map((paper: any) => ({
+        ...paper,
+        author: paper.author || (Array.isArray(paper.authors) ? paper.authors.join(', ') : 'Unknown'),
+        year: String(paper.year || ''),
+        keywords: Array.isArray(paper.keywords) ? paper.keywords.join('; ') : (paper.keywords || ''),
+      }));
       console.log(`Loaded ${literaturePapers.length} papers for testing`);
     } else {
       console.warn('Literature file not found, using mock data');

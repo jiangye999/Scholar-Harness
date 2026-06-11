@@ -5,9 +5,7 @@
   "main": "bridge.js",
   "type": "module",
   "scripts": {
-    "test": "node test.js",
-    "serve": "node server.js",
-    "example": "node examples.js"
+    "serve": "node server.js"
   },
   "keywords": [
     "niceaigc",

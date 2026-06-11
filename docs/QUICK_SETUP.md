@@ -68,7 +68,7 @@ openclaw browser --action open --url "https://node8.nice188.com/"
 ### 4. 启动 ScholarClaw
 
 ```bash
-cd scholar-claw-feishu-1.0.0.5
+cd scholar-harness-1.0.0
 pnpm build
 pnpm start
 ```

@@ -1,3 +1,5 @@
+import * as fs from 'fs';
+import * as path from 'path';
 import { BM25Retriever } from './bm25-retriever';
 import { VectorRetriever } from './vector-retriever';
 import { MetadataFilter } from './metadata-filter';
@@ -39,7 +41,7 @@ export class HybridRetrievalEngine {
       },
       vector: {
         topN: 50,
-        model: 'text-embedding-3-small',
+        model: 'text-embedding-v4',
         dimensions: 1536,
         similarity: 'cosine',
       },
@@ -58,8 +60,11 @@ export class HybridRetrievalEngine {
     this.metadataFilter = new MetadataFilter();
   }
 
+  /**
+   * 全量索引（清空后重新索引）
+   */
   async index(literatures: UnifiedLiterature[]): Promise<void> {
-    this.literatureMap.clear();
+    this.clear();
 
     for (const lit of literatures) {
       this.literatureMap.set(lit.id, lit);
@@ -68,6 +73,38 @@ export class HybridRetrievalEngine {
     this.bm25Retriever.addDocuments(literatures);
     await this.vectorRetriever.addDocuments(literatures);
     this.metadataFilter.index(literatures);
+  }
+
+  /**
+   * 增量索引（只添加新文献，不清空已有索引）
+   */
+  async addDocuments(literatures: UnifiedLiterature[]): Promise<void> {
+    // 只添加新文献
+    const newLiteratures: UnifiedLiterature[] = [];
+    for (const lit of literatures) {
+      if (!this.literatureMap.has(lit.id)) {
+        this.literatureMap.set(lit.id, lit);
+        newLiteratures.push(lit);
+      }
+    }
+
+    if (newLiteratures.length === 0) {
+      console.log(`[HybridEngine] No new documents to add`);
+      return;
+    }
+
+    console.log(`[HybridEngine] Adding ${newLiteratures.length} new documents (total: ${this.literatureMap.size})`);
+
+    this.bm25Retriever.addDocuments(newLiteratures);
+    await this.vectorRetriever.addDocuments(newLiteratures);
+    this.metadataFilter.index(newLiteratures);
+  }
+
+  /**
+   * 获取当前索引的文献数量
+   */
+  getDocumentCount(): number {
+    return this.literatureMap.size;
   }
 
   async retrieve(query: RetrievalQuery): Promise<RetrievalResult> {
@@ -169,7 +206,8 @@ export class HybridRetrievalEngine {
     if (bm25 === undefined && vector === undefined) return 0;
     if (bm25 === undefined) return vector!;
     if (vector === undefined) return bm25;
-    return bm25 * 0.5 + vector * 0.5;
+    // BM25 40% + 语义检索 60% - 语义检索权重更高，因为更能理解论点意图
+    return bm25 * 0.4 + vector * 0.6;
   }
 
   private async rerank(query: string, results: FusionResult[]): Promise<FusionResult[]> {
@@ -195,5 +233,110 @@ export class HybridRetrievalEngine {
     this.vectorRetriever.clear();
     this.metadataFilter.clear();
     this.literatureMap.clear();
+  }
+
+  /**
+   * 更新 API 配置（用于运行时更新 Embedding API 配置）
+   */
+  updateApiConfig(apiConfig?: { url?: string; key?: string }): void {
+    this.vectorRetriever.updateApiConfig(apiConfig);
+    console.log(`[HybridEngine] API config updated: url=${apiConfig?.url ? '已配置' : '空'}, key=${apiConfig?.key ? '已配置' : '空'}`);
+  }
+
+  /**
+   * 保存所有索引到目录
+   */
+  saveIndex(cacheDir: string): void {
+    if (!fs.existsSync(cacheDir)) {
+      fs.mkdirSync(cacheDir, { recursive: true });
+    }
+
+    const literatureMapPath = path.join(cacheDir, 'literature-map.json');
+    const literatureMapData = {
+      version: 1,
+      timestamp: Date.now(),
+      literatures: Array.from(this.literatureMap.entries()).map(([id, lit]) => ({
+        id,
+        title: lit.title,
+        authors: lit.authors,
+        author: lit.author,
+        year: lit.year,
+        abstract: lit.abstract,
+        keywords: lit.keywords,
+        aiKeywords: lit.aiKeywords,
+        journal: lit.journal,
+        volume: lit.volume,
+        issue: lit.issue,
+        pages: lit.pages,
+        doi: lit.doi,
+        documentType: lit.documentType,
+        categories: lit.categories,
+        source: lit.source,
+        embedding: lit.embedding,
+      })),
+    };
+    fs.writeFileSync(literatureMapPath, JSON.stringify(literatureMapData), 'utf-8');
+
+    this.bm25Retriever.saveIndex(path.join(cacheDir, 'bm25-index.json'));
+    this.vectorRetriever.saveIndex(path.join(cacheDir, 'vector-index.json'));
+
+    console.log(`[HybridEngine] Saved all indexes to ${cacheDir}`);
+  }
+
+  /**
+   * 从目录加载所有索引
+   */
+  loadIndex(cacheDir: string): boolean {
+    const literatureMapPath = path.join(cacheDir, 'literature-map.json');
+    const bm25Path = path.join(cacheDir, 'bm25-index.json');
+    const vectorPath = path.join(cacheDir, 'vector-index.json');
+
+    if (!fs.existsSync(literatureMapPath) || !fs.existsSync(bm25Path) || !fs.existsSync(vectorPath)) {
+      console.log(`[HybridEngine] Cache files not found, will rebuild index`);
+      return false;
+    }
+
+    try {
+      const literatureMapData = JSON.parse(fs.readFileSync(literatureMapPath, 'utf-8'));
+      this.literatureMap.clear();
+      for (const litData of literatureMapData.literatures) {
+        this.literatureMap.set(litData.id, {
+          id: litData.id,
+          title: litData.title,
+          authors: litData.authors,
+          author: litData.author,
+          year: litData.year,
+          abstract: litData.abstract,
+          keywords: litData.keywords,
+          aiKeywords: litData.aiKeywords,
+          journal: litData.journal,
+          volume: litData.volume,
+          issue: litData.issue,
+          pages: litData.pages,
+          doi: litData.doi,
+          documentType: litData.documentType,
+          categories: litData.categories,
+          source: litData.source,
+          embedding: litData.embedding,
+        });
+      }
+
+      const bm25Loaded = this.bm25Retriever.loadIndex(bm25Path);
+      const vectorLoaded = this.vectorRetriever.loadIndex(vectorPath);
+
+      if (!bm25Loaded || !vectorLoaded) {
+        console.log(`[HybridEngine] Failed to load sub-indexes, will rebuild`);
+        return false;
+      }
+
+      // 恢复 metadataFilter（用 literatureMap 数据重新索引）
+      this.metadataFilter.index(Array.from(this.literatureMap.values()));
+
+      console.log(`[HybridEngine] Loaded all indexes from ${cacheDir} (${this.literatureMap.size} documents)`);
+      return true;
+    } catch (error) {
+      console.error(`[HybridEngine] Failed to load indexes:`, error);
+      return false;
+    }
   }
 }

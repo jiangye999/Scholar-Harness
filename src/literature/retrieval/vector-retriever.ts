@@ -1,3 +1,5 @@
+import * as fs from 'fs';
+import * as path from 'path';
 import type { UnifiedLiterature, VectorConfig } from '../../types/literature';
 
 interface VectorDocument {
@@ -20,7 +22,7 @@ export class VectorRetriever {
   constructor(config: Partial<VectorConfig> = {}, apiConfig?: { url?: string; key?: string }) {
     this.config = {
       topN: 50,
-      model: 'text-embedding-3-small',
+      model: 'text-embedding-v4',
       dimensions: 1536,
       similarity: 'cosine',
       ...config,
@@ -29,8 +31,13 @@ export class VectorRetriever {
     this.apiKey = apiConfig?.key;
   }
 
+  updateApiConfig(apiConfig?: { url?: string; key?: string }): void {
+    this.apiUrl = apiConfig?.url;
+    this.apiKey = apiConfig?.key;
+  }
+
   async addDocument(lit: UnifiedLiterature): Promise<void> {
-    const text = `${lit.title} ${lit.keywords.join(' ')} ${lit.abstract}`;
+    const text = `${lit.title || ''} ${Array.isArray(lit.keywords) ? lit.keywords.join(' ') : (lit.keywords || '')} ${lit.abstract || ''}`;
     
     const doc: VectorDocument = {
       id: lit.id,
@@ -41,7 +48,10 @@ export class VectorRetriever {
     if (lit.embedding && lit.embedding.length > 0) {
       doc.embedding = lit.embedding;
     } else if (this.apiUrl && this.apiKey) {
-      doc.embedding = await this.getEmbedding(text);
+      const embedding = await this.getEmbedding(text);
+      if (embedding) {
+        doc.embedding = embedding;
+      }
     } else {
       doc.embedding = this.simpleEmbedding(text);
     }
@@ -68,12 +78,16 @@ export class VectorRetriever {
   async search(query: string, topN?: number): Promise<SearchResult[]> {
     const limit = topN || this.config.topN;
     
-    let queryEmbedding: number[];
+    let queryEmbedding: number[] | null;
     
     if (this.apiUrl && this.apiKey) {
       queryEmbedding = await this.getEmbedding(query);
     } else {
       queryEmbedding = this.simpleEmbedding(query);
+    }
+
+    if (!queryEmbedding) {
+      return [];
     }
 
     const scores: SearchResult[] = [];
@@ -85,7 +99,9 @@ export class VectorRetriever {
         ? this.cosineSimilarity(queryEmbedding, doc.embedding)
         : this.dotProduct(queryEmbedding, doc.embedding);
 
-      scores.push({ id, score });
+      if (score > 0) {
+        scores.push({ id, score });
+      }
     }
 
     return scores
@@ -93,32 +109,57 @@ export class VectorRetriever {
       .slice(0, limit);
   }
 
-  private async getEmbedding(text: string): Promise<number[]> {
+  private async getEmbedding(text: string): Promise<number[] | null> {
     if (!this.apiUrl || !this.apiKey) {
       return this.simpleEmbedding(text);
     }
 
     try {
+      // 构建 API 请求体，包含 dimensions 参数（如果模型支持）
+      const requestBody: Record<string, unknown> = {
+        model: this.config.model,
+        input: text.slice(0, 8000),
+      };
+      
+      // 对于支持自定义维度的模型（如 text-embedding-v3/v4），传递 dimensions 参数
+      // 注意：dimensions 必须在模型支持的范围内
+      if (this.config.dimensions) {
+        requestBody.dimensions = this.config.dimensions;
+      }
+
       const response = await fetch(`${this.apiUrl}/embeddings`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${this.apiKey}`,
         },
-        body: JSON.stringify({
-          model: this.config.model,
-          input: text.slice(0, 8000),
-        }),
+        body: JSON.stringify(requestBody),
       });
 
       if (!response.ok) {
-        return this.simpleEmbedding(text);
+        const errorText = await response.text();
+        console.log(`[VectorRetriever] Embedding API error: ${response.status} - ${errorText.slice(0, 200)}`);
+        return null;
       }
 
       const data = await response.json() as { data?: Array<{ embedding: number[] }> };
-      return data.data?.[0]?.embedding || this.simpleEmbedding(text);
-    } catch {
-      return this.simpleEmbedding(text);
+      const embedding = data.data?.[0]?.embedding;
+      
+      if (!embedding) {
+        console.log('[VectorRetriever] No embedding in response');
+        return null;
+      }
+      
+      // 验证返回的 embedding 维度是否与期望一致
+      if (embedding.length !== this.config.dimensions) {
+        console.log(`[VectorRetriever] Warning: API returned ${embedding.length} dimensions, expected ${this.config.dimensions}`);
+        // 仍然使用返回的 embedding，相似度计算会自动处理维度差异
+      }
+      
+      return embedding;
+    } catch (error) {
+      console.log('[VectorRetriever] Embedding API call failed:', error);
+      return null;
     }
   }
 
@@ -187,5 +228,73 @@ export class VectorRetriever {
 
   clear(): void {
     this.documents.clear();
+  }
+
+  /**
+   * 保存向量索引到文件
+   * @param indexPath 索引文件路径
+   */
+  saveIndex(indexPath: string): void {
+    const indexData = {
+      version: 1,
+      timestamp: Date.now(),
+      config: this.config,
+      documents: Array.from(this.documents.entries()).map(([id, doc]) => ({
+        id,
+        text: doc.text,
+        embedding: doc.embedding,
+      })),
+    };
+
+    const dir = path.dirname(indexPath);
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+
+    fs.writeFileSync(indexPath, JSON.stringify(indexData), 'utf-8');
+    console.log(`[VectorRetriever] Saved index to ${indexPath} (${this.documents.size} documents)`);
+  }
+
+  /**
+   * 从文件加载向量索引
+   * @param indexPath 索引文件路径
+   * @returns 是否加载成功
+   */
+  loadIndex(indexPath: string): boolean {
+    if (!fs.existsSync(indexPath)) {
+      console.log(`[VectorRetriever] Index file not found: ${indexPath}`);
+      return false;
+    }
+
+    try {
+      const content = fs.readFileSync(indexPath, 'utf-8');
+      const indexData = JSON.parse(content);
+
+      if (indexData.version !== 1) {
+        console.log(`[VectorRetriever] Unsupported index version: ${indexData.version}`);
+        return false;
+      }
+
+      // 恢复配置
+      if (indexData.config) {
+        this.config = { ...this.config, ...indexData.config };
+      }
+
+      // 恢复文档
+      this.documents.clear();
+      for (const doc of indexData.documents) {
+        this.documents.set(doc.id, {
+          id: doc.id,
+          text: doc.text,
+          embedding: doc.embedding,
+        });
+      }
+
+      console.log(`[VectorRetriever] Loaded index from ${indexPath} (${this.documents.size} documents, timestamp: ${new Date(indexData.timestamp).toLocaleString()})`);
+      return true;
+    } catch (error) {
+      console.error(`[VectorRetriever] Failed to load index:`, error);
+      return false;
+    }
   }
 }

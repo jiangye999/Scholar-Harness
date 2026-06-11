@@ -1,8 +1,8 @@
-# AGENTS.md - ScholarClaw 开发指南
+# AGENTS.md - Scholar Harness 开发指南
 
-**项目**: 对话式学术论文写作助手  
-**技术栈**: Node.js 22+ / TypeScript / Vitest  
-**架构**: 两级 AI 协作 (Primary + Secondary Agent)
+**项目**: 对话式学术论文写作助手 (Scholar Harness)  
+**技术栈**: Node.js 22+ / TypeScript / Express / Vitest  
+**架构**: 两级 AI 协作 (Primary + Secondary Agent) + 混合检索引擎
 
 ---
 
@@ -10,23 +10,288 @@
 
 ```bash
 # 开发
-pnpm dev              # 热重载开发
-pnpm dev:local        # 本地服务器模式
-pnpm dev:cli          # CLI 模式
+npm run dev              # 热重载开发 (ts-node-dev)
+npm run electron:dev     # Electron 开发模式
 
 # 构建
-pnpm build            # TypeScript 编译
+npm run build            # TypeScript 编译
+npm run electron:build   # 打包 Windows exe
 
 # 测试
-pnpm test                         # 运行所有测试
-pnpm vitest run                   # 单次运行所有测试
-pnpm vitest run __tests__/agents  # 运行单个目录的测试
-pnpm vitest run primary-agent     # 运行匹配文件名的测试
-pnpm vitest --watch               # 监听模式
+npm test                 # 运行所有测试 (vitest)
+npx vitest run           # 单次运行
+npx vitest run __tests__/agents  # 运行特定目录
+npx vitest --watch       # 监听模式
 
 # 启动
-pnpm start             # 生产模式
-pnpm start:cli         # CLI 生产模式
+npm start                # 生产模式 (Express 服务器)
+```
+
+---
+
+## 项目架构
+
+### 目录结构
+
+```
+scholar-harness/
+├── agents/                    # AI Agent 实现
+│   ├── primary-agent.ts       # 一级 AI (大牛马) - 规划、生成 Skill、质量检查
+│   ├── secondary-agent-v2.ts  # 二级 AI (小牛马) - 执行写作、引用验证
+│   ├── literature-search-agent.ts  # 文献检索与筛选 Agent
+│   ├── agent-collaboration-workflow.ts  # 大小牛马协作流程
+│   ├── parallel-search-orchestrator.ts  # 并行检索编排
+│   ├── sentence-chunker.ts    # 句子级分块
+│   ├── paragraph-agent.ts     # 段落生成 Agent
+│   └── cow-agent.ts           # 通用写作 Agent
+│
+├── workflows/
+│   └── conversation-flow.ts   # 对话流程管理器
+│
+├── src/
+│   ├── server/                # Express 服务器
+│   │   ├── local-server.ts    # 主服务器入口
+│   │   ├── routes/            # API 路由
+│   │   │   ├── chat-bridge.ts # 聊天桥接
+│   │   │   ├── unified-chat.ts # 统一聊天接口
+│   │   │   ├── literature.ts  # 文献管理
+│   │   │   └── memory.ts      # 记忆管理
+│   │   └── middleware/        # 中间件
+│   │
+│   ├── types/                 # 类型定义
+│   │   ├── index.ts           # 核心类型
+│   │   └── literature.ts      # 文献系统类型
+│   │
+│   ├── utils/                 # 工具函数
+│   │   ├── logger.ts          # 日志工具
+│   │   ├── paths.ts           # 路径管理
+│   │   ├── sanitize.ts        # 输入清理
+│   │   ├── encryption.ts      # 加密工具
+│   │   └── backup-manager.ts  # 备份管理
+│   │
+│   ├── storage/
+│   │   └── session-store.ts   # 会话持久化
+│   │
+│   ├── literature/            # 文献系统
+│   │   ├── parsers/           # 文献解析器 (WoS, CNKI)
+│   │   ├── retrieval/         # 检索引擎
+│   │   │   ├── bm25-retriever.ts    # BM25 检索
+│   │   │   ├── vector-retriever.ts  # 向量检索
+│   │   │   ├── hybrid-engine.ts     # 混合检索引擎
+│   │   │   └── sentence-retriever.ts # 句子级检索
+│   │   ├── generation/        # 内容生成
+│   │   │   └── paragraph-generator.ts # 段落生成器
+│   │   ├── citation/          # 引用管理
+│   │   │   ├── citation-manager.ts
+│   │   │   └── formats/       # 引用格式 (APA, GB/T 7714)
+│   │   └── planning/
+│   │       └── sentence-planner.ts # 句子级规划
+│   │
+│   ├── bridge/                # 桥接模块
+│   │   ├── ai-provider-factory.ts
+│   │   └── chat-bridge/
+│   │
+│   └── orchestrator/
+│       └── task-orchestrator.ts # 任务编排
+│
+├── configs/                   # 配置文件
+│   ├── models.json            # 模型配置
+│   ├── journals.json          # 期刊配置
+│   └── literature-retrieval.json # 检索配置
+│
+├── skills/
+│   └── paper-writing/
+│       └── SKILL.md           # 论文写作技能定义
+│
+├── sci_writing_skills/        # 章节写作技能
+│   ├── 01_title_skill.md
+│   ├── 02_abstract_skill.md
+│   ├── 03_introduction_skill.md
+│   ├── 04_methods_skill.md
+│   ├── 05_results_skill.md
+│   ├── 06_figures_tables_skill.md
+│   ├── 07_discussion_skill.md
+│   ├── 08_conclusion_skill.md
+│   └── 09_additional_statements_skill.md
+│
+├── cloud/                     # 云服务模块
+│   ├── server/                # 云服务器
+│   ├── auth/                  # 认证模块
+│   ├── payment/               # 支付模块
+│   ├── storage/               # 存储模块
+│   └── database/              # 数据库
+│
+├── electron/                  # Electron 桌面应用
+│   └── main.ts
+│
+├── openclaw/                  # OpenClaw 集成
+│
+└── __tests__/                 # 测试文件
+    ├── agents/
+    └── workflows/
+```
+
+---
+
+## 核心架构
+
+### 两级 Agent 系统
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    Agent Collaboration                       │
+├─────────────────────────────────────────────────────────────┤
+│                                                              │
+│  ┌─────────────────────┐      ┌─────────────────────────┐   │
+│  │   PrimaryAgent      │      │    SecondaryAgent       │   │
+│  │   (大牛马)           │      │    (小牛马)              │   │
+│  ├─────────────────────┤      ├─────────────────────────┤   │
+│  │ • generateSkill()   │─────▶│ • writeSection()        │   │
+│  │ • qualityCheck()    │      │ • validateCitations()   │   │
+│  │ • generateSearch    │      │ • formatLatex()         │   │
+│  │   Queries()         │      │ • writeSectionWith      │   │
+│  │                     │      │   ParallelSearch()      │   │
+│  ├─────────────────────┤      ├─────────────────────────┤   │
+│  │ Model:              │      │ Models (by chapter):    │   │
+│  │ claude-sonnet-4.5   │      │ • introduction: gpt-4o  │   │
+│  │                     │      │ • discussion: claude    │   │
+│  │                     │      │ • methods: gpt-4o       │   │
+│  └─────────────────────┘      └─────────────────────────┘   │
+│                                                              │
+│  ┌─────────────────────────────────────────────────────┐    │
+│  │           AgentCollaborationWorkflow                 │    │
+│  ├─────────────────────────────────────────────────────┤    │
+│  │ 1. PrimaryAgent.generateSearchQueries()              │    │
+│  │ 2. LiteratureSearchAgent.executeSearchPipeline()     │    │
+│  │ 3. PrimaryAgent.generateSkill()                      │    │
+│  │ 4. SecondaryAgent.writeSectionWithParallelSearch()   │    │
+│  └─────────────────────────────────────────────────────┘    │
+│                                                              │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### 文献检索系统
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                 HybridRetrievalEngine                       │
+├─────────────────────────────────────────────────────────────┤
+│                                                              │
+│  ┌─────────────┐   ┌─────────────┐   ┌─────────────────┐   │
+│  │ BM25Retriever│   │VectorRetriever│   │MetadataFilter   │   │
+│  │ (关键词匹配) │   │ (语义相似度)  │   │ (元数据筛选)    │   │
+│  └──────┬──────┘   └──────┬──────┘   └────────┬────────┘   │
+│         │                 │                    │            │
+│         └────────────┬────┴────────────────────┘            │
+│                      ▼                                      │
+│              ┌───────────────┐                              │
+│              │  分数融合排序  │                              │
+│              │ combinedScore │                              │
+│              └───────────────┘                              │
+│                                                              │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### 对话流程状态机
+
+```typescript
+type ConversationPhase = 
+  | 'greeting'   // 问候 - 引导用户开始
+  | 'topic'      // 主题 - 收集论文主题
+  | 'journal'    // 期刊 - 确认目标期刊
+  | 'upload'     // 上传 - 收集研究材料
+  | 'planning'   // 规划 - 章节规划
+  | 'writing'    // 写作 - 执行写作
+  | 'complete';  // 完成 - 输出结果
+```
+
+---
+
+## 核心类型定义
+
+### 用户状态 (UserState)
+
+```typescript
+interface UserState {
+  id: string;
+  phase: ConversationPhase;
+  paperTopic?: string;
+  targetJournal?: string;
+  researchContent?: string;
+  researchContentPath?: string;
+  journalPapers?: string[];
+  literatureDb?: string;
+  chapterPlans: Map<string, ChapterPlan>;
+  currentChapter?: string;
+  writingProgress: Map<string, SectionProgress>;
+  createdAt: Date;
+  updatedAt: Date;
+  metadata?: Record<string, unknown>;
+}
+```
+
+### 章节规划 (ChapterPlan)
+
+```typescript
+interface ChapterPlan {
+  chapterName: string;
+  enabled: boolean;
+  writingFocus: string;
+  keyPoints: string[];
+  specialRequirements?: string;
+  wordCountTarget?: number;
+  customTitle?: string;
+}
+```
+
+### 写作 Skill (GeneratedSkill)
+
+```typescript
+interface GeneratedSkill {
+  sectionName: string;
+  userWritingFocus: string;
+  userKeyPoints: string[];
+  specialRequirements?: string;
+  overallStructure: {
+    paragraphCount: number;
+    mainSections: string[];
+    transitionStrategy: string;
+  };
+  paragraphDetails: Array<{
+    paragraphId: number;
+    title: string;
+    purpose: string;
+    contentOutline: string[];
+    wordCountEstimate: number;
+  }>;
+  executionInstructions: string[];
+}
+```
+
+### 文献检索结果 (RetrievedDocument)
+
+```typescript
+interface RetrievedDocument extends UnifiedLiterature {
+  bm25Score?: number;
+  vectorScore?: number;
+  rerankScore?: number;
+  combinedScore: number;
+  rank?: number;
+}
+
+interface UnifiedLiterature {
+  id: string;
+  title: string;
+  authors: Author[];
+  author: string;        // 显示用字符串
+  year: number;
+  abstract: string;
+  keywords: string[];
+  journal: string;
+  doi?: string;
+  source: 'wos' | 'cnki';
+  embedding?: number[];
+}
 ```
 
 ---
@@ -34,6 +299,7 @@ pnpm start:cli         # CLI 生产模式
 ## 代码风格
 
 ### TypeScript 规范
+
 - **严格模式**: 启用 `strict: true`
 - **模块**: CommonJS (`module: "CommonJS"`)
 - **目标**: ES2022
@@ -45,9 +311,9 @@ pnpm start:cli         # CLI 生产模式
 |------|------|------|
 | 类/接口 | PascalCase | `PrimaryAgent`, `UserState` |
 | 函数/变量 | camelCase | `generateSkill()`, `chapterPlans` |
-| 常量 | UPPER_SNAKE | `DEFAULT_MODEL` |
+| 常量 | UPPER_SNAKE | `DEFAULT_MODEL`, `SESSION_TTL_MS` |
 | 文件 | kebab-case | `primary-agent.ts`, `session-store.ts` |
-| 私有属性 | 下划线前缀 | `private apiClient`, `private dataDir` |
+| 私有属性 | 无前缀 | `private apiClient`, `private dataDir` |
 
 ### 导入顺序
 
@@ -58,76 +324,24 @@ import * as path from 'path';
 
 // 2. 第三方库
 import { z } from 'zod';
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 
 // 3. 项目模块 (相对路径)
 import { logger } from '../src/utils/logger';
-import type { UserState, ChapterPlan } from '../types';
-```
-
-### 类型定义
-
-```typescript
-// 使用 interface 定义对象类型
-export interface ChapterPlan {
-  chapterName: string;
-  writingFocus: string;
-  keyPoints: string[];
-  specialRequirements?: string;  // 可选属性用 ?
-}
-
-// 使用 type 定义联合类型或工具类型
-export type ConversationPhase = 
-  | 'greeting' | 'topic' | 'journal' 
-  | 'upload' | 'planning' | 'writing' | 'complete';
-
-// 使用 Zod 进行运行时验证
-export const ChapterPlanSchema = z.object({
-  chapterName: z.string(),
-  writingFocus: z.string(),
-  keyPoints: z.array(z.string()),
-});
+import type { UserState, ChapterPlan } from '../src/types';
 ```
 
 ---
 
-## 核心架构
-
-### 两级 Agent 系统
-
-```
-PrimaryAgent (一级 AI)          SecondaryAgent (二级 AI)
-├── generateSkill()              ├── writeSection()
-├── qualityCheck()               ├── addCitations()
-└── 模型: claude-sonnet-4.5      └── 模型: gpt-4o / claude
-```
-
-### 状态管理
+## 日志规范
 
 ```typescript
-interface UserState {
-  phase: ConversationPhase;           // 当前阶段
-  paperTopic?: string;                // 论文主题
-  targetJournal?: string;             // 目标期刊
-  chapterPlans: Map<string, ChapterPlan>;  // 章节规划
-  writingProgress: Map<string, SectionProgress>; // 写作进度
-}
-```
+import { logger } from '../src/utils/logger';
 
-### 文件结构
-
-```
-scholar-claw/
-├── agents/          # AI Agent 实现
-├── workflows/       # 对话流程管理
-├── src/
-│   ├── types/       # 类型定义 (index.ts)
-│   ├── utils/       # 工具函数 (logger.ts)
-│   ├── storage/     # 数据持久化
-│   └── server/      # 服务器入口
-├── configs/         # 配置文件 (models.json)
-├── skills/          # 技能定义 (paper-writing/)
-└── __tests__/       # 测试文件
+logger.debug('详细调试信息');    // 仅 DEBUG=1 时输出
+logger.info('流程进度');         // 正常信息
+logger.warn('需要注意的情况');   // 警告
+logger.error('错误', error);    // 错误
 ```
 
 ---
@@ -156,30 +370,17 @@ interface ErrorResponse {
 
 ---
 
-## 日志规范
-
-```typescript
-import { logger } from '../src/utils/logger';
-
-logger.debug('详细调试信息');    // 仅 DEBUG=1 时输出
-logger.info('流程进度');         // 正常信息
-logger.warn('需要注意的情况');   // 警告
-logger.error('错误', error);    // 错误
-```
-
----
-
 ## 测试规范
 
 ```typescript
-// 使用 Vitest
 import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { PrimaryAgent } from '../../agents/primary-agent';
 
 describe('PrimaryAgent', () => {
   let agent: PrimaryAgent;
   
   const mockApiClient = {
-    chat: vi.fn().mockResolvedValue('response'),
+    chat: vi.fn().mockResolvedValue('{"sectionName":"test",...}'),
   };
 
   beforeEach(() => {
@@ -198,12 +399,25 @@ describe('PrimaryAgent', () => {
 ## 配置文件
 
 ### configs/models.json
+
 ```json
 {
-  "primary": { "model": "claude-sonnet-4.5", "temperature": 0.7 },
+  "primary": {
+    "model": "claude-sonnet-4-5",
+    "temperature": 0.7,
+    "maxTokens": 4000
+  },
   "secondary": {
     "introduction": { "model": "gpt-4o", "temperature": 0.7 },
-    "discussion": { "model": "claude-sonnet-4.5", "temperature": 0.7 }
+    "methods": { "model": "gpt-4o", "temperature": 0.7 },
+    "results": { "model": "gpt-4o", "temperature": 0.7 },
+    "discussion": { "model": "claude-sonnet-4-5", "temperature": 0.7 },
+    "abstract": { "model": "gpt-4o", "temperature": 0.5 },
+    "conclusion": { "model": "claude-sonnet-4-5", "temperature": 0.7 }
+  },
+  "fallback": {
+    "model": "gpt-4o",
+    "temperature": 0.7
   }
 }
 ```
@@ -212,11 +426,28 @@ describe('PrimaryAgent', () => {
 
 ## 重要提醒
 
-- **不要**硬编码 API Key，使用 `.env` 文件
-- **必须**处理用户中断和进度保存
+- **不要**硬编码 API Key，使用 `.env` 文件或环境变量
+- **必须**处理用户中断和进度保存 (SessionStore)
 - **必须**使用 Zod 验证外部输入
-- **优先**使用 `console.log`/`logger` 而非复杂日志库
+- **优先**使用 `logger` 而非 `console.log`
 - **保持**函数简洁，单一职责
+- **引用验证**: 二级 AI 会自动验证引用的真实性，移除无效引用
+
+---
+
+## 环境变量
+
+```bash
+# .env 文件示例
+API_URL=https://api.example.com/v1
+API_KEY=your-api-key
+PRIMARY_MODEL=qwen3.5-plus
+EMBEDDING_MODEL=text-embedding-3-small
+TAVILY_API_KEY=your-tavily-key
+EXA_API_KEY=your-exa-key
+PORT=18799
+DEBUG=1
+```
 
 ---
 

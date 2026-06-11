@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Scholar Harness - 登录</title>
+  <link rel="stylesheet" href="login.css">
+</head>
+<body>
+  <div class="login-container">
+    <!-- Logo区域 -->
+    <div class="logo-section">
+      <div class="logo-icon">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M2 4.5A2.5 2.5 0 0 1 4.5 2H11v18H4.5A2.5 2.5 0 0 0 2 22z"></path>
+          <path d="M22 4.5A2.5 2.5 0 0 0 19.5 2H13v18h6.5A2.5 2.5 0 0 1 22 22z"></path>
+        </svg>
+      </div>
+      <h1 class="logo-title">Scholar Harness</h1>
+      <p class="logo-subtitle">学术论文写作助手</p>
+    </div>
+    
+    <!-- 登录表单 -->
+    <form id="login-form" class="login-form">
+      <div class="form-group">
+        <label for="email">邮箱</label>
+        <input 
+          type="email" 
+          id="email" 
+          name="email" 
+          placeholder="请输入您的邮箱"
+          required
+          autocomplete="email"
+        >
+      </div>
+      
+      <div class="form-group">
+        <label for="password">密码</label>
+        <input 
+          type="password" 
+          id="password" 
+          name="password" 
+          placeholder="请输入密码"
+          required
+          autocomplete="current-password"
+        >
+      </div>
+      
+      <!-- 授权码/内测码输入 (可选) -->
+      <div class="form-group beta-code-group">
+        <label for="beta-code">授权码/内测码 <span class="optional-label">(可选)</span></label>
+        <div class="beta-code-input-wrapper">
+          <input 
+            type="text" 
+            id="beta-code" 
+            name="beta-code" 
+            placeholder="输入授权码/内测码"
+            maxlength="20"
+            autocomplete="off"
+            class="beta-code-input"
+          >
+          <button type="button" id="validate-beta-btn" class="validate-beta-btn">验证</button>
+        </div>
+        <div id="beta-code-result" class="beta-code-result" style="display: none;"></div>
+        <p class="beta-code-hint">已有账号但未激活使用权限？填写授权码登录时可激活</p>
+      </div>
+      
+      <!-- 错误提示 -->
+      <div id="error-message" class="error-message" style="display: none;"></div>
+      
+      <!-- 成功提示 (授权码激活) -->
+      <div id="success-message" class="success-message" style="display: none;"></div>
+      
+      <!-- 登录按钮 -->
+      <button type="submit" id="login-btn" class="login-btn">
+        <span class="btn-text">登录</span>
+        <span class="btn-loading" style="display: none;">
+          <span class="spinner"></span>
+          登录中...
+        </span>
+      </button>
+    </form>
+    
+    <!-- 底部链接 -->
+    <div class="footer-links">
+      <p>还没有账号？</p>
+      <a href="#" id="register-link">前往网站注册</a>
+      <span class="separator">|</span>
+      <a href="#" id="forgot-password-link">忘记密码？</a>
+    </div>
+    
+    <!-- 授权码获取入口 -->
+    <div class="purchase-section login-hidden-section">
+      <div class="purchase-divider"></div>
+      <p class="purchase-title">获取授权码/内测码</p>
+      <div class="plan-prices">
+        <span class="plan-price">月度</span>
+        <span class="plan-price-divider">·</span>
+        <span class="plan-price">季度</span>
+        <span class="plan-price-divider">·</span>
+        <span class="plan-price">年度</span>
+      </div>
+      <a href="#" id="purchase-link" class="purchase-link">联系获取授权码 →</a>
+    </div>
+    
+    <!-- 离线提示 -->
+    <div id="offline-notice" class="offline-notice" style="display: none;">
+      <div class="notice-icon">⚠️</div>
+      <p>网络连接失败</p>
+      <p class="notice-detail">请检查网络连接后重试</p>
+    </div>
+  </div>
+  
+  <!-- 脚本 -->
+  <script src="login.js"></script>
+</body>
+</html>

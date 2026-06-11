@@ -17,7 +17,7 @@ if not exist node_modules (
     exit /b 1
 )
 
-echo [1/2] Checking build...
+echo [1/3] Checking build...
 if not exist "dist\src\server\local-server.js" (
     echo Building project...
     call npm run build
@@ -34,11 +34,23 @@ if not exist "dist\src\server\local-server.js" (
 )
 echo.
 
-echo [2/2] Starting server...
+echo [2/3] Starting OpenClaw service (port 19222)...
+cd /d "%~dp0openclaw"
+if not exist node_modules (
+    echo Installing OpenClaw dependencies...
+    call npm install
+)
+start "OpenClaw Service" cmd /c "node index.js serve --port 19222"
+echo OK: OpenClaw service started
+cd /d "%~dp0"
+echo.
+
+echo [3/3] Starting ScholarClaw server...
 echo.
 echo =======================================
-echo  Server running at:
-echo  http://localhost:18789
+echo  Services running:
+echo  - OpenClaw:  http://localhost:19222
+echo  - ScholarClaw: http://localhost:18789
 echo =======================================
 echo.
 echo Press Ctrl+C to stop

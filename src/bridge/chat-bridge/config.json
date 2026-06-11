@@ -1,0 +1,31 @@
+{
+  "mode": "api",
+  "chat": {
+    "chat_url": "",
+    "credentials": {
+      "email": "",
+      "password": ""
+    }
+  },
+  "browser": {
+    "profile": "chrome",
+    "timeout_ms": 300000,
+    "wait_for_response_ms": 240000
+  },
+  "service": {
+    "enabled": true,
+    "port": 19222
+  },
+  "primary": {
+    "api_url": "",
+    "api_key": "",
+    "model": "claude-sonnet-4-5",
+    "description": "大牛马 - 规划、Skill生成、写作"
+  },
+  "secondary": {
+    "api_url": "",
+    "api_key": "",
+    "model": "gpt-4o",
+    "description": "小牛马 - 引用验证、更新记忆"
+  }
+}

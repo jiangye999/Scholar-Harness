@@ -1,3 +1,5 @@
+import * as fs from 'fs';
+import * as path from 'path';
 import type { UnifiedLiterature, BM25Config } from '../../types/literature';
 
 interface BM25Document {
@@ -39,10 +41,10 @@ export class BM25Retriever {
   addDocument(lit: UnifiedLiterature): void {
     const fields = {
       title: lit.title,
-      keywords: lit.keywords.join(' '),
-      abstract: lit.abstract,
-      authors: lit.authors.map(a => a.name).join(' '),
-      journal: lit.journal,
+      keywords: [...(lit.keywords || []), ...(lit.aiKeywords || [])].join(' '),
+      abstract: lit.abstract || '',
+      authors: (lit.authors || []).map(a => a.name).join(' '),
+      journal: lit.journal || '',
     };
 
     const tokens: string[] = [];
@@ -161,5 +163,84 @@ export class BM25Retriever {
     this.idf.clear();
     this.avgDocLength = 0;
     this.docCount = 0;
+  }
+
+  /**
+   * 保存 BM25 索引到文件
+   */
+  saveIndex(indexPath: string): void {
+    const indexData = {
+      version: 1,
+      timestamp: Date.now(),
+      config: this.config,
+      avgDocLength: this.avgDocLength,
+      docCount: this.docCount,
+      idf: Array.from(this.idf.entries()),
+      documents: Array.from(this.documents.entries()).map(([id, doc]) => ({
+        id,
+        tokens: doc.tokens,
+        termFreq: Array.from(doc.termFreq.entries()),
+        docLength: doc.docLength,
+        fieldLengths: doc.fieldLengths,
+      })),
+    };
+
+    const dir = path.dirname(indexPath);
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+
+    fs.writeFileSync(indexPath, JSON.stringify(indexData), 'utf-8');
+    console.log(`[BM25Retriever] Saved index to ${indexPath} (${this.documents.size} documents)`);
+  }
+
+  /**
+   * 从文件加载 BM25 索引
+   */
+  loadIndex(indexPath: string): boolean {
+    if (!fs.existsSync(indexPath)) {
+      console.log(`[BM25Retriever] Index file not found: ${indexPath}`);
+      return false;
+    }
+
+    try {
+      const content = fs.readFileSync(indexPath, 'utf-8');
+      const indexData = JSON.parse(content);
+
+      if (indexData.version !== 1) {
+        console.log(`[BM25Retriever] Unsupported index version: ${indexData.version}`);
+        return false;
+      }
+
+      this.config = { ...this.config, ...indexData.config };
+      this.avgDocLength = indexData.avgDocLength;
+      this.docCount = indexData.docCount;
+
+      this.idf.clear();
+      for (const [term, score] of indexData.idf) {
+        this.idf.set(term, score);
+      }
+
+      this.documents.clear();
+      for (const docData of indexData.documents) {
+        const termFreq = new Map<string, number>();
+        for (const [term, freq] of docData.termFreq) {
+          termFreq.set(term, freq);
+        }
+        this.documents.set(docData.id, {
+          id: docData.id,
+          tokens: docData.tokens,
+          termFreq,
+          docLength: docData.docLength,
+          fieldLengths: docData.fieldLengths,
+        });
+      }
+
+      console.log(`[BM25Retriever] Loaded index from ${indexPath} (${this.documents.size} documents, timestamp: ${new Date(indexData.timestamp).toLocaleString()})`);
+      return true;
+    } catch (error) {
+      console.error(`[BM25Retriever] Failed to load index:`, error);
+      return false;
+    }
   }
 }

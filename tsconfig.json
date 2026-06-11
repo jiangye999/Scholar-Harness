@@ -11,10 +11,10 @@
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
     "resolveJsonModule": true,
-    "declaration": true,
-    "declarationMap": true,
-    "sourceMap": true
+    "declaration": false,
+    "sourceMap": false,
+    "types": ["node"]
   },
-  "include": ["src/**/*", "agents/**/*", "workflows/**/*", "integrations/**/*", "skills/**/*", "configs/**/*"],
-  "exclude": ["node_modules", "dist", "__tests__"]
+  "include": ["src/**/*", "agents/**/*", "workflows/**/*", "skills/**/*", "configs/**/*"],
+  "exclude": ["node_modules", "dist", "__tests__", "cloud"]
 }

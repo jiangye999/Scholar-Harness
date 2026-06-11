@@ -46,10 +46,14 @@ export abstract class BaseParser {
     });
   }
 
+  /**
+   * 解析关键词字符串为数组
+   * 支持中英文分隔符：英文分号(;)、英文逗号(,)、中文分号(；)、中文逗号(，)
+   */
   protected parseKeywords(keywordString: string): string[] {
     if (!keywordString) return [];
     return keywordString
-      .split(/[;,.]/)
+      .split(/[;，,；]/)  // 支持中英文标点
       .map(k => k.trim())
       .filter(k => k.length > 0);
   }

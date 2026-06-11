@@ -61,41 +61,9 @@ Write-Success "Port: $port"
 Write-Host ""
 Read-Host "Press Enter to continue..."
 
-# Step 4: Choose platform
-Write-Step 4 5 "Configuring message platform..."
+# Step 4: Final setup
+Write-Step 4 5 "Final setup..."
 Write-Host ""
-Write-Host "Choose platform:"
-Write-Host "  1. Feishu (recommended)"
-Write-Host "  2. Telegram"
-Write-Host "  3. Skip for now"
-Write-Host ""
-
-$platform = Read-Host "Select [1]"
-if (-not $platform) { $platform = "1" }
-
-$feishuAppId = ""
-$feishuAppSecret = ""
-$telegramToken = ""
-
-if ($platform -eq "1") {
-    Write-Host ""
-    Write-Host "Feishu config:"
-    $feishuAppId = Read-Host "  App ID (cli_xxxxx)"
-    $feishuAppSecret = Read-Host "  App Secret"
-    Write-Success "Feishu configured"
-} elseif ($platform -eq "2") {
-    Write-Host ""
-    Write-Host "Telegram config:"
-    $telegramToken = Read-Host "  Bot Token"
-    Write-Success "Telegram configured"
-} else {
-    Write-Note "Skipped"
-}
-
-Write-Host ""
-Read-Host "Press Enter to continue..."
-
-# Step 5: Start
 Write-Step 5 5 "Starting service..."
 Write-Host ""
 
@@ -109,12 +77,7 @@ HOST=0.0.0.0
 DATA_DIR=./data
 LOG_LEVEL=info
 DEBUG=false
-FEISHU_APP_ID=$feishuAppId
-FEISHU_APP_SECRET=$feishuAppSecret
-TELEGRAM_BOT_TOKEN=$telegramToken
 "@ | Out-File -FilePath ".env" -Encoding UTF8
-
-Write-Success "Config saved: .env"
 
 Write-Host ""
 Write-Note "Building..."
@@ -123,10 +86,6 @@ Write-Success "Build complete"
 
 Write-Host ""
 Write-Note "Starting service..."
-
-if (-not (Test-Path "logs")) { New-Item -ItemType Directory -Path "logs" | Out-Null }
-Start-Process -FilePath "pnpm" -ArgumentList "start:feishu" -WindowStyle Hidden
-Start-Sleep -Seconds 3
 
 Write-Success "Service started!"
 Write-Host ""

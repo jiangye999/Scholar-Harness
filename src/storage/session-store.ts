@@ -1,10 +1,27 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import { logger } from '../utils/logger';
+import { sanitizeUserId } from '../utils/paths';
 import type { UserState } from '../types';
 
 // 会话默认过期时间（毫秒）- 7天
 const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const DEFAULT_DRAFT_CHAPTER_NAME = 'section';
+
+export function sanitizeDraftChapterName(chapterName: unknown): string {
+  const raw = String(chapterName || DEFAULT_DRAFT_CHAPTER_NAME).trim();
+  const cleaned = raw
+    .replace(/[/\\:<>|"?*\x00-\x1F]/g, '_')
+    .replace(/\.\.+/g, '.')
+    .replace(/^\.+/, '')
+    .replace(/[^\p{L}\p{N}._-]+/gu, '_')
+    .replace(/_+/g, '_')
+    .slice(0, 80);
+  if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(cleaned)) {
+    return `${cleaned}_`;
+  }
+  return cleaned || DEFAULT_DRAFT_CHAPTER_NAME;
+}
 
 export class SessionStore {
   private dataDir: string;
@@ -14,7 +31,7 @@ export class SessionStore {
   }
 
   private getFilePath(userId: string): string {
-    return path.join(this.dataDir, `${userId}.json`);
+    return path.join(this.dataDir, `${sanitizeUserId(userId)}.json`);
   }
 
   async save(userId: string, state: UserState): Promise<void> {
@@ -114,23 +131,30 @@ export class SessionStore {
 
   // 保存草稿到独立文件
   async saveDraft(userId: string, chapterName: string, content: string): Promise<void> {
-    const userDraftsDir = path.join(this.dataDir, userId, 'drafts');
+    const safeUserId = sanitizeUserId(userId);
+    const safeChapterName = sanitizeDraftChapterName(chapterName);
+    const userDraftsDir = path.join(this.dataDir, safeUserId, 'drafts');
     await fs.mkdir(userDraftsDir, { recursive: true });
     
-    const draftFile = path.join(userDraftsDir, `${chapterName}.json`);
+    const draftFile = path.join(userDraftsDir, `${safeChapterName}.json`);
     const draftData = {
-      chapterName,
+      chapterName: safeChapterName,
       content,
       savedAt: new Date().toISOString(),
     };
     
     await fs.writeFile(draftFile, JSON.stringify(draftData, null, 2), 'utf-8');
-    logger.info(`[SessionStore] Draft saved for user ${userId}, chapter: ${chapterName}`);
+    logger.info(`[SessionStore] Draft saved for user ${safeUserId}, chapter: ${safeChapterName}`);
   }
 
   // 加载草稿
   async loadDraft(userId: string, chapterName: string): Promise<{ content: string; savedAt: string } | null> {
-    const draftFile = path.join(this.dataDir, userId, 'drafts', `${chapterName}.json`);
+    const draftFile = path.join(
+      this.dataDir,
+      sanitizeUserId(userId),
+      'drafts',
+      `${sanitizeDraftChapterName(chapterName)}.json`
+    );
     
     try {
       const content = await fs.readFile(draftFile, 'utf-8');
@@ -149,7 +173,7 @@ export class SessionStore {
 
   // 列出所有草稿
   async listDrafts(userId: string): Promise<Array<{ chapterName: string; savedAt: string }>> {
-    const userDraftsDir = path.join(this.dataDir, userId, 'drafts');
+    const userDraftsDir = path.join(this.dataDir, sanitizeUserId(userId), 'drafts');
     
     try {
       const files = await fs.readdir(userDraftsDir);
@@ -160,7 +184,7 @@ export class SessionStore {
         const content = await fs.readFile(filePath, 'utf-8');
         const data = JSON.parse(content);
         drafts.push({
-          chapterName: data.chapterName,
+          chapterName: sanitizeDraftChapterName(data.chapterName || path.basename(file, '.json')),
           savedAt: data.savedAt,
         });
       }
@@ -176,7 +200,12 @@ export class SessionStore {
 
   // 删除草稿
   async deleteDraft(userId: string, chapterName: string): Promise<void> {
-    const draftFile = path.join(this.dataDir, userId, 'drafts', `${chapterName}.json`);
+    const draftFile = path.join(
+      this.dataDir,
+      sanitizeUserId(userId),
+      'drafts',
+      `${sanitizeDraftChapterName(chapterName)}.json`
+    );
     try {
       await fs.unlink(draftFile);
     } catch (error) {

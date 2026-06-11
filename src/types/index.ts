@@ -2,11 +2,48 @@ export interface APIClient {
   chat(options: ChatOptions): Promise<string>;
 }
 
-export interface ChatOptions {
+/**
+ * 单个 Agent 的 API 配置
+ */
+export interface AgentApiConfig {
+  api_url: string;
+  api_key: string;
   model: string;
+  vision_model?: string;
+  description?: string;
+}
+
+export interface ChatOptions {
+  model?: string;
   messages: Message[];
   temperature?: number;
   maxTokens?: number;
+  onProgress?: (chunk: string) => void;
+  newPage?: boolean;
+  /**
+   * 强制指定使用的 provider/agent
+   * - 'browser': 强制使用浏览器模式（chat_url）- 已弃用
+   * - 'api': 强制使用 API 模式
+   * - 'primary': 使用大牛马 API 配置（规划、Skill生成）
+   * - 'secondary': 使用小牛马 API 配置（执行写作）
+   * - 'codex': 使用本机 Codex CLI
+   * - undefined: 自动选择
+   */
+  forceProvider?: 'browser' | 'api' | 'primary' | 'secondary' | 'codex';
+  /**
+   * forceProvider='codex' 时禁用小牛马降级；用于长任务避免 Codex 超时后把超大上下文再发给小牛马。
+   */
+  disableFallback?: boolean;
+  /**
+   * 单次 Codex CLI 调用超时，毫秒。
+   */
+  codexTimeoutMs?: number;
+  /**
+   * 小牛马 API 配置（来自前端 ⚙️ API 设置）
+   * 当 forceProvider='api' 或 'secondary' 时优先使用这些配置
+   */
+  apiUrl?: string;
+  apiKey?: string;
 }
 
 export interface Message {
@@ -23,10 +60,15 @@ export interface MessageHandler {
 export type ConversationPhase = 
   | 'greeting'
   | 'topic'
+  | 'research'
   | 'journal'
   | 'upload'
   | 'planning'
   | 'writing'
+  | 'integrity'
+  | 'review'
+  | 'revision'
+  | 'final'
   | 'complete';
 
 export interface ChapterPlan {
@@ -72,7 +114,6 @@ export interface GeneratedSkill {
   userKeyPoints: string[];
   specialRequirements?: string;
   wordCountTarget?: number;
-  styleGuideContent: string;
   overallStructure: {
     paragraphCount: number;
     mainSections: string[];
@@ -92,7 +133,6 @@ export interface WritingInput {
   skill: GeneratedSkill;
   chapterPlan: ChapterPlan;
   researchContent: string;
-  styleGuide?: string;
   literatureRetriever?: LiteratureRetriever;
 }
 

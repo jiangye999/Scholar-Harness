@@ -1,0 +1,283 @@
+'use client';
+
+import { Suspense, useEffect, useState } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
+import Link from 'next/link';
+
+interface PaymentStatus {
+  status: 'pending' | 'processing' | 'success' | 'failed';
+  orderId: string;
+}
+
+const planInfo: Record<string, { name: string; price: number; validity: string }> = {
+  monthly: { name: '月度套餐', price: 49, validity: '30天' },
+  quarterly: { name: '季度套餐', price: 129, validity: '90天' },
+  yearly: { name: '年度套餐', price: 299, validity: '365天' },
+  lifetime: { name: '永久套餐', price: 999, validity: '永久' }
+};
+
+function PaymentPageContent() {
+  const searchParams = useSearchParams();
+  const orderId = searchParams.get('orderId') || '';
+  const router = useRouter();
+
+  const [paymentMethod, setPaymentMethod] = useState<'wechat' | 'alipay'>('wechat');
+  const [paymentStatus, setPaymentStatus] = useState<PaymentStatus>({
+    status: 'pending',
+    orderId
+  });
+  const [countdown, setCountdown] = useState(180); // 3 minutes countdown
+
+  // Mock payment status polling
+  useEffect(() => {
+    if (paymentStatus.status !== 'pending') return;
+
+    const pollInterval = setInterval(async () => {
+      // Mock: simulate payment success after 5-10 seconds
+      const mockDelay = Math.random() * 5000 + 5000;
+      
+      setTimeout(() => {
+        // 90% success rate for demo
+        const success = Math.random() > 0.1;
+        setPaymentStatus({
+          status: success ? 'success' : 'failed',
+          orderId
+        });
+      }, mockDelay);
+    }, 3000);
+
+    return () => clearInterval(pollInterval);
+  }, [paymentStatus.status, orderId]);
+
+  // Countdown timer
+  useEffect(() => {
+    if (paymentStatus.status !== 'pending') return;
+
+    const timer = setInterval(() => {
+      setCountdown(prev => {
+        if (prev <= 1) {
+          setPaymentStatus({ status: 'failed', orderId });
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+
+    return () => clearInterval(timer);
+  }, [paymentStatus.status, orderId]);
+
+  // Redirect on success
+  useEffect(() => {
+    if (paymentStatus.status === 'success') {
+      setTimeout(() => {
+        router.push('/dashboard');
+      }, 3000);
+    }
+  }, [paymentStatus.status, router]);
+
+  const getPlanData = () => {
+    // Extract plan type from orderId or default to quarterly
+    const planType = orderId.includes('monthly') ? 'monthly' :
+                     orderId.includes('quarterly') ? 'quarterly' :
+                     orderId.includes('yearly') ? 'yearly' :
+                     orderId.includes('lifetime') ? 'lifetime' : 'quarterly';
+    return planInfo[planType];
+  };
+
+  const planData = getPlanData();
+
+  const renderStatusIcon = () => {
+    switch (paymentStatus.status) {
+      case 'pending':
+        return (
+          <div className="w-16 h-16 bg-blue-100 rounded-full flex items-center justify-center animate-pulse">
+            <svg className="w-8 h-8 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+          </div>
+        );
+      case 'success':
+        return (
+          <div className="w-16 h-16 bg-green-100 rounded-full flex items-center justify-center">
+            <svg className="w-8 h-8 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+            </svg>
+          </div>
+        );
+      case 'failed':
+        return (
+          <div className="w-16 h-16 bg-red-100 rounded-full flex items-center justify-center">
+            <svg className="w-8 h-8 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </div>
+        );
+      default:
+        return null;
+    }
+  };
+
+  if (paymentStatus.status === 'success') {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gray-50 py-12 px-4">
+        <div className="max-w-md w-full text-center">
+          {renderStatusIcon()}
+          <h2 className="text-3xl font-bold text-gray-900 mt-6 mb-2">支付成功</h2>
+          <p className="text-gray-600 mb-4">感谢您的购买！正在跳转到个人中心...</p>
+          <div className="bg-green-50 border border-green-200 rounded-lg p-4 text-green-700">
+            套餐: {planData.name} | 价格: ¥{planData.price}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (paymentStatus.status === 'failed') {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gray-50 py-12 px-4">
+        <div className="max-w-md w-full text-center">
+          {renderStatusIcon()}
+          <h2 className="text-3xl font-bold text-gray-900 mt-6 mb-2">支付失败</h2>
+          <p className="text-gray-600 mb-4">支付未完成或已超时，请重新尝试</p>
+          <div className="space-y-3">
+            <button
+              onClick={() => {
+                setPaymentStatus({ status: 'pending', orderId });
+                setCountdown(180);
+              }}
+              className="w-full py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-medium transition"
+            >
+              重新支付
+            </button>
+            <Link
+              href="/pricing"
+              className="block w-full py-3 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-lg font-medium transition"
+            >
+              返回套餐页面
+            </Link>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen bg-gray-50 py-12 px-4 sm:px-6 lg:px-8">
+      <div className="max-w-3xl mx-auto">
+        {/* Header */}
+        <div className="text-center mb-8">
+          <h1 className="text-3xl font-bold text-gray-900 mb-2">订单支付</h1>
+          <p className="text-gray-600">请使用微信或支付宝扫码支付</p>
+        </div>
+
+        <div className="grid md:grid-cols-2 gap-8">
+          {/* Order Info */}
+          <div className="bg-white rounded-xl shadow-lg border border-gray-200 p-6">
+            <h2 className="text-xl font-bold text-gray-900 mb-6">订单信息</h2>
+            <div className="space-y-3">
+              <div className="flex justify-between">
+                <span className="text-gray-600">套餐名称</span>
+                <span className="text-gray-900 font-medium">{planData.name}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-gray-600">价格</span>
+                <span className="text-2xl font-bold text-blue-600">¥{planData.price}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-gray-600">有效期</span>
+                <span className="text-gray-900 font-medium">{planData.validity}</span>
+              </div>
+              <div className="flex justify-between pt-3 border-t border-gray-200">
+                <span className="text-gray-600">订单号</span>
+                <span className="text-gray-900 font-medium text-sm">{orderId}</span>
+              </div>
+            </div>
+
+            {/* Countdown */}
+            <div className="mt-6 bg-blue-50 rounded-lg p-4">
+              <div className="flex items-center justify-center gap-2">
+                <svg className="w-5 h-5 text-blue-600 animate-spin" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+                <span className="text-blue-700 font-medium">
+                  请在 {Math.floor(countdown / 60)}:{(countdown % 60).toString().padStart(2, '0')} 内完成支付
+                </span>
+              </div>
+            </div>
+          </div>
+
+          {/* QR Code */}
+          <div className="bg-white rounded-xl shadow-lg border border-gray-200 p-6">
+            {/* Payment Method Selection */}
+            <div className="flex gap-4 mb-6">
+              <button
+                onClick={() => setPaymentMethod('wechat')}
+                className={`flex-1 py-3 rounded-lg font-medium transition ${
+                  paymentMethod === 'wechat'
+                    ? 'bg-green-600 text-white'
+                    : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                }`}
+              >
+                微信支付
+              </button>
+              <button
+                onClick={() => setPaymentMethod('alipay')}
+                className={`flex-1 py-3 rounded-lg font-medium transition ${
+                  paymentMethod === 'alipay'
+                    ? 'bg-blue-600 text-white'
+                    : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                }`}
+              >
+                支付宝
+              </button>
+            </div>
+
+            {/* QR Code Placeholder */}
+            <div className="bg-gray-100 rounded-xl p-8 flex items-center justify-center">
+              <div className="text-center">
+                {/* Mock QR Code */}
+                <div className="w-48 h-48 bg-white border-4 border-gray-300 rounded-lg mx-auto mb-4 flex items-center justify-center">
+                  <div className="grid grid-cols-8 gap-1 p-4">
+                    {Array.from({ length: 64 }).map((_, i) => (
+                      <div
+                        key={i}
+                        className={`w-4 h-4 ${Math.random() > 0.5 ? 'bg-gray-800' : 'bg-white'}`}
+                      ></div>
+                    ))}
+                  </div>
+                </div>
+                <p className="text-gray-600 text-sm">请使用 {paymentMethod === 'wechat' ? '微信' : '支付宝'} 扫码支付</p>
+                <p className="text-blue-600 font-medium mt-2">¥{planData.price}</p>
+              </div>
+            </div>
+
+            {/* Status */}
+            <div className="mt-6 flex items-center justify-center gap-2 text-blue-600">
+              {renderStatusIcon()}
+              <span className="text-sm">正在等待支付...</span>
+            </div>
+          </div>
+        </div>
+
+        {/* Footer */}
+        <div className="mt-8 text-center text-sm text-gray-600">
+          <Link href="/pricing" className="text-blue-600 hover:text-blue-700">
+            返回套餐页面
+          </Link>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export default function PaymentPage() {
+  return (
+    <Suspense fallback={
+      <div className="min-h-screen flex items-center justify-center bg-gray-50">
+        <div className="text-gray-600">加载中...</div>
+      </div>
+    }>
+      <PaymentPageContent />
+    </Suspense>
+  );
+}

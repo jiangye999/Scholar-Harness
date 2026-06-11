@@ -38,6 +38,7 @@ export interface UnifiedLiterature {
   year: number;                  // 发表年份
   abstract: string;              // 摘要
   keywords: string[];            // 关键词
+  aiKeywords?: string[];          // AI 生成或人工合并关键词
   journal: string;               // 期刊/来源
   volume?: string;               // 卷号
   issue?: string;                // 期号
@@ -45,6 +46,7 @@ export interface UnifiedLiterature {
   doi?: string;                  // DOI
   documentType: DocumentType;    // 文献类型
   categories?: string[];         // 学科分类
+  documentCategories?: string[];  // 细分文献类别标签
   references?: string[];         // 参考文献列表（如果有）
   source: 'wos' | 'cnki';        // 数据来源
   rawData?: string;              // 原始数据（用于调试）
@@ -112,6 +114,7 @@ export interface MetadataFilters {
   authors?: string[];
   journals?: string[];
   categories?: string[];
+  aiKeywords?: string[];
   documentTypes?: DocumentType[];
 }
 
@@ -262,7 +265,7 @@ export interface RetrievalLogEntry {
  * 文献导入请求
  */
 export interface ImportRequest {
-  source: 'wos' | 'cnki';
+  source: 'wos' | 'cnki' | 'ris' | 'bib' | 'auto';
   filePath: string;
 }
 
@@ -279,6 +282,12 @@ export interface ImportResponse {
   }>;
   error?: string;
   errors?: string[];
+  /** 合规确认信息 */
+  compliance?: {
+    legal_source_confirmed: boolean;
+    confirmed_at: string;
+    disclaimer: string;
+  };
 }
 
 /**

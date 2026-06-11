@@ -1,0 +1,19 @@
+{
+  "name": "openclaw",
+  "version": "1.0.0",
+  "description": "Browser automation tool for AI Chat Bridge",
+  "main": "index.js",
+  "bin": {
+    "openclaw": "./index.js"
+  },
+  "scripts": {
+    "test": "node index.js --version"
+  },
+  "dependencies": {
+    "commander": "^11.1.0",
+    "playwright": "^1.58.2"
+  },
+  "engines": {
+    "node": ">=16.0.0"
+  }
+}

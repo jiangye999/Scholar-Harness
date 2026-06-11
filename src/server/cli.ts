@@ -1,4 +1,11 @@
-import 'dotenv/config';
+// 仅在开发环境加载 .env 文件
+if (process.env.NODE_ENV !== 'production' && !process.env.ELECTRON_RUN_AS_NODE) {
+  try {
+    require('dotenv/config');
+  } catch (e) {
+    // dotenv 模块不存在时忽略
+  }
+}
 import readline from 'readline';
 import { ConversationFlow } from '../../workflows/conversation-flow';
 import { HybridRetrievalEngine } from '../literature/retrieval';

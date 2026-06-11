@@ -1,0 +1,292 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Scholar Harness 使用指导手册</title>
+  <style>
+    @page { size: A4; margin: 18mm 16mm; }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      color: #17211b;
+      background: #ffffff;
+      font-family: "Microsoft YaHei", "Noto Sans CJK SC", Arial, sans-serif;
+      line-height: 1.68;
+      font-size: 12.5px;
+    }
+    h1, h2, h3 { color: #0f3f35; line-height: 1.28; margin: 0 0 10px; }
+    h1 { font-size: 31px; letter-spacing: 0.2px; }
+    h2 { font-size: 19px; margin-top: 26px; padding-top: 8px; border-top: 2px solid #dce8e2; }
+    h3 { font-size: 14.5px; margin-top: 14px; color: #15584b; }
+    p { margin: 6px 0 10px; }
+    ul, ol { margin: 6px 0 10px 20px; padding: 0; }
+    li { margin: 3px 0; }
+    table { width: 100%; border-collapse: collapse; margin: 10px 0 14px; page-break-inside: avoid; }
+    th, td { border: 1px solid #d7e2dc; padding: 7px 8px; vertical-align: top; }
+    th { background: #eef5f2; color: #123c33; text-align: left; }
+    code { font-family: Consolas, "Courier New", monospace; background: #eef5f2; padding: 1px 4px; border-radius: 3px; }
+    .cover {
+      min-height: 930px;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      border: 1px solid #d7e2dc;
+      padding: 42px;
+      background: linear-gradient(135deg, #f7faf8 0%, #eef6f2 52%, #ffffff 100%);
+      page-break-after: always;
+    }
+    .brand { color: #0b6b5c; font-weight: 700; font-size: 15px; margin-bottom: 14px; }
+    .subtitle { font-size: 18px; color: #405047; max-width: 620px; margin-top: 14px; }
+    .meta { margin-top: 42px; color: #52625a; font-size: 13px; }
+    .toc { page-break-after: always; }
+    .note {
+      border-left: 4px solid #0b6b5c;
+      background: #f2f8f5;
+      padding: 9px 11px;
+      margin: 10px 0 14px;
+    }
+    .warn {
+      border-left: 4px solid #b35b00;
+      background: #fff7ed;
+      padding: 9px 11px;
+      margin: 10px 0 14px;
+    }
+    .small { color: #5d6b63; font-size: 11.5px; }
+    .page-break { page-break-before: always; }
+  </style>
+</head>
+<body>
+  <section class="cover">
+    <div class="brand">Scholar Harness</div>
+    <h1>使用指导手册</h1>
+    <p class="subtitle">从账号配置、软件安装、文件导入到 Auto Research、一键写论文、讨论式写作、Meta 分析、文献计量、AI 文献管理与数据分析的完整操作说明。</p>
+    <div class="meta">
+      <p>适用版本：Scholar Harness 1.0.0</p>
+      <p>更新日期：2026-06-10</p>
+      <p>官网：https://scholarharness.com</p>
+      <p>支持邮箱：sjs@cau.edu.cn</p>
+    </div>
+  </section>
+
+  <section class="toc">
+    <h2>目录</h2>
+    <ol>
+      <li>产品定位与推荐工作流</li>
+      <li>账号、安装与首次配置</li>
+      <li>API、模型、PDF 解析与本地工具配置</li>
+      <li>文件导入：文献、PDF、数据表、Meta 编码表和文献计量数据</li>
+      <li>Auto Research 使用流程</li>
+      <li>一键写论文使用流程</li>
+      <li>讨论式写作与草稿管理</li>
+      <li>AI 文献管理与 PDF Wiki 论点库</li>
+      <li>Meta 分析全流程</li>
+      <li>文献计量分析全流程</li>
+      <li>数据分析与 R 语言作图</li>
+      <li>引用、证据溯源与常见问题</li>
+    </ol>
+  </section>
+
+  <h2>1. 产品定位与推荐工作流</h2>
+  <p>Scholar Harness 是面向科研论文全流程的本地优先 AI 学术工作台。它把文献管理、PDF 深度解析、句子级证据、Auto Research、论文写作、Meta 分析、文献计量、数据分析和 R 作图放在同一个项目上下文中。</p>
+  <div class="note">
+    推荐理解方式：不要把它当成单次聊天工具，而要把它当成一个科研项目工作台。先建立项目与资料库，再让 AI 基于项目资料进行调研、分析和写作。
+  </div>
+  <h3>推荐工作流</h3>
+  <ol>
+    <li>创建或选择项目，完成账号登录和 API 配置。</li>
+    <li>导入文献 PDF、WoS/CNKI 文献数据、实验数据表或 Meta 编码表。</li>
+    <li>使用 AI 文献管理解析 PDF，生成句子级论点库和论文一览图。</li>
+    <li>用 Auto Research 做选题审查、证据链检查、研究边界锁定和写作蓝图。</li>
+    <li>进入一键写论文或讨论式写作，调用项目资料、Auto Research 报告和证据库。</li>
+    <li>需要统计和图件时，使用 Meta 分析、文献计量或数据分析 + R 作图模块。</li>
+    <li>导出 Word、Markdown、图表包或报告，继续人工审阅和修改。</li>
+  </ol>
+
+  <h2>2. 账号、安装与首次配置</h2>
+  <h3>2.1 下载与安装</h3>
+  <ol>
+    <li>访问官网首页，点击“下载软件”。</li>
+    <li>下载 Windows 安装包 <code>scholar-harness-setup-1.0.0.exe</code>。</li>
+    <li>双击安装包，按安装向导选择安装位置。</li>
+    <li>首次启动时，Windows 可能提示未知发布者或安全提醒，确认来源为官网安装包后继续。</li>
+  </ol>
+  <h3>2.2 登录与账号</h3>
+  <ol>
+    <li>在官网注册账号，或使用已有账号登录。</li>
+    <li>桌面端启动后进入登录页，输入同一账号。</li>
+    <li>登录成功后，桌面端会连接本地服务和云端账号服务。</li>
+  </ol>
+  <h3>2.3 本地数据位置</h3>
+  <p>桌面端会在本机保存项目文件、上传文献、解析缓存、草稿和日志。常见位置：</p>
+  <table>
+    <tr><th>内容</th><th>说明</th></tr>
+    <tr><td><code>%APPDATA%\scholar-harness\data</code></td><td>本地主要数据目录，包括项目、上传文件、缓存和日志。</td></tr>
+    <tr><td>项目目录</td><td>每个项目隔离保存，便于长期管理课题资料。</td></tr>
+    <tr><td>论文草稿</td><td>可在软件内继续编辑、导出 Word 或 Markdown。</td></tr>
+  </table>
+
+  <h2>3. API、模型、PDF 解析与本地工具配置</h2>
+  <h3>3.1 AI API 配置</h3>
+  <ol>
+    <li>打开左下角设置或模型配置入口。</li>
+    <li>填写 API 地址，例如 <code>https://api.openai.com/v1</code> 或其他兼容 OpenAI 格式的服务地址。</li>
+    <li>填写 API Key，并选择主模型和辅助模型。</li>
+    <li>保存后执行一次测试对话，确认模型能正常返回内容。</li>
+  </ol>
+  <div class="warn">
+    API 地址通常只填写到 <code>/v1</code>，不要填写 <code>/chat/completions</code> 这样的端点路径。
+  </div>
+  <h3>3.2 Codex CLI 与本地写作链条</h3>
+  <p>部分高级写作、PDF Wiki 和 Auto Research 能力会调用 Codex CLI。若出现“Not inside a trusted directory”之类错误，请升级到包含修复的安装包；新版已在调用参数中加入仓库检查跳过逻辑。</p>
+  <h3>3.3 PDF 解析配置</h3>
+  <p>PDF 解析可使用本地解析、LiteParse、Marker、pdf-marker-md 或外部模型链路。建议先使用默认解析；遇到扫描版、图表多、正文提取差的 PDF，再切换更强的解析方式。</p>
+  <h3>3.4 R 语言与图件工具</h3>
+  <ol>
+    <li>进入 R 语言作图或数据分析模块。</li>
+    <li>点击检测 R 环境。</li>
+    <li>若未安装 R，可使用软件内的一键安装入口，或先从 R 官网安装。</li>
+    <li>生成 R 脚本后可直接执行，输出 PDF/PNG 图件。</li>
+  </ol>
+
+  <h2>4. 文件导入</h2>
+  <table>
+    <tr><th>文件类型</th><th>入口</th><th>用途</th></tr>
+    <tr><td>论文 PDF</td><td>AI 文献管理 / PDF Wiki</td><td>解析全文、图表、句子级论点、论文一览图，并供写作调用。</td></tr>
+    <tr><td>WoS / CNKI / RIS / BibTeX</td><td>文献库或文献计量入口</td><td>建立 embedding 文献库、文献计量数据库或写作参考库。</td></tr>
+    <tr><td>Excel / CSV 数据表</td><td>数据分析模块</td><td>统计分析、变量选择、显著性整理和 R 作图。</td></tr>
+    <tr><td>Meta 编码表</td><td>Meta 分析向导</td><td>效应量计算、模型设置、森林图、漏斗图和敏感性分析。</td></tr>
+    <tr><td>实验资料 / 研究说明</td><td>项目记忆 / 对话上传</td><td>沉淀研究背景、试验设计、数据总结和写作上下文。</td></tr>
+  </table>
+  <h3>导入建议</h3>
+  <ul>
+    <li>一个项目只放同一研究主题相关资料，避免不同课题资料混杂。</li>
+    <li>PDF 文件名尽量包含作者、年份或主题，便于后续人工识别。</li>
+    <li>Meta 编码表和数据表应保留清晰列名，单位和处理组信息不要写在备注里。</li>
+    <li>导入后先检查解析预览，再进入写作或分析。</li>
+  </ul>
+
+  <h2>5. Auto Research 使用流程</h2>
+  <p>Auto Research 用于从研究问题出发，生成调研任务、证据链、选题审查、内容增强报告和写作蓝图。</p>
+  <ol>
+    <li>输入研究主题、关键词或初步论文题目。</li>
+    <li>系统拆解研究问题、检索方向和资料需求。</li>
+    <li>生成选题审查：判断论文类型、范围风险、证据是否足够。</li>
+    <li>生成内容增强报告：Evidence Matrix、变量-机制-结果矩阵、证据强度热图、创新框架等。</li>
+    <li>任务完成后，可在已完成任务记录中折叠查看、勾选删除或下载报告。</li>
+  </ol>
+  <h3>结果如何进入写作</h3>
+  <ul>
+    <li><code>paperTopicReview</code> 控制论文类型、风险、边界和是否进入写作。</li>
+    <li><code>paperWritingBlueprint</code> 控制中心论点、科学问题、支持主张和不能写的结论。</li>
+    <li><code>contentEnhancementReport</code> 控制 Results、Discussion 和 Conclusion 的内容厚度。</li>
+  </ul>
+
+  <h2>6. 一键写论文使用流程</h2>
+  <ol>
+    <li>在一键写论文入口填写论文主题、字数、语言、引用格式和用户要求。</li>
+    <li>选择是否调用 Auto Research 最新报告、PDF Wiki、embedding 文献库和长期项目记忆。</li>
+    <li>系统先生成章节提纲，再拆成段落和句子级写作单元。</li>
+    <li>每个句子会先检索证据，再生成正文，避免无来源写作。</li>
+    <li>完成后可导出 Word，并查看引用核查清单。</li>
+  </ol>
+  <div class="note">
+    一键写论文适合生成第一版可编辑草稿。导出后仍建议人工检查研究逻辑、统计结果、引用支撑和期刊格式。
+  </div>
+  <h3>证据来源规则</h3>
+  <ul>
+    <li>PDF Wiki 句子级证据：使用 <code>来源Wiki论点库: 句子证XXXXXXX（需核查）</code> 保持可追溯。</li>
+    <li>Embedding 文献库证据：使用正常文内引用，例如 <code>(Zhang et al., 2026)</code>。</li>
+    <li>不要把 embedding 文献库证据标成 Wiki 句子证据。</li>
+  </ul>
+
+  <h2>7. 讨论式写作与草稿管理</h2>
+  <p>讨论式写作适合边思考边写论文。用户可以要求系统解释结果、比较文献、扩写段落、压缩表达、改成目标期刊风格或补充证据。</p>
+  <ol>
+    <li>在主对话中说明要写的章节，例如“写 Discussion 第二段，解释机制”。</li>
+    <li>需要时明确调用资料，例如“调用 PDF Wiki 论点库”“调用 Auto Research 报告”。</li>
+    <li>系统会根据当前项目上下文生成或修改段落。</li>
+    <li>满意后说“保存到草稿”，系统会写入对应章节草稿。</li>
+    <li>在论文草稿面板继续编辑、下载 Word 或 Markdown。</li>
+  </ol>
+  <h3>Discussion 写作注意事项</h3>
+  <ul>
+    <li>Discussion 不是 Results 的重复，应解释为什么出现这些结果。</li>
+    <li>把变量、机制和结果连成机制链。</li>
+    <li>区分直接证据、相邻证据、机制证据和背景证据。</li>
+    <li>遵守 Auto Research 给出的 claimsToAvoid，不要写证据不支持的强结论。</li>
+  </ul>
+
+  <h2>8. AI 文献管理与 PDF Wiki 论点库</h2>
+  <p>AI 文献管理负责把 PDF 从普通文件变成可分析、可检索、可写作调用的知识库。</p>
+  <ol>
+    <li>上传 PDF 文献。</li>
+    <li>执行 PDF 解析，检查正文、图表和页码信息。</li>
+    <li>运行深度分析，生成论文摘要、研究设计、关键结论和局限。</li>
+    <li>生成论文一览图，帮助快速理解文献结构。</li>
+    <li>抽取句子级论点，形成 PDF Wiki 论点库。</li>
+  </ol>
+  <h3>句子级证据编号</h3>
+  <p>PDF Wiki 句子级证据会带 7 位证据编号，用于把论文正文中的可疑引用追溯到具体 PDF 句子。写作时如果无法确认该句直接支持正文论断，应保留“需核查”标记。</p>
+
+  <h2>9. Meta 分析全流程</h2>
+  <ol>
+    <li>进入 Meta 分析向导，创建或选择研究主题。</li>
+    <li>导入 Meta 编码表，或从 PDF 提取研究数据后形成编码表。</li>
+    <li>检查 Study、Obs、处理组、对照组、均值、标准差、样本量和单位。</li>
+    <li>选择效应量类型、因变量、模型、调节变量和聚类字段。</li>
+    <li>运行模型，查看森林图、漏斗图、敏感性分析、Egger 检验和调节变量结果。</li>
+    <li>下载效应量 CSV、图件和 R 脚本，或调用结果写作方法和结果章节。</li>
+  </ol>
+  <div class="warn">
+    Meta 分析最容易出错的是单位、处理组/对照组方向、同一研究多观测值和样本量字段。运行前务必复核编码表。
+  </div>
+
+  <h2>10. 文献计量分析全流程</h2>
+  <ol>
+    <li>导入 WoS、CNKI 或其他支持格式的文献计量数据。</li>
+    <li>系统解析标题、作者、机构、关键词、摘要、来源期刊和年份。</li>
+    <li>运行关键词、作者、机构、主题聚类、趋势等分析。</li>
+    <li>下载图件、表格和完整分析结果。</li>
+    <li>在写作中调用文献计量分析结果，生成方法、结果解释和图注。</li>
+  </ol>
+  <p>写作文献计量论文时，应调用已经分析好的结果和图件索引，不要只把原始导入文件交给 AI 解释。</p>
+
+  <h2>11. 数据分析与 R 语言作图</h2>
+  <ol>
+    <li>上传 Excel 或 CSV 数据表。</li>
+    <li>选择因变量、自变量、分组变量、时间变量或处理变量。</li>
+    <li>选择分析类型，例如描述统计、相关分析、回归、分组比较或自定义分析。</li>
+    <li>生成统计解释和 R 作图代码。</li>
+    <li>检测 R 环境并运行脚本，输出 PDF/PNG 图件。</li>
+    <li>把统计结果和图件说明调用到论文 Results 或 Discussion 中。</li>
+  </ol>
+  <h3>数据表整理建议</h3>
+  <ul>
+    <li>第一行为列名，列名不要重复。</li>
+    <li>每一列只放一种变量，不要把数值和单位混写。</li>
+    <li>缺失值统一为 NA 或空白，不要混用多个符号。</li>
+    <li>分类变量保持命名一致，例如 Control、Treatment A、Treatment B。</li>
+  </ul>
+
+  <h2>12. 引用、证据溯源与常见问题</h2>
+  <h3>12.1 引用和证据</h3>
+  <table>
+    <tr><th>证据来源</th><th>正文标记</th><th>说明</th></tr>
+    <tr><td>PDF Wiki 句子级证据</td><td><code>来源Wiki论点库: 句子证XXXXXXX（需核查）</code></td><td>用于追溯到具体 PDF 句子。需核查表示仍需人工确认直接支撑关系。</td></tr>
+    <tr><td>Embedding 文献库证据</td><td><code>(Author et al., Year)</code></td><td>使用普通文内引用，不添加 Wiki 句子证据标记。</td></tr>
+    <tr><td>用户上传实验资料</td><td>不作为文献引用</td><td>可作为研究背景或数据上下文，但不能冒充论文引用。</td></tr>
+  </table>
+  <h3>12.2 常见问题</h3>
+  <table>
+    <tr><th>问题</th><th>处理方式</th></tr>
+    <tr><td>模型返回空内容</td><td>降低字数、检查 API 地址和 Key、减少一次性上下文，或改用稳定模型重试。</td></tr>
+    <tr><td>PDF 解析失败</td><td>尝试更换解析方式，检查是否为扫描版，必要时先 OCR。</td></tr>
+    <tr><td>引用显示需核查</td><td>查看句子证据编号，回到 PDF Wiki 论点库核对原句是否直接支持。</td></tr>
+    <tr><td>R 图件无法生成</td><td>检查 R 是否安装、路径是否可识别、依赖包是否安装、数据列名是否含特殊符号。</td></tr>
+    <tr><td>一键写论文太慢</td><td>这是逐句检索和逐句写作导致的正常现象；可降低字数或减少调用资料源。</td></tr>
+  </table>
+
+  <p class="small page-break">本文档为 Scholar Harness 用户使用手册。软件功能会持续更新，具体界面以当前版本为准。</p>
+</body>
+</html>
