@@ -14,7 +14,7 @@
     "electron:dev:window": "npm run build && tsc -p electron/tsconfig.json && electron .",
     "electron:prepare": "node scripts/prepare-playwright.js",
     "electron:build": "npm run electron:prepare && npm run build && tsc -p electron/tsconfig.json && node scripts/build-copy.js && npm run build:bytecode && electron-builder --win",
-    "electron:build:mac": "npm run electron:prepare && npm run build && tsc -p electron/tsconfig.json && node scripts/build-copy.js && npm run build:bytecode && node scripts/write-mac-electron-builder-config.js && electron-builder --config dist/electron-builder-mac.json --mac --x64 --arm64",
+    "electron:build:mac": "npm run electron:prepare && npm run build && tsc -p electron/tsconfig.json && node scripts/build-copy.js && npm run build:bytecode && node scripts/write-mac-electron-builder-config.js && electron-builder --config dist/electron-builder-mac.json --mac --x64 --arm64 --publish never",
     "electron:build:signed": "node scripts/check-code-signing.js --required && npm run electron:build",
     "electron:build:debug": "npm run electron:prepare && npm run build && tsc -p electron/tsconfig.json && node scripts/build-copy.js && electron-builder --win",
     "electron:preview": "npm run build && tsc -p electron/tsconfig.json && electron .",
