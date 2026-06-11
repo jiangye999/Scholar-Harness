@@ -31,7 +31,15 @@ jobs:
         run: npm ci
 
       - name: Build macOS installers
-        run: npm run electron:build:mac
+        run: |
+          set -o pipefail
+          npm run electron:build:mac 2>&1 | tee macos-build.log
+
+      - name: Print build log tail
+        if: failure()
+        run: |
+          echo "Last 200 lines from macos-build.log"
+          tail -n 200 macos-build.log || true
 
       - name: Upload macOS artifacts
         uses: actions/upload-artifact@v4
@@ -43,4 +51,13 @@ jobs:
             dist-electron/*.blockmap
             dist-electron/builder-effective-config.yaml
           if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload macOS build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: scholar-harness-macos-build-log-${{ github.run_number }}
+          path: macos-build.log
+          if-no-files-found: warn
           retention-days: 14
