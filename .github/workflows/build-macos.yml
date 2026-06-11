@@ -6,6 +6,9 @@ on:
       - master
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build-macos:
     name: Build macOS dmg and zip
@@ -61,3 +64,21 @@ jobs:
           path: macos-build.log
           if-no-files-found: warn
           retention-days: 14
+
+      - name: Publish failure log branch
+        if: failure()
+        run: |
+          if [ ! -f macos-build.log ]; then
+            echo "macos-build.log was not created"
+            exit 0
+          fi
+          cp macos-build.log /tmp/macos-build.log
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout --orphan ci/macos-build-log
+          git rm -rf .
+          mkdir -p ci-logs
+          cp /tmp/macos-build.log ci-logs/macos-build.log
+          git add ci-logs/macos-build.log
+          git commit -m "Capture macOS build failure log"
+          git push --force origin ci/macos-build-log
