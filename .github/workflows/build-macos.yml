@@ -36,6 +36,8 @@ jobs:
       - name: Build macOS installers
         run: |
           set -o pipefail
+          ulimit -n 65536 || true
+          ulimit -n
           npm run electron:build:mac 2>&1 | tee macos-build.log
 
       - name: Print build log tail
