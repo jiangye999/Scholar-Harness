@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import type { UnifiedLiterature, VectorConfig } from '../../types/literature';
+import { buildSemanticRetrievalQuery } from './semantic-query';
 
 interface VectorDocument {
   id: string;
@@ -36,6 +37,10 @@ export class VectorRetriever {
     this.apiKey = apiConfig?.key;
   }
 
+  hasApiConfig(): boolean {
+    return Boolean(this.apiUrl && this.apiKey);
+  }
+
   async addDocument(lit: UnifiedLiterature): Promise<void> {
     const text = `${lit.title || ''} ${Array.isArray(lit.keywords) ? lit.keywords.join(' ') : (lit.keywords || '')} ${lit.abstract || ''}`;
     
@@ -44,16 +49,9 @@ export class VectorRetriever {
       text,
     };
 
-    // 如果文献已有 embedding，直接使用，不再重新计算
+    // 文献索引只使用已有 embedding。查询时才调用 embedding API，避免启动重建索引时逐篇请求模型。
     if (lit.embedding && lit.embedding.length > 0) {
       doc.embedding = lit.embedding;
-    } else if (this.apiUrl && this.apiKey) {
-      const embedding = await this.getEmbedding(text);
-      if (embedding) {
-        doc.embedding = embedding;
-      }
-    } else {
-      doc.embedding = this.simpleEmbedding(text);
     }
 
     this.documents.set(lit.id, doc);
@@ -80,11 +78,8 @@ export class VectorRetriever {
     
     let queryEmbedding: number[] | null;
     
-    if (this.apiUrl && this.apiKey) {
-      queryEmbedding = await this.getEmbedding(query);
-    } else {
-      queryEmbedding = this.simpleEmbedding(query);
-    }
+    if (!this.apiUrl || !this.apiKey) return [];
+    queryEmbedding = await this.getEmbedding(buildSemanticRetrievalQuery(query));
 
     if (!queryEmbedding) {
       return [];
@@ -102,6 +97,33 @@ export class VectorRetriever {
       if (score > 0) {
         scores.push({ id, score });
       }
+    }
+
+    return scores
+      .sort((a, b) => b.score - a.score)
+      .slice(0, limit);
+  }
+
+  async searchWithin(query: string, candidateIds: string[], topN?: number): Promise<SearchResult[]> {
+    const limit = topN || this.config.topN;
+    if (!this.apiUrl || !this.apiKey || candidateIds.length === 0) return [];
+
+    const queryEmbedding = await this.getEmbedding(buildSemanticRetrievalQuery(query));
+    if (!queryEmbedding) return [];
+
+    const scores: SearchResult[] = [];
+    const seen = new Set<string>();
+    for (const id of candidateIds) {
+      if (seen.has(id)) continue;
+      seen.add(id);
+      const doc = this.documents.get(id);
+      if (!doc?.embedding || doc.embedding.length === 0) continue;
+
+      const score = this.config.similarity === 'cosine'
+        ? this.cosineSimilarity(queryEmbedding, doc.embedding)
+        : this.dotProduct(queryEmbedding, doc.embedding);
+
+      if (score > 0) scores.push({ id, score });
     }
 
     return scores
@@ -236,7 +258,7 @@ export class VectorRetriever {
    */
   saveIndex(indexPath: string): void {
     const indexData = {
-      version: 1,
+      version: 2,
       timestamp: Date.now(),
       config: this.config,
       documents: Array.from(this.documents.entries()).map(([id, doc]) => ({
@@ -270,7 +292,7 @@ export class VectorRetriever {
       const content = fs.readFileSync(indexPath, 'utf-8');
       const indexData = JSON.parse(content);
 
-      if (indexData.version !== 1) {
+      if (indexData.version !== 2) {
         console.log(`[VectorRetriever] Unsupported index version: ${indexData.version}`);
         return false;
       }

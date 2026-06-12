@@ -22,6 +22,7 @@ let subscriptionStore: SubscriptionStore;
 let verificationStore: VerificationStore;
 let db: DatabaseConnection;
 const LIFETIME_2D_CODE_TYPE = 'lifetime_2d';
+const LIFETIME_ONCE_CODE_TYPE = 'lifetime_once';
 const LIMITED_TRIAL_2D_15D_CODE_TYPE = 'limited_trial_2d_15d';
 const DAY_MS = 24 * 60 * 60 * 1000;
 const LIFETIME_YEARS = 100;
@@ -157,7 +158,7 @@ router.post('/register', rateLimitMiddleware(5, 60000), async (req: Request, res
         });
       }
       
-      isLifetimeBetaCode = betaCodeRecord.code_type === LIFETIME_2D_CODE_TYPE;
+      isLifetimeBetaCode = betaCodeRecord.code_type === LIFETIME_2D_CODE_TYPE || betaCodeRecord.code_type === LIFETIME_ONCE_CODE_TYPE;
       isUnlimitedUseCode = isUnlimitedUseBetaCode(betaCodeRecord.code_type);
 
       if (betaCodeRecord.status !== 'unused' && !isUnlimitedUseCode) {
@@ -409,7 +410,7 @@ router.post('/login', rateLimitMiddleware(10, 60000), async (req: Request, res: 
       try {
         const existingSubscription = await subscriptionStore.getActiveSubscription(user.id);
         const betaCodeRecord = await betaCodeStore.findByCode(beta_code);
-        const isLifetimeCode = betaCodeRecord?.code_type === LIFETIME_2D_CODE_TYPE;
+        const isLifetimeCode = betaCodeRecord?.code_type === LIFETIME_2D_CODE_TYPE || betaCodeRecord?.code_type === LIFETIME_ONCE_CODE_TYPE;
         const isUnlimitedUseCode = betaCodeRecord ? isUnlimitedUseBetaCode(betaCodeRecord.code_type) : false;
 
         if (existingSubscription && !isLifetimeCode) {

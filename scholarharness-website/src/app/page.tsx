@@ -12,12 +12,44 @@ import type { User } from "@/lib/auth";
 const navItems = [
   { label: "功能总览", href: "#features" },
   { label: "全流程能力", href: "#workflow" },
-  { label: "适合场景", href: "#scenarios" },
   { label: "下载安装", href: "#access" },
 ];
 
-const softwareDownloadHref = "/downloads/scholar-harness-setup-1.0.2.exe";
+const windowsDownloadHref = "/downloads/scholar-harness-setup-1.0.2.exe";
+const macArm64DownloadHref = "/downloads/scholar-harness-1.0.2-arm64.dmg";
+const macX64DownloadHref = "/downloads/scholar-harness-1.0.2-x64.dmg";
 const manualDownloadHref = "/downloads/scholarharness-user-manual.pdf";
+
+const featureVideos: Record<string, { src: string; title: string }> = {
+  "auto-research": {
+    src: "/videos/auto-research.mp4",
+    title: "Auto Research 演示",
+  },
+  "review-writing": {
+    src: "/videos/review-writing.mp4",
+    title: "一键辅助写综述演示",
+  },
+  "discussion-writing": {
+    src: "/videos/discussion-writing.mp4",
+    title: "讨论式辅助写作演示",
+  },
+  bibliometrics: {
+    src: "/videos/bibliometrics.mp4",
+    title: "文献计量分析演示",
+  },
+  "meta-analysis": {
+    src: "/videos/meta-analysis.mp4",
+    title: "Meta 分析演示",
+  },
+  "ai-pdf-management": {
+    src: "/videos/ai-pdf-management.mp4",
+    title: "AI 文献管理演示",
+  },
+  "data-analysis-r-plot": {
+    src: "/videos/data-analysis-r-plot.mp4",
+    title: "数据分析 + R 作图演示",
+  },
+};
 
 const workflowPillars = [
   {
@@ -32,13 +64,6 @@ const workflowPillars = [
     title: "写作与图件输出",
     body: "讨论式写作、一键写综述、R 语言作图、Meta 分析图件和文献计量图件统一服务论文草稿。",
   },
-];
-
-const scenarioCards = [
-  "系统综述和 Meta 分析团队",
-  "需要文献计量图谱的研究者",
-  "长期管理大量文献的课题组",
-  "需要数据分析和 R 图件的论文作者",
 ];
 
 interface AuthState {
@@ -150,28 +175,52 @@ export default function Home() {
               <p className="mt-6 max-w-2xl text-lg leading-8 text-[#465149] sm:text-xl">
                 把 Auto Research、综述写作、讨论式写作、文献计量、Meta 分析、文献管理、数据分析和 R 语言作图放进同一个科研项目流程。
               </p>
-              <div className="mt-8 flex flex-col gap-3 sm:flex-row">
+              <div className="mt-8 flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:gap-2 lg:w-[min(56rem,calc(100vw-3rem))] lg:flex-nowrap">
                 <Link
                   href="#features"
-                  className="inline-flex h-12 items-center justify-center gap-2 rounded-lg bg-[#0b6b5c] px-5 text-sm font-semibold text-white shadow-sm transition hover:bg-[#084f45]"
+                  className="inline-flex h-12 shrink-0 items-center justify-center gap-2 rounded-lg bg-[#0b6b5c] px-4 text-sm font-semibold text-white shadow-sm transition hover:bg-[#084f45]"
                 >
                   查看功能
                   <FeatureIcon name="arrow" className="h-4 w-4" />
                 </Link>
                 <Link
                   href={primaryCtaHref}
-                  className="inline-flex h-12 items-center justify-center gap-2 rounded-lg border border-black/15 bg-white/80 px-5 text-sm font-semibold text-[#19221c] transition hover:border-black/30 hover:bg-white"
+                  className="inline-flex h-12 shrink-0 items-center justify-center gap-2 rounded-lg border border-black/15 bg-white/80 px-4 text-sm font-semibold text-[#19221c] transition hover:border-black/30 hover:bg-white"
                 >
                   {primaryCtaLabel}
                   <FeatureIcon name="arrow" className="h-4 w-4" />
                 </Link>
                 <a
-                  href={softwareDownloadHref}
+                  href={manualDownloadHref}
                   download
-                  className="inline-flex h-12 items-center justify-center gap-2 rounded-lg border border-[#0b6b5c]/30 bg-white/90 px-5 text-sm font-semibold text-[#0b6b5c] transition hover:border-[#0b6b5c] hover:bg-white"
+                  className="inline-flex h-12 shrink-0 items-center justify-center gap-2 rounded-lg border border-[#0b6b5c]/30 bg-white/90 px-4 text-sm font-semibold text-[#0b6b5c] transition hover:border-[#0b6b5c] hover:bg-white"
                 >
-                  下载软件
-                  <FeatureIcon name="download" className="h-4 w-4" />
+                  使用说明
+                  <FeatureIcon name="file" className="h-4 w-4" />
+                </a>
+                <a
+                  href={windowsDownloadHref}
+                  download
+                  className="inline-flex h-12 shrink-0 items-center justify-center gap-2 rounded-lg border border-[#0b6b5c]/30 bg-white/90 px-4 text-sm font-semibold text-[#0b6b5c] transition hover:border-[#0b6b5c] hover:bg-white"
+                >
+                  下载 Windows
+                  <FeatureIcon name="windows" className="h-4 w-4" />
+                </a>
+                <a
+                  href={macArm64DownloadHref}
+                  download
+                  className="inline-flex h-12 shrink-0 items-center justify-center gap-2 rounded-lg border border-[#0b6b5c]/30 bg-white/90 px-4 text-sm font-semibold text-[#0b6b5c] transition hover:border-[#0b6b5c] hover:bg-white"
+                >
+                  Mac M 系列
+                  <FeatureIcon name="apple" className="h-4 w-4" />
+                </a>
+                <a
+                  href={macX64DownloadHref}
+                  download
+                  className="inline-flex h-12 shrink-0 items-center justify-center gap-2 rounded-lg border border-[#0b6b5c]/30 bg-white/90 px-4 text-sm font-semibold text-[#0b6b5c] transition hover:border-[#0b6b5c] hover:bg-white"
+                >
+                  Mac Intel
+                  <FeatureIcon name="apple" className="h-4 w-4" />
                 </a>
               </div>
               <div className="mt-[78px] max-w-5xl">
@@ -208,9 +257,8 @@ export default function Home() {
 
             <div className="mt-10 grid gap-5">
               {productFeatures.map((feature, index) => (
-                <Link
+                <article
                   key={feature.slug}
-                  href={`/features/${feature.slug}`}
                   className="group grid gap-6 rounded-lg border border-black/10 bg-white p-5 shadow-sm transition hover:border-[#0b6b5c]/45 hover:shadow-md md:grid-cols-[0.42fr_1fr] md:p-6"
                 >
                   <div className="flex flex-col justify-between gap-6 rounded-lg bg-[#eef4f1] p-5">
@@ -223,10 +271,13 @@ export default function Home() {
                       </p>
                       <h3 className="mt-2 text-2xl font-semibold text-[#101410]">{feature.title}</h3>
                     </div>
-                    <div className="inline-flex items-center gap-2 text-sm font-semibold text-[#0b6b5c]">
+                    <Link
+                      href={`/features/${feature.slug}`}
+                      className="inline-flex items-center gap-2 text-sm font-semibold text-[#0b6b5c]"
+                    >
                       进入功能介绍
                       <FeatureIcon name="arrow" className="h-4 w-4 transition group-hover:translate-x-1" />
-                    </div>
+                    </Link>
                   </div>
 
                   <div className="grid gap-6 lg:grid-cols-[1fr_0.9fr]">
@@ -242,19 +293,34 @@ export default function Home() {
                       </div>
                     </div>
 
-                    <div className="rounded-lg border border-black/10 bg-[#fbfcfb] p-4">
-                      <p className="text-xs font-semibold text-[#758078]">主要输出</p>
-                      <ul className="mt-3 grid gap-2 text-sm text-[#3c463f]">
-                        {feature.outputs.map((item) => (
-                          <li key={item} className="flex gap-2">
-                            <FeatureIcon name="check" className="mt-0.5 h-4 w-4 shrink-0 text-[#0b6b5c]" />
-                            <span>{item}</span>
-                          </li>
-                        ))}
-                      </ul>
-                    </div>
+                    {featureVideos[feature.slug] ? (
+                      <div className="rounded-lg border border-black/10 bg-[#fbfcfb] p-4">
+                        <p className="text-xs font-semibold text-[#758078]">{featureVideos[feature.slug].title}</p>
+                        <video
+                          className="mt-3 aspect-video w-full rounded-lg border border-black/10 bg-black object-cover"
+                          controls
+                          muted
+                          playsInline
+                          preload="metadata"
+                        >
+                          <source src={featureVideos[feature.slug].src} type="video/mp4" />
+                        </video>
+                      </div>
+                    ) : (
+                      <div className="rounded-lg border border-black/10 bg-[#fbfcfb] p-4">
+                        <p className="text-xs font-semibold text-[#758078]">主要输出</p>
+                        <ul className="mt-3 grid gap-2 text-sm text-[#3c463f]">
+                          {feature.outputs.map((item) => (
+                            <li key={item} className="flex gap-2">
+                              <FeatureIcon name="check" className="mt-0.5 h-4 w-4 shrink-0 text-[#0b6b5c]" />
+                              <span>{item}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
                   </div>
-                </Link>
+                </article>
               ))}
             </div>
           </div>
@@ -286,74 +352,73 @@ export default function Home() {
           </div>
         </section>
 
-        <section id="scenarios" className="px-5 py-20 sm:px-6 lg:py-24">
-          <div className="mx-auto max-w-7xl">
-            <div className="max-w-3xl">
-              <p className="text-sm font-semibold text-[#0b6b5c]">适合场景</p>
-              <h2 className="mt-3 text-3xl font-semibold leading-tight text-[#101410] sm:text-4xl">
-                为真实科研项目准备，而不是只做演示型聊天
-              </h2>
-            </div>
+        <section id="access" className="border-y border-black/10 bg-white px-5 py-14 sm:px-6">
+          <div className="mx-auto max-w-6xl">
+            <p className="text-center text-sm font-semibold text-[#0b6b5c]">下载安装</p>
 
-            <div className="mt-10 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-              {scenarioCards.map((item) => (
-                <article key={item} className="rounded-lg border border-black/10 bg-white p-5 shadow-sm">
-                  <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-[#eef4f1] text-[#0b6b5c]">
-                    <FeatureIcon name="check" className="h-5 w-5" />
-                  </div>
-                  <h3 className="mt-5 text-lg font-semibold text-[#151815]">{item}</h3>
-                </article>
-              ))}
-            </div>
-          </div>
-        </section>
-
-        <section id="access" className="border-y border-black/10 bg-white px-5 py-16 sm:px-6">
-          <div className="mx-auto grid max-w-7xl gap-8 lg:grid-cols-[0.9fr_1.1fr] lg:items-center">
-            <div>
-              <p className="text-sm font-semibold text-[#0b6b5c]">下载安装</p>
-              <h2 className="mt-3 text-3xl font-semibold leading-tight text-[#101410] sm:text-4xl">
-                一套账号连接官网、桌面端和本地科研项目
-              </h2>
-              <p className="mt-4 text-base leading-7 text-[#5d675f]">
-                官网负责注册、登录、说明和服务入口；桌面端负责本地文献、Meta 数据、R 语言环境和长期项目工作流。
-              </p>
-            </div>
-
-            <div className="grid gap-4 sm:grid-cols-3">
+            <div className="mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
               <a
-                href={softwareDownloadHref}
+                href={windowsDownloadHref}
                 download
-                className="rounded-lg border border-[#b8cbc3] bg-[#f8faf8] p-5 transition hover:border-[#0b6b5c] hover:shadow-sm"
+                className="flex min-h-[154px] min-w-0 flex-col items-center justify-center rounded-lg border border-[#b8cbc3] bg-[#f8faf8] px-5 py-6 text-center transition hover:border-[#0b6b5c] hover:shadow-sm"
               >
-                <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-white text-[#0b6b5c]">
-                  <FeatureIcon name="download" />
+                <div className="mx-auto flex h-10 w-10 items-center justify-center rounded-lg bg-white text-[#0b6b5c]">
+                  <FeatureIcon name="windows" />
                 </div>
-                <h3 className="mt-5 text-lg font-semibold text-[#151815]">下载 Windows 桌面端</h3>
-                <p className="mt-3 text-sm leading-6 text-[#5d675f]">下载 Scholar Harness 安装包，适用于 Windows x64。</p>
+                <h3 className="mt-4 max-w-[9rem] text-lg font-semibold leading-snug text-[#151815]">
+                  下载 Windows 桌面端
+                </h3>
                 <p className="mt-3 text-xs font-semibold text-[#0b6b5c]">约 418 MB</p>
+              </a>
+              <a
+                href={macArm64DownloadHref}
+                download
+                className="flex min-h-[154px] min-w-0 flex-col items-center justify-center rounded-lg border border-[#b8cbc3] bg-[#f8faf8] px-5 py-6 text-center transition hover:border-[#0b6b5c] hover:shadow-sm"
+              >
+                <div className="mx-auto flex h-10 w-10 items-center justify-center rounded-lg bg-white text-[#0b6b5c]">
+                  <FeatureIcon name="apple" />
+                </div>
+                <h3 className="mt-4 max-w-[9rem] text-lg font-semibold leading-snug text-[#151815]">
+                  下载 Mac M 系列
+                </h3>
+                <p className="mt-3 text-xs font-semibold text-[#0b6b5c]">约 428 MB</p>
+              </a>
+              <a
+                href={macX64DownloadHref}
+                download
+                className="flex min-h-[154px] min-w-0 flex-col items-center justify-center rounded-lg border border-[#b8cbc3] bg-[#f8faf8] px-5 py-6 text-center transition hover:border-[#0b6b5c] hover:shadow-sm"
+              >
+                <div className="mx-auto flex h-10 w-10 items-center justify-center rounded-lg bg-white text-[#0b6b5c]">
+                  <FeatureIcon name="apple" />
+                </div>
+                <h3 className="mt-4 max-w-[9rem] text-lg font-semibold leading-snug text-[#151815]">
+                  下载 Mac Intel
+                </h3>
+                <p className="mt-3 text-xs font-semibold text-[#0b6b5c]">约 432 MB</p>
               </a>
               <a
                 href={manualDownloadHref}
                 download
-                className="rounded-lg border border-[#b8cbc3] bg-[#f8faf8] p-5 transition hover:border-[#0b6b5c] hover:shadow-sm"
+                className="flex min-h-[154px] min-w-0 flex-col items-center justify-center rounded-lg border border-[#b8cbc3] bg-[#f8faf8] px-5 py-6 text-center transition hover:border-[#0b6b5c] hover:shadow-sm"
               >
-                <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-white text-[#0b6b5c]">
+                <div className="mx-auto flex h-10 w-10 items-center justify-center rounded-lg bg-white text-[#0b6b5c]">
                   <FeatureIcon name="file" />
                 </div>
-                <h3 className="mt-5 text-lg font-semibold text-[#151815]">下载使用手册 PDF</h3>
-                <p className="mt-3 text-sm leading-6 text-[#5d675f]">从配置、文件导入到各功能使用的完整指导手册。</p>
+                <h3 className="mt-4 max-w-[9rem] text-lg font-semibold leading-snug text-[#151815]">
+                  下载使用手册 PDF
+                </h3>
                 <p className="mt-3 text-xs font-semibold text-[#0b6b5c]">PDF 版</p>
               </a>
               <Link
                 href="/register"
-                className="rounded-lg border border-[#b8cbc3] bg-[#f8faf8] p-5 transition hover:border-[#0b6b5c] hover:shadow-sm"
+                className="flex min-h-[154px] min-w-0 flex-col items-center justify-center rounded-lg border border-[#b8cbc3] bg-[#f8faf8] px-5 py-6 text-center transition hover:border-[#0b6b5c] hover:shadow-sm"
               >
-                <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-white text-[#0b6b5c]">
+                <div className="mx-auto flex h-10 w-10 items-center justify-center rounded-lg bg-white text-[#0b6b5c]">
                   <FeatureIcon name="spark" />
                 </div>
-                <h3 className="mt-5 text-lg font-semibold text-[#151815]">注册与内测</h3>
-                <p className="mt-3 text-sm leading-6 text-[#5d675f]">创建账号后进入控制台和桌面端使用流程。</p>
+                <h3 className="mt-4 max-w-[9rem] text-lg font-semibold leading-snug text-[#151815]">
+                  注册与内测
+                </h3>
               </Link>
             </div>
           </div>

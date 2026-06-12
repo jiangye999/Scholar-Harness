@@ -18,6 +18,11 @@ build.extraResources = (build.extraResources || []).filter((entry) => {
 delete build.win;
 delete build.nsis;
 
+build.mac = {
+  ...(build.mac || {}),
+  icon: 'build/icon.icns',
+};
+
 fs.mkdirSync(outputDir, { recursive: true });
 fs.writeFileSync(outputPath, JSON.stringify(build, null, 2));
 console.log(`[Mac Build] Wrote ${path.relative(rootDir, outputPath)}`);

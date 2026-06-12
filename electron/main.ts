@@ -744,6 +744,15 @@ async function ensureServerRunning(): Promise<void> {
 }
 
 function createWindow(): void {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    startupLog('Main window already exists, focusing existing window');
+    if (mainWindow.isMinimized()) {
+      mainWindow.restore();
+    }
+    mainWindow.focus();
+    return;
+  }
+
   mainWindow = new BrowserWindow({
     width: 1400,
     height: 900,
@@ -766,6 +775,15 @@ function createWindow(): void {
     },
     show: false,
   });
+
+  let mainWindowShown = false;
+  const showMainWindow = (reason: string): void => {
+    if (mainWindowShown || !mainWindow || mainWindow.isDestroyed()) return;
+    mainWindowShown = true;
+    startupLog(`Showing main window (${reason})`);
+    mainWindow.show();
+    mainWindow.focus();
+  };
   
   // 加载页面，添加错误处理
   // 清除缓存，确保加载最新版本
@@ -782,8 +800,16 @@ function createWindow(): void {
   });
   
   mainWindow.once('ready-to-show', () => {
-    mainWindow?.show();
+    showMainWindow('ready-to-show');
   });
+
+  mainWindow.webContents.once('did-finish-load', () => {
+    showMainWindow('did-finish-load');
+  });
+
+  setTimeout(() => {
+    showMainWindow('fallback-timeout');
+  }, 5000);
   
   // 页面加载失败时的处理
   mainWindow.webContents.on('did-fail-load', (event, errorCode, errorDescription) => {

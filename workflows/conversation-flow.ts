@@ -779,7 +779,7 @@ ${session.researchContent ? `研究内容：${session.researchContent}` : ''}
       logger.warn(`[Flow] Failed to load long-term memory for ${userId}:`, error);
     }
 
-    const prompt = `你是一位专业的学术文献检索专家。请根据以下章节写作规划，生成3-5个最优的英文检索词/短语，用于在文献数据库中检索相关文献。
+    const prompt = `你是一位专业的学术文献检索专家。请根据以下章节写作规划，分别生成3-5个英文检索词/短语和3-5个中文检索词/短语，用于在文献数据库中分路检索相关文献。
 
 ## 章节信息
 - 章节名称: ${chapterPlan.chapterName}
@@ -793,16 +793,17 @@ ${session.paperTopic || '未指定'}
 ${session.researchContent?.slice(0, 1000) || '未提供'}
 
 ## 要求
-1. 每个检索词应该是3-5个英文单词组成的短语
+1. 英文检索词使用学术英文短语，中文检索词使用准确中文术语
 2. 检索词应该覆盖不同的子主题和角度
-3. 优先使用学术领域常用的专业术语
-4. 避免过于宽泛的词汇（如"study", "research"）
+3. 必须保留并翻译方向性动词，例如 reduce/decrease/降低、increase/增加、promote/促进、inhibit/抑制
+4. 避免过于宽泛的词汇（如"study", "research", "研究"）
 
 ## 输出格式
 每行一个检索词，不要编号，不要其他说明。例如：
-N2O emission agricultural soil
-nitrous oxide climate change
-greenhouse gas mitigation strategy
+intervention A reduce target risk
+method B improve prediction accuracy
+干预A 降低 目标风险
+方法B 提高 预测准确性
 
 请生成检索词：`;
 

@@ -3,6 +3,7 @@ import * as path from 'path';
 import { BM25Retriever } from './bm25-retriever';
 import { VectorRetriever } from './vector-retriever';
 import { MetadataFilter } from './metadata-filter';
+import { buildSemanticRetrievalQuery } from './semantic-query';
 import type {
   UnifiedLiterature,
   RetrievedDocument,
@@ -110,19 +111,38 @@ export class HybridRetrievalEngine {
   async retrieve(query: RetrievalQuery): Promise<RetrievalResult> {
     const startTime = Date.now();
     const { query: queryText, filters, topK = 20, searchMode = 'hybrid' } = query;
+    const semanticQueryText = buildSemanticRetrievalQuery(queryText);
 
     let bm25Results: Array<{ id: string; score: number }> = [];
     let vectorResults: Array<{ id: string; score: number }> = [];
 
     const bm25Start = Date.now();
     if (searchMode === 'bm25' || searchMode === 'hybrid') {
-      bm25Results = this.bm25Retriever.search(queryText, this.config.bm25.topN);
+      const bm25Limit = searchMode === 'hybrid'
+        ? Math.min(
+            Math.max(this.config.bm25.topN, topK * 8, 80),
+            Math.max(1, this.literatureMap.size)
+          )
+        : this.config.bm25.topN;
+      bm25Results = this.bm25Retriever.search(semanticQueryText, bm25Limit);
     }
     const bm25Ms = Date.now() - bm25Start;
 
     const vectorStart = Date.now();
-    if (searchMode === 'vector' || searchMode === 'hybrid') {
-      vectorResults = await this.vectorRetriever.search(queryText, this.config.vector.topN);
+    if (searchMode === 'vector') {
+      vectorResults = await this.vectorRetriever.search(semanticQueryText, this.config.vector.topN);
+    } else if (searchMode === 'hybrid' && bm25Results.length > 0) {
+      const vectorCandidateLimit = Math.max(this.config.vector.topN, topK * 8, 80);
+      const vectorWithinResults = await this.vectorRetriever.searchWithin(
+        semanticQueryText,
+        bm25Results.map(result => result.id),
+        vectorCandidateLimit
+      );
+      const vectorGlobalResults = await this.vectorRetriever.search(
+        semanticQueryText,
+        Math.max(this.config.vector.topN, topK * 4, 40)
+      );
+      vectorResults = this.mergeVectorResults(vectorWithinResults, vectorGlobalResults, vectorCandidateLimit);
     }
     const vectorMs = Date.now() - vectorStart;
 
@@ -178,6 +198,7 @@ export class HybridRetrievalEngine {
     mode: string
   ): FusionResult[] {
     const scores = new Map<string, { bm25?: number; vector?: number }>();
+    const semanticAvailable = mode === 'hybrid' && vectorResults.length > 0;
 
     if (mode === 'bm25' || mode === 'hybrid') {
       const maxBm25 = Math.max(...bm25Results.map(r => r.score), 1);
@@ -198,16 +219,35 @@ export class HybridRetrievalEngine {
       id,
       bm25Score: s.bm25 || 0,
       vectorScore: s.vector || 0,
-      combinedScore: this.calculateCombinedScore(s.bm25, s.vector),
+      combinedScore: this.calculateCombinedScore(s.bm25, s.vector, semanticAvailable),
     })).sort((a, b) => b.combinedScore - a.combinedScore);
   }
 
-  private calculateCombinedScore(bm25?: number, vector?: number): number {
+  private mergeVectorResults(
+    primary: Array<{ id: string; score: number }>,
+    secondary: Array<{ id: string; score: number }>,
+    limit: number
+  ): Array<{ id: string; score: number }> {
+    const merged = new Map<string, number>();
+    for (const result of [...primary, ...secondary]) {
+      const current = merged.get(result.id) || 0;
+      if (result.score > current) merged.set(result.id, result.score);
+    }
+    return Array.from(merged.entries())
+      .map(([id, score]) => ({ id, score }))
+      .sort((a, b) => b.score - a.score)
+      .slice(0, Math.max(1, limit));
+  }
+
+  private calculateCombinedScore(bm25?: number, vector?: number, semanticAvailable = false): number {
     if (bm25 === undefined && vector === undefined) return 0;
+    if (semanticAvailable) {
+      return (bm25 || 0) * 0.22 + (vector || 0) * 0.78;
+    }
     if (bm25 === undefined) return vector!;
     if (vector === undefined) return bm25;
-    // BM25 40% + 语义检索 60% - 语义检索权重更高，因为更能理解论点意图
-    return bm25 * 0.4 + vector * 0.6;
+    // BM25 只负责粗召回和兜底；真正有向量相似度时由上面的 semanticAvailable 分支主导排序。
+    return bm25 * 0.35 + vector * 0.65;
   }
 
   private async rerank(query: string, results: FusionResult[]): Promise<FusionResult[]> {

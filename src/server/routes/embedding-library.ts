@@ -21,7 +21,23 @@ import { logger } from "../../utils/logger";
 
 export const EMBEDDING_LIBRARY_PAGE_SIZE = 100;
 export const BUILT_IN_OA_DOWNLOAD_SOURCE_LABEL =
-  "内置开放获取下载器：Semantic Scholar -> CORE API -> OpenAlex -> PubMed/NCBI E-utilities -> Crossref -> Unpaywall -> Europe PMC/PMC";
+  "内置开放获取下载器：Semantic Scholar -> CORE API -> OpenAlex -> PubMed/NCBI E-utilities -> Crossref -> Unpaywall -> Europe PMC/PMC -> OA落地页PDF解析";
+
+const DEFAULT_PDF_FETCH_USER_AGENT =
+  process.env.PAPER_DOWNLOAD_USER_AGENT ||
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36";
+
+function parsePositiveInteger(value: unknown, fallback: number, min: number, max: number): number {
+  const parsed = Math.floor(Number(value ?? fallback));
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.max(min, Math.min(max, parsed));
+}
+
+const PDF_FETCH_TIMEOUT_MS = parsePositiveInteger(process.env.PAPER_DOWNLOAD_PDF_TIMEOUT_MS, 25000, 3000, 120000);
+const METADATA_FETCH_TIMEOUT_MS = parsePositiveInteger(process.env.PAPER_DOWNLOAD_METADATA_TIMEOUT_MS, 12000, 2000, 60000);
+const LANDING_FETCH_TIMEOUT_MS = parsePositiveInteger(process.env.PAPER_DOWNLOAD_LANDING_TIMEOUT_MS, 8000, 3000, 60000);
+const OA_CANDIDATE_ATTEMPT_LIMIT = parsePositiveInteger(process.env.OA_CANDIDATE_ATTEMPT_LIMIT, 10, 3, 50);
+const OA_DISCOVERED_PDF_ATTEMPT_LIMIT = parsePositiveInteger(process.env.OA_DISCOVERED_PDF_ATTEMPT_LIMIT, 3, 1, 12);
 
 type PaperDownloadResult = {
   doi: string;
@@ -193,14 +209,34 @@ async function responseToBuffer(response: globalThis.Response): Promise<Buffer> 
   return Buffer.from(await response.arrayBuffer());
 }
 
+async function fetchWithTimeout(url: string, init: RequestInit = {}, timeoutMs = METADATA_FETCH_TIMEOUT_MS): Promise<globalThis.Response> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, {
+      ...init,
+      signal: controller.signal,
+    });
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 async function fetchPdfByUrl(url: string, apiKey: string, extraHeaders: Record<string, string> = {}): Promise<{ buffer?: Buffer; contentType: string; error?: string }> {
-  const response = await fetch(url, {
-    headers: {
-      Accept: "application/pdf,application/octet-stream,*/*",
-      ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
-      ...extraHeaders,
-    },
-  });
+  let response: globalThis.Response;
+  try {
+    response = await fetchWithTimeout(url, {
+      headers: {
+        Accept: "application/pdf,application/octet-stream,*/*",
+        "User-Agent": DEFAULT_PDF_FETCH_USER_AGENT,
+        "Accept-Language": "en-US,en;q=0.8,zh-CN;q=0.7,zh;q=0.6",
+        ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+        ...extraHeaders,
+      },
+    }, PDF_FETCH_TIMEOUT_MS);
+  } catch (error) {
+    return { contentType: "", error: `fetch failed: ${(error as Error).message}` };
+  }
   if (!response.ok) {
     return { contentType: "", error: `HTTP ${response.status}` };
   }
@@ -212,14 +248,112 @@ async function fetchPdfByUrl(url: string, apiKey: string, extraHeaders: Record<s
   return { buffer, contentType };
 }
 
+function decodeHtmlAttribute(value: string): string {
+  return String(value || "")
+    .replace(/&amp;/g, "&")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">");
+}
+
+function isLikelyPdfCandidateUrl(url: string): boolean {
+  return /^https?:\/\//i.test(url) && (
+    /\.pdf(?:[?#].*)?$/i.test(url) ||
+    /(?:^|[/?&=._-])(pdf|download|fulltext|full-text|full_text)(?:[/?&=._-]|$)/i.test(url) ||
+    /pmc(?:\.ncbi\.nlm\.nih\.gov|\/articles\/pmc)/i.test(url)
+  );
+}
+
+function pushUniqueUrl(urls: string[], rawUrl: string, baseUrl?: string): void {
+  const clean = decodeHtmlAttribute(rawUrl).trim();
+  if (!clean) return;
+  try {
+    const url = baseUrl ? new URL(clean, baseUrl).toString() : new URL(clean).toString();
+    if (!/^https?:\/\//i.test(url)) return;
+    if (!urls.includes(url)) urls.push(url);
+  } catch {
+    // ignore malformed URLs from metadata or HTML
+  }
+}
+
+function getOaCandidatePriority(candidate: { source: string; url: string }): number {
+  const source = String(candidate.source || "").toLowerCase();
+  const url = String(candidate.url || "");
+  let score = 0;
+  if (/\.pdf(?:[?#].*)?$/i.test(url)) score += 100;
+  if (/\/pdf(?:[/?#]|$)|pdf=|download/i.test(url)) score += 70;
+  if (/pmc\.ncbi\.nlm\.nih\.gov|ncbi\.nlm\.nih\.gov\/pmc/i.test(url)) score += 60;
+  if (/semantic scholar|unpaywall|openalex/i.test(source)) score += 40;
+  if (/pubmed|pmc|europe pmc|ncbi/i.test(source)) score += 35;
+  if (/core|crossref/i.test(source)) score += 20;
+  if (/doi landing/i.test(source)) score -= 20;
+  return score;
+}
+
+function prioritizeOpenAccessCandidates(candidates: Array<{ source: string; url: string }>): Array<{ source: string; url: string }> {
+  return candidates
+    .slice()
+    .sort((a, b) => getOaCandidatePriority(b) - getOaCandidatePriority(a));
+}
+
+function extractPdfUrlsFromHtml(html: string, baseUrl: string): string[] {
+  const urls: string[] = [];
+  const text = String(html || "");
+  const metaPatterns = [
+    /<meta\b[^>]*(?:name|property)=["']citation_pdf_url["'][^>]*content=["']([^"']+)["'][^>]*>/ig,
+    /<meta\b[^>]*content=["']([^"']+)["'][^>]*(?:name|property)=["']citation_pdf_url["'][^>]*>/ig,
+    /<link\b[^>]*(?:rel)=["'][^"']*(?:alternate|canonical|item)[^"']*["'][^>]*href=["']([^"']+)["'][^>]*>/ig,
+  ];
+  for (const pattern of metaPatterns) {
+    let match: RegExpExecArray | null;
+    while ((match = pattern.exec(text)) !== null) {
+      if (isLikelyPdfCandidateUrl(match[1])) pushUniqueUrl(urls, match[1], baseUrl);
+    }
+  }
+
+  const hrefPattern = /\b(?:href|src|data)=["']([^"']+)["']/ig;
+  let hrefMatch: RegExpExecArray | null;
+  while ((hrefMatch = hrefPattern.exec(text)) !== null) {
+    if (isLikelyPdfCandidateUrl(hrefMatch[1])) pushUniqueUrl(urls, hrefMatch[1], baseUrl);
+    if (urls.length >= 20) break;
+  }
+  return urls.slice(0, 20);
+}
+
+async function discoverPdfUrlsFromLandingPage(url: string): Promise<{ urls: string[]; error?: string }> {
+  try {
+    const response = await fetchWithTimeout(url, {
+      headers: {
+        Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,application/pdf;q=0.8,*/*;q=0.5",
+        "User-Agent": DEFAULT_PDF_FETCH_USER_AGENT,
+        "Accept-Language": "en-US,en;q=0.8,zh-CN;q=0.7,zh;q=0.6",
+      },
+    }, LANDING_FETCH_TIMEOUT_MS);
+    if (!response.ok) return { urls: [], error: `landing HTTP ${response.status}` };
+    const contentType = response.headers.get("content-type") || "";
+    if (/application\/pdf|application\/octet-stream/i.test(contentType)) {
+      return { urls: [response.url || url] };
+    }
+    if (!/text\/html|application\/xhtml|application\/xml|text\/plain/i.test(contentType)) {
+      return { urls: [], error: `landing not HTML (${contentType || "unknown content-type"})` };
+    }
+    const html = await response.text();
+    return { urls: extractPdfUrlsFromHtml(html, response.url || url) };
+  } catch (error) {
+    return { urls: [], error: (error as Error).message };
+  }
+}
+
 async function fetchJson(url: string, headers: Record<string, string> = {}): Promise<Record<string, unknown> | null> {
   try {
-    const response = await fetch(url, {
+    const response = await fetchWithTimeout(url, {
       headers: {
         Accept: "application/json",
+        "User-Agent": DEFAULT_PDF_FETCH_USER_AGENT,
         ...headers,
       },
-    });
+    }, METADATA_FETCH_TIMEOUT_MS);
     if (!response.ok) return null;
     const parsed = await response.json();
     return parsed && typeof parsed === "object" ? parsed as Record<string, unknown> : null;
@@ -231,8 +365,8 @@ async function fetchJson(url: string, headers: Record<string, string> = {}): Pro
 function collectOaPdfUrls(value: unknown, urls: string[] = []): string[] {
   if (!value) return urls;
   if (typeof value === "string") {
-    if (/^https?:\/\//i.test(value) && (/\.pdf(?:[?#].*)?$/i.test(value) || /pdf|\/download\/?|fulltext|pmc\/articles/i.test(value))) {
-      urls.push(value);
+    if (/^https?:\/\//i.test(value) && isLikelyPdfCandidateUrl(value)) {
+      pushUniqueUrl(urls, value);
     }
     return urls;
   }
@@ -246,11 +380,28 @@ function collectOaPdfUrls(value: unknown, urls: string[] = []): string[] {
   if (contentType.includes("pdf")) {
     for (const key of ["url", "URL", "downloadUrl", "download_url", "fileUrl", "file_url"]) {
       const found = record[key];
-      if (typeof found === "string" && /^https?:\/\//i.test(found)) urls.push(found);
+      if (typeof found === "string" && /^https?:\/\//i.test(found)) pushUniqueUrl(urls, found);
     }
   }
-  for (const key of ["url_for_pdf", "pdf_url", "pdfUrl", "url", "URL", "downloadUrl", "download_url", "fileUrl", "file_url", "fullTextIdentifier"]) {
+  for (const key of ["url", "URL"]) {
+    const found = record[key];
+    if (typeof found === "string" && isLikelyPdfCandidateUrl(found)) pushUniqueUrl(urls, found);
+  }
+  const isOpenAccessRecord = record.is_oa === true
+    || Boolean(record.oa_status)
+    || Boolean(record.host_type)
+    || Boolean(record.license)
+    || Boolean(record.status)
+    || Boolean(record.url_for_landing_page)
+    || Boolean(record.landing_page_url);
+  for (const key of ["url_for_pdf", "pdf_url", "pdfUrl", "downloadUrl", "download_url", "fileUrl", "file_url", "fullTextIdentifier"]) {
     collectOaPdfUrls(record[key], urls);
+  }
+  if (isOpenAccessRecord) {
+    for (const key of ["url", "URL", "url_for_landing_page", "landing_page_url", "landingPageUrl"]) {
+      const found = record[key];
+      if (typeof found === "string" && /^https?:\/\//i.test(found)) pushUniqueUrl(urls, found);
+    }
   }
   for (const key of [
     "best_oa_location",
@@ -303,9 +454,19 @@ function getOpenclawDir(): string {
   return path.join(process.cwd(), "openclaw");
 }
 
-function loadOpenclawChromium(): unknown {
+function findPackagedChromiumExecutable(browsersPath: string): string {
+  const candidates = [
+    path.join(browsersPath, "chromium-1208", "chrome-win64", "chrome.exe"),
+    path.join(browsersPath, "chromium-1208", "chrome-win", "chrome.exe"),
+    path.join(browsersPath, "chromium_headless_shell-1208", "chrome-headless-shell-win64", "chrome-headless-shell.exe"),
+  ];
+  return candidates.find(candidate => fs.existsSync(candidate)) || "";
+}
+
+function loadOpenclawChromium(): { chromium: unknown; executablePath?: string } {
   const openclawDir = getOpenclawDir();
   const packagedBrowsersPath = path.join(openclawDir, "browsers");
+  const executablePath = findPackagedChromiumExecutable(packagedBrowsersPath);
   if (fs.existsSync(packagedBrowsersPath)) {
     process.env.PLAYWRIGHT_BROWSERS_PATH = packagedBrowsersPath;
   }
@@ -317,7 +478,10 @@ function loadOpenclawChromium(): unknown {
   if (!playwright.chromium) {
     throw new Error("OpenClaw/Playwright Chromium 不可用");
   }
-  return playwright.chromium;
+  return {
+    chromium: playwright.chromium,
+    executablePath: executablePath || undefined,
+  };
 }
 
 async function buildBrowserCookieHeader(context: { cookies(urls?: string | string[]): Promise<Array<{ name: string; value: string }>> }, url: string): Promise<string> {
@@ -371,100 +535,120 @@ async function getOpenAccessPdfCandidates(doi: string): Promise<Array<{ source: 
     }
   };
 
-  const semanticScholar = await fetchJson(
-    `https://api.semanticscholar.org/graph/v1/paper/DOI:${encodeURIComponent(normalizedDoi)}?fields=title,openAccessPdf,externalIds`
-  );
-  add("Semantic Scholar", collectOaPdfUrls(semanticScholar));
-
-  const coreApiKey = String(process.env.CORE_API_KEY || "").trim();
-  const core = await fetchJson(
-    `https://api.core.ac.uk/v3/search/works?q=${encodeURIComponent(`doi:"${normalizedDoi}"`)}&limit=5`,
-    coreApiKey ? { Authorization: `Bearer ${coreApiKey}` } : {}
-  );
-  add("CORE API", collectOaPdfUrls(core));
-
-  const openAlex = await fetchJson(
-    `https://api.openalex.org/works/${encodeURIComponent(`https://doi.org/${normalizedDoi}`)}`
-  );
-  add("OpenAlex", collectOaPdfUrls(openAlex));
-
   const ncbiParams = getNcbiParams();
-  const idConverter = await fetchJson(
-    appendQuery("https://pmc.ncbi.nlm.nih.gov/tools/idconv/api/v1/articles/", {
-      ids: normalizedDoi,
-      format: "json",
-      email: ncbiParams.email,
-      tool: ncbiParams.tool,
-    })
-  );
-  const idConverterRecords = Array.isArray(idConverter?.records) ? idConverter.records as Array<Record<string, unknown>> : [];
-  for (const record of idConverterRecords) {
-    const pmcid = String(record.pmcid || record.pmcId || "").trim();
-    if (pmcid) {
-      add("PubMed/NCBI ID Converter", [`https://pmc.ncbi.nlm.nih.gov/articles/${encodeURIComponent(pmcid)}/pdf/`]);
-    }
-  }
+  const unpaywallEmail = String(process.env.UNPAYWALL_EMAIL || process.env.PAPER_DOWNLOAD_EMAIL || "support@scholarharness.com").trim();
+  const coreApiKey = String(process.env.CORE_API_KEY || "").trim();
 
-  const ncbiSearch = await fetchJson(
-    appendQuery("https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi", {
-      ...ncbiParams,
-      db: "pubmed",
-      term: `${normalizedDoi}[AID]`,
-      retmode: "json",
-      retmax: "5",
-    })
-  );
-  const pubmedIds = ((((ncbiSearch?.esearchresult as Record<string, unknown> | undefined)?.idlist as unknown[]) || [])
-    .map(id => String(id || "").trim())
-    .filter(Boolean));
-  for (const pubmedId of pubmedIds) {
-    const ncbiLinks = await fetchJson(
-      appendQuery("https://eutils.ncbi.nlm.nih.gov/entrez/eutils/elink.fcgi", {
-        ...ncbiParams,
-        dbfrom: "pubmed",
-        db: "pmc",
-        id: pubmedId,
-        retmode: "json",
-      })
-    );
-    const linksets = Array.isArray(ncbiLinks?.linksets) ? ncbiLinks.linksets as Array<Record<string, unknown>> : [];
-    for (const linkset of linksets) {
-      const linksetDbs = Array.isArray(linkset.linksetdbs) ? linkset.linksetdbs as Array<Record<string, unknown>> : [];
-      for (const linksetDb of linksetDbs) {
-        const links = Array.isArray(linksetDb.links) ? linksetDb.links : [];
-        for (const link of links) {
-          const pmcId = String(link || "").trim();
-          if (!pmcId) continue;
-          add("PubMed/NCBI E-utilities", [
-            `https://pmc.ncbi.nlm.nih.gov/articles/${pmcId.startsWith("PMC") ? encodeURIComponent(pmcId) : `PMC${encodeURIComponent(pmcId)}`}/pdf/`,
+  await Promise.allSettled([
+    (async () => {
+      const semanticScholar = await fetchJson(
+        `https://api.semanticscholar.org/graph/v1/paper/DOI:${encodeURIComponent(normalizedDoi)}?fields=title,openAccessPdf,externalIds`
+      );
+      add("Semantic Scholar", collectOaPdfUrls(semanticScholar));
+    })(),
+    (async () => {
+      const core = await fetchJson(
+        `https://api.core.ac.uk/v3/search/works?q=${encodeURIComponent(`doi:"${normalizedDoi}"`)}&limit=5`,
+        coreApiKey ? { Authorization: `Bearer ${coreApiKey}` } : {}
+      );
+      add("CORE API", collectOaPdfUrls(core));
+    })(),
+    (async () => {
+      const openAlex = await fetchJson(
+        `https://api.openalex.org/works/${encodeURIComponent(`https://doi.org/${normalizedDoi}`)}`
+      );
+      add("OpenAlex", collectOaPdfUrls(openAlex));
+    })(),
+    (async () => {
+      const idConverter = await fetchJson(
+        appendQuery("https://pmc.ncbi.nlm.nih.gov/tools/idconv/api/v1/articles/", {
+          ids: normalizedDoi,
+          format: "json",
+          email: ncbiParams.email,
+          tool: ncbiParams.tool,
+        })
+      );
+      const idConverterRecords = Array.isArray(idConverter?.records) ? idConverter.records as Array<Record<string, unknown>> : [];
+      for (const record of idConverterRecords) {
+        const pmcid = String(record.pmcid || record.pmcId || "").trim();
+        if (pmcid) {
+          add("PubMed/NCBI ID Converter", [
+            `https://pmc.ncbi.nlm.nih.gov/articles/${encodeURIComponent(pmcid)}/pdf/`,
+            `https://europepmc.org/articles/${encodeURIComponent(pmcid)}?pdf=render`,
           ]);
         }
       }
-    }
-  }
+    })(),
+    (async () => {
+      const ncbiSearch = await fetchJson(
+        appendQuery("https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi", {
+          ...ncbiParams,
+          db: "pubmed",
+          term: `${normalizedDoi}[AID]`,
+          retmode: "json",
+          retmax: "5",
+        })
+      );
+      const pubmedIds = ((((ncbiSearch?.esearchresult as Record<string, unknown> | undefined)?.idlist as unknown[]) || [])
+        .map(id => String(id || "").trim())
+        .filter(Boolean));
+      await Promise.allSettled(pubmedIds.map(async (pubmedId) => {
+        const ncbiLinks = await fetchJson(
+          appendQuery("https://eutils.ncbi.nlm.nih.gov/entrez/eutils/elink.fcgi", {
+            ...ncbiParams,
+            dbfrom: "pubmed",
+            db: "pmc",
+            id: pubmedId,
+            retmode: "json",
+          })
+        );
+        const linksets = Array.isArray(ncbiLinks?.linksets) ? ncbiLinks.linksets as Array<Record<string, unknown>> : [];
+        for (const linkset of linksets) {
+          const linksetDbs = Array.isArray(linkset.linksetdbs) ? linkset.linksetdbs as Array<Record<string, unknown>> : [];
+          for (const linksetDb of linksetDbs) {
+            const links = Array.isArray(linksetDb.links) ? linksetDb.links : [];
+            for (const link of links) {
+              const pmcId = String(link || "").trim();
+              if (!pmcId) continue;
+              const normalizedPmcId = pmcId.startsWith("PMC") ? pmcId : `PMC${pmcId}`;
+              add("PubMed/NCBI E-utilities", [
+                `https://pmc.ncbi.nlm.nih.gov/articles/${encodeURIComponent(normalizedPmcId)}/pdf/`,
+                `https://europepmc.org/articles/${encodeURIComponent(normalizedPmcId)}?pdf=render`,
+              ]);
+            }
+          }
+        }
+      }));
+    })(),
+    (async () => {
+      const crossref = await fetchJson(
+        `https://api.crossref.org/works/${encodeURIComponent(normalizedDoi)}`
+      );
+      add("Crossref", collectOaPdfUrls(crossref));
+    })(),
+    (async () => {
+      const unpaywall = await fetchJson(
+        `https://api.unpaywall.org/v2/${encodeURIComponent(normalizedDoi)}?email=${encodeURIComponent(unpaywallEmail)}`
+      );
+      add("Unpaywall", collectOaPdfUrls(unpaywall));
+    })(),
+    (async () => {
+      const europePmc = await fetchJson(
+        `https://www.ebi.ac.uk/europepmc/webservices/rest/search?query=${encodeURIComponent(`DOI:"${normalizedDoi}"`)}&format=json&pageSize=1`
+      );
+      add("Europe PMC", collectOaPdfUrls(europePmc));
+      const firstResult = (((europePmc?.resultList as Record<string, unknown> | undefined)?.result as unknown[]) || [])[0] as Record<string, unknown> | undefined;
+      const pmcid = String(firstResult?.pmcid || firstResult?.pmcId || "").trim();
+      if (pmcid) {
+        add("PubMed Central", [
+          `https://www.ncbi.nlm.nih.gov/pmc/articles/${encodeURIComponent(pmcid)}/pdf/`,
+          `https://europepmc.org/articles/${encodeURIComponent(pmcid)}?pdf=render`,
+        ]);
+      }
+    })(),
+  ]);
 
-  const crossref = await fetchJson(
-    `https://api.crossref.org/works/${encodeURIComponent(normalizedDoi)}`
-  );
-  add("Crossref", collectOaPdfUrls(crossref));
-
-  const unpaywallEmail = String(process.env.UNPAYWALL_EMAIL || process.env.PAPER_DOWNLOAD_EMAIL || "support@scholarharness.com").trim();
-  const unpaywall = await fetchJson(
-    `https://api.unpaywall.org/v2/${encodeURIComponent(normalizedDoi)}?email=${encodeURIComponent(unpaywallEmail)}`
-  );
-  add("Unpaywall", collectOaPdfUrls(unpaywall));
-
-  const europePmc = await fetchJson(
-    `https://www.ebi.ac.uk/europepmc/webservices/rest/search?query=${encodeURIComponent(`DOI:"${normalizedDoi}"`)}&format=json&pageSize=1`
-  );
-  add("Europe PMC", collectOaPdfUrls(europePmc));
-  const firstResult = (((europePmc?.resultList as Record<string, unknown> | undefined)?.result as unknown[]) || [])[0] as Record<string, unknown> | undefined;
-  const pmcid = String(firstResult?.pmcid || firstResult?.pmcId || "").trim();
-  if (pmcid) {
-    add("PubMed Central", [
-      `https://www.ncbi.nlm.nih.gov/pmc/articles/${encodeURIComponent(pmcid)}/pdf/`,
-    ]);
-  }
+  add("DOI landing page", [`https://doi.org/${normalizedDoi}`]);
 
   return candidates;
 }
@@ -478,22 +662,45 @@ export async function downloadOpenAccessPaperByDoi(
     return { doi: "", status: "failed", message: "DOI 为空" };
   }
 
-  const candidates = await getOpenAccessPdfCandidates(normalizedDoi);
+  const candidates = prioritizeOpenAccessCandidates(await getOpenAccessPdfCandidates(normalizedDoi))
+    .slice(0, OA_CANDIDATE_ATTEMPT_LIMIT);
   const errors: string[] = [];
   for (const candidate of candidates) {
-    const fetched = await fetchPdfByUrl(candidate.url, "");
-    if (fetched.buffer) {
-      return {
-        doi: normalizedDoi,
-        status: "downloaded",
-        buffer: fetched.buffer,
-        filename: `${sanitizeZipName(normalizedDoi.replace(/\//g, "_"))}.pdf`,
-        link: candidate.url,
-        source: candidate.source,
-        message: `${candidate.source}: downloaded ${fetched.buffer.length} bytes`,
-      };
+    if (isLikelyPdfCandidateUrl(candidate.url)) {
+      const fetched = await fetchPdfByUrl(candidate.url, "");
+      if (fetched.buffer) {
+        return {
+          doi: normalizedDoi,
+          status: "downloaded",
+          buffer: fetched.buffer,
+          filename: `${sanitizeZipName(normalizedDoi.replace(/\//g, "_"))}.pdf`,
+          link: candidate.url,
+          source: candidate.source,
+          message: `${candidate.source}: downloaded ${fetched.buffer.length} bytes`,
+        };
+      }
+      errors.push(`${candidate.source}: ${fetched.error || "no pdf"}`);
     }
-    errors.push(`${candidate.source}: ${fetched.error || "no pdf"}`);
+
+    const discovered = await discoverPdfUrlsFromLandingPage(candidate.url);
+    if (discovered.error) {
+      errors.push(`${candidate.source} landing: ${discovered.error}`);
+    }
+    for (const pdfUrl of discovered.urls.slice(0, OA_DISCOVERED_PDF_ATTEMPT_LIMIT)) {
+      const pdfFetched = await fetchPdfByUrl(pdfUrl, "", { Referer: candidate.url });
+      if (pdfFetched.buffer) {
+        return {
+          doi: normalizedDoi,
+          status: "downloaded",
+          buffer: pdfFetched.buffer,
+          filename: `${sanitizeZipName(normalizedDoi.replace(/\//g, "_"))}.pdf`,
+          link: pdfUrl,
+          source: `${candidate.source} landing page`,
+          message: `${candidate.source}: discovered PDF from landing page, downloaded ${pdfFetched.buffer.length} bytes`,
+        };
+      }
+      errors.push(`${candidate.source} discovered ${pdfUrl}: ${pdfFetched.error || "no pdf"}`);
+    }
   }
 
   return {
@@ -519,11 +726,13 @@ export async function downloadInstitutionalPaperByDoi(
 
   let browser: BrowserLike | null = null;
   try {
-    const chromium = loadOpenclawChromium() as {
+    const browserRuntime = loadOpenclawChromium();
+    const chromium = browserRuntime.chromium as {
       launch(options: Record<string, unknown>): Promise<BrowserLike>;
     };
     browser = await chromium.launch({
       headless: String(process.env.INSTITUTION_BROWSER_HEADLESS || "true").toLowerCase() !== "false",
+      ...(browserRuntime.executablePath ? { executablePath: browserRuntime.executablePath } : {}),
       args: [
         "--disable-blink-features=AutomationControlled",
         "--no-sandbox",
@@ -662,7 +871,7 @@ async function downloadPaperByDoi(
     });
   }
 
-  const response = await fetch(endpoint, init);
+  const response = await fetchWithTimeout(endpoint, init, PDF_FETCH_TIMEOUT_MS);
   if (!response.ok) {
     return { doi, status: "failed", message: `API 返回 HTTP ${response.status}` };
   }

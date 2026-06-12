@@ -132,6 +132,11 @@ import {
   inferSourceType,
   normalizeLiterature,
 } from "../utils/literature-helpers";
+import {
+  buildBilingualRetrievalQueries,
+  formatRetrievalQueryVariants,
+  type RetrievalQueryVariant,
+} from "../literature/retrieval/semantic-query";
 // 导入多用户检索引擎管理器（解决 C5 问题）
 import {
   RetrievalEngineManager,
@@ -3821,9 +3826,7 @@ function generateBibliography(content: string, papers: LitPaper[]): { bibliograp
 function searchLiterature(query: string, papers: LitPaper[], maxResults: number = 10): SearchResult[] {
   const queryLower = query.toLowerCase();
   const queryWords = queryLower.split(/\s+/).filter(w => w.length > 1);
-  
-  const queryEmbedding = simpleEmbedding(query);
-  
+
   const results: SearchResult[] = [];
   
   for (const paper of papers) {
@@ -3865,12 +3868,8 @@ function searchLiterature(query: string, papers: LitPaper[], maxResults: number 
       matchFields.push('year');
     }
     
-    let vectorScore = 0;
-    if (paper.embedding && paper.embedding.length > 0) {
-      vectorScore = cosineSimilarity(queryEmbedding, paper.embedding);
-    }
-    
-    const combinedScore = lexicalScore * 2 + vectorScore * 100;
+    const vectorScore = 0;
+    const combinedScore = lexicalScore;
     
     if (combinedScore > 0) {
       results.push({ 
@@ -4001,6 +4000,109 @@ function extractSentencesFromMessage(message: string): string[] {
   
   // 去重并返回
   return [...new Set(sentences)].slice(0, 10); // 最多10个句子
+}
+
+async function retrieveBilingualDocuments(
+  engine: HybridRetrievalEngine,
+  sentence: string,
+  topK = 5,
+  topic?: string
+): Promise<any[]> {
+  const variants = buildBilingualRetrievalQueries({
+    sentence,
+    topic,
+    keywordsEn: [sentence, topic || ''].filter(Boolean),
+    keywordsCn: [sentence, topic || ''].filter(value => /[\u4e00-\u9fff]/.test(value)),
+  });
+  const groups: any[][] = [];
+  for (const variant of variants) {
+    const queryResults = await engine.retrieve({
+      query: variant.query,
+      topK: Math.min(80, Math.max(topK * 4, 20)),
+      searchMode: 'hybrid',
+    });
+    const mapped = queryResults.results.map(doc => ({
+      ...doc,
+      retrievalPath: variant.label,
+      retrievalLanguage: variant.language,
+      retrievalQuery: variant.query,
+    }));
+    groups.push(filterRetrievedResultsForLanguage(mapped, variant.language, topK));
+  }
+
+  return interleaveRetrievedResultGroups(groups, topK);
+}
+
+function buildRetrievedResultKey(item: any): string {
+  return String(item?.doi || item?.title || item?.id || '').trim().toLowerCase();
+}
+
+function inferRetrievedDocumentLanguage(item: any): 'en' | 'zh' | 'mixed' | 'unknown' {
+  const source = String(item?.source || '').toLowerCase();
+  if (/cnki|中文|china national knowledge/.test(source)) return 'zh';
+  if (/wos|web of science|pubmed|scopus|crossref|openalex|semantic/.test(source)) return 'en';
+
+  const text = [
+    item?.title,
+    item?.abstract,
+    item?.journal,
+    Array.isArray(item?.keywords) ? item.keywords.join(' ') : item?.keywords,
+  ].filter(Boolean).join(' ');
+  const chineseCount = (text.match(/[\u4e00-\u9fff]/g) || []).length;
+  const latinWordCount = (text.match(/[a-zA-Z]{3,}/g) || []).length;
+  if (chineseCount > 0 && latinWordCount > 0) {
+    return chineseCount >= latinWordCount ? 'zh' : 'en';
+  }
+  if (chineseCount > 0) return 'zh';
+  if (latinWordCount > 0) return 'en';
+  return 'unknown';
+}
+
+function filterRetrievedResultsForLanguage(items: any[], language: 'en' | 'zh', limit: number): any[] {
+  const preferred = items.filter(item => {
+    const inferred = inferRetrievedDocumentLanguage(item);
+    return language === 'zh' ? inferred === 'zh' : inferred === 'en';
+  });
+  if (preferred.length > 0) return preferred.slice(0, Math.max(limit, 1));
+
+  // 如果该语言路径确实没有匹配文献，保留少量原结果作为兜底，同时让 retrievalLanguage 标记真实路径。
+  return items.slice(0, Math.max(limit, 1));
+}
+
+function interleaveRetrievedResultGroups(groups: any[][], limit: number): any[] {
+  const safeLimit = Math.max(0, Math.floor(limit || 0));
+  if (safeLimit <= 0) return [];
+  const seen = new Set<string>();
+  const output: any[] = [];
+  const sortedGroups = groups
+    .map(group => group.slice().sort((a, b) => Number(b.combinedScore || b.score || 0) - Number(a.combinedScore || a.score || 0)))
+    .filter(group => group.length > 0);
+  const maxLength = Math.max(0, ...sortedGroups.map(group => group.length));
+
+  for (let index = 0; index < maxLength && output.length < safeLimit; index++) {
+    for (const group of sortedGroups) {
+      const item = group[index];
+      if (!item) continue;
+      const key = buildRetrievedResultKey(item);
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      output.push(item);
+      if (output.length >= safeLimit) break;
+    }
+  }
+
+  if (output.length >= safeLimit) return output;
+  const fillItems = sortedGroups
+    .flat()
+    .sort((a, b) => Number(b.combinedScore || 0) - Number(a.combinedScore || 0))
+    .filter(item => {
+      const key = buildRetrievedResultKey(item);
+      if (!key || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .slice(0, safeLimit - output.length);
+  return output.concat(fillItems);
 }
 
 async function webSearch(query: string, numResults: number = 10, customUrl?: string, customKey?: string): Promise<string> {
@@ -4327,18 +4429,18 @@ ${journalStyleHint}
 请提供您需要检索的具体论点或句子，支持以下格式：
 
 **格式1 - 引号包裹：**
-"硝化抑制剂减少NO排放"
-"干旱条件下土壤氮素转化增强"
+"干预A显著降低目标风险"
+"方法B提高模型预测准确性"
 
 **格式2 - 编号列表：**
-1. 硝化抑制剂减少NO排放
-2. DCD在玉米田中的应用效果
-3. 干旱对土壤氮循环的影响
+1. 干预A显著降低目标风险
+2. 方法B提高模型预测准确性
+3. 政策工具促进资源配置效率
 
 **格式3 - 直接提供（每行一个）：**
-硝化抑制剂通过抑制氨氧化细菌减少NO排放
-DCD和nitrapyrin是常用的硝化抑制剂
-干旱条件会改变土壤氮素转化速率
+干预A通过抑制关键过程降低目标风险
+方法B在多场景数据中提高预测稳定性
+政策工具可能促进资源配置效率
 
 请发送您需要检索的具体内容，我将为每句话检索最相关的文献。`;
       }
@@ -4347,20 +4449,18 @@ DCD和nitrapyrin是常用的硝化抑制剂
       const results: Record<string, any[]> = {};
       
       for (const sentence of sentences) {
-        const queryResults = await globalRetrievalEngine.retrieve({
-          query: sentence,
-          topK: 5,
-          searchMode: 'hybrid'
-        });
-        
-        results[sentence] = queryResults.results.map(doc => ({
+        const docs = await retrieveBilingualDocuments(globalRetrievalEngine, sentence, 5);
+
+        results[sentence] = docs.map(doc => ({
           title: doc.title,
-          author: doc.authors.map(a => a.name).join(', '),
+          author: doc.authors.map((a: { name?: string }) => a.name).join(', '),
           year: doc.year,
           journal: doc.journal,
           doi: doc.doi,
           abstract: doc.abstract,
           score: doc.combinedScore,
+          retrievalPath: doc.retrievalPath,
+          retrievalQuery: doc.retrievalQuery,
           citation: `(${doc.authors[0]?.name?.split(/\s+/).pop() || 'Unknown'} et al., ${doc.year})`
         }));
       }
@@ -4377,6 +4477,7 @@ DCD和nitrapyrin是常用的硝化抑制剂
           papers.forEach((paper, idx) => {
             response += `${idx + 1}. **${paper.title}**\n`;
             response += `   ${paper.citation}\n`;
+            if (paper.retrievalPath) response += `   ${paper.retrievalPath}: ${paper.retrievalQuery || ''}\n`;
             response += `   *${paper.journal}*\n`;
             response += `   ${paper.abstract?.substring(0, 150)}...\n\n`;
           });
@@ -4502,7 +4603,7 @@ ${taskHint}
 2. **文内引用**：必须使用 "(作者，年份)" 格式引用文献，如 "(Wang et al., 2023)"
 3. **文末尾注**：文末必须列出所有参考文献的完整尾注信息，包含：作者、年份、标题、期刊、卷号、页码、DOI，格式如下：
    - "[序号] 作者全名. (年份). 论文标题. 期刊名, 卷号(期号), 页码. DOI: xxx"
-   - 示例："[1] Song, X. T. et al. (2022). Soil oxygen depletion and corresponding nitrous oxide production at hot moments in an agricultural soil. Environmental Pollution, 315, 120440. DOI: 10.1016/j.envpol.2022.120440"
+   - 示例："[1] Smith, J. et al. (2023). Intervention effects on target outcomes in applied research. Journal of Applied Research, 12(3), 101-115. DOI: 10.0000/example.2023.001"
 4. 如果用户提供了文献，必须引用；不要编造引用
 5. 使用专业的学术表达
 6. 结构清晰，逻辑严密
@@ -4520,7 +4621,7 @@ section: [章节名]
 references: |
 [参考文献完整列表]
 - [序号] 作者全名. (年份). 论文标题. 期刊名, 卷号(期号), 页码. DOI: xxx
-- 示例：[1] Song, X. T. et al. (2022). Soil oxygen depletion and corresponding nitrous oxide production at hot moments in an agricultural soil. Environmental Pollution, 315, 120440. DOI: 10.1016/j.envpol.2022.120440
+- 示例：[1] Smith, J. et al. (2023). Intervention effects on target outcomes in applied research. Journal of Applied Research, 12(3), 101-115. DOI: 10.0000/example.2023.001
 \`\`\`
 
 **重要**：references 字段必须列出本章节引用的所有文献完整信息，包括作者、年份、标题、期刊、卷号、页码、DOI。
@@ -4615,20 +4716,18 @@ references: |
             // 执行逐句检索
             const searchResults: Record<string, any[]> = {};
             for (const sentence of sentences) {
-              const queryResults = await globalRetrievalEngine.retrieve({
-                query: sentence,
-                topK: 5,
-                searchMode: 'hybrid'
-              });
-              
-              searchResults[sentence] = queryResults.results.map(doc => ({
+              const docs = await retrieveBilingualDocuments(globalRetrievalEngine, sentence, 5);
+
+              searchResults[sentence] = docs.map(doc => ({
                 title: doc.title,
-                author: doc.authors.map(a => a.name).join(', '),
+                author: doc.authors.map((a: { name?: string }) => a.name).join(', '),
                 year: doc.year,
                 journal: doc.journal,
                 doi: doc.doi,
                 abstract: doc.abstract,
                 score: doc.combinedScore,
+                retrievalPath: doc.retrievalPath,
+                retrievalQuery: doc.retrievalQuery,
                 citation: `(${doc.authors[0]?.name?.split(/\s+/).pop() || 'Unknown'} et al., ${doc.year})`
               }));
             }
@@ -4645,6 +4744,7 @@ references: |
                 papers.forEach((paper, idx) => {
                   searchResultText += `${idx + 1}. **${paper.title}**\n`;
                   searchResultText += `   ${paper.citation}\n`;
+                  if (paper.retrievalPath) searchResultText += `   ${paper.retrievalPath}: ${paper.retrievalQuery || ''}\n`;
                   searchResultText += `   *${paper.journal}*\n`;
                   searchResultText += `   ${paper.abstract?.substring(0, 150)}...\n\n`;
                 });
@@ -4682,22 +4782,19 @@ references: |
           logger.info(`[ChatProcessor] AI requested single sentence search: ${sentenceId} - ${searchQuery}`);
           
           // 执行单句检索
-          const queryResults = await globalRetrievalEngine.retrieve({
-            query: searchQuery,
-            topK: 5,
-            searchMode: 'hybrid'
-          });
+          const docs = await retrieveBilingualDocuments(globalRetrievalEngine, searchQuery, 5, topic);
           
           // 格式化检索结果
           let searchResultText = `\n\n## ${sentenceId} 文献检索结果\n\n`;
           searchResultText += `**检索词**：${searchQuery}\n`;
           searchResultText += `**主题**：${topic}\n`;
-          searchResultText += `**找到 ${queryResults.results.length} 篇相关文献**：\n\n`;
+          searchResultText += `**找到 ${docs.length} 篇相关文献**：\n\n`;
           
-          queryResults.results.forEach((doc, idx) => {
+          docs.forEach((doc, idx) => {
             const citation = `(${doc.authors[0]?.name?.split(/\s+/).pop() || 'Unknown'} et al., ${doc.year})`;
             searchResultText += `${idx + 1}. **${doc.title}**\n`;
             searchResultText += `   ${citation}\n`;
+            if (doc.retrievalPath) searchResultText += `   ${doc.retrievalPath}: ${doc.retrievalQuery || ''}\n`;
             searchResultText += `   *${doc.journal}*\n`;
             searchResultText += `   ${doc.abstract?.substring(0, 150)}...\n\n`;
           });
@@ -7655,6 +7752,12 @@ app.post("/api/embedding/config", (req: Request, res: Response) => {
   });
 
   retrievalEngineManager.clearAll();
+  retrievalEngineManager.updateApiConfig({
+    url: currentEmbeddingConfig.enabled ? currentEmbeddingConfig.url : undefined,
+    key: currentEmbeddingConfig.enabled ? currentEmbeddingConfig.key : undefined,
+    model: currentEmbeddingConfig.model,
+    dimensions: currentEmbeddingConfig.dimensions,
+  });
   pdfWikiManager.clearAllEngines();
   
   // 更新检索引擎的 API 配置和维度配置
@@ -10075,8 +10178,57 @@ app.post("/api/literature/search", async (req: Request, res: Response) => {
     }
 
     const userEngine = await retrievalEngineManager.getEngine(userId);
+    const variants = mode === "hybrid"
+      ? buildBilingualRetrievalQueries({ sentence: query, keywordsEn: [query], keywordsCn: [query] })
+      : [];
+    if (variants.length > 1) {
+      const settled = await Promise.all(variants.map(variant => userEngine.retrieve({
+        query: variant.query,
+        topK: Math.min(80, Math.max(topK * 4, 20)),
+        searchMode: mode,
+      })));
+      const resultGroups = settled.map((item, index) => {
+        const variant = variants[index];
+        const mapped = item.results.map(doc => ({
+          ...doc,
+          retrievalPath: variant.label,
+          retrievalLanguage: variant.language,
+          retrievalQuery: variant.query,
+        }));
+        return filterRetrievedResultsForLanguage(mapped, variant.language, topK);
+      });
+      const results = interleaveRetrievedResultGroups(resultGroups, topK)
+        .map((doc, index) => ({ ...doc, rank: index + 1 }));
+      res.json({
+        success: true,
+        data: {
+          query: formatRetrievalQueryVariants(variants),
+          queryVariants: variants,
+          languageGroups: variants.map((variant, index) => ({
+            language: variant.language,
+            label: variant.label,
+            query: variant.query,
+            totalCount: settled[index]?.totalCount || settled[index]?.results.length || 0,
+            returned: resultGroups[index]?.length || 0,
+            rawReturned: settled[index]?.results.length || 0,
+            filteredOut: Math.max(0, (settled[index]?.results.length || 0) - (resultGroups[index]?.length || 0)),
+            semanticUsed: (resultGroups[index] || []).some(item => Number(item.vectorScore || 0) > 0),
+          })),
+          totalCount: results.length,
+          results,
+          timing: {
+            bm25Ms: settled.reduce((sum, item) => sum + item.timing.bm25Ms, 0),
+            vectorMs: settled.reduce((sum, item) => sum + item.timing.vectorMs, 0),
+            rerankMs: settled.reduce((sum, item) => sum + item.timing.rerankMs, 0),
+            totalMs: settled.reduce((sum, item) => sum + item.timing.totalMs, 0),
+          },
+        },
+      });
+      return;
+    }
+
     const result = await userEngine.retrieve({
-      query,
+      query: variants[0]?.query || query,
       topK,
       searchMode: mode,
     });
@@ -13201,6 +13353,8 @@ app.post("/api/paper-draft/save", async (req: Request, res: Response) => {
 const retrievalEngineManager = initRetrievalEngineManager({
   apiUrl: currentEmbeddingConfig.url,
   apiKey: currentEmbeddingConfig.key,
+  embeddingModel: currentEmbeddingConfig.model,
+  embeddingDimensions: currentEmbeddingConfig.dimensions,
   maxEngines: 20, // 最多缓存 20 个用户的引擎
   idleTimeoutMs: 30 * 60 * 1000, // 30 分钟空闲超时
 });
@@ -13410,11 +13564,11 @@ ${content.substring(0, 15000)}
 ### 🎯 实验目的
 [明确实验的主要目标]
 
-### 📍 实验地点与环境
-- 地理位置：[具体地点和坐标]
-- 气候条件：[年均温、降水量等]
-- 土壤性质：[土壤类型、基本理化性质]
-- 试验地土壤物化生指标：[pH、有机质/有机碳、全氮、有效氮/磷/钾、容重、质地、含水量/WFPS、微生物量、酶活性、微生物群落等；有就填，没有就留空]
+### 📍 实验地点、对象与环境
+- 地点或来源：[具体地点、机构、样本来源或数据来源]
+- 环境条件：[温度、湿度、时间、场景、平台或其他背景条件]
+- 研究对象/材料属性：[对象类型、样本特征、材料性质或系统参数]
+- 基础指标：[用户提供的物理、化学、生物、人口学、技术或运行指标；有就填，没有就留空]
 
 ### 🔬 实验设计
 - 处理设置：[各处理组名称及设置]
@@ -13433,7 +13587,7 @@ ${content.substring(0, 15000)}
 [其他重要信息，如年际变异、特殊情况等]
 
 要求：
-1. 保留所有关键数值（温度、降水、土壤性质、土壤物化生指标等）
+1. 保留所有关键数值（环境条件、样本/材料属性、基础指标、实验参数等）
 2. 结构清晰，层次分明
 3. 语言简洁专业
 4. 总字数控制在800-1500字`
@@ -13485,20 +13639,20 @@ ${content.substring(0, 15000)}
 - 数据类型：[观测数据/实验数据/模型数据等]
 - 数据量：[样本数量、观测频次等]
 
-### 🌡️ 环境条件数据
-- 温度数据：[年均温、季节变化、年际变异等]
-- 降水数据：[年降水量、季节分布、年际变异等]
-- 土壤条件：[水分含量、WFPS等关键指标；如有pH、有机质/有机碳、全氮、有效氮/磷/钾、容重、质地、微生物量、酶活性、微生物群落等也保留，没有就留空]
+### 🌡️ 环境/样本/实验条件数据
+- 背景条件：[温度、湿度、时间、地点、平台、场景或其他背景变量]
+- 样本或对象属性：[样本量、来源、分组、材料性质、系统参数等]
+- 基础指标：[用户提供的物理、化学、生物、人口学、技术或运行指标；没有就留空]
 
-### 📈 排放/测量数据
-- 主要指标：[N2O、NO等排放数据范围]
+### 📈 结果/测量数据
+- 主要指标：[用户提供的核心结果、效应量、性能指标或测量数据范围]
 - 峰值特征：[峰值出现条件、数值范围]
-- 累积排放：[各处理累积排放量对比]
+- 累积/总量/综合指标：[各组、各阶段或各方案的累积值、总量或综合指标对比]
 
 ### 🔬 统计分析结果
 - 处理间差异：[显著性水平、差异幅度]
 - 年际变异：[不同年份数据对比]
-- 关键比值：[如NO/N2O比值等]
+- 关键比值或指数：[用户提供的比值、指数、标准化指标或派生指标]
 
 ### 🧬 微生物数据（如有）
 - 功能基因丰度：[关键基因丰度变化]
@@ -13597,6 +13751,387 @@ interface RetrievalSearchStat {
   selected: number;
 }
 
+type ClaimEvidenceRelation = 'supports' | 'contradicts' | 'related' | 'irrelevant' | 'unchecked';
+
+interface ClaimEvidenceJudgment {
+  relation: ClaimEvidenceRelation;
+  confidence: number;
+  reason: string;
+  evidenceSnippets: string[];
+  checked: boolean;
+  adjustedScore?: number;
+}
+
+function normalizeClaimEvidenceRelation(value: unknown): ClaimEvidenceRelation {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (normalized === 'supports' || normalized === 'support' || normalized === 'supported') return 'supports';
+  if (normalized === 'contradicts' || normalized === 'contradict' || normalized === 'opposes' || normalized === 'opposite') return 'contradicts';
+  if (normalized === 'related' || normalized === 'partial' || normalized === 'partially_related') return 'related';
+  if (normalized === 'irrelevant' || normalized === 'unrelated' || normalized === 'not_relevant') return 'irrelevant';
+  return 'unchecked';
+}
+
+function clampClaimEvidenceConfidence(value: unknown): number {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return 0;
+  return Math.max(0, Math.min(1, parsed));
+}
+
+function buildUncheckedClaimEvidenceJudgment(reason: string): ClaimEvidenceJudgment {
+  return {
+    relation: 'unchecked',
+    confidence: 0,
+    reason,
+    evidenceSnippets: [],
+    checked: false,
+  };
+}
+
+function cleanClaimEvidenceText(value: unknown, limit = 1200): string {
+  return String(value || '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, limit);
+}
+
+function parseClaimEvidenceJsonItems(content: string): Array<Record<string, unknown>> {
+  const jsonMatch = String(content || '').match(/\{[\s\S]*\}/);
+  if (!jsonMatch) return [];
+  const parsed = JSON.parse(jsonMatch[0]) as { items?: unknown };
+  return Array.isArray(parsed.items)
+    ? parsed.items.filter((item): item is Record<string, unknown> => Boolean(item && typeof item === 'object'))
+    : [];
+}
+
+function buildClaimEvidenceCandidateId(item: any, index: number): string {
+  return String(item?.id || item?.doi || item?.title || `doc-${index + 1}`)
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 180) || `doc-${index + 1}`;
+}
+
+function normalizeClaimEvidenceSnippets(value: unknown): string[] {
+  const raw = Array.isArray(value) ? value : (value ? [value] : []);
+  const snippets: string[] = [];
+  const seen = new Set<string>();
+  for (const item of raw) {
+    const clean = cleanClaimEvidenceText(item, 500);
+    if (!clean) continue;
+    const key = clean.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    snippets.push(clean);
+    if (snippets.length >= 3) break;
+  }
+  return snippets;
+}
+
+async function judgeClaimEvidenceForRetrievedReferences(
+  sentence: string,
+  items: any[],
+  config?: { apiUrl?: string; apiKey?: string; model?: string; label?: string }
+): Promise<any[]> {
+  if (items.length === 0) return items;
+
+  const useApiUrl = config?.apiUrl || currentApiUrl || process.env.API_URL;
+  const useApiKey = config?.apiKey || currentApiKey || process.env.API_KEY;
+  const model = config?.model || currentSecondaryModel || currentModel || process.env.MODEL || "gpt-4o";
+  if (!useApiUrl || !useApiKey) {
+    const unchecked = buildUncheckedClaimEvidenceJudgment('未配置 LLM API，未执行证据支持判断。');
+    return items.map(item => ({ ...item, claimSupport: unchecked }));
+  }
+
+  const candidates = items.map((item, index) => ({
+    id: buildClaimEvidenceCandidateId(item, index),
+    title: cleanClaimEvidenceText(item?.title, 320),
+    year: cleanClaimEvidenceText(item?.year, 20),
+    journal: cleanClaimEvidenceText(item?.journal, 180),
+    keywords: Array.isArray(item?.keywords)
+      ? item.keywords.slice(0, 12).map((keyword: unknown) => cleanClaimEvidenceText(keyword, 80)).filter(Boolean).join('; ')
+      : cleanClaimEvidenceText(item?.keywords, 320),
+    abstract: cleanClaimEvidenceText(item?.abstract, 1400),
+  }));
+  const candidateIds = new Set(candidates.map(candidate => candidate.id));
+
+  const prompt = `你是通用科研证据匹配判别器。请判断每篇候选文献的题名、摘要、关键词是否能支持用户论点。
+
+用户论点：
+${sentence}
+
+候选文献 JSON：
+${JSON.stringify(candidates, null, 2)}
+
+只允许根据候选文献的 title、abstract、keywords 判断，不要使用外部知识，不要预设学科领域，也不要补充候选文本中没有的信息。
+
+relation 定义：
+- supports：候选文献直接支持用户论点中的核心关系、方向或结论。
+- contradicts：候选文献与用户论点的方向、关系或结论相反。
+- related：候选文献主题相关，但不能直接支持该论点，或方向/对象/结论不够明确。
+- irrelevant：候选文献与该论点基本无关。
+
+输出严格 JSON，不要 markdown：
+{
+  "items": [
+    {
+      "id": "必须使用候选文献中的 id",
+      "relation": "supports|contradicts|related|irrelevant",
+      "confidence": 0.0,
+      "reason": "一句话说明为什么",
+      "evidenceSnippets": ["从 title/abstract/keywords 中摘出的原文短句，不能编造"]
+    }
+  ]
+}`;
+
+  try {
+    const content = await callChatCompletion(
+      {
+        apiUrl: useApiUrl,
+        apiKey: useApiKey,
+        label: config?.label || "SentenceClaimEvidence",
+        defaultModel: model,
+      },
+      {
+        model,
+        temperature: 0,
+        maxTokens: 5000,
+        messages: [
+          {
+            role: "system",
+            content: "你是严格的科研证据支持关系判别器。只输出 JSON；没有直接证据时必须标为 related 或 irrelevant，不能把主题相关误判为 supports。",
+          },
+          {
+            role: "user",
+            content: prompt,
+          },
+        ],
+      }
+    );
+
+    const parsedItems = parseClaimEvidenceJsonItems(content);
+    const judgments = new Map<string, ClaimEvidenceJudgment>();
+    for (const parsed of parsedItems) {
+      const id = cleanClaimEvidenceText(parsed.id, 180);
+      if (!candidateIds.has(id)) continue;
+      const relation = normalizeClaimEvidenceRelation(parsed.relation);
+      judgments.set(id, {
+        relation,
+        confidence: clampClaimEvidenceConfidence(parsed.confidence),
+        reason: cleanClaimEvidenceText(parsed.reason, 260) || '模型未提供判断理由。',
+        evidenceSnippets: normalizeClaimEvidenceSnippets((parsed as Record<string, unknown>).evidenceSnippets || (parsed as Record<string, unknown>).evidence_snippets),
+        checked: relation !== 'unchecked',
+      });
+    }
+
+    return items.map((item, index) => {
+      const candidate = candidates[index];
+      const judgment = judgments.get(candidate.id)
+        || buildUncheckedClaimEvidenceJudgment('证据支持判断未返回该候选文献。');
+      return { ...item, claimSupport: judgment };
+    });
+  } catch (error) {
+    logger.warn("[SentenceClaimEvidence] 判断失败，保留原检索排序:", error);
+    const unchecked = buildUncheckedClaimEvidenceJudgment(`证据支持判断失败：${(error as Error).message}`);
+    return items.map(item => ({ ...item, claimSupport: unchecked }));
+  }
+}
+
+function getClaimEvidenceRelationDelta(relation: ClaimEvidenceRelation | undefined): number {
+  switch (relation) {
+    case 'supports':
+      return 0.35;
+    case 'related':
+      return 0.06;
+    case 'unchecked':
+      return 0;
+    case 'contradicts':
+      return -0.18;
+    case 'irrelevant':
+      return -0.42;
+    default:
+      return 0;
+  }
+}
+
+function rankClaimEvidenceJudgedResults(items: any[], limit: number): any[] {
+  return items
+    .map(item => {
+      const baseScore = Number(item?.combinedScore || item?.score || 0);
+      const support = (item?.claimSupport || buildUncheckedClaimEvidenceJudgment('未执行证据支持判断。')) as ClaimEvidenceJudgment;
+      const adjustedScore = Math.max(0, baseScore + getClaimEvidenceRelationDelta(support.relation) + (support.confidence || 0) * 0.08);
+      return {
+        ...item,
+        originalCombinedScore: Number.isFinite(baseScore) ? baseScore : 0,
+        combinedScore: adjustedScore,
+        claimSupport: {
+          ...support,
+          adjustedScore,
+        },
+      };
+    })
+    .sort((a, b) => {
+      const scoreDiff = Number(b.combinedScore || 0) - Number(a.combinedScore || 0);
+      if (scoreDiff !== 0) return scoreDiff;
+      return Number(b.vectorScore || 0) - Number(a.vectorScore || 0);
+    })
+    .slice(0, Math.max(1, Math.floor(limit || 1)));
+}
+
+function summarizeClaimEvidenceJudgments(items: any[]): Record<ClaimEvidenceRelation, number> {
+  const summary: Record<ClaimEvidenceRelation, number> = {
+    supports: 0,
+    contradicts: 0,
+    related: 0,
+    irrelevant: 0,
+    unchecked: 0,
+  };
+  for (const item of items) {
+    const relation = normalizeClaimEvidenceRelation(item?.claimSupport?.relation);
+    summary[relation] += 1;
+  }
+  return summary;
+}
+
+function buildRetrievalPointQueryVariants(point: RetrievalPoint): RetrievalQueryVariant[] {
+  const variants = buildBilingualRetrievalQueries({
+    sentence: point.sentence,
+    keywordsEn: point.keywords_en,
+    keywordsCn: point.keywords_cn,
+  });
+  if (variants.length > 0) return variants;
+  const fallback = (point.keywords_en?.[0] || point.keywords_cn?.[0] || point.sentence || '').trim();
+  return fallback
+    ? [{ language: 'en', label: '英文检索', query: fallback }]
+    : [];
+}
+
+function normalizeRetrievalKeywordArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set<string>();
+  const output: string[] = [];
+  for (const item of value) {
+    const clean = String(item || '').replace(/\s+/g, ' ').trim();
+    if (!clean) continue;
+    const key = clean.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    output.push(clean);
+  }
+  return output.slice(0, 4);
+}
+
+function buildFallbackRetrievalPoint(sentence: string): RetrievalPoint {
+  const clean = String(sentence || '').trim();
+  return {
+    sentence: clean,
+    keywords_en: [clean].filter(Boolean),
+    keywords_cn: /[\u4e00-\u9fff]/.test(clean) ? [clean] : [],
+  };
+}
+
+async function parseSentenceClaimRetrievalPoint(sentence: string): Promise<{
+  point: RetrievalPoint;
+  parser: 'ai' | 'fallback';
+  reason: string;
+  warning?: string;
+}> {
+  const cleanSentence = String(sentence || '').trim();
+  const fallback = buildFallbackRetrievalPoint(cleanSentence);
+  const useApiUrl = currentApiUrl || process.env.API_URL;
+  const useApiKey = currentApiKey || process.env.API_KEY;
+  const model = currentModel || process.env.MODEL || "gpt-4o";
+
+  if (!useApiUrl || !useApiKey) {
+    return {
+      point: fallback,
+      parser: 'fallback',
+      reason: '未配置 LLM API，使用原句构建规则检索式。',
+      warning: 'query 解析未调用 AI；中文句子可能缺少英文翻译检索式。',
+    };
+  }
+
+  const prompt = `你是句子级文献检索 query 解析器。请把用户输入的一个科研论点/句子解析成中英文两条检索路径，供后端先 BM25 关键词筛选，再在 BM25 候选池内做 embedding 语义相似度重排。
+
+用户句子：
+${cleanSentence}
+
+输出 JSON：
+{
+  "sentence": "原句",
+  "keywords_en": ["英文组合检索式"],
+  "keywords_cn": ["中文组合检索式"],
+  "reason": "简短说明"
+}
+
+要求：
+- keywords_en 和 keywords_cn 各输出 1-2 条组合检索式。
+- 英文用 AND 连接核心概念；中文可用 AND 或空格连接核心短语。
+- 必须保留并翻译方向性动词和关系词：下降/降低/reduce/decrease、增加/increase、促进/promote、抑制/inhibit、显著/significant、正相关/positive association、负相关/negative association。
+- 不要只提取名词；检索式必须体现“谁影响谁、方向是什么”。
+- 不要预设任何学科领域、研究对象或主图方向。
+- 只返回 JSON，不要 markdown。`;
+
+  try {
+    const response = await fetch(useApiUrl + "/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": "Bearer " + useApiKey,
+      },
+      body: JSON.stringify({
+        model,
+        messages: [{ role: "user", content: prompt }],
+        temperature: 0.2,
+        max_tokens: 1200,
+      }),
+    });
+    if (!response.ok) {
+      return {
+        point: fallback,
+        parser: 'fallback',
+        reason: 'query 解析 API 返回异常，已使用原句规则检索。',
+        warning: `query parser API failed: ${response.status}`,
+      };
+    }
+    const payload = await response.json() as { choices?: Array<{ message?: { content?: string } }> };
+    const content = payload.choices?.[0]?.message?.content || "";
+    const jsonMatch = content.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) {
+      return {
+        point: fallback,
+        parser: 'fallback',
+        reason: 'query 解析未返回 JSON，已使用原句规则检索。',
+        warning: 'query parser returned non-JSON content',
+      };
+    }
+    const parsed = JSON.parse(jsonMatch[0]) as Record<string, unknown>;
+    const point: RetrievalPoint = {
+      sentence: String(parsed.sentence || cleanSentence).trim() || cleanSentence,
+      keywords_en: normalizeRetrievalKeywordArray(parsed.keywords_en),
+      keywords_cn: normalizeRetrievalKeywordArray(parsed.keywords_cn),
+    };
+    if (point.keywords_en.length === 0 && point.keywords_cn.length === 0) {
+      return {
+        point: fallback,
+        parser: 'fallback',
+        reason: 'query 解析未给出有效检索词，已使用原句规则检索。',
+        warning: 'query parser returned empty keywords',
+      };
+    }
+    return {
+      point,
+      parser: 'ai',
+      reason: String(parsed.reason || '已解析为中英文两条检索路径。'),
+    };
+  } catch (error) {
+    return {
+      point: fallback,
+      parser: 'fallback',
+      reason: 'query 解析失败，已使用原句规则检索。',
+      warning: (error as Error).message,
+    };
+  }
+}
+
 interface RetrievalExecutionResult {
   success: true;
   librarySource: "abstract" | "pdfWiki" | "combined";
@@ -13671,12 +14206,16 @@ ${context || '无额外上下文'}
 }
 
 ## ⚠️ 关键要求：按论点组合检索词
-- **每个论点只提供 ONE 个组合检索词**，用 AND 连接多个关键词
-- 例如：论点"WFPS对土壤N2O排放有显著影响"
-  - ✅ 正确：keywords_en: ["WFPS AND N2O AND soil"]
-  - ❌ 错误：keywords_en: ["WFPS", "N2O", "soil"]
+- **每个论点必须同时提供 ONE 个英文组合检索词和 ONE 个中文组合检索词**，分别放入 keywords_en 和 keywords_cn
+- 英文组合检索词用 AND 连接多个关键词；中文组合检索词用空格或 AND 连接核心中文短语
+- 例如：论点"干预A显著降低目标风险"
+  - ✅ 正确：keywords_en: ["intervention A AND reduce AND target risk"]
+  - ✅ 正确：keywords_cn: ["干预A AND 降低 AND 目标风险"]
+  - ❌ 错误：keywords_en: ["intervention A", "risk", "effect"]
 - 这样可以确保检索到的文献同时包含所有关键词，真正支撑该论点
 - 检索词要具体，能准确定位相关文献
+- 动词和方向词必须保留并翻译到另一种语言，例如：下降/降低/reduce/decrease、增加/increase、促进/promote、抑制/inhibit、显著/significant、正相关/positive association、负相关/negative association
+- 不要只提取名词；如果论点说“降低/促进/抑制/增加”，检索词必须体现这个方向关系
 - points 最多提取5个论点
 - 只返回JSON，不要其他文字`;
 
@@ -13840,59 +14379,60 @@ async function runAbstractRetrieval(points: RetrievalPoint[], userId: string): P
   const searchStats: RetrievalSearchStat[] = [];
 
   for (const point of points) {
-    if (!point.keywords_en || point.keywords_en.length === 0) continue;
+    const variants = buildRetrievalPointQueryVariants(point);
+    if (variants.length === 0) continue;
 
-    const combinedQuery = point.keywords_en[0];
-    const sentence = point.sentence || combinedQuery;
-
+    const sentence = point.sentence || variants[0].query;
     logger.info(`[Retrieval] 检索论点：${sentence}`);
-    logger.info(`[Retrieval] 组合检索词：${combinedQuery}`);
+    logger.info(`[Retrieval] 双语检索路径：${formatRetrievalQueryVariants(variants)}`);
 
-    try {
-      const queryResults = await userEngine.retrieve({
-        query: combinedQuery,
-        topK: 15,
-        searchMode: 'hybrid'
-      });
+    for (const variant of variants) {
+      try {
+        const queryResults = await userEngine.retrieve({
+          query: variant.query,
+          topK: 15,
+          searchMode: 'hybrid'
+        });
 
-      const initialResults = queryResults.results;
-      logger.info(`[Retrieval] 检索到 ${initialResults.length} 篇文献，开始 AI 筛选...`);
+        const initialResults = queryResults.results;
+        logger.info(`[Retrieval] ${variant.label} 检索到 ${initialResults.length} 篇文献，开始 AI 筛选...`);
 
-      const selectedResults = await aiSelectPapers(
-        initialResults,
-        sentence,
-        4,
-        currentApiUrl,
-        currentApiKey
-      );
+        const selectedResults = await aiSelectPapers(
+          initialResults,
+          `${sentence}\n检索路径：${variant.label}\n检索词：${variant.query}`,
+          4,
+          currentApiUrl,
+          currentApiKey
+        );
 
-      logger.info(`[Retrieval] AI 筛选出 ${selectedResults.length} 篇最相关文献`);
+        logger.info(`[Retrieval] ${variant.label} AI 筛选出 ${selectedResults.length} 篇最相关文献`);
 
-      const resultsWithMeta = selectedResults.map(doc => ({
-        title: doc.title,
-        authors: doc.authors,
-        author: doc.author,
-        year: doc.year,
-        journal: doc.journal,
-        doi: doc.doi,
-        abstract: doc.abstract,
-        score: doc.combinedScore,
-        keyword: combinedQuery,
-        sentence: sentence,
-        relevanceScore: (doc as any).relevanceScore || Math.round((doc.combinedScore || 0.5) * 100),
-        qualityScore: (doc as any).qualityScore || Math.round((doc.combinedScore || 0.5) * 100),
-      }));
+        const resultsWithMeta = selectedResults.map(doc => ({
+          title: doc.title,
+          authors: doc.authors,
+          author: doc.author,
+          year: doc.year,
+          journal: doc.journal,
+          doi: doc.doi,
+          abstract: doc.abstract,
+          score: doc.combinedScore,
+          keyword: `${variant.label}: ${variant.query}`,
+          retrievalLanguage: variant.language,
+          sentence,
+          relevanceScore: (doc as any).relevanceScore || Math.round((doc.combinedScore || 0.5) * 100),
+          qualityScore: (doc as any).qualityScore || Math.round((doc.combinedScore || 0.5) * 100),
+        }));
 
-      allResults.push(...resultsWithMeta);
-      searchStats.push({
-        sentence,
-        keyword: combinedQuery,
-        found: initialResults.length,
-        selected: selectedResults.length
-      });
-
-    } catch (e) {
-      logger.warn(`[Retrieval] 论点检索失败:`, e);
+        allResults.push(...resultsWithMeta);
+        searchStats.push({
+          sentence: `${variant.label}｜${sentence}`,
+          keyword: variant.query,
+          found: initialResults.length,
+          selected: selectedResults.length
+        });
+      } catch (e) {
+        logger.warn(`[Retrieval] ${variant.label} 论点检索失败:`, e);
+      }
     }
   }
 
@@ -14001,43 +14541,44 @@ async function runPdfWikiRetrieval(points: RetrievalPoint[], userId: string): Pr
   const searchStats: RetrievalSearchStat[] = [];
 
   for (const point of points) {
-    if (!point.keywords_en || point.keywords_en.length === 0) continue;
-
-    const combinedQuery = point.keywords_en[0];
-    const sentence = point.sentence || combinedQuery;
+    const variants = buildRetrievalPointQueryVariants(point);
+    if (variants.length === 0) continue;
+    const sentence = point.sentence || variants[0].query;
     logger.info(`[PdfWikiRetrieval] 检索论点：${sentence}`);
-    logger.info(`[PdfWikiRetrieval] 组合检索词：${combinedQuery}`);
+    logger.info(`[PdfWikiRetrieval] 双语检索路径：${formatRetrievalQueryVariants(variants)}`);
 
-    try {
-      const queryResults = await wikiEngine.retrieve({
-        query: combinedQuery,
-        topK: 12,
-        searchMode: 'hybrid',
-      });
-      const selected: Array<{ doc: { id: string; combinedScore?: number }; entry: PdfWikiEntry }> = [];
-      for (const doc of queryResults.results) {
-        const entry = entryMap.get(doc.id);
-        if (entry) selected.push({ doc, entry });
-        if (selected.length >= 4) break;
-      }
-
-      for (const item of selected) {
-        allResults.push({
-          entry: item.entry,
-          score: item.doc.combinedScore || 0,
-          keyword: combinedQuery,
-          sentence,
+    for (const variant of variants) {
+      try {
+        const queryResults = await wikiEngine.retrieve({
+          query: variant.query,
+          topK: 12,
+          searchMode: 'hybrid',
         });
-      }
+        const selected: Array<{ doc: { id: string; combinedScore?: number }; entry: PdfWikiEntry }> = [];
+        for (const doc of queryResults.results) {
+          const entry = entryMap.get(doc.id);
+          if (entry) selected.push({ doc, entry });
+          if (selected.length >= 4) break;
+        }
 
-      searchStats.push({
-        sentence,
-        keyword: combinedQuery,
-        found: queryResults.results.length,
-        selected: selected.length,
-      });
-    } catch (error) {
-      logger.warn("[PdfWikiRetrieval] 论点检索失败:", error);
+        for (const item of selected) {
+          allResults.push({
+            entry: item.entry,
+            score: item.doc.combinedScore || 0,
+            keyword: `${variant.label}: ${variant.query}`,
+            sentence,
+          });
+        }
+
+        searchStats.push({
+          sentence: `${variant.label}｜${sentence}`,
+          keyword: variant.query,
+          found: queryResults.results.length,
+          selected: selected.length,
+        });
+      } catch (error) {
+        logger.warn(`[PdfWikiRetrieval] ${variant.label} 论点检索失败:`, error);
+      }
     }
   }
 
@@ -14440,6 +14981,8 @@ interface ReviewWriterEvidence {
   referenceRaw?: string;
   referenceNumber?: number;
   traceSnippets?: ReviewWriterEvidenceTraceSnippet[];
+  claimSupport?: ClaimEvidenceJudgment;
+  originalScore?: number;
 }
 
 interface ReviewWriterEvidenceTraceSnippet {
@@ -15713,13 +16256,23 @@ ${generateSectionStyleGuide(sectionName, styles, rawContent).slice(0, perGuideLi
   }
 }
 
-function buildReviewSearchQuery(sentence: ReviewWriterSentencePlan, topic: string): string {
+function buildReviewSearchQueries(sentence: ReviewWriterSentencePlan, topic: string): RetrievalQueryVariant[] {
   const keywords = normalizeReviewKeywordList(sentence.searchKeywords, [topic, sentence.plannedContent]);
-  return [...new Set([...keywords, topic])]
+  const englishKeywords = keywords.filter(keyword => /[A-Za-z]/.test(keyword));
+  const chineseKeywords = keywords.filter(keyword => /[\u4e00-\u9fff]/.test(keyword));
+  const variants = buildBilingualRetrievalQueries({
+    sentence: [sentence.purpose, sentence.plannedContent].filter(Boolean).join(" "),
+    topic,
+    keywordsEn: englishKeywords.length ? englishKeywords : keywords,
+    keywordsCn: chineseKeywords,
+  });
+  if (variants.length > 0) return variants;
+  const fallback = [...new Set([...keywords, topic])]
     .join(" ")
     .replace(/\s+/g, " ")
     .trim()
     .slice(0, 500);
+  return fallback ? [{ language: "en", label: "英文检索", query: fallback }] : [];
 }
 
 function buildReviewCitation(authors: string, year: string): string {
@@ -15964,8 +16517,45 @@ function deduplicateReviewEvidenceInUseOrder(items: ReviewWriterEvidence[]): Rev
   return unique.sort((a, b) => (a.referenceNumber || 999999) - (b.referenceNumber || 999999));
 }
 
+function getReviewEvidenceSupportPriority(item: ReviewWriterEvidence): number {
+  const relation = normalizeClaimEvidenceRelation(item.claimSupport?.relation);
+  switch (relation) {
+    case "supports":
+      return 5;
+    case "related":
+      return 3;
+    case "unchecked":
+      return 2;
+    case "contradicts":
+      return 1;
+    case "irrelevant":
+      return 0;
+    default:
+      return 2;
+  }
+}
+
+function rankReviewEvidenceByClaimSupport(items: ReviewWriterEvidence[]): ReviewWriterEvidence[] {
+  return deduplicateReviewEvidence(items)
+    .map((item) => ({
+      ...item,
+      originalScore: item.originalScore ?? item.score,
+    }))
+    .sort((a, b) => {
+      const priorityDiff = getReviewEvidenceSupportPriority(b) - getReviewEvidenceSupportPriority(a);
+      if (priorityDiff !== 0) return priorityDiff;
+      const confidenceDiff = Number(b.claimSupport?.confidence || 0) - Number(a.claimSupport?.confidence || 0);
+      if (confidenceDiff !== 0) return confidenceDiff;
+      return Number(b.score || 0) - Number(a.score || 0);
+    });
+}
+
 function selectReviewEvidenceForSentence(candidates: ReviewWriterEvidence[]): ReviewWriterEvidence[] {
-  const ranked = deduplicateReviewEvidence(candidates);
+  const ranked = rankReviewEvidenceByClaimSupport(candidates)
+    .filter((item) => {
+      const relation = normalizeClaimEvidenceRelation(item.claimSupport?.relation);
+      return relation !== "contradicts" && relation !== "irrelevant";
+    });
   if (ranked.length <= 3) return ranked;
 
   const topScore = Number.isFinite(ranked[0]?.score) ? ranked[0].score : 0;
@@ -15978,47 +16568,85 @@ function selectReviewEvidenceForSentence(candidates: ReviewWriterEvidence[]): Re
   return (selected.length > 0 ? selected : ranked.slice(0, 1)).slice(0, 3);
 }
 
+async function judgeReviewWriterEvidenceForClaim(
+  claimText: string,
+  candidates: ReviewWriterEvidence[],
+  config?: ReviewWriterLlmConfig
+): Promise<ReviewWriterEvidence[]> {
+  const cleanClaim = cleanReviewMultilineText(claimText, "", 1600);
+  if (!cleanClaim || candidates.length === 0) return candidates;
+  const candidateLimit = Math.min(30, Math.max(10, candidates.length));
+  const judged = await judgeClaimEvidenceForRetrievedReferences(
+    cleanClaim,
+    candidates.slice(0, candidateLimit),
+    config
+      ? {
+          apiUrl: config.apiUrl,
+          apiKey: config.apiKey,
+          model: config.model,
+          label: "Paper Writer evidence support",
+        }
+      : undefined
+  ) as ReviewWriterEvidence[];
+  return rankReviewEvidenceByClaimSupport(judged);
+}
+
+function normalizeReviewRetrievalQueryVariants(query: string | RetrievalQueryVariant[]): RetrievalQueryVariant[] {
+  if (Array.isArray(query)) return query.filter(item => item.query.trim());
+  const variants = buildBilingualRetrievalQueries({ sentence: query, keywordsEn: [query] });
+  return variants.length > 0 ? variants : [{ language: "en", label: "英文检索", query }];
+}
+
 async function retrieveReviewEvidence(
-  query: string,
+  query: string | RetrievalQueryVariant[],
   userId: string,
   topK: number,
-  librarySources: ReviewWriterLibrarySource[]
+  librarySources: ReviewWriterLibrarySource[],
+  claimText = "",
+  config?: ReviewWriterLlmConfig
 ): Promise<{ evidence: ReviewWriterEvidence[]; warnings: string[] }> {
   const warnings: string[] = [];
   const selectedSources: ReviewWriterLibrarySource[] = librarySources.length > 0 ? librarySources : ["abstract", "pdfWiki"];
-  const retrievalTasks = selectedSources.map(async (source) => ({
+  const queryVariants = normalizeReviewRetrievalQueryVariants(query);
+  const retrievalTasks = selectedSources.flatMap(source => queryVariants.map(async (variant) => ({
     source,
+    variant,
     evidence: source === "pdfWiki"
-      ? await retrieveReviewPdfWikiEvidence(query, userId, topK)
-      : await retrieveReviewAbstractEvidence(query, userId, topK),
-  }));
+      ? await retrieveReviewPdfWikiEvidence(variant.query, userId, topK)
+      : await retrieveReviewAbstractEvidence(variant.query, userId, topK),
+  })));
   const settled = await Promise.allSettled(retrievalTasks);
 
-  const evidenceBySource: Record<ReviewWriterLibrarySource, ReviewWriterEvidence[]> = {
-    abstract: [],
-    pdfWiki: [],
-  };
+  const evidenceBuckets: ReviewWriterEvidence[][] = [];
 
   settled.forEach((result, index) => {
-    const source = selectedSources[index];
     if (result.status === "fulfilled") {
-      evidenceBySource[result.value.source] = result.value.evidence;
+      evidenceBuckets.push(result.value.evidence);
       return;
     }
+    const taskIndex = Math.floor(index / Math.max(1, queryVariants.length));
+    const variantIndex = index % Math.max(1, queryVariants.length);
+    const source = selectedSources[taskIndex] || "abstract";
+    const variant = queryVariants[variantIndex];
     const label = source === "pdfWiki" ? "PDF Wiki retrieval" : "Embedding retrieval";
-    warnings.push(`${label} failed: ${result.reason?.message || result.reason}`);
+    warnings.push(`${label} ${variant?.label || ""} failed: ${result.reason?.message || result.reason}`);
   });
 
   const interleaved: ReviewWriterEvidence[] = [];
   for (let i = 0; i < topK; i++) {
-    for (const source of selectedSources) {
-      const item = evidenceBySource[source][i];
+    for (const bucket of evidenceBuckets) {
+      const item = bucket[i];
       if (item) interleaved.push(item);
     }
   }
 
+  const merged = deduplicateReviewEvidence(interleaved);
+  const judged = claimText
+    ? await judgeReviewWriterEvidenceForClaim(claimText, merged, config)
+    : merged;
+
   return {
-    evidence: deduplicateReviewEvidence(interleaved).slice(0, topK),
+    evidence: rankReviewEvidenceByClaimSupport(judged).slice(0, topK),
     warnings,
   };
 }
@@ -16028,12 +16656,20 @@ function formatReviewEvidenceForPrompt(evidence: ReviewWriterEvidence[]): string
   return evidence.map((item, index) => {
     const sourceLabel = item.source === "pdfWiki" ? "PDF Wiki" : "Embedding abstract library";
     const evidenceId = `R${item.referenceNumber || index + 1}`;
+    const support = item.claimSupport || buildUncheckedClaimEvidenceJudgment("未执行证据支持判断。");
     const traceLines = (item.traceSnippets || []).slice(0, 5)
       .map(snippet => `- ${snippet.code}: ${snippet.text}`)
+      .join("\n");
+    const supportSnippets = (support.evidenceSnippets || []).slice(0, 3)
+      .map(snippet => `- ${snippet}`)
       .join("\n");
     return `[${index + 1}] Source: ${sourceLabel}
 Evidence ID: ${evidenceId}
 Citation: ${item.citation}
+Evidence relation to planned sentence: ${support.relation} (confidence ${Math.round((support.confidence || 0) * 100)}%)
+Evidence relation reason: ${support.reason || "NR"}
+Evidence relation snippets:
+${supportSnippets || "- NR"}
 Title: ${item.title}
 Authors: ${item.authors}
 Year: ${item.year}
@@ -16063,6 +16699,10 @@ function formatReviewEvidenceForAudit(
     const sourceLabel = item.source === "pdfWiki" ? "PDF Wiki argument/evidence library" : "Embedding abstract library";
     const evidenceText = cleanReviewMultilineText(item.abstract || item.referenceRaw || "", "", maxEvidenceChars);
     const evidenceId = `R${item.referenceNumber || blocks.length + 1}`;
+    const support = item.claimSupport || buildUncheckedClaimEvidenceJudgment("未执行证据支持判断。");
+    const supportSnippets = (support.evidenceSnippets || []).slice(0, 4)
+      .map(snippet => `- ${cleanReviewMultilineText(snippet, "", 500)}`)
+      .join("\n");
     const traceLines = (item.traceSnippets || []).slice(0, 6)
       .map(snippet => `- ${snippet.code} (${snippet.sourceLabel}): ${cleanReviewMultilineText(snippet.text, "", 500)}`)
       .join("\n");
@@ -16075,6 +16715,10 @@ Year: ${item.year}
 Journal: ${item.journal || "Unknown"}
 DOI: ${item.doi || "N/A"}
 Original reference: ${cleanReviewMultilineText(item.referenceRaw || "", "", 500)}
+Evidence relation to generated claim: ${support.relation} (confidence ${Math.round((support.confidence || 0) * 100)}%)
+Evidence relation reason: ${support.reason || "NR"}
+Evidence relation snippets:
+${supportSnippets || "- NR"}
 Traceable evidence sentences:
 ${traceLines || "- NR: no sentence-level trace snippet available"}
 Abstract / evidence excerpt:
@@ -17613,7 +18257,8 @@ async function runReviewWriterGeneration(
         const sentence = paragraph.sentences[sentenceIndex];
         const sentenceNo = totalSentences + 1;
         const baseProgress = 12 + (totalSentences / safeTotal) * 78;
-        const query = buildReviewSearchQuery(sentence, input.topic);
+        const queryVariants = buildReviewSearchQueries(sentence, input.topic);
+        const query = formatRetrievalQueryVariants(queryVariants);
         sentence.searchQuery = query;
         progress(
           `第 ${sentenceNo}/${safeTotal} 句：正在生成检索词并检索 ${libraryLabel}\n检索词：${query}`,
@@ -17621,7 +18266,18 @@ async function runReviewWriterGeneration(
           "retrieval"
         );
 
-        const retrieval = await retrieveReviewEvidence(query, input.userId, input.topK, input.librarySources);
+        const evidenceClaimText = [
+          sentence.purpose,
+          sentence.plannedContent,
+        ].filter(Boolean).join("\n");
+        const retrieval = await retrieveReviewEvidence(
+          queryVariants,
+          input.userId,
+          Math.max(input.topK, 12),
+          input.librarySources,
+          evidenceClaimText,
+          input.config
+        );
         throwIfReviewWriterStopped(shouldStop);
         const selectedEvidence = assignReviewEvidenceCitations(
           selectReviewEvidenceForSentence(retrieval.evidence),
@@ -17632,10 +18288,11 @@ async function runReviewWriterGeneration(
         retrievalWarnings.push(...retrieval.warnings);
         sentence.candidateEvidenceCount = retrieval.evidence.length;
         sentence.evidenceCount = selectedEvidence.length;
+        const supportSummary = summarizeClaimEvidenceJudgments(retrieval.evidence as unknown as any[]);
         allReferences.push(...selectedEvidence);
         sectionReferences.push(...selectedEvidence);
         progress(
-          `第 ${sentenceNo}/${safeTotal} 句：已检索到 ${retrieval.evidence.length} 条候选证据，筛选出 ${selectedEvidence.length} 篇最相关文献用于写句`,
+          `第 ${sentenceNo}/${safeTotal} 句：已检索到 ${retrieval.evidence.length} 条候选证据，证据支持判断：支持 ${supportSummary.supports}、仅相关 ${supportSummary.related}、反向 ${supportSummary.contradicts}、无关 ${supportSummary.irrelevant}；筛选出 ${selectedEvidence.length} 篇用于写句`,
           baseProgress + 2,
           "sentence-writing"
         );
@@ -18033,7 +18690,7 @@ export default app;
 
 // 句子级文献检索
 app.post("/api/sentence/search", async (req: Request, res: Response) => {
-  const { sentences, userId, apiKey, apiUrl } = req.body;
+  const { sentences, userId } = req.body;
   
   if (!sentences || !Array.isArray(sentences) || sentences.length === 0) {
     res.json({ success: false, error: "请提供需要检索的句子数组" });
@@ -18041,17 +18698,11 @@ app.post("/api/sentence/search", async (req: Request, res: Response) => {
   }
   
   try {
-    const userDir = getUserUploadDir(userId || "web-user");
-    const litJsonFile = getUserLiteraturePath(userId || "web-user");
-    
-    let literaturePapers: LitPaper[] = [];
-    if (fs.existsSync(litJsonFile)) {
-      const parsed = JSON.parse(fs.readFileSync(litJsonFile, 'utf-8'));
-      const rawPapers = Array.isArray(parsed) ? parsed : (Array.isArray(parsed.papers) ? parsed.papers : []);
-      literaturePapers = normalizePapers(rawPapers);
-    }
-    
-    if (literaturePapers.length === 0) {
+    const safeUserId = sanitizeUserId(userId || "web-user");
+    const userEngine = await retrievalEngineManager.getEngine(safeUserId);
+    const literatureCount = userEngine.getDocumentCount();
+
+    if (literatureCount === 0) {
       res.json({ success: false, error: "文献库为空，请先上传文献" });
       return;
     }
@@ -18063,34 +18714,353 @@ app.post("/api/sentence/search", async (req: Request, res: Response) => {
     
     for (const sentence of sentences) {
       if (!sentence || typeof sentence !== 'string') continue;
-      
-      // 提取关键词（简化版，使用整个句子作为查询）
-      const searchResults = searchLiterature(sentence, literaturePapers, 5);
-      
-      results[sentence] = searchResults.map(result => ({
-        title: result.paper.title,
-        author: result.paper.author,
-        year: result.paper.year,
-        journal: result.paper.journal,
-        doi: result.paper.doi,
-        abstract: result.paper.abstract,
-        score: result.score,
-        citation: formatCitation(result.paper)
+
+      const variants = buildBilingualRetrievalQueries({ sentence, keywordsEn: [sentence] });
+      const groups: any[][] = [];
+      for (const variant of variants) {
+        const queryResults = await userEngine.retrieve({
+          query: variant.query,
+          topK: 20,
+          searchMode: 'hybrid',
+        });
+        const mapped = queryResults.results.map(doc => ({
+          ...doc,
+          retrievalPath: variant.label,
+          retrievalLanguage: variant.language,
+          retrievalQuery: variant.query,
+        }));
+        groups.push(filterRetrievedResultsForLanguage(mapped, variant.language, 5));
+      }
+
+      const unique = interleaveRetrievedResultGroups(groups, 5);
+
+      results[sentence] = unique.map(result => ({
+        title: result.title,
+        author: result.author,
+        year: result.year,
+        journal: result.journal,
+        doi: result.doi,
+        abstract: result.abstract,
+        score: result.combinedScore || result.score,
+        retrievalPath: result.retrievalPath,
+        retrievalQuery: result.retrievalQuery,
+        citation: formatCitation(result as LitPaper)
       }));
-      
-      logger.info(`[SentenceSearch] "${sentence.substring(0, 30)}..." found ${searchResults.length} refs`);
+
+      logger.info(`[SentenceSearch] "${sentence.substring(0, 30)}..." found ${unique.length} refs via ${formatRetrievalQueryVariants(variants)}`);
     }
     
     res.json({ 
       success: true, 
       results,
       totalSentences: sentences.length,
-      literatureCount: literaturePapers.length
+      literatureCount
     });
     
   } catch (error) {
     logger.error("[SentenceSearch] Error:", error);
     res.json({ success: false, error: "检索失败: " + (error as Error).message });
+  }
+});
+
+app.post("/api/sentence/claim-match", async (req: Request, res: Response) => {
+  try {
+    const rawQuery = String(req.body.query || req.body.sentence || '').trim();
+    const safeUserId = sanitizeUserId(req.body.userId || "web-user");
+    const topK = Math.min(20, Math.max(1, Math.floor(Number(req.body.topK || 6))));
+
+    if (!rawQuery) {
+      res.status(400).json({ success: false, error: "请输入需要匹配参考文献的句子或论点" });
+      return;
+    }
+
+    const userEngine = await retrievalEngineManager.getEngine(safeUserId);
+    const literatureCount = userEngine.getDocumentCount();
+    if (literatureCount === 0) {
+      res.json({ success: false, error: "文献库为空，请先上传或导入参考文献" });
+      return;
+    }
+
+    const extracted = extractSentencesFromMessage(rawQuery);
+    const sentenceList = (extracted.length > 0 ? extracted : rawQuery.split(/\n+/))
+      .map(item => String(item || '').trim())
+      .filter(Boolean)
+      .slice(0, 8);
+
+    const results: Record<string, any[]> = {};
+    const sentenceDetails: Array<Record<string, unknown>> = [];
+
+    for (const sentence of sentenceList) {
+      const parsed = await parseSentenceClaimRetrievalPoint(sentence);
+      const variants = buildRetrievalPointQueryVariants(parsed.point);
+      const groups: any[][] = [];
+      const languageGroups: Array<Record<string, unknown>> = [];
+
+      for (const variant of variants) {
+        const queryResults = await userEngine.retrieve({
+          query: variant.query,
+          topK: Math.min(80, Math.max(topK * 4, 20)),
+          searchMode: 'hybrid',
+        });
+        const rawMapped = queryResults.results.map(doc => ({
+          ...doc,
+          retrievalPath: variant.label,
+          retrievalLanguage: variant.language,
+          retrievalQuery: variant.query,
+        }));
+        const mapped = filterRetrievedResultsForLanguage(rawMapped, variant.language, Math.min(30, Math.max(topK * 2, topK)));
+        groups.push(mapped);
+        languageGroups.push({
+          language: variant.language,
+          label: variant.label,
+          query: variant.query,
+          totalCount: queryResults.totalCount,
+          returned: mapped.length,
+          rawReturned: queryResults.results.length,
+          filteredOut: Math.max(0, rawMapped.length - mapped.length),
+          semanticUsed: mapped.some(item => Number(item.vectorScore || 0) > 0),
+          timing: queryResults.timing,
+        });
+      }
+
+      const selectedRaw = interleaveRetrievedResultGroups(groups, Math.min(30, Math.max(topK * 2, topK)));
+      const selected = selectedRaw.filter(item => !isLikelyPlaceholderReferenceRecord(item));
+      const hiddenInvalidMetadataCount = selectedRaw.length - selected.length;
+      const judged = await judgeClaimEvidenceForRetrievedReferences(sentence, selected);
+      const ranked = rankClaimEvidenceJudgedResults(judged, Math.max(topK, judged.length));
+      const supportCounts = summarizeClaimEvidenceJudgments(ranked);
+      const visibleRanked = ranked
+        .filter(item => normalizeClaimEvidenceRelation(item?.claimSupport?.relation) !== 'irrelevant')
+        .slice(0, topK);
+      results[sentence] = visibleRanked.map(mapRetrievedReferenceForClient);
+      sentenceDetails.push({
+        sentence,
+        parser: parsed.parser,
+        parserReason: parsed.reason,
+        parserWarning: parsed.warning || "",
+        parsedPoint: parsed.point,
+        queryVariants: variants,
+        querySummary: formatRetrievalQueryVariants(variants),
+        languageGroups,
+        evidenceChecked: ranked.some(item => Boolean(item?.claimSupport?.checked)),
+        supportCounts,
+        hiddenIrrelevantCount: supportCounts.irrelevant,
+        hiddenInvalidMetadataCount,
+        resultCount: visibleRanked.length,
+        requestedCount: topK,
+      });
+
+      logger.info(`[SentenceClaimMatch] "${sentence.substring(0, 40)}..." parser=${parsed.parser}, refs=${visibleRanked.length}, hiddenIrrelevant=${supportCounts.irrelevant}, hiddenInvalidMetadata=${hiddenInvalidMetadataCount}, supports=${supportCounts.supports}, related=${supportCounts.related}, queries=${formatRetrievalQueryVariants(variants)}`);
+    }
+
+    res.json({
+      success: true,
+      query: rawQuery,
+      pipeline: [
+        "用户句子解析为中英文组合检索式",
+        "英文检索和中文检索分路评分排序",
+        "BM25 关键词粗筛候选文献池",
+        "在 BM25 候选池内生成用户 query embedding 并计算语义相似度",
+        "LLM/NLI 风格证据支持判断：支持、反向、仅相关、无关",
+        "按证据支持度、语义分数和关键词分综合排序返回",
+      ],
+      literatureCount,
+      topK,
+      sentences: sentenceDetails,
+      results,
+    });
+  } catch (error) {
+    logger.error("[SentenceClaimMatch] Error:", error);
+    res.json({ success: false, error: "快速句子级论点检索失败: " + (error as Error).message });
+  }
+});
+
+app.post("/api/sentence/claim-match/stream", async (req: Request, res: Response) => {
+  res.setHeader("Content-Type", "application/x-ndjson; charset=utf-8");
+  res.setHeader("Cache-Control", "no-cache, no-transform");
+  res.setHeader("Connection", "keep-alive");
+
+  const send = (payload: Record<string, unknown>) => {
+    res.write(`${JSON.stringify(payload)}\n`);
+  };
+
+  try {
+    const rawQuery = String(req.body.query || req.body.sentence || '').trim();
+    const safeUserId = sanitizeUserId(req.body.userId || "web-user");
+    const topK = Math.min(20, Math.max(1, Math.floor(Number(req.body.topK || 6))));
+
+    if (!rawQuery) {
+      send({ type: "error", error: "请输入需要匹配参考文献的句子或论点" });
+      return;
+    }
+
+    send({ type: "log", message: "开始快速句子级论点检索。", timestamp: new Date().toISOString() });
+    const userEngine = await retrievalEngineManager.getEngine(safeUserId);
+    const literatureCount = userEngine.getDocumentCount();
+    send({ type: "log", message: `已加载用户文献库：${literatureCount} 条记录。`, timestamp: new Date().toISOString() });
+    if (literatureCount === 0) {
+      send({ type: "error", error: "文献库为空，请先上传或导入参考文献" });
+      return;
+    }
+
+    const extracted = extractSentencesFromMessage(rawQuery);
+    const sentenceList = (extracted.length > 0 ? extracted : rawQuery.split(/\n+/))
+      .map(item => String(item || '').trim())
+      .filter(Boolean)
+      .slice(0, 8);
+    send({ type: "log", message: `已解析待检索句子：${sentenceList.length} 条；每句最多返回 ${topK} 条。`, timestamp: new Date().toISOString() });
+
+    const results: Record<string, any[]> = {};
+    const sentenceDetails: Array<Record<string, unknown>> = [];
+
+    for (const sentence of sentenceList) {
+      send({ type: "log", message: `正在解析句子：${sentence.slice(0, 80)}`, timestamp: new Date().toISOString() });
+      const parsed = await parseSentenceClaimRetrievalPoint(sentence);
+      const variants = buildRetrievalPointQueryVariants(parsed.point);
+      const groups: any[][] = [];
+      const languageGroups: Array<Record<string, unknown>> = [];
+      send({ type: "log", message: `Query 解析完成：${parsed.parser === "ai" ? "AI解析" : "规则解析"}；生成 ${variants.length} 条中英文检索路径。`, timestamp: new Date().toISOString() });
+
+      for (const variant of variants) {
+        send({ type: "log", message: `正在执行${variant.label}：BM25 粗筛 + embedding 语义重排。`, timestamp: new Date().toISOString() });
+        const queryResults = await userEngine.retrieve({
+          query: variant.query,
+          topK: Math.min(80, Math.max(topK * 4, 20)),
+          searchMode: 'hybrid',
+        });
+        const rawMapped = queryResults.results.map(doc => ({
+          ...doc,
+          retrievalPath: variant.label,
+          retrievalLanguage: variant.language,
+          retrievalQuery: variant.query,
+        }));
+        const mapped = filterRetrievedResultsForLanguage(rawMapped, variant.language, Math.min(30, Math.max(topK * 2, topK)));
+        groups.push(mapped);
+        languageGroups.push({
+          language: variant.language,
+          label: variant.label,
+          query: variant.query,
+          totalCount: queryResults.totalCount,
+          returned: mapped.length,
+          rawReturned: queryResults.results.length,
+          filteredOut: Math.max(0, rawMapped.length - mapped.length),
+          semanticUsed: mapped.some(item => Number(item.vectorScore || 0) > 0),
+          timing: queryResults.timing,
+        });
+        send({ type: "log", message: `${variant.label}完成：候选 ${queryResults.totalCount} 条，语言过滤后保留 ${mapped.length} 条。`, timestamp: new Date().toISOString() });
+      }
+
+      const selectedRaw = interleaveRetrievedResultGroups(groups, Math.min(30, Math.max(topK * 2, topK)));
+      const selected = selectedRaw.filter(item => !isLikelyPlaceholderReferenceRecord(item));
+      const hiddenInvalidMetadataCount = selectedRaw.length - selected.length;
+      send({ type: "log", message: `中英文候选整合完成：${selectedRaw.length} 条；隐藏疑似示例/占位元数据 ${hiddenInvalidMetadataCount} 条。`, timestamp: new Date().toISOString() });
+      send({ type: "log", message: "正在执行证据支持判断：支持、反向、仅相关、无关。", timestamp: new Date().toISOString() });
+
+      const judged = await judgeClaimEvidenceForRetrievedReferences(sentence, selected);
+      const ranked = rankClaimEvidenceJudgedResults(judged, Math.max(topK, judged.length));
+      const supportCounts = summarizeClaimEvidenceJudgments(ranked);
+      const visibleRanked = ranked
+        .filter(item => normalizeClaimEvidenceRelation(item?.claimSupport?.relation) !== 'irrelevant')
+        .slice(0, topK);
+      results[sentence] = visibleRanked.map(mapRetrievedReferenceForClient);
+      sentenceDetails.push({
+        sentence,
+        parser: parsed.parser,
+        parserReason: parsed.reason,
+        parserWarning: parsed.warning || "",
+        parsedPoint: parsed.point,
+        queryVariants: variants,
+        querySummary: formatRetrievalQueryVariants(variants),
+        languageGroups,
+        evidenceChecked: ranked.some(item => Boolean(item?.claimSupport?.checked)),
+        supportCounts,
+        hiddenIrrelevantCount: supportCounts.irrelevant,
+        hiddenInvalidMetadataCount,
+        resultCount: visibleRanked.length,
+        requestedCount: topK,
+      });
+
+      send({
+        type: "log",
+        message: `证据判断完成：支持 ${supportCounts.supports}、反向 ${supportCounts.contradicts}、仅相关 ${supportCounts.related}、无关 ${supportCounts.irrelevant}；最终展示 ${visibleRanked.length} 条。`,
+        timestamp: new Date().toISOString(),
+      });
+      logger.info(`[SentenceClaimMatchStream] "${sentence.substring(0, 40)}..." parser=${parsed.parser}, refs=${visibleRanked.length}, hiddenIrrelevant=${supportCounts.irrelevant}, hiddenInvalidMetadata=${hiddenInvalidMetadataCount}, supports=${supportCounts.supports}, related=${supportCounts.related}, queries=${formatRetrievalQueryVariants(variants)}`);
+    }
+
+    send({ type: "log", message: "检索完成，正在渲染结果。", timestamp: new Date().toISOString() });
+    send({
+      type: "result",
+      data: {
+        success: true,
+        query: rawQuery,
+        pipeline: [
+          "用户句子解析为中英文组合检索式",
+          "英文检索和中文检索分路评分排序",
+          "BM25 关键词粗筛候选文献池",
+          "在 BM25 候选池内生成用户 query embedding 并计算语义相似度",
+          "LLM/NLI 风格证据支持判断：支持、反向、仅相关、无关",
+          "按证据支持度、语义分数和关键词分综合排序返回",
+        ],
+        literatureCount,
+        topK,
+        sentences: sentenceDetails,
+        results,
+      },
+    });
+  } catch (error) {
+    logger.error("[SentenceClaimMatchStream] Error:", error);
+    send({ type: "error", error: "快速句子级论点检索失败: " + (error as Error).message });
+  } finally {
+    res.end();
+  }
+});
+
+app.post("/api/sentence/translate", async (req: Request, res: Response) => {
+  try {
+    const text = String(req.body.text || '').trim();
+    const targetLanguage = String(req.body.targetLanguage || '中文').trim() || '中文';
+    const useApiUrl = currentApiUrl || process.env.API_URL;
+    const useApiKey = currentApiKey || process.env.API_KEY;
+    const model = currentSecondaryModel || currentModel || process.env.MODEL || "gpt-4o";
+
+    if (!text) {
+      res.status(400).json({ success: false, error: "待翻译文本为空" });
+      return;
+    }
+    if (!useApiUrl || !useApiKey) {
+      res.status(400).json({ success: false, error: "API未配置，请先在配置中填写模型 API 地址和密钥" });
+      return;
+    }
+
+    const translation = await callChatCompletion(
+      {
+        apiUrl: useApiUrl,
+        apiKey: useApiKey,
+        label: "SentenceClaimTranslate",
+        defaultModel: model,
+      },
+      {
+        model,
+        temperature: 0.1,
+        maxTokens: 5000,
+        messages: [
+          {
+            role: "system",
+            content: "你是学术文献摘要翻译助手。请将用户提供的摘要准确翻译为目标语言，保留专业术语、统计符号、缩写、物种名、化学式、pH、基因名、单位和引用格式。只输出译文，不要解释。",
+          },
+          {
+            role: "user",
+            content: `目标语言：${targetLanguage}\n\n待翻译摘要：\n${text.slice(0, 12000)}`,
+          },
+        ],
+      }
+    );
+
+    res.json({ success: true, translation });
+  } catch (error) {
+    logger.error("[SentenceTranslate] Error:", error);
+    res.json({ success: false, error: "翻译失败: " + (error as Error).message });
   }
 });
 
@@ -18109,4 +19079,73 @@ function formatCitation(paper: LitPaper): string {
   } else {
     return `(${authorLastName}, ${paper.year || 'n.d.'})`;
   }
+}
+
+function getRetrievedReferenceAuthor(item: any): string {
+  if (typeof item?.author === 'string' && item.author.trim()) return item.author.trim();
+  if (Array.isArray(item?.authors)) {
+    return item.authors
+      .map((author: unknown) => typeof author === 'string' ? author : String((author as Record<string, unknown>)?.name || ''))
+      .map((author: string) => author.trim())
+      .filter(Boolean)
+      .join(', ');
+  }
+  return 'Unknown';
+}
+
+function splitReferenceAuthorNames(value: unknown): string[] {
+  if (Array.isArray(value)) {
+    return value
+      .flatMap(item => splitReferenceAuthorNames(typeof item === 'string' ? item : (item as Record<string, unknown>)?.name))
+      .filter(Boolean);
+  }
+  return String(value || '')
+    .split(/[,;，；、]|\band\b|\s+&\s+/i)
+    .map(item => item.trim())
+    .filter(Boolean);
+}
+
+function isLikelyPlaceholderAuthorName(name: string): boolean {
+  const normalized = name.trim().replace(/\s+/g, ' ');
+  if (!normalized) return false;
+  return /^(张三|李四|王五|赵六|孙七|周八|测试作者|示例作者|作者[甲乙丙丁ABCD]|unknown author|test author|sample author|john doe|jane doe|author [a-z])$/i.test(normalized);
+}
+
+function isLikelyPlaceholderReferenceRecord(item: any): boolean {
+  const authors = [
+    ...splitReferenceAuthorNames(item?.authors),
+    ...splitReferenceAuthorNames(item?.author),
+  ];
+  const uniqueAuthors = Array.from(new Set(authors.map(author => author.trim()).filter(Boolean)));
+  if (uniqueAuthors.length < 2) return false;
+  const placeholderCount = uniqueAuthors.filter(isLikelyPlaceholderAuthorName).length;
+  return placeholderCount >= 2 && placeholderCount / uniqueAuthors.length >= 0.5;
+}
+
+function mapRetrievedReferenceForClient(item: any): Record<string, unknown> {
+  const author = getRetrievedReferenceAuthor(item);
+  const normalized = {
+    ...item,
+    author,
+  } as LitPaper & Record<string, unknown>;
+  return {
+    id: item.id || "",
+    title: item.title || "Untitled",
+    author,
+    year: item.year || "",
+    journal: item.journal || "",
+    doi: item.doi || "",
+    abstract: item.abstract || "",
+    keywords: item.keywords || [],
+    source: item.source || "",
+    score: Number(item.combinedScore || item.score || 0),
+    originalScore: Number(item.originalCombinedScore || item.combinedScore || item.score || 0),
+    bm25Score: Number(item.bm25Score || 0),
+    vectorScore: Number(item.vectorScore || 0),
+    claimSupport: item.claimSupport || null,
+    retrievalPath: item.retrievalPath || "",
+    retrievalLanguage: item.retrievalLanguage || "",
+    retrievalQuery: item.retrievalQuery || "",
+    citation: formatCitation(normalized),
+  };
 }

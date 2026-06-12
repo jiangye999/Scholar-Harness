@@ -10,6 +10,7 @@ import { Subscription } from "../../database/types";
 const adminRouter = Router();
 const publicRouter = Router();
 const LIFETIME_2D_CODE_TYPE = "lifetime_2d";
+const LIFETIME_ONCE_CODE_TYPE = "lifetime_once";
 const LIMITED_TRIAL_2D_15D_CODE_TYPE = "limited_trial_2d_15d";
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -63,11 +64,12 @@ adminRouter.post("/generate", authMiddleware, adminMiddleware, async (req: Authe
   try {
     const { quantity, code_type, validity_days, batch_name, expires_at, notes } = req.body;
     const isLifetimeCode = code_type === LIFETIME_2D_CODE_TYPE;
+    const isLifetimeOnceCode = code_type === LIFETIME_ONCE_CODE_TYPE;
     const isLimitedTrialCode = code_type === LIMITED_TRIAL_2D_15D_CODE_TYPE;
     const input: CreateBetaCodeInput = {
       quantity,
       code_type: code_type || "trial",
-      validity_days: isLifetimeCode ? 2 : (isLimitedTrialCode ? 15 : (validity_days || 30)),
+      validity_days: isLifetimeCode ? 2 : (isLifetimeOnceCode ? 365 : (isLimitedTrialCode ? 15 : (validity_days || 30))),
       batch_name,
       expires_at: expires_at ? new Date(expires_at) : (isUnlimitedUseCode(code_type) ? getTwoDayExpiryDate() : undefined),
       notes,
@@ -131,7 +133,7 @@ publicRouter.post("/validate", rateLimitMiddleware(20, 60000), async (req: Reque
     }
     const betaCode = await betaCodeStore.findByCode(trimmedCode);
     if (!betaCode) return res.json({ valid: false, reason: "内测码不存在", code: "NOT_FOUND" });
-    const isLifetimeCode = betaCode.code_type === LIFETIME_2D_CODE_TYPE;
+    const isLifetimeCode = betaCode.code_type === LIFETIME_2D_CODE_TYPE || betaCode.code_type === LIFETIME_ONCE_CODE_TYPE;
     const isUnlimitedUse = isUnlimitedUseCode(betaCode.code_type);
     if (betaCode.status === "used" && !isUnlimitedUse) return res.json({ valid: false, reason: "内测码已被使用", code: "ALREADY_USED" });
     if (betaCode.status === "expired") return res.json({ valid: false, reason: "内测码已过期", code: "EXPIRED" });
@@ -144,7 +146,7 @@ publicRouter.post("/validate", rateLimitMiddleware(20, 60000), async (req: Reque
       unlimited_uses: isUnlimitedUse,
       access_type: isLifetimeCode ? "lifetime" : "trial",
       message: isLifetimeCode
-        ? "有效 - 2天限时永久内测码，不限使用人数"
+        ? (betaCode.code_type === LIFETIME_ONCE_CODE_TYPE ? "有效 - 一次性永久内测码，每个码仅可使用一次" : "有效 - 2天限时永久内测码，不限使用人数")
         : (isUnlimitedUse ? `有效 - 2天限时${betaCode.validity_days}天试用码，不限使用人数` : `有效 - ${betaCode.validity_days}天免费试用`),
     });
   } catch (error) {
@@ -181,7 +183,7 @@ publicRouter.post("/activate", authMiddleware, async (req: AuthenticatedRequest,
       });
     }
     
-    const isLifetimeCode = betaCodeRecord.code_type === LIFETIME_2D_CODE_TYPE;
+    const isLifetimeCode = betaCodeRecord.code_type === LIFETIME_2D_CODE_TYPE || betaCodeRecord.code_type === LIFETIME_ONCE_CODE_TYPE;
     const isUnlimitedUse = isUnlimitedUseCode(betaCodeRecord.code_type);
 
     // 普通试用码不覆盖已有订阅；限时永久码可以把已有订阅升级为永久。

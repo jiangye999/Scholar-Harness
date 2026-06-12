@@ -3,6 +3,16 @@
 import { useState } from 'react';
 import Link from 'next/link';
 
+const supportEmail = 'sjs@cau.edu.cn';
+
+const subjectLabels: Record<string, string> = {
+  technical: '技术支持',
+  billing: '账单问题',
+  feature: '功能建议',
+  bug: 'Bug反馈',
+  other: '其他'
+};
+
 export default function ContactPage() {
   const [formData, setFormData] = useState({
     name: '',
@@ -17,9 +27,17 @@ export default function ContactPage() {
     e.preventDefault();
     setLoading(true);
 
-    // TODO: Call actual API
-    await new Promise(resolve => setTimeout(resolve, 1000));
-    
+    const subject = `ScholarHarness ${subjectLabels[formData.subject] || '咨询'}`;
+    const body = [
+      `姓名：${formData.name}`,
+      `邮箱：${formData.email}`,
+      `主题：${subjectLabels[formData.subject] || formData.subject}`,
+      '',
+      '消息内容：',
+      formData.message
+    ].join('\n');
+
+    window.location.href = `mailto:${supportEmail}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
     setSuccess(true);
     setLoading(false);
   };
@@ -33,14 +51,24 @@ export default function ContactPage() {
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
             </svg>
           </div>
-          <h2 className="text-2xl font-bold text-gray-900 mb-2">消息已发送</h2>
-          <p className="text-gray-600 mb-6">感谢您的来信，我们会尽快回复您！</p>
-          <Link
-            href="/"
-            className="inline-block px-6 py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-medium transition"
-          >
-            返回首页
-          </Link>
+          <h2 className="text-2xl font-bold text-gray-900 mb-2">邮件已准备好</h2>
+          <p className="text-gray-600 mb-6">
+            请在弹出的邮件客户端中确认发送。如果没有弹出，也可以直接发送邮件到 {supportEmail}。
+          </p>
+          <div className="flex flex-col gap-3 sm:flex-row sm:justify-center">
+            <a
+              href={`mailto:${supportEmail}`}
+              className="inline-block px-6 py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-medium transition"
+            >
+              打开邮箱
+            </a>
+            <Link
+              href="/help"
+              className="inline-block px-6 py-3 border border-gray-300 hover:border-gray-400 text-gray-700 rounded-lg font-medium transition"
+            >
+              返回帮助中心
+            </Link>
+          </div>
         </div>
       </div>
     );
@@ -70,8 +98,8 @@ export default function ContactPage() {
                   </div>
                   <div>
                     <h3 className="font-semibold text-gray-900">邮箱</h3>
-                    <a href="mailto:sjs@cau.edu.cn" className="text-blue-600 hover:text-blue-700">
-                      sjs@cau.edu.cn
+                    <a href={`mailto:${supportEmail}`} className="text-blue-600 hover:text-blue-700">
+                      {supportEmail}
                     </a>
                   </div>
                 </div>

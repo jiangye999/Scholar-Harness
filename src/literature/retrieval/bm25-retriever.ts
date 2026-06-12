@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import type { UnifiedLiterature, BM25Config } from '../../types/literature';
+import { tokenizeRetrievalText, weightRetrievalQueryTokens } from './semantic-query';
 
 interface BM25Document {
   id: string;
@@ -38,7 +39,7 @@ export class BM25Retriever {
     };
   }
 
-  addDocument(lit: UnifiedLiterature): void {
+  addDocument(lit: UnifiedLiterature, updateStats = true): void {
     const fields = {
       title: lit.title,
       keywords: [...(lit.keywords || []), ...(lit.aiKeywords || [])].join(' '),
@@ -79,18 +80,21 @@ export class BM25Retriever {
     });
 
     this.docCount++;
-    this.updateStats();
+    if (updateStats) {
+      this.updateStats();
+    }
   }
 
   addDocuments(literatures: UnifiedLiterature[]): void {
     for (const lit of literatures) {
-      this.addDocument(lit);
+      this.addDocument(lit, false);
     }
+    this.updateStats();
   }
 
   search(query: string, topN?: number): SearchResult[] {
     const limit = topN || this.config.topN;
-    const queryTokens = this.tokenize(query);
+    const queryTokens = weightRetrievalQueryTokens(this.tokenize(query));
     const scores: SearchResult[] = [];
 
     for (const [id, doc] of this.documents) {
@@ -124,12 +128,7 @@ export class BM25Retriever {
   }
 
   private tokenize(text: string): string[] {
-    if (!text) return [];
-    
-    return text.toLowerCase()
-      .replace(/[^\w\s\u4e00-\u9fa5]/g, ' ')
-      .split(/\s+/)
-      .filter(t => t.length > 1);
+    return tokenizeRetrievalText(text);
   }
 
   private updateStats(): void {
@@ -170,7 +169,7 @@ export class BM25Retriever {
    */
   saveIndex(indexPath: string): void {
     const indexData = {
-      version: 1,
+      version: 2,
       timestamp: Date.now(),
       config: this.config,
       avgDocLength: this.avgDocLength,
@@ -207,7 +206,7 @@ export class BM25Retriever {
       const content = fs.readFileSync(indexPath, 'utf-8');
       const indexData = JSON.parse(content);
 
-      if (indexData.version !== 1) {
+      if (indexData.version !== 2) {
         console.log(`[BM25Retriever] Unsupported index version: ${indexData.version}`);
         return false;
       }

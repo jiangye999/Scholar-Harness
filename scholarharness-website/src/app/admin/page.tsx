@@ -104,13 +104,13 @@ interface BetaCodeStats {
   disabled: number;
 }
 
-type BetaCodeKind = 'trial' | 'premium_trial' | 'extended_trial' | 'lifetime_2d' | 'limited_trial_2d_15d';
+type BetaCodeKind = 'trial' | 'premium_trial' | 'extended_trial' | 'lifetime_2d' | 'lifetime_once' | 'limited_trial_2d_15d';
 type CommercialCardPlanKey = 'month' | 'quarter' | 'year';
 
 interface CommercialCardPlan {
   label: string;
   durationLabel: string;
-  codeType: Exclude<BetaCodeKind, 'lifetime_2d' | 'limited_trial_2d_15d'>;
+  codeType: Exclude<BetaCodeKind, 'lifetime_2d' | 'lifetime_once' | 'limited_trial_2d_15d'>;
   validityDays: number;
   batchPrefix: string;
 }
@@ -683,6 +683,7 @@ export default function AdminPage() {
     if (codeType === 'premium_trial') return '高级试用';
     if (codeType === 'extended_trial') return '延长试用';
     if (codeType === 'lifetime_2d') return '2天限时永久码';
+    if (codeType === 'lifetime_once') return '一次性永久码';
     if (codeType === 'limited_trial_2d_15d') return '2天限时15天试用码';
     return codeType;
   };
@@ -690,6 +691,17 @@ export default function AdminPage() {
   const isTwoDayUnlimitedBetaCode = (codeType: string) => (
     codeType === 'lifetime_2d' || codeType === 'limited_trial_2d_15d'
   );
+
+  const isPermanentBetaCode = (codeType: string) => (
+    codeType === 'lifetime_2d' || codeType === 'lifetime_once'
+  );
+
+  const getBetaCodeValidityDays = (codeType: string, fallbackDays: number) => {
+    if (codeType === 'lifetime_2d') return 2;
+    if (codeType === 'lifetime_once') return 365;
+    if (codeType === 'limited_trial_2d_15d') return 15;
+    return fallbackDays;
+  };
 
   const getCommercialBatchName = (planKey: CommercialCardPlanKey) => {
     return `${COMMERCIAL_CARD_PLANS[planKey].batchPrefix}-${getCompactDate()}`;
@@ -761,7 +773,7 @@ export default function AdminPage() {
         body: JSON.stringify({
           quantity: newBetaCode.quantity,
           code_type: newBetaCode.code_type,
-          validity_days: newBetaCode.code_type === 'lifetime_2d' ? 2 : (newBetaCode.code_type === 'limited_trial_2d_15d' ? 15 : newBetaCode.validity_days),
+          validity_days: getBetaCodeValidityDays(newBetaCode.code_type, newBetaCode.validity_days),
           batch_name: newBetaCode.batch_name,
           expires_at: newBetaCode.expires_at || (isTwoDayUnlimitedBetaCode(newBetaCode.code_type) ? getLifetimeBetaExpiryDate() : undefined),
           notes: newBetaCode.notes,
@@ -1677,7 +1689,7 @@ export default function AdminPage() {
               <h3 className="text-lg font-bold text-gray-900 mb-4">生成内测码</h3>
               <div className="bg-purple-50 border border-purple-200 rounded-lg p-4 mb-4">
                 <p className="text-sm text-purple-700">
-                  内测码用于用户注册或登录时激活权益。2天限时永久码和2天限时15天试用码在过期前可被不限人数使用。
+                  内测码用于用户注册或登录时激活权益。一次性永久码每个码只能被一个账号使用；2天限时永久码和2天限时15天试用码在过期前可被不限人数使用。
                 </p>
               </div>
               <div className="grid md:grid-cols-3 lg:grid-cols-4 gap-4">
@@ -1692,7 +1704,7 @@ export default function AdminPage() {
                     setNewBetaCode({
                       ...newBetaCode,
                       code_type: codeType,
-                      validity_days: codeType === 'lifetime_2d' ? 2 : (codeType === 'limited_trial_2d_15d' ? 15 : newBetaCode.validity_days),
+                      validity_days: getBetaCodeValidityDays(codeType, newBetaCode.validity_days),
                       expires_at: isTwoDayUnlimitedBetaCode(codeType) ? getLifetimeBetaExpiryDate() : newBetaCode.expires_at,
                     });
                   }} className="w-full border border-gray-300 rounded-lg px-3 py-2">
@@ -1700,12 +1712,13 @@ export default function AdminPage() {
                     <option value="premium_trial">高级试用 (30天)</option>
                     <option value="extended_trial">延长试用 (90天)</option>
                     <option value="lifetime_2d">2天限时永久码 (不限人数)</option>
+                    <option value="lifetime_once">一次性永久码 (每码仅1人)</option>
                     <option value="limited_trial_2d_15d">2天限时15天试用码 (不限人数)</option>
                   </select>
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">{newBetaCode.code_type === 'lifetime_2d' ? '活动有效天数' : '试用天数'}</label>
-                  <input type="number" value={newBetaCode.validity_days} onChange={(e) => setNewBetaCode({ ...newBetaCode, validity_days: parseInt(e.target.value) })} className="w-full border border-gray-300 rounded-lg px-3 py-2" min="1" disabled={isTwoDayUnlimitedBetaCode(newBetaCode.code_type)} />
+                  <label className="block text-sm font-medium text-gray-700 mb-1">{isPermanentBetaCode(newBetaCode.code_type) ? '权益类型' : '试用天数'}</label>
+                  <input type={isPermanentBetaCode(newBetaCode.code_type) ? 'text' : 'number'} value={isPermanentBetaCode(newBetaCode.code_type) ? '永久权限' : newBetaCode.validity_days} onChange={(e) => setNewBetaCode({ ...newBetaCode, validity_days: parseInt(e.target.value, 10) })} className="w-full border border-gray-300 rounded-lg px-3 py-2" min="1" disabled={isPermanentBetaCode(newBetaCode.code_type) || isTwoDayUnlimitedBetaCode(newBetaCode.code_type)} />
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">批次名称</label>
@@ -1763,7 +1776,7 @@ export default function AdminPage() {
                         <td className="px-4 py-3 text-sm">
                           {getBetaCodeTypeLabel(code.code_type)}
                         </td>
-                        <td className="px-4 py-3 text-sm">{code.code_type === 'lifetime_2d' ? '永久权限' : `${code.validity_days}天`}</td>
+                        <td className="px-4 py-3 text-sm">{isPermanentBetaCode(code.code_type) ? '永久权限' : `${code.validity_days}天`}</td>
                         <td className="px-4 py-3">
                           <span className={`px-2 py-1 rounded text-xs font-medium ${code.status === 'unused' ? 'bg-blue-100 text-blue-800' : code.status === 'used' ? 'bg-green-100 text-green-800' : code.status === 'expired' ? 'bg-yellow-100 text-yellow-800' : 'bg-red-100 text-red-800'}`}>
                             {code.status === 'unused' ? '未使用' : code.status === 'used' ? '已使用' : code.status === 'expired' ? '已过期' : '已禁用'}

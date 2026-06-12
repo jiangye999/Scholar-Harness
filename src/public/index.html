@@ -521,6 +521,34 @@
       margin-bottom: 2px;
       line-height: 1.15;
     }
+    .sidebar-panel-toggle {
+      width: 100%;
+      min-height: 20px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 6px;
+      border: 0;
+      background: transparent;
+      cursor: pointer;
+      text-align: left;
+      font-family: inherit;
+    }
+    .sidebar-panel-toggle:hover {
+      color: var(--text-primary);
+    }
+    .sidebar-panel-chevron {
+      width: 13px;
+      height: 13px;
+      flex: 0 0 13px;
+      transition: transform 0.18s ease;
+    }
+    .sidebar-panel.is-collapsed .sidebar-panel-body {
+      display: none;
+    }
+    .sidebar-panel.is-collapsed .sidebar-panel-chevron {
+      transform: rotate(-90deg);
+    }
     .sidebar-panel-body {
       flex: 0 0 auto;
       display: grid;
@@ -2649,8 +2677,11 @@
           </div>
         </div>
         
-        <div class="upload-section sidebar-panel upload-panel literature-panel">
-          <div class="sidebar-panel-title">上传</div>
+        <div class="upload-section sidebar-panel upload-panel literature-panel" data-sidebar-collapse-key="upload">
+          <button type="button" class="sidebar-panel-title sidebar-panel-toggle" data-sidebar-toggle-key="upload" aria-expanded="true">
+            <span>上传</span>
+            <svg class="sidebar-panel-chevron ui-icon sm" viewBox="0 0 24 24" aria-hidden="true"><polyline points="6 9 12 15 18 9"></polyline></svg>
+          </button>
           <div class="sidebar-panel-body">
             <input type="file" id="fileInput" class="file-input" accept=".txt,.md,.json,.ris,.bib,.pdf" multiple>
             <input type="file" id="pdfFileInput" class="file-input" accept=".pdf" multiple>
@@ -2686,8 +2717,11 @@
           </div>
         </div>
 
-        <div class="sidebar-panel view-panel project-panel">
-          <div class="sidebar-panel-title">查看</div>
+        <div class="sidebar-panel view-panel project-panel" data-sidebar-collapse-key="view">
+          <button type="button" class="sidebar-panel-title sidebar-panel-toggle" data-sidebar-toggle-key="view" aria-expanded="true">
+            <span>查看</span>
+            <svg class="sidebar-panel-chevron ui-icon sm" viewBox="0 0 24 24" aria-hidden="true"><polyline points="6 9 12 15 18 9"></polyline></svg>
+          </button>
           <div class="sidebar-panel-body">
             <button class="lit-btn" onclick="showOverviewPage()">
               <svg class="ui-icon sm" viewBox="0 0 24 24" aria-hidden="true">
@@ -2723,8 +2757,11 @@
           </div>
         </div>
 
-        <div class="sidebar-panel workflow-panel project-panel">
-          <div class="sidebar-panel-title">学术工作流</div>
+        <div class="sidebar-panel workflow-panel project-panel" data-sidebar-collapse-key="workflow">
+          <button type="button" class="sidebar-panel-title sidebar-panel-toggle" data-sidebar-toggle-key="workflow" aria-expanded="true">
+            <span>学术工作流</span>
+            <svg class="sidebar-panel-chevron ui-icon sm" viewBox="0 0 24 24" aria-hidden="true"><polyline points="6 9 12 15 18 9"></polyline></svg>
+          </button>
           <div class="sidebar-panel-body">
             <button class="lit-btn" onclick="showAutoResearchMode()">
               <svg class="ui-icon sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2v4"></path><path d="M12 18v4"></path><path d="M4.93 4.93l2.83 2.83"></path><path d="M16.24 16.24l2.83 2.83"></path><path d="M2 12h4"></path><path d="M18 12h4"></path><path d="M4.93 19.07l2.83-2.83"></path><path d="M16.24 7.76l2.83-2.83"></path><circle cx="12" cy="12" r="4"></circle></svg>
@@ -2752,9 +2789,13 @@
           </div>
         </div>
         
-        <div class="sidebar-panel plot-panel project-panel">
-          <div class="sidebar-panel-title">实用工具</div>
+        <div class="sidebar-panel plot-panel project-panel" data-sidebar-collapse-key="tools">
+          <button type="button" class="sidebar-panel-title sidebar-panel-toggle" data-sidebar-toggle-key="tools" aria-expanded="true">
+            <span>实用工具</span>
+            <svg class="sidebar-panel-chevron ui-icon sm" viewBox="0 0 24 24" aria-hidden="true"><polyline points="6 9 12 15 18 9"></polyline></svg>
+          </button>
           <div class="sidebar-panel-body">
+            <button class="lit-btn" onclick="showSentenceClaimSearchDialog()"><svg class="ui-icon sm" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"></circle><path d="m20 20-3.5-3.5"></path><path d="M8 11h6"></path><path d="M11 8v6"></path></svg>句子论点检索</button>
             <button class="lit-btn" onclick="showDataAnalysisDialog()"><svg class="ui-icon sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19V5"></path><path d="M4 19h16"></path><rect x="7" y="11" width="3" height="5"></rect><rect x="12" y="7" width="3" height="9"></rect><rect x="17" y="4" width="3" height="12"></rect></svg>数据分析</button>
             <button class="lit-btn" onclick="showRPlotDialog()"><svg class="ui-icon sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 3v18h18"></path><path d="m7 15 4-4 3 3 5-7"></path></svg>R语言作图</button>
             <button class="lit-btn" onclick="showFlowchartMakerDialog()"><svg class="ui-icon sm" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="6" height="5" rx="1"></rect><rect x="15" y="4" width="6" height="5" rx="1"></rect><rect x="9" y="15" width="6" height="5" rx="1"></rect><path d="M9 6.5h6"></path><path d="M18 9v2.5a3.5 3.5 0 0 1-3.5 3.5H12"></path><path d="M6 9v2.5A3.5 3.5 0 0 0 9.5 15H12"></path></svg>流程图制作</button>
@@ -2786,7 +2827,7 @@
       <div class="chat-container" id="chatContainer">
         <div class="empty-state" id="emptyState">
           <h1 class="brand-title">Scholar Harness</h1>
-          <p class="typing-greeting"><span>你好！我是学术论文写作助手，<strong class="typing-powered-inline">Powered by 智能体辅助写作攻关小组 石江山 康锁倩 王雯欣！技术支持 张肖其！</strong></span></p>
+          <p class="typing-greeting"><span>你好！我是学术论文写作助手！</span></p>
           <p style="margin-top: 12px;">正在加载您的文献库...</p>
         </div>
         <div id="messages"></div>
@@ -2945,7 +2986,7 @@
     var PDF_WIKI_TASK_OPTIONS_KEY = 'scholarclaw_pdf_wiki_task_options';
     var THEME_KEY = 'scholarclaw_theme';
     var BRAND_TITLE_HTML = '<h1 class="brand-title">Scholar Harness</h1>';
-    var GREETING_HTML = '<p class="typing-greeting"><span>你好！我是学术论文写作助手，<strong class="typing-powered-inline">Powered by 智能体辅助写作攻关小组 石江山 康锁倩 王雯欣！技术支持 张肖其！</strong></span></p>';
+    var GREETING_HTML = '<p class="typing-greeting"><span>你好！我是学术论文写作助手！</span></p>';
 var CHAT_BRIDGE_KEY = 'scholarclaw_chat_bridge';
 var OPENROUTER_API_URL = 'https://openrouter.ai/api/v1';
 var OPENROUTER_KEYS_URL = 'https://openrouter.ai/keys';
@@ -3238,6 +3279,48 @@ var chatBridgeState = { paused: false, currentUrl: null, hasActivePage: false, s
     }
     
     initSidebar();
+
+    function getSidebarPanelCollapseKey(panelKey) {
+      return 'scholarclaw_sidebar_panel_collapsed_' + panelKey;
+    }
+
+    function setSidebarPanelCollapsed(panel, collapsed) {
+      if (!panel) return;
+      panel.classList.toggle('is-collapsed', collapsed);
+      var toggle = panel.querySelector('.sidebar-panel-toggle');
+      if (toggle) {
+        toggle.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+        toggle.setAttribute('title', collapsed ? '展开' : '折叠');
+      }
+    }
+
+    function toggleSidebarPanel(panelKey) {
+      var panel = document.querySelector('[data-sidebar-collapse-key="' + panelKey + '"]');
+      if (!panel) return;
+      var collapsed = !panel.classList.contains('is-collapsed');
+      setSidebarPanelCollapsed(panel, collapsed);
+      localStorage.setItem(getSidebarPanelCollapseKey(panelKey), collapsed ? 'true' : 'false');
+    }
+    window.toggleSidebarPanel = toggleSidebarPanel;
+
+    function initSidebarPanelCollapse() {
+      document.querySelectorAll('[data-sidebar-toggle-key]').forEach(function(toggle) {
+        var panelKey = toggle.getAttribute('data-sidebar-toggle-key');
+        if (!panelKey) return;
+        toggle.addEventListener('click', function() {
+          toggleSidebarPanel(panelKey);
+        });
+      });
+
+      document.querySelectorAll('[data-sidebar-collapse-key]').forEach(function(panel) {
+        var panelKey = panel.getAttribute('data-sidebar-collapse-key');
+        if (!panelKey) return;
+        var collapsed = localStorage.getItem(getSidebarPanelCollapseKey(panelKey)) === 'true';
+        setSidebarPanelCollapsed(panel, collapsed);
+      });
+    }
+
+    initSidebarPanelCollapse();
     
     // ========== 右侧历史面板折叠功能 ==========
     function toggleHistorySidebar() {
@@ -4017,6 +4100,18 @@ var chatBridgeState = { paused: false, currentUrl: null, hasActivePage: false, s
         .replace(/\/+$/, '');
     }
     window.normalizeApiBaseUrl = normalizeApiBaseUrl;
+
+    function isScholarHarnessAccountApiUrl(url) {
+      try {
+        var parsed = new URL(normalizeApiBaseUrl(url));
+        var host = parsed.hostname.toLowerCase();
+        var path = parsed.pathname.replace(/\/+$/, '');
+        return (host === 'scholarharness.com' || host === 'api.scholarharness.com') && path === '/api/v1';
+      } catch (e) {
+        return false;
+      }
+    }
+    window.isScholarHarnessAccountApiUrl = isScholarHarnessAccountApiUrl;
     
     function saveApiConfig() {
       localStorage.setItem(API_KEY, JSON.stringify(apiConfig));
@@ -4470,9 +4565,9 @@ var chatBridgeState = { paused: false, currentUrl: null, hasActivePage: false, s
           '</div>' +
         '</div>' +
         '<div class="config-center-grid">' +
+          configCenterButton('小牛马', '写作执行', 'messageCircle', 'showConnectDialog()') +
           configCenterButton('大牛马', '规划 / Skill / 质检', 'settings', 'showChatBridgeDialog()') +
           configCenterButton('Embedding', '语义检索', 'network', 'showEmbeddingDialog()') +
-          configCenterButton('小牛马', '写作执行', 'messageCircle', 'showConnectDialog()') +
           configCenterButton('PDF Wiki/Marker', 'PDF 解析', 'bookOpen', 'showPdfWikiLlmDialog()') +
           configCenterButton('联网搜索配置', 'Tavily / Exa', 'globe', 'showWebSearchDialog()') +
         '</div>' +
@@ -5101,6 +5196,10 @@ var chatBridgeState = { paused: false, currentUrl: null, hasActivePage: false, s
       
       if (!url) {
         alert('⚠️ 请填写 API 地址\n\n例如：https://dashscope.aliyuncs.com/compatible-mode/v1');
+        return;
+      }
+      if (isScholarHarnessAccountApiUrl(url)) {
+        alert('⚠️ 这个地址是 Scholar Harness 官网账号接口，不是模型 API 地址。\n\n请填写模型服务商提供的 OpenAI 兼容地址，例如：\nhttps://dashscope.aliyuncs.com/compatible-mode/v1\nhttps://openrouter.ai/api/v1');
         return;
       }
       if (!key) {
@@ -7125,7 +7224,7 @@ var chatBridgeState = { paused: false, currentUrl: null, hasActivePage: false, s
 
     function buildProjectGreetingHtml(profileId) {
       var labels = getProjectUiLabels(profileId);
-      return '<p class="typing-greeting"><span>你好！我是' + labels.assistantName + '，<strong class="typing-powered-inline">Powered by 智能体辅助写作攻关小组 石江山 康锁倩 王雯欣！技术支持 张肖其！</strong></span></p>';
+      return '<p class="typing-greeting"><span>你好！我是' + labels.assistantName + '！</span></p>';
     }
 
     function applyProjectWritingProfileUi(profileId) {
@@ -23344,7 +23443,7 @@ function showChatBridgeDialog() {
             '<div style="font-size:14px;font-weight:600;margin-bottom:12px;color:#6b7280;">API 配置（规划、Skill生成、质量检查）</div>' +
             '<div style="margin-bottom:10px;">' +
             '<label style="display:block;margin-bottom:5px;font-size:12px;color:var(--text-secondary);">API URL</label>' +
-            '<input type="text" id="primaryApiUrl" placeholder="例如: https://api.openai.com/v1 或 https://scholarharness.com/api/v1" value="' + (chatBridgeConfig.primary?.apiUrl || 'https://scholarharness.com/api/v1') + '" style="width:100%;padding:8px 12px;border:1px solid var(--border-color);border-radius:6px;background:var(--bg-input);color:var(--text-primary);">' +
+            '<input type="text" id="primaryApiUrl" placeholder="例如: https://openrouter.ai/api/v1 或 https://dashscope.aliyuncs.com/compatible-mode/v1" value="' + (chatBridgeConfig.primary?.apiUrl || '') + '" style="width:100%;padding:8px 12px;border:1px solid var(--border-color);border-radius:6px;background:var(--bg-input);color:var(--text-primary);">' +
             '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px;">' +
             '<button type="button" onclick="applyOpenRouterPrimaryPreset(false)" style="flex:1;min-width:150px;padding:8px 10px;background:#e5e7eb;border:1px solid #cbd5e1;border-radius:6px;color:#374151;cursor:pointer;font-size:12px;font-weight:600;box-shadow:inset 0 1px 0 rgba(255,255,255,0.65);">填入 OpenRouter URL</button>' +
             '<button type="button" onclick="applyOpenRouterPrimaryPreset(true)" style="flex:1;min-width:170px;padding:8px 10px;background:#d1d5db;border:1px solid #9ca3af;border-radius:6px;color:#374151;cursor:pointer;font-size:12px;font-weight:600;box-shadow:inset 0 1px 0 rgba(255,255,255,0.62);">OpenRouter 官网申请 API</button>' +
@@ -23649,6 +23748,10 @@ function showChatBridgeDialog() {
       // 验证配置
       if (!primaryApiUrl) {
         appendMessage('⚠️ 请填写大牛马的 API URL', 'bot', false, true);
+        return;
+      }
+      if (isScholarHarnessAccountApiUrl(primaryApiUrl)) {
+        appendMessage('⚠️ 这个地址是 Scholar Harness 官网账号接口，不是模型 API 地址。\n\n请填写模型服务商提供的 OpenAI 兼容地址，例如：\nhttps://openrouter.ai/api/v1\nhttps://dashscope.aliyuncs.com/compatible-mode/v1', 'bot', false, true);
         return;
       }
       
@@ -24550,6 +24653,424 @@ function showChatBridgeDialog() {
           '</div>';
       }).join('');
     }
+
+    function showSentenceClaimSearchDialog() {
+      var html = '' +
+        '<div style="height:100%;min-height:0;display:flex;flex-direction:column;gap:12px;overflow:hidden;">' +
+          '<section id="sentenceClaimSearchResult" style="flex:1 1 auto;min-height:0;border:1px solid var(--border-color);border-radius:8px;background:var(--bg-secondary);padding:14px;overflow:auto;">' +
+            '<div style="height:100%;display:flex;align-items:center;justify-content:center;text-align:center;color:var(--text-secondary);font-size:13px;">' +
+              '<div>' +
+                '<div style="font-size:16px;font-weight:850;color:var(--text-primary);margin-bottom:6px;">句子级论点检索</div>' +
+                '<div style="line-height:1.7;">输入一句需要参考文献支撑的论点，系统会在上方展示可追溯证据。</div>' +
+              '</div>' +
+            '</div>' +
+          '</section>' +
+          '<section style="flex:0 0 auto;display:flex;justify-content:center;align-items:flex-end;padding-top:4px;background:var(--modal-bg);">' +
+            '<div style="width:min(100%,820px);border:1px solid var(--border-color);border-radius:12px;background:var(--bg-primary);padding:10px 11px;box-shadow:0 12px 30px rgba(15,23,42,0.12);">' +
+              '<textarea id="sentenceClaimSearchInput" rows="1" onkeydown="handleSentenceClaimInputKeydown(event)" placeholder="输入需要参考文献支撑的句子或论点，例如：干预A显著降低目标风险。" style="width:100%;resize:vertical;min-height:24px;max-height:90px;border:0;outline:none;background:transparent;color:var(--text-primary);padding:1px 4px;font-size:13px;line-height:1.45;font-family:inherit;"></textarea>' +
+              '<div style="display:flex;gap:8px;align-items:center;justify-content:flex-end;flex-wrap:wrap;margin-top:8px;">' +
+                '<div style="display:flex;gap:8px;align-items:center;justify-content:center;flex-wrap:wrap;">' +
+                  '<label for="sentenceClaimTopK" style="height:34px;min-width:132px;border:1px solid var(--border-color);border-radius:7px;background:var(--bg-input);color:var(--text-primary);padding:0 8px;display:flex;align-items:center;justify-content:center;gap:8px;font-size:12px;font-weight:750;text-align:center;">' +
+                    '<span style="white-space:nowrap;">返回数量</span>' +
+                    '<select id="sentenceClaimTopK" style="width:62px;height:28px;border:0;border-radius:6px;background:var(--bg-secondary);color:var(--text-primary);padding:0 20px 0 20px;font-size:12px;text-align:center;text-align-last:center;appearance:none;-webkit-appearance:none;transform:translateY(7px);background-image:linear-gradient(45deg,transparent 50%,currentColor 50%),linear-gradient(135deg,currentColor 50%,transparent 50%);background-position:calc(100% - 12px) 12px,calc(100% - 8px) 12px;background-size:4px 4px,4px 4px;background-repeat:no-repeat;">' +
+                      '<option value="5">5</option>' +
+                      '<option value="8">8</option>' +
+                      '<option value="10">10</option>' +
+                      '<option value="15">15</option>' +
+                    '</select>' +
+                  '</label>' +
+                  '<button id="sentenceClaimSearchBtn" type="button" onclick="runSentenceClaimSearch()" style="height:34px;min-width:112px;border:1px solid var(--accent-color);border-radius:7px;background:var(--accent-color);color:white;cursor:pointer;font-size:12px;font-weight:800;">开始检索</button>' +
+                '</div>' +
+              '</div>' +
+            '</div>' +
+          '</section>' +
+        '</div>';
+      showModal('快速句子级论点检索', html, true, true);
+      setTimeout(function() {
+        var input = document.getElementById('sentenceClaimSearchInput');
+        if (input) input.focus();
+      }, 50);
+    }
+    window.showSentenceClaimSearchDialog = showSentenceClaimSearchDialog;
+
+    function handleSentenceClaimInputKeydown(event) {
+      if (!event) return;
+      if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
+        event.preventDefault();
+        runSentenceClaimSearch();
+      }
+    }
+    window.handleSentenceClaimInputKeydown = handleSentenceClaimInputKeydown;
+
+    function fillSentenceClaimSearchExample(text) {
+      var input = document.getElementById('sentenceClaimSearchInput');
+      if (input) input.value = text;
+    }
+    window.fillSentenceClaimSearchExample = fillSentenceClaimSearchExample;
+
+    function formatSentenceClaimScore(value) {
+      var score = Number(value || 0);
+      return Number.isFinite(score) ? score.toFixed(3) : '0.000';
+    }
+
+    function getSentenceClaimSupportMeta(support) {
+      var relation = support && support.relation ? String(support.relation) : 'unchecked';
+      var map = {
+        supports: { label: '支持', color: '#047857', bg: 'rgba(16,185,129,0.12)', border: 'rgba(16,185,129,0.32)' },
+        contradicts: { label: '反向', color: '#b91c1c', bg: 'rgba(239,68,68,0.12)', border: 'rgba(239,68,68,0.32)' },
+        related: { label: '仅相关', color: '#b45309', bg: 'rgba(245,158,11,0.14)', border: 'rgba(245,158,11,0.34)' },
+        irrelevant: { label: '无关', color: '#6b7280', bg: 'rgba(107,114,128,0.12)', border: 'rgba(107,114,128,0.28)' },
+        unchecked: { label: '未核查', color: 'var(--text-secondary)', bg: 'var(--bg-secondary)', border: 'var(--border-color)' }
+      };
+      return map[relation] || map.unchecked;
+    }
+
+    function renderSentenceClaimSupportSummary(counts, checked, sectionId, sticky) {
+      if (!counts) return '';
+      var containerStyle = sticky
+        ? 'position:sticky;top:-14px;z-index:20;display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin:0 -14px 8px -14px;padding:8px 24px;border:1px solid var(--border-color);border-top:0;border-radius:0 0 8px 8px;background:var(--bg-primary);box-shadow:0 8px 18px rgba(15,23,42,0.10);'
+        : 'display:flex;gap:6px;flex-wrap:wrap;margin-top:8px;';
+      var items = [
+        ['supports', '支持', counts.supports || 0, getSentenceClaimSupportMeta({ relation: 'supports' })],
+        ['contradicts', '反向', counts.contradicts || 0, getSentenceClaimSupportMeta({ relation: 'contradicts' })],
+        ['related', '仅相关', counts.related || 0, getSentenceClaimSupportMeta({ relation: 'related' })],
+        ['irrelevant', '无关', counts.irrelevant || 0, getSentenceClaimSupportMeta({ relation: 'irrelevant' })],
+        ['unchecked', '未核查', counts.unchecked || 0, getSentenceClaimSupportMeta({ relation: 'unchecked' })]
+      ];
+      return '<div style="' + containerStyle + '">' +
+        '<span style="font-size:11px;color:var(--text-secondary);align-self:center;">证据判断：' + (checked ? '已执行' : '未执行') + '</span>' +
+        '<button type="button" onclick="filterSentenceClaimPapers(\'' + escapeHtml(sectionId || '') + '\', \'all\')" style="font-size:11px;padding:2px 7px;border:1px solid var(--border-color);border-radius:999px;background:var(--bg-secondary);color:var(--text-primary);cursor:pointer;">全部</button>' +
+        items.map(function(item) {
+          var relation = item[0];
+          var label = item[1];
+          var count = item[2];
+          var meta = item[3];
+          if (!count) return '';
+          if (relation === 'irrelevant') {
+            return '<span title="无关文献已隐藏，不进入结果列表" style="font-size:11px;padding:2px 6px;border:1px solid ' + meta.border + ';border-radius:999px;background:' + meta.bg + ';color:' + meta.color + ';">' + escapeHtml(label) + ' ' + escapeHtml(count) + '（已隐藏）</span>';
+          }
+          return '<button type="button" onclick="filterSentenceClaimPapers(\'' + escapeHtml(sectionId || '') + '\', \'' + escapeHtml(relation) + '\')" style="font-size:11px;padding:2px 6px;border:1px solid ' + meta.border + ';border-radius:999px;background:' + meta.bg + ';color:' + meta.color + ';cursor:pointer;">' + escapeHtml(label) + ' ' + escapeHtml(count) + '</button>';
+        }).join('') +
+      '</div>';
+    }
+
+    function renderSentenceClaimSupportBox(paper) {
+      var support = paper && paper.claimSupport ? paper.claimSupport : null;
+      if (!support) return '';
+      var meta = getSentenceClaimSupportMeta(support);
+      var confidence = Number(support.confidence || 0);
+      var confidenceText = Number.isFinite(confidence) && confidence > 0 ? Math.round(confidence * 100) + '%' : '-';
+      var snippets = Array.isArray(support.evidenceSnippets) ? support.evidenceSnippets : [];
+      return '<div style="margin-top:8px;border:1px solid ' + meta.border + ';border-radius:7px;background:' + meta.bg + ';padding:8px;">' +
+        '<div style="display:flex;gap:8px;align-items:center;justify-content:space-between;flex-wrap:wrap;">' +
+          '<span style="font-size:12px;font-weight:850;color:' + meta.color + ';">证据关系：' + escapeHtml(meta.label) + '</span>' +
+          '<span style="font-size:11px;color:var(--text-secondary);">置信度 ' + escapeHtml(confidenceText) + '</span>' +
+        '</div>' +
+        (support.reason ? '<div style="margin-top:6px;font-size:12px;line-height:1.6;color:var(--text-primary);">' + escapeHtml(support.reason) + '</div>' : '') +
+        (snippets.length ? '<div style="display:flex;flex-direction:column;gap:5px;margin-top:7px;">' + snippets.map(function(snippet) {
+          return '<div style="border-left:3px solid ' + meta.color + ';padding-left:7px;font-size:11.5px;line-height:1.55;color:var(--text-secondary);word-break:break-word;">' + escapeHtml(snippet) + '</div>';
+        }).join('') + '</div>' : '') +
+      '</div>';
+    }
+
+    function renderSentenceClaimQueryBox(detail) {
+      var groups = Array.isArray(detail.languageGroups) ? detail.languageGroups : [];
+      var parserLabel = detail.parser === 'ai' ? 'AI解析' : '规则解析';
+      return '<div style="border:1px solid var(--border-color);border-radius:8px;background:var(--bg-primary);padding:11px;margin-bottom:12px;">' +
+        '<div style="display:flex;justify-content:space-between;gap:10px;align-items:flex-start;margin-bottom:8px;">' +
+          '<div style="font-size:13px;font-weight:800;color:var(--text-primary);">解析 query</div>' +
+          '<span style="font-size:11px;color:var(--accent-color);white-space:nowrap;">' + escapeHtml(parserLabel) + '</span>' +
+        '</div>' +
+        (detail.parserReason ? '<div style="font-size:11.5px;color:var(--text-secondary);line-height:1.55;margin-bottom:8px;">' + escapeHtml(detail.parserReason) + '</div>' : '') +
+        (detail.parserWarning ? '<div style="font-size:11.5px;color:var(--danger-color);line-height:1.55;margin-bottom:8px;">' + escapeHtml(detail.parserWarning) + '</div>' : '') +
+        '<div style="display:flex;flex-direction:column;gap:7px;">' +
+          groups.map(function(group) {
+            return '<div style="border:1px solid var(--border-color);border-radius:7px;background:var(--bg-secondary);padding:8px;">' +
+              '<div style="display:flex;justify-content:space-between;gap:8px;margin-bottom:5px;">' +
+                '<span style="font-size:12px;font-weight:750;color:var(--text-primary);">' + escapeHtml(group.label || '') + '</span>' +
+                '<span style="font-size:11px;color:var(--text-secondary);">候选 ' + escapeHtml(group.totalCount || 0) + ' / 返回 ' + escapeHtml(group.returned || 0) + ' · 语义 ' + (group.semanticUsed ? '已用' : '未用') + '</span>' +
+              '</div>' +
+              '<div style="font-size:11.5px;line-height:1.55;color:var(--text-secondary);word-break:break-word;">' + escapeHtml(group.query || '') + '</div>' +
+            '</div>';
+          }).join('') +
+        '</div>' +
+      '</div>';
+    }
+
+    function renderSentenceClaimPaperCard(paper, index) {
+      var abstract = String(paper.abstract || '');
+      var sourceLine = [paper.journal, paper.year, paper.doi ? 'DOI: ' + paper.doi : ''].filter(Boolean).join(' · ');
+      var relation = paper && paper.claimSupport && paper.claimSupport.relation ? String(paper.claimSupport.relation) : 'unchecked';
+      var supportMeta = getSentenceClaimSupportMeta(paper.claimSupport);
+      return '<article data-sentence-claim-paper data-claim-relation="' + escapeHtml(relation) + '" style="border:1px solid var(--border-color);border-radius:8px;background:var(--bg-primary);padding:11px;margin-bottom:9px;">' +
+        '<div style="display:flex;gap:9px;align-items:flex-start;">' +
+          '<div style="width:28px;height:28px;border-radius:7px;background:rgba(15,118,110,0.10);color:var(--accent-color);display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:850;flex:0 0 auto;">' + (index + 1) + '</div>' +
+          '<div style="min-width:0;flex:1;">' +
+            '<div style="font-size:13px;font-weight:800;color:var(--text-primary);line-height:1.45;">' + escapeHtml(paper.title || 'Untitled') + '</div>' +
+            '<div style="margin-top:4px;font-size:11.5px;color:var(--text-secondary);line-height:1.55;">' + escapeHtml(paper.citation || '') + (paper.author ? ' · ' + escapeHtml(paper.author) : '') + '</div>' +
+            (sourceLine ? '<div style="margin-top:3px;font-size:11.5px;color:var(--text-secondary);line-height:1.55;">' + escapeHtml(sourceLine) + '</div>' : '') +
+            '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:7px;">' +
+              '<span style="font-size:11px;padding:2px 6px;border-radius:999px;background:rgba(15,118,110,0.10);color:var(--accent-color);">' + escapeHtml(paper.retrievalPath || '-') + '</span>' +
+              '<span style="font-size:11px;padding:2px 6px;border:1px solid ' + supportMeta.border + ';border-radius:999px;background:' + supportMeta.bg + ';color:' + supportMeta.color + ';">证据 ' + escapeHtml(supportMeta.label) + '</span>' +
+              '<span style="font-size:11px;padding:2px 6px;border-radius:999px;background:var(--bg-secondary);color:var(--text-secondary);">score ' + escapeHtml(formatSentenceClaimScore(paper.score)) + '</span>' +
+              '<span style="font-size:11px;padding:2px 6px;border-radius:999px;background:var(--bg-secondary);color:var(--text-secondary);">BM25 ' + escapeHtml(formatSentenceClaimScore(paper.bm25Score)) + '</span>' +
+              '<span style="font-size:11px;padding:2px 6px;border-radius:999px;background:var(--bg-secondary);color:var(--text-secondary);">semantic ' + escapeHtml(formatSentenceClaimScore(paper.vectorScore)) + '</span>' +
+            '</div>' +
+            renderSentenceClaimSupportBox(paper) +
+            '<details open style="margin-top:8px;border:1px solid var(--border-color);border-radius:7px;background:var(--bg-secondary);padding:8px;">' +
+              '<summary style="cursor:pointer;font-size:12px;font-weight:750;color:var(--text-primary);list-style-position:inside;">摘要</summary>' +
+              '<div style="display:flex;justify-content:flex-end;margin-top:7px;">' +
+                '<button type="button" onclick="translateSentenceClaimAbstract(this)" style="height:28px;padding:0 9px;border:1px solid var(--accent-color);border-radius:6px;background:transparent;color:var(--accent-color);cursor:pointer;font-size:11px;font-weight:750;">翻译摘要</button>' +
+              '</div>' +
+              '<div data-sentence-claim-translation style="display:none;margin-top:8px;border:1px solid rgba(15,118,110,0.28);border-radius:7px;background:rgba(15,118,110,0.08);padding:8px;font-size:12px;line-height:1.7;color:var(--text-primary);white-space:pre-wrap;word-break:break-word;"></div>' +
+              '<div data-sentence-claim-abstract style="margin-top:7px;font-size:12px;line-height:1.7;color:var(--text-secondary);white-space:pre-wrap;word-break:break-word;">' + escapeHtml(abstract || '暂无摘要') + '</div>' +
+            '</details>' +
+          '</div>' +
+        '</div>' +
+      '</article>';
+    }
+
+    function filterSentenceClaimPapers(sectionId, relation) {
+      var section = document.getElementById(sectionId);
+      if (!section) return;
+      var cards = Array.prototype.slice.call(section.querySelectorAll('[data-sentence-claim-paper]'));
+      var visible = 0;
+      cards.forEach(function(card) {
+        var cardRelation = card.getAttribute('data-claim-relation') || 'unchecked';
+        var show = relation === 'all' || cardRelation === relation;
+        card.style.display = show ? '' : 'none';
+        if (show) visible++;
+      });
+      var empty = section.querySelector('[data-sentence-claim-filter-empty]');
+      if (empty) {
+        empty.style.display = visible ? 'none' : 'block';
+        empty.textContent = relation === 'all'
+          ? '没有可展示的参考文献；无关文献已隐藏。'
+          : '当前筛选条件下没有可展示的参考文献；无关文献已隐藏。';
+      }
+    }
+    window.filterSentenceClaimPapers = filterSentenceClaimPapers;
+
+    async function translateSentenceClaimAbstract(button) {
+      var article = button ? button.closest('article') : null;
+      var abstractNode = article ? article.querySelector('[data-sentence-claim-abstract]') : null;
+      var translationNode = article ? article.querySelector('[data-sentence-claim-translation]') : null;
+      var text = abstractNode ? abstractNode.textContent.trim() : '';
+      if (!text || text === '暂无摘要') {
+        alert('没有可翻译的摘要');
+        return;
+      }
+      var originalText = button.textContent;
+      button.disabled = true;
+      button.textContent = '翻译中';
+      if (translationNode) {
+        translationNode.style.display = 'block';
+        translationNode.textContent = '正在翻译摘要...';
+      }
+      try {
+        var response = await fetch('/api/sentence/translate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            text: text,
+            targetLanguage: '中文',
+            userId: currentUserId || 'web-user'
+          })
+        });
+        var data = await response.json();
+        if (!data.success) throw new Error(data.error || '翻译失败');
+        if (translationNode) {
+          translationNode.textContent = data.translation || '';
+          translationNode.style.display = 'block';
+        }
+        button.textContent = '重新翻译';
+      } catch (e) {
+        if (translationNode) {
+          translationNode.textContent = '翻译失败：' + (e.message || String(e));
+          translationNode.style.display = 'block';
+        }
+        button.textContent = originalText || '翻译摘要';
+      } finally {
+        button.disabled = false;
+      }
+    }
+    window.translateSentenceClaimAbstract = translateSentenceClaimAbstract;
+
+    function renderSentenceClaimSearchResult(data) {
+      var details = Array.isArray(data.sentences) ? data.sentences : [];
+      var resultMap = data.results || {};
+      if (!details.length) {
+        return '<div style="padding:16px;color:var(--text-secondary);font-size:13px;">没有返回可展示的检索结果。</div>';
+      }
+      return '<div style="display:flex;flex-direction:column;gap:14px;">' +
+        '<div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;">' +
+          '<div style="border:1px solid var(--border-color);border-radius:8px;background:var(--bg-primary);padding:10px;"><div style="font-size:11px;color:var(--text-secondary);">文献库</div><div style="margin-top:3px;font-size:17px;font-weight:850;color:var(--text-primary);">' + escapeHtml(data.literatureCount || 0) + '</div></div>' +
+          '<div style="border:1px solid var(--border-color);border-radius:8px;background:var(--bg-primary);padding:10px;"><div style="font-size:11px;color:var(--text-secondary);">句子</div><div style="margin-top:3px;font-size:17px;font-weight:850;color:var(--text-primary);">' + escapeHtml(details.length) + '</div></div>' +
+          '<div style="border:1px solid var(--border-color);border-radius:8px;background:var(--bg-primary);padding:10px;"><div style="font-size:11px;color:var(--text-secondary);">每句返回</div><div style="margin-top:3px;font-size:17px;font-weight:850;color:var(--text-primary);">' + escapeHtml(data.topK || '-') + '</div></div>' +
+        '</div>' +
+        details.map(function(detail, detailIndex) {
+          detail.sectionId = 'sentenceClaimSection' + detailIndex;
+          var papers = Array.isArray(resultMap[detail.sentence]) ? resultMap[detail.sentence] : [];
+          var filterNotes = [];
+          if (Number(detail.requestedCount || data.topK || 0) > papers.length) {
+            filterNotes.push('本句按证据关系过滤后返回 ' + papers.length + ' 条，低于用户要求的 ' + (detail.requestedCount || data.topK || '-') + ' 条；无关文献已隐藏。');
+          }
+          if (Number(detail.hiddenInvalidMetadataCount || 0) > 0) {
+            filterNotes.push('已隐藏 ' + detail.hiddenInvalidMetadataCount + ' 条疑似示例/占位作者记录。');
+          }
+          var shortage = filterNotes.length
+            ? '<div style="border:1px solid rgba(245,158,11,0.28);border-radius:8px;background:rgba(245,158,11,0.08);padding:9px 10px;color:#92400e;font-size:12px;line-height:1.55;margin-bottom:8px;">' + escapeHtml(filterNotes.join(' ')) + '</div>'
+            : '';
+          return '<section id="' + escapeHtml(detail.sectionId) + '">' +
+            '<div style="font-size:14px;font-weight:850;color:var(--text-primary);line-height:1.45;margin-bottom:8px;">' + escapeHtml(detail.sentence || '') + '</div>' +
+            renderSentenceClaimQueryBox(detail) +
+            renderSentenceClaimSupportSummary(detail.supportCounts, detail.evidenceChecked, detail.sectionId, true) +
+            shortage +
+            '<div data-sentence-claim-filter-empty style="display:none;border:1px dashed var(--border-color);border-radius:8px;padding:14px;color:var(--text-secondary);font-size:13px;background:var(--bg-primary);margin-bottom:8px;"></div>' +
+            (papers.length ? papers.map(renderSentenceClaimPaperCard).join('') : '<div style="border:1px dashed var(--border-color);border-radius:8px;padding:14px;color:var(--text-secondary);font-size:13px;background:var(--bg-primary);">未匹配到参考文献。</div>') +
+          '</section>';
+        }).join('') +
+      '</div>';
+    }
+
+    var sentenceClaimRunLogQueue = [];
+    var sentenceClaimRunLogTyping = false;
+
+    function renderSentenceClaimRunLogPanel() {
+      return '' +
+        '<div style="height:100%;display:flex;align-items:flex-start;justify-content:flex-start;">' +
+          '<div id="sentenceClaimRunLogs" style="width:100%;max-height:100%;overflow:auto;padding:0 2px;font-size:13px;line-height:1.75;color:var(--text-primary);text-align:left;"></div>' +
+        '</div>';
+    }
+
+    function resetSentenceClaimRunLogs() {
+      sentenceClaimRunLogQueue = [];
+      sentenceClaimRunLogTyping = false;
+    }
+
+    function queueSentenceClaimRunLog(message) {
+      sentenceClaimRunLogQueue.push(String(message || ''));
+      if (!sentenceClaimRunLogTyping) drainSentenceClaimRunLogQueue();
+    }
+
+    function drainSentenceClaimRunLogQueue() {
+      var logBox = document.getElementById('sentenceClaimRunLogs');
+      if (!logBox) {
+        resetSentenceClaimRunLogs();
+        return;
+      }
+      var message = sentenceClaimRunLogQueue.shift();
+      if (!message) {
+        sentenceClaimRunLogTyping = false;
+        return;
+      }
+      sentenceClaimRunLogTyping = true;
+      Array.prototype.slice.call(logBox.querySelectorAll('[data-sentence-claim-log-line]')).forEach(function(node) {
+        node.style.color = 'var(--text-secondary)';
+      });
+      var line = document.createElement('div');
+      line.setAttribute('data-sentence-claim-log-line', '1');
+      line.style.cssText = 'white-space:pre-wrap;word-break:break-word;margin-bottom:7px;color:var(--text-primary);font-weight:650;';
+      logBox.appendChild(line);
+      var text = '[' + new Date().toLocaleTimeString() + '] ' + message;
+      var index = 0;
+      function typeNext() {
+        if (!document.getElementById('sentenceClaimRunLogs')) {
+          resetSentenceClaimRunLogs();
+          return;
+        }
+        line.textContent = text.slice(0, index);
+        logBox.scrollTop = logBox.scrollHeight;
+        index += 1;
+        if (index <= text.length) {
+          setTimeout(typeNext, 8);
+        } else {
+          setTimeout(drainSentenceClaimRunLogQueue, 35);
+        }
+      }
+      typeNext();
+    }
+
+    async function readSentenceClaimSearchStream(response) {
+      if (!response.body || !response.body.getReader) {
+        throw new Error('当前环境不支持流式读取后端日志');
+      }
+      var reader = response.body.getReader();
+      var decoder = new TextDecoder('utf-8');
+      var buffer = '';
+      var finalData = null;
+
+      function handleLine(line) {
+        if (!line.trim()) return;
+        var payload = JSON.parse(line);
+        if (payload.type === 'log') {
+          queueSentenceClaimRunLog(payload.message || '');
+        } else if (payload.type === 'result') {
+          finalData = payload.data;
+        } else if (payload.type === 'error') {
+          throw new Error(payload.error || '检索失败');
+        }
+      }
+
+      while (true) {
+        var chunk = await reader.read();
+        if (chunk.done) break;
+        buffer += decoder.decode(chunk.value, { stream: true });
+        var lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+        lines.forEach(handleLine);
+      }
+      buffer += decoder.decode();
+      if (buffer.trim()) handleLine(buffer);
+      if (!finalData) throw new Error('后端未返回最终检索结果');
+      return finalData;
+    }
+
+    async function runSentenceClaimSearch() {
+      var input = document.getElementById('sentenceClaimSearchInput');
+      var topKInput = document.getElementById('sentenceClaimTopK');
+      var resultBox = document.getElementById('sentenceClaimSearchResult');
+      var button = document.getElementById('sentenceClaimSearchBtn');
+      var query = input ? input.value.trim() : '';
+      if (button && button.disabled) return;
+      if (!query) {
+        alert('请输入句子或论点');
+        return;
+      }
+      if (resultBox) {
+        resultBox.innerHTML = renderSentenceClaimRunLogPanel();
+        resetSentenceClaimRunLogs();
+        queueSentenceClaimRunLog('前端已提交检索请求，等待后端开始处理。');
+      }
+      if (button) {
+        button.disabled = true;
+        button.textContent = '检索中';
+      }
+      try {
+        var requestPayload = {
+          query: query,
+          topK: topKInput ? Number(topKInput.value || 5) : 5,
+          userId: currentUserId || 'web-user'
+        };
+        var response = await fetch('/api/sentence/claim-match/stream', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(requestPayload)
+        });
+        if (!response.ok) throw new Error('后端日志流连接失败：HTTP ' + response.status);
+        var data = await readSentenceClaimSearchStream(response);
+        if (!data.success) throw new Error(data.error || '检索失败');
+        if (resultBox) resultBox.innerHTML = renderSentenceClaimSearchResult(data);
+      } catch (e) {
+        if (resultBox) resultBox.innerHTML = '<div style="border:1px solid rgba(239,68,68,0.35);border-radius:8px;background:rgba(239,68,68,0.08);padding:14px;color:var(--danger-color);font-size:13px;line-height:1.6;">' + escapeHtml(e.message || String(e)) + '</div>';
+      } finally {
+        if (button) {
+          button.disabled = false;
+          button.textContent = '开始检索';
+        }
+      }
+    }
+    window.runSentenceClaimSearch = runSentenceClaimSearch;
 
     function showDataAnalysisDialog() {
       dataAnalysisStructure = null;

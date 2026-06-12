@@ -2,6 +2,13 @@ import * as crypto from 'crypto';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import { computeKeywordTags, getPaperKeywords, normalizeKeyword, splitKeywordInput, type LiteratureRecord, type OuterTagsConfig } from '../literature/keyword-library';
+import {
+  buildBilingualRetrievalQueries,
+  buildSemanticRetrievalQuery,
+  tokenizeRetrievalText,
+  weightRetrievalQueryTokens,
+  type RetrievalQueryVariant,
+} from '../literature/retrieval/semantic-query';
 import { AUTO_RESEARCH_PAPER_TOPIC_CONTENT_SKILL_FOR_WRITING } from '../config/auto-research-paper-topic-skill';
 import { logger } from './logger';
 import { sanitizeUserId } from './paths';
@@ -182,6 +189,7 @@ export interface AutoResearchLiteratureNode {
   categories: string[];
   hasEmbedding: boolean;
   embeddingDimension: number;
+  embedding?: number[];
   trace: AutoResearchLiteratureTrace;
   createdAt: string;
   updatedAt: string;
@@ -998,8 +1006,13 @@ export class AutoResearchManager {
       : entryCount === 0
         ? `PDF Wiki 已登记 ${sourcePdfCount} 个 PDF，但尚未生成论点组；请先运行深入分析或重建 PDF Wiki。`
         : '';
+    const topicRelevantLiteratureNodes = await this.selectTopicRelevantLiteratureNodes(
+      state.task.topic || state.task.goal,
+      state.literatureMap.nodes || [],
+      120
+    );
     const embeddingEvidenceCount = this.buildEmbeddingEvidenceObjects(
-      this.selectTopicRelevantLiteratureNodes(state.task.topic || state.task.goal, state.literatureMap.nodes || [], 120),
+      topicRelevantLiteratureNodes,
       now,
       120
     ).length;
@@ -1163,8 +1176,8 @@ export class AutoResearchManager {
     const safeUserId = sanitizeUserId(userId);
     const state = await this.loadState(safeUserId, project);
     const now = new Date().toISOString();
-    const report = this.buildSelfEvaluationReport(state, now);
-    const evidenceContext = this.buildEvidenceContext(state, now, 200);
+    const report = await this.buildSelfEvaluationReport(state, now);
+    const evidenceContext = await this.buildEvidenceContext(state, now, 200);
     state.evaluations.unshift(report);
     state.evaluations = state.evaluations.slice(0, 50);
     state.task.stages = this.ensureStages(state.task.stages, now).map(stage => {
@@ -1210,7 +1223,7 @@ export class AutoResearchManager {
     const safeUserId = sanitizeUserId(userId);
     const state = await this.loadState(safeUserId, project);
     const now = new Date().toISOString();
-    const wiki = this.buildResearchWikiState(state, now);
+    const wiki = await this.buildResearchWikiState(state, now);
     state.researchWiki = wiki;
     state.task.stages = this.ensureStages(state.task.stages, now).map(stage => {
       if (stage.id !== 'literature_map') return stage;
@@ -1253,9 +1266,9 @@ export class AutoResearchManager {
     const safeUserId = sanitizeUserId(userId);
     const state = await this.loadState(safeUserId, project);
     const now = new Date().toISOString();
-    const wiki = this.buildResearchWikiState(state, now);
+    const wiki = await this.buildResearchWikiState(state, now);
     state.researchWiki = wiki;
-    const report = this.buildAuditReport(state, wiki, now);
+    const report = await this.buildAuditReport(state, wiki, now);
     state.auditReports.unshift(report);
     state.auditReports = state.auditReports.slice(0, 30);
     state.task.stages = this.ensureStages(state.task.stages, now).map(stage => {
@@ -1303,7 +1316,7 @@ export class AutoResearchManager {
     const safeUserId = sanitizeUserId(userId);
     const state = await this.loadState(safeUserId, project);
     const now = new Date().toISOString();
-    const report = this.buildFinalReport(state, now, await this.loadAutoResearchWritingSkill());
+    const report = await this.buildFinalReport(state, now, await this.loadAutoResearchWritingSkill());
     state.finalReports.unshift(report);
     state.finalReports = state.finalReports.slice(0, 20);
     state.task.status = 'completed';
@@ -1427,7 +1440,7 @@ export class AutoResearchManager {
       throw new Error('未找到 AutoResearch 最终报告，无法写论文');
     }
 
-    const evidenceContext = this.buildEvidenceContext(state, now, 200);
+    const evidenceContext = await this.buildEvidenceContext(state, now, 200);
     const markdown = this.buildPaperDraftMarkdown(report, state, evidenceContext, await this.loadAutoResearchWritingSkill());
     const draft: AutoResearchPaperDraft = {
       id: `paper_${this.hash({ userId: safeUserId, reportId, now, markdown }).slice(0, 18)}`,
@@ -1615,8 +1628,8 @@ export class AutoResearchManager {
     return record;
   }
 
-  private buildResearchWikiState(state: AutoResearchState, now: string): AutoResearchWikiState {
-    const evidenceContext = this.buildEvidenceContext(state, now, 200);
+  private async buildResearchWikiState(state: AutoResearchState, now: string): Promise<AutoResearchWikiState> {
+    const evidenceContext = await this.buildEvidenceContext(state, now, 200);
     const nodes = new Map<string, AutoResearchWikiNode>();
     const edges = new Map<string, AutoResearchWikiEdge>();
     const literatureNodeIdBySourceKey = new Map<string, string>();
@@ -1808,8 +1821,8 @@ export class AutoResearchManager {
     return wiki;
   }
 
-  private buildAuditReport(state: AutoResearchState, wiki: AutoResearchWikiState, now: string): AutoResearchAuditReport {
-    const evidenceContext = this.buildEvidenceContext(state, now, 200);
+  private async buildAuditReport(state: AutoResearchState, wiki: AutoResearchWikiState, now: string): Promise<AutoResearchAuditReport> {
+    const evidenceContext = await this.buildEvidenceContext(state, now, 200);
     const evidenceObjects = evidenceContext.evidenceObjects;
     const claimMap = this.groupEvidenceByClaim(evidenceObjects);
     const totalEvidence = evidenceObjects.length;
@@ -1992,7 +2005,7 @@ export class AutoResearchManager {
     lines.push(`**关键词**：${keywords.length ? keywords.join('；') : topic}`);
     lines.push('');
     lines.push('## 1. 引言');
-    lines.push(`${topic} 是连接研究对象、证据边界和机制解释的综合性问题。AutoResearch 前置审查提示，本稿应优先围绕“${blueprint?.coreResearchObject || topic}”展开，并明确哪些结论可由直接证据支持、哪些只能作为相邻或机制证据使用${citeTop(Math.min(4, references.length))}。然而，不同研究之间常因研究区域、作物制度、土壤条件、处理方式和观测尺度不同而产生结论差异。`);
+    lines.push(`${topic} 是连接研究对象、证据边界和机制解释的综合性问题。AutoResearch 前置审查提示，本稿应优先围绕“${blueprint?.coreResearchObject || topic}”展开，并明确哪些结论可由直接证据支持、哪些只能作为相邻或机制证据使用${citeTop(Math.min(4, references.length))}。然而，不同研究之间常因对象、人群/样本、场景、方法、指标定义和观测尺度不同而产生结论差异。`);
     lines.push('');
     lines.push(`本文的目标是将 AutoResearch 形成的文献图谱和证据库转化为可写作的论文草稿：首先筛选主题相关文献，其次抽取或派生论点级证据，再对引用对齐、证据充分性、创新性和可复现性进行审稿式自检，最后提出研究假设、知识缺口和后续分析计划。`);
     lines.push('');
@@ -2263,9 +2276,6 @@ export class AutoResearchManager {
   }
 
   private buildPaperDraftTitle(topic: string): string {
-    if (/氮肥|n2o|氧化亚氮|nitrous oxide/i.test(topic)) {
-      return `不同氮肥管理措施对农田 N2O 排放的影响及其机理：基于 AutoResearch 证据链的综述草稿`;
-    }
     return `${topic}：基于 AutoResearch 证据链的论文草稿`;
   }
 
@@ -2463,7 +2473,10 @@ export class AutoResearchManager {
       if (!key) continue;
       const id = `lit_${this.hash({ key }).slice(0, 18)}`;
       if (nodesById.has(id)) continue;
-      const embeddingDimension = Array.isArray(paper.embedding) ? paper.embedding.length : 0;
+      const embedding = Array.isArray(paper.embedding)
+        ? paper.embedding.filter(value => Number.isFinite(value))
+        : [];
+      const embeddingDimension = embedding.length;
       nodesById.set(id, {
         id,
         key,
@@ -2479,6 +2492,7 @@ export class AutoResearchManager {
         categories: this.extractLiteratureCategories(paper).slice(0, 60),
         hasEmbedding: embeddingDimension > 0,
         embeddingDimension,
+        embedding: embeddingDimension > 0 ? embedding : undefined,
         trace: {
           sourceType: 'embedding-library',
           sourceUri: `embedding-library://${userId}/literature/${encodeURIComponent(key)}`,
@@ -2530,13 +2544,13 @@ export class AutoResearchManager {
       .slice(0, 400);
   }
 
-  private buildEvidenceContext(
+  private async buildEvidenceContext(
     state: AutoResearchState,
     now: string,
     literatureLimit = 160
-  ): AutoResearchEvidenceContext {
+  ): Promise<AutoResearchEvidenceContext> {
     const allLiteratureNodes = state.literatureMap.nodes || [];
-    const literatureNodes = this.selectTopicRelevantLiteratureNodes(state.task.topic || state.task.goal, allLiteratureNodes, literatureLimit);
+    const literatureNodes = await this.selectTopicRelevantLiteratureNodes(state.task.topic || state.task.goal, allLiteratureNodes, literatureLimit);
     const pdfWikiEvidenceObjects = state.evidenceLibrary.objects || [];
     const embeddingEvidenceObjects = this.buildEmbeddingEvidenceObjects(
       literatureNodes,
@@ -2741,7 +2755,7 @@ export class AutoResearchManager {
     ]).filter(Boolean);
   }
 
-  private buildFinalReport(state: AutoResearchState, now: string, autoResearchWritingSkill: string): AutoResearchFinalReport {
+  private async buildFinalReport(state: AutoResearchState, now: string, autoResearchWritingSkill: string): Promise<AutoResearchFinalReport> {
     const topic = this.cleanText(state.task.topic || state.task.goal, 500) || '未命名研究主题';
     const {
       allLiteratureNodes,
@@ -2749,7 +2763,7 @@ export class AutoResearchManager {
       pdfWikiEvidenceObjects,
       embeddingEvidenceObjects,
       evidenceObjects,
-    } = this.buildEvidenceContext(state, now, 120);
+    } = await this.buildEvidenceContext(state, now, 120);
     const literatureTags = this.buildLiteratureTagsFromNodes(literatureNodes);
     const latestEvaluation = state.evaluations[0];
     const latestAudit = state.auditReports[0];
@@ -2879,7 +2893,7 @@ export class AutoResearchManager {
       ? 'direct'
       : embeddingEvidenceObjects.length >= 5
         ? 'adjacent'
-        : evidenceObjects.some(item => /mechanism|机制|nitrification|denitrification|microbial|enzyme|gene/i.test(`${item.claim} ${item.evidenceText} ${item.viewpointSummary}`))
+        : evidenceObjects.some(item => /mechanism|机制|机理|pathway|process|mediated|driver|因果|路径|过程|介导|驱动/i.test(`${item.claim} ${item.evidenceText} ${item.viewpointSummary}`))
           ? 'mechanistic'
           : 'insufficient';
     const topClaims = evidenceSynthesis.slice(0, 4).map(item => this.cleanText(item.claim, 180));
@@ -2896,7 +2910,7 @@ export class AutoResearchManager {
       topicRiskLevel === 'high' || topicRiskLevel === 'not-recommended' ? '题目可能大于当前证据范围。' : '',
       evidenceReadiness === 'insufficient' ? '证据不足，容易生成看似完整但无法支撑的论文。' : '',
       evidenceReadiness === 'adjacent' ? '摘要级或相邻证据不能直接写成确定结论。' : '',
-      evidenceReadiness === 'mechanistic' ? '机制证据只能作为可能解释，不能写成田间应用效果。' : '',
+      evidenceReadiness === 'mechanistic' ? '机制或路径证据只能作为可能解释，不能写成直接应用、临床、政策或工程效果。' : '',
       evidenceSynthesis.length === 0 ? '尚未形成观点-证据链矩阵。' : '',
       topClaims.length < 2 ? '核心科学问题和主论点仍需进一步收敛。' : '',
       ...knowledgeGaps.slice(0, 3),
@@ -2930,24 +2944,24 @@ export class AutoResearchManager {
       actualEvidenceScope: this.cleanText(`主题相关文献 ${literatureNodes.length} 篇；等权纳入证据对象 ${evidenceObjects.length} 个；原始可用 PDF Wiki 句级证据 ${pdfWikiEvidenceObjects.length} 个、embedding 摘要证据 ${embeddingEvidenceObjects.length} 个；核心论点 ${evidenceSynthesis.length} 个。`, 700),
       mismatchPoints,
       recommendedBoundary: {
-        region: this.inferBoundaryValue(topic, terms, /华北|north china/i, '围绕用户主题中明确出现的区域；若未明确，写作中不要扩大到全球或全国结论。'),
-        system: this.inferBoundaryValue(topic, terms, /农田|cropland|farmland|field|soil|土壤|作物/i, '以当前文献和证据中出现频率最高的作物/生态系统为准。'),
+        region: this.inferBoundaryValue(topic, terms, /全球|全国|中国|省|市|县|地区|区域|人群|队列|样本|global|national|regional|local|china|population|cohort|sample|scenario/i, '围绕用户主题或证据中明确出现的地区、人群、样本或应用场景；若未明确，写作中不要扩大适用范围。'),
+        system: this.inferBoundaryValue(topic, terms, /系统|场景|对象|模型|平台|组织|患者|样本|材料|设备|system|setting|scenario|population|model|platform|patient|sample|material|device/i, '以当前文献和证据中出现频率最高的对象、系统、样本或应用场景为准。'),
         object: this.cleanText(topClaims[0] || topic, 220),
-        treatments: this.extractBoundaryTerms(topic, terms, ['氮肥', '施肥', 'fertilization', 'nitrogen fertilizer', 'biochar', 'irrigation', 'tillage']).slice(0, 8),
-        indicators: this.extractBoundaryTerms(topic, terms, ['n2o', 'nitrous oxide', '氧化亚氮', 'emission', 'yield', '产量', 'efficiency', 'soil']).slice(0, 8),
-        mechanisms: this.extractBoundaryTerms(`${topic} ${hypotheses.join(' ')}`, terms, ['nitrification', 'denitrification', 'microbial', 'amoa', 'nosz', '硝化', '反硝化', '微生物']).slice(0, 8),
+        treatments: this.inferGenericBoundaryTerms(topic, terms, ['变量', '处理', '干预', '暴露', '方法', '策略', '方案', '措施', 'variable', 'intervention', 'exposure', 'method', 'strategy', 'treatment']).slice(0, 8),
+        indicators: this.inferGenericBoundaryTerms(topic, terms, ['指标', '结果', '结局', '性能', '效率', '风险', '质量', 'outcome', 'indicator', 'performance', 'efficiency', 'risk', 'quality', 'response']).slice(0, 8),
+        mechanisms: this.inferGenericBoundaryTerms(`${topic} ${hypotheses.join(' ')}`, terms, ['机制', '机理', '路径', '过程', '介导', '驱动', '关联', '因果', 'mechanism', 'pathway', 'process', 'mediated', 'driver', 'association', 'causal']).slice(0, 8),
         timeScale: '以当前文献/数据实际覆盖的观测期、年份和尺度为准；缺失时标注需要作者补充。',
         excludedScope: this.uniqueStrings([
-          '未被当前证据覆盖的区域、作物、系统和管理措施。',
-          '没有产量证据时，不写稳产或增产结论。',
-          '没有效率指标时，不写提高资源利用效率结论。',
-          '室内、模型或机制证据不能直接外推为田间确定结论。',
+          '未被当前证据覆盖的对象、人群/样本、场景、变量、指标和尺度。',
+          '没有直接指标证据时，不写该指标的确定改善、降低、增加或有效性结论。',
+          '没有因果或机制证据时，不写确定机制、强因果或普遍适用结论。',
+          '模型、摘要级、相邻或机制证据不能直接外推为真实应用、临床、政策或工程确定结论。',
         ]),
       },
       optimizedScientificQuestions: this.uniqueStrings([
         topClaims[0] ? `在当前研究边界内，${topClaims[0]}是否有直接证据支持，证据强度和边界条件是什么？` : '',
         hypotheses[0] ? `哪些机制或情境可能解释：${this.cleanText(hypotheses[0], 220)}` : '',
-        evidenceSynthesis.some(item => item.opposeCount > 0 || item.neutralCount > 0) ? '不同研究结论不一致时，差异来自区域、作物、处理、测量方法还是时间尺度？' : '',
+        evidenceSynthesis.some(item => item.opposeCount > 0 || item.neutralCount > 0) ? '不同研究结论不一致时，差异来自对象、人群/样本、场景、变量、测量方法还是时间尺度？' : '',
         '当前证据可以支持哪些克制结论，哪些结论必须避免或标注为待验证？',
       ]).slice(0, 4),
       highRiskIssues,
@@ -3009,8 +3023,8 @@ export class AutoResearchManager {
           ? evidenceSynthesis.slice(0, 5).map(item => this.cleanText(item.summary, 220)).filter(Boolean)
           : ['相邻证据可用于比较和启发，但不能直接支撑强结论。'],
         mechanisticEvidence: this.uniqueStrings([
-          ...hypotheses.filter(item => /mechanism|机制|硝化|反硝化|microbial|process/i.test(item)).slice(0, 4),
-          '机制证据只能解释可能路径，除非有直接实验或田间证据支撑。',
+          ...hypotheses.filter(item => /mechanism|机制|机理|pathway|process|mediated|driver|因果|路径|过程|介导|驱动/i.test(item)).slice(0, 4),
+          '机制或路径证据只能解释可能路径，除非有直接证据、数据或原文证据支撑。',
         ]).slice(0, 5),
       },
       innovationPoints: this.uniqueStrings([
@@ -3019,11 +3033,11 @@ export class AutoResearchManager {
         evidenceSynthesis.some(item => item.neutralCount > 0 || item.opposeCount > 0) ? '保留中性/反对证据，用于构建边界条件和争议解释。' : '',
       ]).slice(0, 5),
       mechanismChain: this.uniqueStrings([
-        review.recommendedBoundary.treatments[0] || '管理措施/处理',
-        review.recommendedBoundary.mechanisms[0] || '土壤/生物/环境过程',
-        review.recommendedBoundary.indicators[0] || '目标指标',
+        review.recommendedBoundary.treatments[0] || '核心变量/干预/暴露',
+        review.recommendedBoundary.mechanisms[0] || '中间机制/路径/过程',
+        review.recommendedBoundary.indicators[0] || '主要结果/评价指标',
         '结果响应',
-        '产量、效率或环境权衡（仅在有证据时写）',
+        '收益、风险、性能、质量或适用性权衡（仅在有证据时写）',
       ]),
       recommendedStructure: [
         'Title',
@@ -3088,7 +3102,7 @@ export class AutoResearchManager {
       positiveFindings.length < 3 ? '可强调的正向发现少于 3 条，需要继续从证据矩阵中提炼条件性发现。' : '',
       dependencyCheck.some(item => item.overDependsOnSingleSource) ? '部分核心结论过度依赖单一来源，需要补充同对象、同机制、同指标或相反立场证据。' : '',
       quantitativeResultSummary.length === 0 ? '当前没有可整理的数值结果；涉及效应大小、增减幅度或统计显著性时必须标注 NR 或需要作者补充。' : '',
-      indicatorBoundaryCheck.length === 0 ? '核心指标边界不清，容易混用短期/长期、总量/效率、相关/因果等不同指标。' : '',
+      indicatorBoundaryCheck.length === 0 ? '核心指标边界不清，容易混用短期/长期、总量/比例、性能/风险、相关/因果等不同指标。' : '',
       latestAudit && latestAudit.verdict !== 'pass' ? `引用-论据审计仍有风险：${latestAudit.summary}` : '',
       latestEvaluation && latestEvaluation.overallScore < 0.72 ? `审稿式自评偏低：${latestEvaluation.recommendations.slice(0, 2).join('；')}` : '',
     ]).slice(0, 10);
@@ -3292,7 +3306,7 @@ export class AutoResearchManager {
       directEffect: row.supportedClaim || '需要作者补充直接效应描述',
       intermediateMechanism: row.mechanismIndicator || 'hypothesized mechanism: 需要进一步原文证据验证',
       primaryOutcome: row.outcomeIndicator || review.recommendedBoundary.indicators[0] || '需要作者补充主要结果指标',
-      secondaryOutcomeTradeoff: '产量、效率、成本、风险或环境权衡仅在证据矩阵中有直接材料时写入正文。',
+      secondaryOutcomeTradeoff: '收益、效率、成本、风险、质量、环境或适用性权衡仅在证据矩阵中有直接材料时写入正文。',
       evidenceClass: row.evidenceClass,
       evidenceStrength: row.evidenceStrength,
       boundaryCondition: row.contextRegionScenario || review.recommendedBoundary.timeScale,
@@ -3348,7 +3362,7 @@ export class AutoResearchManager {
       indicator,
       whatItCanSupport: `可支持与“${indicator}”直接相关的方向、边界或证据强度判断。`,
       whatItCannotSupport: '不能自动支持不同时间尺度、不同系统、不同统计口径或未报告指标的结论。',
-      needsSeparationFrom: '短期 vs 长期；总量 vs 效率；相关 vs 因果；中间变量 vs 最终结果；模型/摘要证据 vs 原文直接证据。',
+      needsSeparationFrom: '短期 vs 长期；总量 vs 比例/效率；性能 vs 风险；相关 vs 因果；中间变量 vs 最终结果；模型/摘要证据 vs 原文直接证据。',
     }));
   }
 
@@ -3568,7 +3582,7 @@ export class AutoResearchManager {
   private inferContentEvidenceClass(item: AutoResearchEvidenceObject, text: string): AutoResearchContentEvidenceClass {
     const lower = this.normalizeSearchText(text);
     if ((item.references.length === 0 && item.inTextCitations.length === 0) || Number(item.groundingScore || 0) < 0.25) return 'Insufficient';
-    if (/mechanism|pathway|process|mediated|microbial|enzyme|gene|硝化|反硝化|机制|机理|路径|过程/.test(lower)) return 'Mechanistic';
+    if (/mechanism|pathway|process|mediated|driver|association|causal|机制|机理|路径|过程|介导|驱动|关联|因果/.test(lower)) return 'Mechanistic';
     if (item.trace?.sourceType === 'pdf-wiki' && Number(item.groundingScore || 0) >= 0.65) return 'Direct';
     if (item.trace?.sourceType === 'pdf-wiki') return 'System-specific';
     if (item.trace?.sourceType === 'embedding-library') return 'Adjacent';
@@ -3609,7 +3623,7 @@ export class AutoResearchManager {
       review.recommendedBoundary.system,
       item.section,
       item.location,
-      this.extractBoundaryTerms(text, this.buildTopicSearchTerms(text), ['north china', 'north china plain', 'field', 'laboratory', 'model', 'greenhouse', '华北', '田间', '室内', '模型']).join('；'),
+      this.inferGenericBoundaryTerms(text, this.buildTopicSearchTerms(text), ['地区', '区域', '人群', '样本', '场景', '模型', '平台', '实验', '临床', '应用', 'region', 'population', 'sample', 'scenario', 'model', 'platform', 'clinical', 'application']).join('；'),
     ]).filter(Boolean);
     return this.cleanText(terms.join('；') || 'NR: context not reported in available material', 260);
   }
@@ -3617,7 +3631,7 @@ export class AutoResearchManager {
   private inferContentVariable(review: AutoResearchPaperTopicReview, text: string): string {
     const terms = this.uniqueStrings([
       ...review.recommendedBoundary.treatments,
-      ...this.extractBoundaryTerms(text, this.buildTopicSearchTerms(text), ['nitrogen fertilizer', 'fertilization', 'nitrogen rate', 'biochar', 'irrigation', 'tillage', 'urea', '氮肥', '施肥', '灌溉', '耕作']),
+      ...this.inferGenericBoundaryTerms(text, this.buildTopicSearchTerms(text), ['变量', '干预', '暴露', '处理', '方法', '策略', '措施', '算法', '材料', '剂量', 'variable', 'intervention', 'exposure', 'treatment', 'method', 'strategy', 'algorithm', 'material', 'dose']),
     ]).filter(Boolean);
     return this.cleanText(terms.join('；') || 'NR: variable/intervention not explicitly reported', 240);
   }
@@ -3625,7 +3639,7 @@ export class AutoResearchManager {
   private inferContentOutcomeIndicator(review: AutoResearchPaperTopicReview, text: string): string {
     const terms = this.uniqueStrings([
       ...review.recommendedBoundary.indicators,
-      ...this.extractBoundaryTerms(text, this.buildTopicSearchTerms(text), ['n2o', 'nitrous oxide', 'emission', 'yield', 'efficiency', 'soil', 'biomass', '氧化亚氮', '排放', '产量', '效率', '土壤']),
+      ...this.inferGenericBoundaryTerms(text, this.buildTopicSearchTerms(text), ['指标', '结果', '结局', '性能', '效率', '风险', '质量', '准确性', '成本', 'outcome', 'indicator', 'performance', 'efficiency', 'risk', 'quality', 'accuracy', 'cost']),
     ]).filter(Boolean);
     return this.cleanText(terms.join('；') || 'NR: outcome indicator not explicitly reported', 240);
   }
@@ -3633,7 +3647,7 @@ export class AutoResearchManager {
   private inferContentMechanism(review: AutoResearchPaperTopicReview, text: string): string {
     const terms = this.uniqueStrings([
       ...review.recommendedBoundary.mechanisms,
-      ...this.extractBoundaryTerms(text, this.buildTopicSearchTerms(text), ['nitrification', 'denitrification', 'microbial', 'enzyme', 'gene', 'amoa', 'nosz', '硝化', '反硝化', '微生物', '酶', '基因']),
+      ...this.inferGenericBoundaryTerms(text, this.buildTopicSearchTerms(text), ['机制', '机理', '路径', '过程', '介导', '驱动', '关联', '因果', 'mechanism', 'pathway', 'process', 'mediated', 'driver', 'association', 'causal']),
     ]).filter(Boolean);
     return this.cleanText(terms.join('；') || 'NR', 240);
   }
@@ -3739,55 +3753,97 @@ export class AutoResearchManager {
     return hit || fallback;
   }
 
+  private inferGenericBoundaryTerms(topic: string, terms: string[], anchors: string[]): string[] {
+    const anchorSet = new Set(anchors.map(anchor => this.normalizeSearchText(anchor)).filter(Boolean));
+    const topicTerms = this.buildTopicSearchTerms(topic);
+    const candidates = this.uniqueStrings([...terms, ...topicTerms])
+      .map(term => this.cleanText(term, 80))
+      .filter(term => {
+        const normalized = this.normalizeSearchText(term);
+        if (!normalized || normalized.length < 2) return false;
+        if (/^\d+$/.test(normalized)) return false;
+        if (anchorSet.has(normalized)) return true;
+        return anchors.some(anchor => normalized.includes(this.normalizeSearchText(anchor)) || this.normalizeSearchText(anchor).includes(normalized));
+      });
+    if (candidates.length > 0) return candidates;
+    return this.uniqueStrings(topicTerms
+      .filter(term => term.length >= 2 && !/^\d+$/.test(term))
+      .slice(0, 6));
+  }
+
   private extractBoundaryTerms(topic: string, terms: string[], candidates: string[]): string[] {
     const text = `${topic} ${terms.join(' ')}`.toLowerCase();
     return this.uniqueStrings(candidates.filter(candidate => text.includes(candidate.toLowerCase())));
   }
 
-  private selectTopicRelevantLiteratureNodes(topic: string, nodes: AutoResearchLiteratureNode[], limit: number): AutoResearchLiteratureNode[] {
-    const terms = this.buildTopicSearchTerms(topic);
-    if (terms.length === 0) return nodes.slice(0, limit);
-    return nodes
-      .map(node => ({ node, score: this.scoreLiteratureNodeForTopic(node, terms) }))
-      .filter(item => item.score >= 8)
-      .sort((a, b) => b.score - a.score || Number(b.node.year || 0) - Number(a.node.year || 0) || a.node.title.localeCompare(b.node.title, 'zh-CN'))
-      .slice(0, limit)
+  private async selectTopicRelevantLiteratureNodes(topic: string, nodes: AutoResearchLiteratureNode[], limit: number): Promise<AutoResearchLiteratureNode[]> {
+    const safeLimit = Math.max(0, Math.floor(limit || 0));
+    if (safeLimit <= 0 || nodes.length === 0) return [];
+
+    const variants = this.buildAutoResearchRetrievalVariants(topic);
+    if (variants.length === 0) return nodes.slice(0, safeLimit);
+
+    const semanticConfig = await this.loadAutoResearchEmbeddingConfig();
+    const poolLimit = Math.min(nodes.length, Math.max(safeLimit * 8, 100));
+    const bestByNode = new Map<string, { node: AutoResearchLiteratureNode; score: number; bm25Score: number; semanticScore: number; language: string }>();
+
+    for (const variant of variants) {
+      const terms = this.buildTopicSearchTerms(variant.query);
+      if (terms.length === 0) continue;
+
+      const bm25Ranked = nodes
+        .map(node => ({ node, score: this.scoreLiteratureNodeForTopic(node, terms) }))
+        .filter(item => item.score > 0)
+        .sort((a, b) => b.score - a.score || Number(b.node.year || 0) - Number(a.node.year || 0) || a.node.title.localeCompare(b.node.title, 'zh-CN'))
+        .slice(0, poolLimit);
+
+      if (bm25Ranked.length === 0) continue;
+
+      const maxBm25 = Math.max(...bm25Ranked.map(item => item.score), 1);
+      const canUseSemantic = Boolean(semanticConfig && bm25Ranked.some(item => item.node.embedding && item.node.embedding.length > 0));
+      const queryEmbedding = canUseSemantic
+        ? await this.embedAutoResearchQuery(variant.query, semanticConfig!)
+        : null;
+
+      for (const item of bm25Ranked) {
+        const bm25Score = item.score / maxBm25;
+        const semanticScore = queryEmbedding && item.node.embedding
+          ? Math.max(0, this.cosineSimilarity(queryEmbedding, item.node.embedding))
+          : 0;
+        const finalScore = queryEmbedding
+          ? bm25Score * 0.22 + semanticScore * 0.78
+          : bm25Score;
+        const existing = bestByNode.get(item.node.id);
+        if (!existing || finalScore > existing.score) {
+          bestByNode.set(item.node.id, {
+            node: item.node,
+            score: finalScore,
+            bm25Score,
+            semanticScore,
+            language: variant.language,
+          });
+        }
+      }
+    }
+
+    if (bestByNode.size === 0) return nodes.slice(0, safeLimit);
+
+    return Array.from(bestByNode.values())
+      .sort((a, b) =>
+        b.score - a.score
+        || b.semanticScore - a.semanticScore
+        || Number(b.node.year || 0) - Number(a.node.year || 0)
+        || a.node.title.localeCompare(b.node.title, 'zh-CN')
+      )
+      .slice(0, safeLimit)
       .map(item => item.node);
   }
 
   private buildTopicSearchTerms(topic: string): string[] {
-    const raw = this.cleanText(topic, 500);
-    const lower = raw.toLowerCase().replace(/[₂]/g, '2');
-    const terms: string[] = [];
-    const add = (...values: string[]) => values.forEach(value => {
-      const clean = this.cleanText(value, 120).toLowerCase().replace(/[₂]/g, '2');
-      if (clean) terms.push(clean);
-    });
-
-    add(...(lower.match(/[a-z][a-z0-9+-]{1,}/g) || []));
-    const domainPhrases = ['氮肥', '华北', '华北农田', '华北平原', '农田', '氧化亚氮', '排放', '减排', '管理措施', '施肥', '机理'];
-    for (const phrase of domainPhrases) {
-      if (raw.includes(phrase)) add(phrase);
-    }
-    if (/\bn2o\b|氧化亚氮|nitrous oxide/i.test(raw)) {
-      add('n2o', 'nitrous oxide', '氧化亚氮');
-    }
-    if (/氮肥|施肥|fertil/i.test(raw)) {
-      add('nitrogen fertilizer', 'nitrogen fertilization', 'fertilization', 'nitrogen application', 'nitrogen rate', 'urea', '氮肥', '施肥');
-    }
-    if (/华北|north china/i.test(raw)) {
-      add('north china', 'north china plain', '华北', '华北平原');
-    }
-    if (/农田|cropland|farmland|field/i.test(raw)) {
-      add('cropland', 'farmland', 'agricultural soil', 'field experiment', '农田');
-    }
-    if (/排放|emission/i.test(raw)) {
-      add('n2o emission', 'n2o emissions', 'nitrous oxide emission', 'nitrous oxide emissions', 'greenhouse gas emission', '排放');
-    }
-    if (/机理|mechanism|过程/i.test(raw)) {
-      add('mechanism', 'nitrification', 'denitrification', 'microbial', 'amoa', 'nosz', '硝化', '反硝化', '微生物');
-    }
-    return this.uniqueStrings(terms).filter(term => !['农业', 'agriculture', '影响', 'effect', 'effects', 'different'].includes(term));
+    const semanticQuery = buildSemanticRetrievalQuery(this.cleanText(topic, 1200));
+    return this.uniqueStrings(weightRetrievalQueryTokens(tokenizeRetrievalText(semanticQuery)))
+      .filter(term => term.length >= 2)
+      .slice(0, 180);
   }
 
   private scoreLiteratureNodeForTopic(node: AutoResearchLiteratureNode, terms: string[]): number {
@@ -3795,6 +3851,7 @@ export class AutoResearchManager {
     const journal = this.normalizeSearchText(node.journal);
     const keywords = this.normalizeSearchText([...node.keywords, ...node.aiKeywords, ...node.categories].join(' '));
     const abstract = this.normalizeSearchText(node.abstract);
+    const authors = this.normalizeSearchText(node.authors);
     const documentType = this.normalizeSearchText(node.documentType);
     let score = 0;
     for (const term of terms) {
@@ -3804,16 +3861,94 @@ export class AutoResearchManager {
       if (keywords.includes(normalizedTerm)) score += 4;
       if (abstract.includes(normalizedTerm)) score += 2;
       if (journal.includes(normalizedTerm)) score += 1;
+      if (authors.includes(normalizedTerm)) score += 0.5;
     }
-    const combined = `${title} ${keywords} ${abstract}`;
-    if (/\bn2o\b|nitrous oxide|氧化亚氮/.test(combined)) score += 6;
-    if (/nitrogen fertil|fertilization|nitrogen application|氮肥|施肥/.test(combined)) score += 4;
-    if (/north china|north china plain|华北|华北平原/.test(combined)) score += 4;
-    if (/nitrification|denitrification|硝化|反硝化|microbial|微生物/.test(combined)) score += 2;
     if (node.hasEmbedding) score += 0.5;
-    if (/article|review|论文|期刊/.test(documentType)) score += 0.5;
+    if (node.abstract && node.abstract.length >= 80) score += 0.5;
+    if (/article|review|论文|期刊|journal|会议|conference|book|thesis|学位/.test(documentType)) score += 0.3;
     if (/日报|商报|导报|新闻|会议开启|行动计划|解读|青年|工厂|newspaper|news/i.test(`${node.journal} ${node.title}`)) score -= 7;
     return score;
+  }
+
+  private buildAutoResearchRetrievalVariants(topic: string): RetrievalQueryVariant[] {
+    return buildBilingualRetrievalQueries({
+      sentence: topic,
+      topic,
+      keywordsEn: [topic],
+      keywordsCn: /[\u4e00-\u9fff]/.test(topic) ? [topic] : [],
+    });
+  }
+
+  private async loadAutoResearchEmbeddingConfig(): Promise<{ url: string; key: string; model: string; dimensions: number } | null> {
+    try {
+      const configPath = path.join(this.dataDir, 'embedding-config.json');
+      const raw = await fs.readFile(configPath, 'utf-8');
+      const parsed = JSON.parse(raw) as Record<string, unknown>;
+      const enabled = parsed.enabled !== false;
+      const url = String(parsed.url || '').replace(/\/+$/, '');
+      const key = String(parsed.key || '');
+      const model = String(parsed.model || 'text-embedding-v4');
+      const dimensions = Number(parsed.dimensions || 1024);
+      if (!enabled || !url || !key) return null;
+      return {
+        url,
+        key,
+        model,
+        dimensions: Number.isFinite(dimensions) && dimensions > 0 ? dimensions : 1024,
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  private async embedAutoResearchQuery(query: string, config: { url: string; key: string; model: string; dimensions: number }): Promise<number[] | null> {
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 30_000);
+      try {
+        const body: Record<string, unknown> = {
+          model: config.model,
+          input: buildSemanticRetrievalQuery(query).slice(0, 8000),
+        };
+        if (config.dimensions > 0) body.dimensions = config.dimensions;
+        const response = await fetch(`${config.url}/embeddings`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${config.key}`,
+          },
+          body: JSON.stringify(body),
+          signal: controller.signal,
+        });
+        if (!response.ok) {
+          logger.warn(`[AutoResearch] Embedding query API failed: ${response.status}`);
+          return null;
+        }
+        const payload = await response.json() as { data?: Array<{ embedding?: number[] }> };
+        const embedding = payload.data?.[0]?.embedding;
+        return Array.isArray(embedding) ? embedding.filter(value => Number.isFinite(value)) : null;
+      } finally {
+        clearTimeout(timeout);
+      }
+    } catch (error) {
+      logger.warn('[AutoResearch] Embedding query failed; falling back to BM25-only topic screening', error);
+      return null;
+    }
+  }
+
+  private cosineSimilarity(a: number[], b: number[]): number {
+    const length = Math.min(a.length, b.length);
+    if (length === 0) return 0;
+    let dot = 0;
+    let normA = 0;
+    let normB = 0;
+    for (let index = 0; index < length; index++) {
+      dot += a[index] * b[index];
+      normA += a[index] * a[index];
+      normB += b[index] * b[index];
+    }
+    if (normA === 0 || normB === 0) return 0;
+    return dot / (Math.sqrt(normA) * Math.sqrt(normB));
   }
 
   private buildLiteratureTagsFromNodes(nodes: AutoResearchLiteratureNode[]): AutoResearchLiteratureTag[] {
@@ -3832,14 +3967,14 @@ export class AutoResearchManager {
     ].sort((a, b) => b.count - a.count || a.kind.localeCompare(b.kind) || a.name.localeCompare(b.name, 'zh-CN'));
   }
 
-  private buildSelfEvaluationReport(state: AutoResearchState, now: string): AutoResearchSelfEvaluationReport {
+  private async buildSelfEvaluationReport(state: AutoResearchState, now: string): Promise<AutoResearchSelfEvaluationReport> {
     const {
       allLiteratureNodes,
       literatureNodes,
       pdfWikiEvidenceObjects,
       embeddingEvidenceObjects,
       evidenceObjects,
-    } = this.buildEvidenceContext(state, now, 200);
+    } = await this.buildEvidenceContext(state, now, 200);
     const literatureSnapshots = state.literatureMap.snapshots || [];
     const totalEvidence = evidenceObjects.length;
     const citedEvidence = evidenceObjects.filter(item => item.references.length > 0 || item.inTextCitations.length > 0).length;
@@ -4050,7 +4185,6 @@ export class AutoResearchManager {
     evidenceSynthesis: AutoResearchFinalReport['evidenceSynthesis'],
     literatureNodes: AutoResearchLiteratureNode[]
   ): string[] {
-    const topicLower = topic.toLowerCase();
     const themeNames = topTags.slice(0, 5).map(tag => tag.name);
     const claimNames = evidenceSynthesis.slice(0, 4).map(item => item.claim);
     const recentYears = literatureNodes
@@ -4058,16 +4192,8 @@ export class AutoResearchManager {
       .filter(year => Number.isFinite(year) && year > 0)
       .sort((a, b) => b - a)
       .slice(0, 3);
-    const domainHypotheses = /氮肥|n2o|nitrous oxide|氧化亚氮/i.test(topicLower)
-      ? [
-          '不同施氮量、肥料类型和施肥时期/方式可能通过改变土壤 NH4+、NO3- 供应以及硝化/反硝化过程，影响农田 N2O 排放强度。',
-          '华北农田的降雨、灌溉、土壤含水量和作物生育期可能调节氮肥管理措施的 N2O 减排效果。',
-          '缓释肥、硝化抑制剂、深施或分次施肥等措施的效果可能取决于土壤温度、有机碳、pH 和微生物功能基因等边界条件。',
-        ]
-      : [];
     return this.uniqueStrings([
-      ...domainHypotheses,
-      themeNames.length && domainHypotheses.length === 0 ? `在“${topic}”中，${themeNames.slice(0, 2).join('与')}可能是解释核心结果差异的重要机制或调控路径。` : '',
+      themeNames.length ? `在“${topic}”中，${themeNames.slice(0, 2).join('与')}可能是解释核心结果差异的重要机制、路径或条件变量。` : '',
       claimNames.length ? `现有证据最集中指向“${this.cleanText(claimNames[0], 120)}”，可作为主论点或主效应路径。` : '',
       evidenceSynthesis.length === 0
         ? `当前缺少可追溯证据对象，因此这些假设只能作为待验证方向，不能作为已证实结论。`

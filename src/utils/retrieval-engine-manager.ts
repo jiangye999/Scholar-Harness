@@ -23,6 +23,8 @@ interface EngineEntry {
 interface RetrievalEngineManagerOptions {
   apiUrl?: string;
   apiKey?: string;
+  embeddingModel?: string;
+  embeddingDimensions?: number;
   maxEngines?: number; // 最大缓存的引擎数量
   idleTimeoutMs?: number; // 空闲超时时间（毫秒）
 }
@@ -38,6 +40,8 @@ interface RetrievalEngineManagerOptions {
 export class RetrievalEngineManager {
   private engines: Map<string, EngineEntry> = new Map();
   private apiConfig: { url?: string; key?: string };
+  private embeddingModel: string;
+  private embeddingDimensions: number;
   private maxEngines: number;
   private idleTimeoutMs: number;
   private cleanupInterval: NodeJS.Timeout | null = null;
@@ -47,6 +51,8 @@ export class RetrievalEngineManager {
       url: options.apiUrl,
       key: options.apiKey,
     };
+    this.embeddingModel = options.embeddingModel || 'text-embedding-v4';
+    this.embeddingDimensions = options.embeddingDimensions || 1024;
     this.maxEngines = options.maxEngines || 10;
     this.idleTimeoutMs = options.idleTimeoutMs || 30 * 60 * 1000; // 默认 30 分钟
     
@@ -91,7 +97,14 @@ export class RetrievalEngineManager {
    * 为用户创建并初始化检索引擎
    */
   private async createEngineForUser(userId: string): Promise<HybridRetrievalEngine> {
-    const engine = new HybridRetrievalEngine({}, this.apiConfig);
+    const engine = new HybridRetrievalEngine({
+      vector: {
+        model: this.embeddingModel,
+        dimensions: this.embeddingDimensions,
+        topN: 50,
+        similarity: 'cosine',
+      },
+    }, this.apiConfig);
     const cacheDir = getIndexCacheDir(userId);
     const literatureFile = getUserLiteraturePath(userId);
     
@@ -128,8 +141,13 @@ export class RetrievalEngineManager {
   /**
    * 更新 API 配置（所有现有引擎和新引擎都会使用）
    */
-  updateApiConfig(config: { url?: string; key?: string }): void {
-    this.apiConfig = config;
+  updateApiConfig(config: { url?: string; key?: string; model?: string; dimensions?: number }): void {
+    this.apiConfig = {
+      url: config.url,
+      key: config.key,
+    };
+    if (config.model) this.embeddingModel = config.model;
+    if (config.dimensions && Number.isFinite(config.dimensions)) this.embeddingDimensions = config.dimensions;
     
     // 更新所有现有引擎的 API 配置
     for (const entry of this.engines.values()) {

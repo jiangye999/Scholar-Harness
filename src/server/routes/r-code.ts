@@ -849,12 +849,13 @@ async function collectRArtifacts(rootDir: string, userId: string, jobId: string)
   await walk(root, 0);
   const priority = (file: RArtifact) => {
     const name = `${file.relativePath || file.name}`.toLowerCase();
-    if (name.includes('pooled_effect_summary_all')) return 0;
+    if (name.includes('overall_pooled_effect_summary')) return 0;
     if (name.includes('_pooled_effect')) return 1;
     if (name.includes('subgroup_pooled_effect')) return 2;
     if (name.includes('subgroup_summary')) return 3;
     if (name.includes('mean_only_bootstrap_summary') || name.includes('pooled_effect_summary.csv')) return 2;
     if (name.includes('forest')) return 4;
+    if (name.includes('pooled_effect_summary_all')) return 7;
     if (name.includes('last_plot')) return 8;
     return 6;
   };

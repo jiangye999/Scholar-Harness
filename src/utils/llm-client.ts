@@ -45,6 +45,25 @@ export function normalizeChatCompletionUrl(apiUrl: string): string {
   if (!trimmed) {
     throw new Error("LLM API URL is empty");
   }
+
+  try {
+    const parsed = new URL(trimmed);
+    const hostname = parsed.hostname.toLowerCase();
+    const pathname = parsed.pathname.replace(/\/+$/, "");
+    if (
+      (hostname === "scholarharness.com" || hostname === "api.scholarharness.com") &&
+      (pathname === "/api/v1" || pathname.startsWith("/api/v1/activation") || pathname.startsWith("/api/v1/beta-codes"))
+    ) {
+      throw new Error(
+        "LLM API URL 指向 Scholar Harness 官网账号服务，不是模型服务地址。请改为 OpenAI 兼容的模型 API 地址，例如 https://openrouter.ai/api/v1 或 https://dashscope.aliyuncs.com/compatible-mode/v1。"
+      );
+    }
+  } catch (error) {
+    if (error instanceof Error && error.message.startsWith("LLM API URL 指向")) {
+      throw error;
+    }
+  }
+
   return trimmed.endsWith("/chat/completions")
     ? trimmed
     : `${trimmed}/chat/completions`;
@@ -104,6 +123,9 @@ export async function callChatCompletion(
 
   if (!response.ok) {
     const errorText = await response.text();
+    if (response.status === 402 && /insufficient\s+balance/i.test(errorText)) {
+      throw new Error(`${config.label || "LLM"} API error: 402 - 上游模型服务余额不足或 Key 所属账户无可用额度。请充值对应模型平台，或更换有余额的 API Key。`);
+    }
     throw new Error(`${config.label || "LLM"} API error: ${response.status} - ${errorText}`);
   }
 

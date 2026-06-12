@@ -318,7 +318,7 @@ ${input.literatureContext}
 6. **写作思路后询问**: 当给用户提供某段的写作思路后，必须询问用户是否需要生成逐句的检索词（用于从文献库检索支撑该句的文献）
 7. **段落参考文献列表**: 当生成某章节的某个段落时，必须在段落下方列出参考文献的完整信息，格式为：
    - "[作者, 年份] 作者全名. (年份). 论文标题. 期刊名, 卷号, 页码."
-   - 示例："[Song et al., 2022] Song, X. T. et al. (2022). Soil oxygen depletion and corresponding nitrous oxide production at hot moments in an agricultural soil. Environmental Pollution, 315, 120440."
+   - 示例："[Smith et al., 2023] Smith, J. et al. (2023). Intervention effects on target outcomes in applied research. Journal of Applied Research, 12, 101-115."
 
 ## ⚠️ AI生成内容标识（合规要求）
 

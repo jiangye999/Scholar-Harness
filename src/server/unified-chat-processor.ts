@@ -24,6 +24,10 @@ import { AUTO_RESEARCH_PAPER_TOPIC_CONTENT_SKILL_FOR_WRITING } from '../config/a
 import { REFERENCE_RELEVANCE_WRITING_RULES } from '../config/reference-relevance-constraint-skill';
 import { SessionStore } from '../storage/session-store';
 import type { HybridRetrievalEngine } from '../literature/retrieval';
+import {
+  buildBilingualRetrievalQueries,
+  formatRetrievalQueryVariants,
+} from '../literature/retrieval/semantic-query';
 // Bug #3 修复：导入统一的重复检测函数
 // Bug #5 修复补充：从 memory.ts 导入结构化总结生成函数（避免循环依赖）
 import {
@@ -634,11 +638,31 @@ export async function processUnifiedChatMessage(
       : '';
     taskHint = [
       '\n## 写作任务\n用户想要写 Discussion（讨论）部分。请根据用户在对话中提供的文献和材料进行撰写。',
+      `## 本地文献检索要求
+在正式撰写 Discussion 段落前，先为关键论点调用句子级检索工具。每次输出 2-5 个待支撑句子即可，等待系统返回“逐句检索结果”后，再基于其中标记为“支持”或“仅相关”的文献继续写作。不要引用标记为“反向”或“无关”的文献作为正向证据。
+
+\`\`\`
+🔧 调用工具：sentence_search
+sentences:
+- 需要文献支撑的讨论论点 1
+- 需要文献支撑的讨论论点 2
+\`\`\``,
       `## Auto Research / 一键论文写作硬约束\n${AUTO_RESEARCH_PAPER_TOPIC_CONTENT_SKILL_FOR_WRITING}`,
       discussionSkillBlock,
     ].filter(Boolean).join('\n\n');
   } else if (taskType === '写引言') {
-    taskHint = '\n## 写作任务\n用户想要写 Introduction（引言）部分。请根据用户在对话中提供的文献和材料进行撰写。\n';
+    taskHint = `\n## 写作任务\n用户想要写 Introduction（引言）部分。请根据用户在对话中提供的文献和材料进行撰写。
+
+## 本地文献检索要求
+在正式撰写 Introduction 的事实性背景、研究空白和核心论点前，先为关键论点调用句子级检索工具。等待系统返回“逐句检索结果”后，再基于其中标记为“支持”或“仅相关”的文献继续写作。
+
+\`\`\`
+🔧 调用工具：sentence_search
+sentences:
+- 需要文献支撑的引言论点 1
+- 需要文献支撑的引言论点 2
+\`\`\`
+`;
   }
   
   // 9. 记忆介绍
@@ -744,7 +768,11 @@ export async function processUnifiedChatMessage(
     );
     
     // 14. 处理工具调用（草稿保存、句子检索等）
-    response = await processToolCalls(response, userId, literaturePapers);
+    response = await processToolCalls(response, userId, literaturePapers, {
+      apiUrl,
+      apiKey,
+      model: secondaryModel || model,
+    });
     
     // 15. 更新对话历史
     const currentHistory = conversationHistories.get(userId) || [];
@@ -990,7 +1018,7 @@ value: [要保存的内容]
 \`\`\`
 🔧 调用工具：save_memory
 key: experiment_summary
-value: 本研究探讨了华北平原农田土壤N2O排放机制...
+value: 本研究探讨了干预A对目标结果的影响机制...
 \`\`\`
 
 ${webSearchContext}
@@ -1001,7 +1029,7 @@ ${taskHint}
 2. **文内引用**：必须使用 "(作者，年份)" 格式引用具体文献，如 "(Wang et al., 2023)"
 3. **文末尾注**：文末必须列出所有参考文献的完整尾注信息，包含：作者、年份、标题、期刊、卷号、页码、DOI，格式如下：
    - "[序号] 作者全名. (年份). 论文标题. 期刊名, 卷号(期号), 页码. DOI: xxx"
-   - 示例："[1] Song, X. T. et al. (2022). Soil oxygen depletion and corresponding nitrous oxide production at hot moments in an agricultural soil. Environmental Pollution, 315, 120440. DOI: 10.1016/j.envpol.2022.120440"
+   - 示例："[1] Smith, J. et al. (2023). Intervention effects on target outcomes in applied research. Journal of Applied Research, 12(3), 101-115. DOI: 10.0000/example.2023.001"
 4. 如果用户提供了文献，必须引用；不要编造引用
 5. 使用专业的学术表达
 6. 结构清晰，逻辑严密
@@ -1019,7 +1047,7 @@ section: [章节名]
 references: |
 [参考文献完整列表]
 - [序号] 作者全名. (年份). 论文标题. 期刊名, 卷号(期号), 页码. DOI: xxx
-- 示例：[1] Song, X. T. et al. (2022). Soil oxygen depletion and corresponding nitrous oxide production at hot moments in an agricultural soil. Environmental Pollution, 315, 120440. DOI: 10.1016/j.envpol.2022.120440
+- 示例：[1] Smith, J. et al. (2023). Intervention effects on target outcomes in applied research. Journal of Applied Research, 12(3), 101-115. DOI: 10.0000/example.2023.001
 \`\`\`
 
 **重要**：references 字段必须列出本章节引用的所有文献完整信息，包括作者、年份、标题、期刊、卷号、页码、DOI。
@@ -1031,10 +1059,204 @@ references: |
 3. 分段写作，逐段确认`;
 }
 
+type ChatEvidenceRelation = 'supports' | 'contradicts' | 'related' | 'irrelevant' | 'unchecked';
+
+interface ChatEvidenceJudgment {
+  relation: ChatEvidenceRelation;
+  confidence: number;
+  reason: string;
+  evidenceSnippets: string[];
+  checked: boolean;
+}
+
+function normalizeChatEvidenceRelation(value: unknown): ChatEvidenceRelation {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (normalized === 'supports' || normalized === 'support' || normalized === 'supported') return 'supports';
+  if (normalized === 'contradicts' || normalized === 'contradict' || normalized === 'opposes' || normalized === 'opposite') return 'contradicts';
+  if (normalized === 'related' || normalized === 'partial' || normalized === 'partially_related') return 'related';
+  if (normalized === 'irrelevant' || normalized === 'unrelated' || normalized === 'not_relevant') return 'irrelevant';
+  return 'unchecked';
+}
+
+function buildUncheckedChatEvidenceJudgment(reason: string): ChatEvidenceJudgment {
+  return {
+    relation: 'unchecked',
+    confidence: 0,
+    reason,
+    evidenceSnippets: [],
+    checked: false,
+  };
+}
+
+function cleanChatEvidenceText(value: unknown, limit = 1200): string {
+  return String(value || '').replace(/\s+/g, ' ').trim().slice(0, limit);
+}
+
+function parseChatEvidenceJsonItems(content: string): Array<Record<string, unknown>> {
+  const jsonMatch = String(content || '').match(/\{[\s\S]*\}/);
+  if (!jsonMatch) return [];
+  const parsed = JSON.parse(jsonMatch[0]) as { items?: unknown };
+  return Array.isArray(parsed.items)
+    ? parsed.items.filter((item): item is Record<string, unknown> => Boolean(item && typeof item === 'object'))
+    : [];
+}
+
+function normalizeChatEvidenceSnippets(value: unknown): string[] {
+  const raw = Array.isArray(value) ? value : (value ? [value] : []);
+  const seen = new Set<string>();
+  const snippets: string[] = [];
+  for (const item of raw) {
+    const clean = cleanChatEvidenceText(item, 500);
+    if (!clean) continue;
+    const key = clean.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    snippets.push(clean);
+    if (snippets.length >= 3) break;
+  }
+  return snippets;
+}
+
+function getChatEvidenceCandidateId(item: any, index: number): string {
+  return String(item?.id || item?.doi || item?.title || `doc-${index + 1}`)
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 180) || `doc-${index + 1}`;
+}
+
+function getChatEvidencePriority(item: any): number {
+  const relation = normalizeChatEvidenceRelation(item?.claimSupport?.relation);
+  if (relation === 'supports') return 5;
+  if (relation === 'related') return 3;
+  if (relation === 'unchecked') return 2;
+  if (relation === 'contradicts') return 1;
+  return 0;
+}
+
+function rankChatEvidenceResults(items: any[], limit: number): any[] {
+  return items
+    .slice()
+    .sort((a, b) => {
+      const priorityDiff = getChatEvidencePriority(b) - getChatEvidencePriority(a);
+      if (priorityDiff !== 0) return priorityDiff;
+      const confidenceDiff = Number(b?.claimSupport?.confidence || 0) - Number(a?.claimSupport?.confidence || 0);
+      if (confidenceDiff !== 0) return confidenceDiff;
+      return Number(b?.combinedScore || b?.score || 0) - Number(a?.combinedScore || a?.score || 0);
+    })
+    .slice(0, Math.max(1, Math.floor(limit || 1)));
+}
+
+async function judgeChatEvidenceForSentence(
+  sentence: string,
+  items: any[],
+  config: { apiUrl: string; apiKey: string; model: string }
+): Promise<any[]> {
+  if (!items.length) return items;
+  if (!config.apiUrl || !config.apiKey) {
+    const unchecked = buildUncheckedChatEvidenceJudgment('未配置 LLM API，未执行证据支持判断。');
+    return items.map(item => ({ ...item, claimSupport: unchecked }));
+  }
+
+  const candidates = items.map((item, index) => ({
+    id: getChatEvidenceCandidateId(item, index),
+    title: cleanChatEvidenceText(item?.title, 320),
+    year: cleanChatEvidenceText(item?.year, 20),
+    journal: cleanChatEvidenceText(item?.journal, 180),
+    keywords: Array.isArray(item?.keywords)
+      ? item.keywords.slice(0, 12).map((keyword: unknown) => cleanChatEvidenceText(keyword, 80)).filter(Boolean).join('; ')
+      : cleanChatEvidenceText(item?.keywords, 320),
+    abstract: cleanChatEvidenceText(item?.abstract, 1400),
+  }));
+  const candidateIds = new Set(candidates.map(candidate => candidate.id));
+
+  const prompt = `你是通用科研证据匹配判别器。请判断每篇候选文献的题名、摘要、关键词是否能支持用户正在写作或检索的句子。
+
+用户句子：
+${sentence}
+
+候选文献 JSON：
+${JSON.stringify(candidates, null, 2)}
+
+只允许根据候选文献的 title、abstract、keywords 判断，不要使用外部知识，不要预设学科领域，也不要补充候选文本中没有的信息。
+
+relation 定义：
+- supports：候选文献直接支持用户句子中的核心关系、方向或结论。
+- contradicts：候选文献与用户句子的方向、关系或结论相反。
+- related：候选文献主题相关，但不能直接支持该句，或方向/对象/结论不够明确。
+- irrelevant：候选文献与该句基本无关。
+
+输出严格 JSON，不要 markdown：
+{"items":[{"id":"必须使用候选文献中的 id","relation":"supports|contradicts|related|irrelevant","confidence":0.0,"reason":"一句话说明为什么","evidenceSnippets":["从 title/abstract/keywords 中摘出的原文短句，不能编造"]}]}`;
+
+  try {
+    const content = await callChatCompletion(
+      {
+        apiUrl: config.apiUrl,
+        apiKey: config.apiKey,
+        label: 'UnifiedChat evidence support',
+        defaultModel: config.model,
+      },
+      {
+        model: config.model,
+        messages: [
+          {
+            role: 'system',
+            content: '你是严格的科研证据支持关系判别器。只输出 JSON；没有直接证据时必须标为 related 或 irrelevant，不能把主题相关误判为 supports。',
+          },
+          {
+            role: 'user',
+            content: prompt,
+          },
+        ],
+        temperature: 0,
+        maxTokens: 5000,
+      }
+    );
+    const parsedItems = parseChatEvidenceJsonItems(content);
+    const judgments = new Map<string, ChatEvidenceJudgment>();
+    for (const parsed of parsedItems) {
+      const id = cleanChatEvidenceText(parsed.id, 180);
+      if (!candidateIds.has(id)) continue;
+      const relation = normalizeChatEvidenceRelation(parsed.relation);
+      judgments.set(id, {
+        relation,
+        confidence: Math.max(0, Math.min(1, Number(parsed.confidence) || 0)),
+        reason: cleanChatEvidenceText(parsed.reason, 260) || '模型未提供判断理由。',
+        evidenceSnippets: normalizeChatEvidenceSnippets(parsed.evidenceSnippets || parsed.evidence_snippets),
+        checked: relation !== 'unchecked',
+      });
+    }
+    return items.map((item, index) => {
+      const candidate = candidates[index];
+      return {
+        ...item,
+        claimSupport: judgments.get(candidate.id) || buildUncheckedChatEvidenceJudgment('证据支持判断未返回该候选文献。'),
+      };
+    });
+  } catch (error) {
+    logger.warn('[UnifiedChat] Evidence support judge failed, keeping retrieval order:', error);
+    const unchecked = buildUncheckedChatEvidenceJudgment(`证据支持判断失败：${(error as Error).message}`);
+    return items.map(item => ({ ...item, claimSupport: unchecked }));
+  }
+}
+
+function formatChatEvidenceRelationForUser(support: ChatEvidenceJudgment | undefined): string {
+  const relation = normalizeChatEvidenceRelation(support?.relation);
+  const labels: Record<ChatEvidenceRelation, string> = {
+    supports: '支持',
+    contradicts: '反向',
+    related: '仅相关',
+    irrelevant: '无关',
+    unchecked: '未核查',
+  };
+  return labels[relation] || labels.unchecked;
+}
+
 async function processToolCalls(
   response: string,
   userId: string,
-  literaturePapers: LitPaper[]
+  literaturePapers: LitPaper[],
+  llmConfig: { apiUrl: string; apiKey: string; model: string }
 ): Promise<string> {
   // 处理记忆保存（新增）
   const memorySaveMatch = response.match(/```[\s\S]*?🔧 调用工具：save_memory[\s\S]*?```/);
@@ -1143,13 +1365,41 @@ async function processToolCalls(
           
           const searchResults: Record<string, any[]> = {};
           for (const sentence of sentences) {
-            const queryResults = await retrievalEngine.retrieve({
-              query: sentence,
-              topK: 5,
-              searchMode: 'hybrid'
-            });
-            
-            searchResults[sentence] = queryResults.results;
+            const variants = buildBilingualRetrievalQueries({ sentence, keywordsEn: [sentence] });
+            const groupedResults: any[][] = [];
+            for (const variant of variants) {
+              const queryResults = await retrievalEngine.retrieve({
+                query: variant.query,
+                topK: 20,
+                searchMode: 'hybrid'
+              });
+              groupedResults.push(queryResults.results.map(result => ({
+                ...result,
+                retrievalPath: variant.label,
+                retrievalLanguage: variant.language,
+                retrievalQuery: variant.query,
+              })));
+            }
+
+            const seen = new Set<string>();
+            const selected: any[] = [];
+            const sortedGroups = groupedResults
+              .map(group => group.slice().sort((a, b) => Number(b.combinedScore || 0) - Number(a.combinedScore || 0)))
+              .filter(group => group.length > 0);
+            const maxLength = Math.max(0, ...sortedGroups.map(group => group.length));
+            for (let index = 0; index < maxLength && selected.length < 10; index++) {
+              for (const group of sortedGroups) {
+                const item = group[index];
+                if (!item) continue;
+                const key = String(item.doi || item.title || item.id || '').toLowerCase();
+                if (!key || seen.has(key)) continue;
+                seen.add(key);
+                selected.push(item);
+                if (selected.length >= 10) break;
+              }
+            }
+            const judged = await judgeChatEvidenceForSentence(sentence, selected, llmConfig);
+            searchResults[sentence] = rankChatEvidenceResults(judged, 5);
           }
           
           let searchResultText = `\n\n## 逐句检索结果\n\n`;
@@ -1158,8 +1408,20 @@ async function processToolCalls(
             if (papers.length === 0) {
               searchResultText += `*未找到相关文献*\n\n`;
             } else {
-              papers.slice(0, 3).forEach((paper: any, idx: number) => {
+              papers.slice(0, 5).forEach((paper: any, idx: number) => {
+                const support = paper.claimSupport as ChatEvidenceJudgment | undefined;
+                const snippets = Array.isArray(support?.evidenceSnippets) ? support!.evidenceSnippets.slice(0, 2) : [];
                 searchResultText += `${idx + 1}. **${paper.title}** (${paper.year})\n`;
+                if (paper.retrievalPath) {
+                  searchResultText += `   - ${paper.retrievalPath}: ${paper.retrievalQuery || ''}\n`;
+                }
+                searchResultText += `   - 证据关系: ${formatChatEvidenceRelationForUser(support)}${support?.confidence ? ` (${Math.round(support.confidence * 100)}%)` : ''}\n`;
+                if (support?.reason) {
+                  searchResultText += `   - 判断理由: ${support.reason}\n`;
+                }
+                if (snippets.length > 0) {
+                  searchResultText += `   - 依据片段: ${snippets.join('；')}\n`;
+                }
               });
             }
           }
@@ -1375,8 +1637,8 @@ async function extractMemoryWithAI(
 
 ## 需要提取的字段（根据对话内容选择性提取）
 
-1. **experiment_summary** - 试验资料总结：研究背景、实验设计、实验方法、主要发现、试验地土壤物化生指标等（用户提供了研究材料时提取；土壤物化生指标有就填，没有就留空）
-2. **experiment_summary_structured** - 试验资料总结（结构化）：AI整理的结构化实验信息，必须保留试验地土壤物化生指标（如pH、有机质/有机碳、全氮、有效氮/磷/钾、容重、质地、含水量/WFPS、微生物量、酶活性、微生物群落等；没有就留空）
+1. **experiment_summary** - 试验资料总结：研究背景、实验设计、实验方法、主要发现、环境/样本/系统基础指标等（用户提供了研究材料时提取；相关基础指标有就填，没有就留空）
+2. **experiment_summary_structured** - 试验资料总结（结构化）：AI整理的结构化实验信息，必须保留用户提供的环境、样本、材料、系统、设备、参数、物理/化学/生物/人口学/技术指标等基础信息；没有就留空
 3. **data_summary** - 数据详细总结：实验数据、统计结果、图表信息等（用户提供了数据时提取）
 4. **data_summary_structured** - 数据详细总结（结构化）：AI整理的结构化数据信息
 5. **writing_progress** - 写作整体进度（如"引言撰写中"、"讨论已完成"等）
@@ -1396,7 +1658,7 @@ ${conversation}
 {
   "experiment_summary": "本研究探讨了...",
   "writing_progress": "引言已完成，正在写方法部分",
-  "paper_topic": "华北平原N2O排放机制"
+  "paper_topic": "干预A对目标结果的影响机制"
 }
 
 如果没有相关信息，**不要编造**，直接省略该字段或填"未提及"。

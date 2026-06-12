@@ -46,6 +46,9 @@ const faqs = [
   }
 ];
 
+const manualPdfHref = '/downloads/scholarharness-user-manual.pdf';
+const manualHtmlHref = '/downloads/scholarharness-user-manual.html';
+
 export default function HelpPage() {
   const [openIndex, setOpenIndex] = useState<number | null>(null);
 
@@ -60,7 +63,10 @@ export default function HelpPage() {
 
         {/* Quick Links */}
         <div className="grid md:grid-cols-3 gap-6 mb-12">
-          <div className="bg-white rounded-xl shadow p-6 text-center hover:shadow-lg transition">
+          <a
+            href="#guide"
+            className="bg-white rounded-xl shadow p-6 text-center hover:shadow-lg transition focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2"
+          >
             <div className="w-12 h-12 bg-blue-100 rounded-lg flex items-center justify-center mx-auto mb-4">
               <svg className="w-6 h-6 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
@@ -68,9 +74,12 @@ export default function HelpPage() {
             </div>
             <h3 className="text-lg font-semibold text-gray-900 mb-2">使用指南</h3>
             <p className="text-sm text-gray-600">快速上手教程</p>
-          </div>
+          </a>
 
-          <div className="bg-white rounded-xl shadow p-6 text-center hover:shadow-lg transition">
+          <a
+            href="#faq"
+            className="bg-white rounded-xl shadow p-6 text-center hover:shadow-lg transition focus:outline-none focus:ring-2 focus:ring-purple-500 focus:ring-offset-2"
+          >
             <div className="w-12 h-12 bg-purple-100 rounded-lg flex items-center justify-center mx-auto mb-4">
               <svg className="w-6 h-6 text-purple-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8.228 9c.549-1.165 2.03-2 3.772-2 2.21 0 4 1.343 4 3 0 1.4-1.278 2.575-3.006 2.907-.542.104-.994.54-.994 1.093m0 3h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
@@ -78,9 +87,12 @@ export default function HelpPage() {
             </div>
             <h3 className="text-lg font-semibold text-gray-900 mb-2">常见问题</h3>
             <p className="text-sm text-gray-600">快速找到答案</p>
-          </div>
+          </a>
 
-          <div className="bg-white rounded-xl shadow p-6 text-center hover:shadow-lg transition">
+          <Link
+            href="/contact"
+            className="bg-white rounded-xl shadow p-6 text-center hover:shadow-lg transition focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-offset-2"
+          >
             <div className="w-12 h-12 bg-green-100 rounded-lg flex items-center justify-center mx-auto mb-4">
               <svg className="w-6 h-6 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
@@ -88,11 +100,49 @@ export default function HelpPage() {
             </div>
             <h3 className="text-lg font-semibold text-gray-900 mb-2">联系我们</h3>
             <p className="text-sm text-gray-600">获取专业支持</p>
-          </div>
+          </Link>
         </div>
 
+        {/* Guide Section */}
+        <section id="guide" className="bg-white rounded-xl shadow mb-12 scroll-mt-8">
+          <div className="border-b border-gray-200 px-6 py-4">
+            <h2 className="text-xl font-bold text-gray-900">使用指南</h2>
+          </div>
+          <div className="px-6 py-6">
+            <div className="grid gap-4 md:grid-cols-2">
+              <a
+                href={manualPdfHref}
+                download
+                className="rounded-lg border border-gray-200 p-5 transition hover:border-blue-400 hover:bg-blue-50"
+              >
+                <h3 className="font-semibold text-gray-900">下载使用手册 PDF</h3>
+                <p className="mt-2 text-sm leading-6 text-gray-600">
+                  包含软件安装、账号登录、配置、文件导入和各功能使用说明。
+                </p>
+              </a>
+              <a
+                href={manualHtmlHref}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="rounded-lg border border-gray-200 p-5 transition hover:border-blue-400 hover:bg-blue-50"
+              >
+                <h3 className="font-semibold text-gray-900">在线查看手册</h3>
+                <p className="mt-2 text-sm leading-6 text-gray-600">
+                  不下载文件，直接在浏览器中查看完整指导手册。
+                </p>
+              </a>
+            </div>
+            <ol className="mt-6 list-decimal space-y-2 pl-5 text-sm leading-6 text-gray-700">
+              <li>先下载并安装桌面端软件。</li>
+              <li>注册或登录账号，按页面提示完成内测码或订阅激活。</li>
+              <li>在软件内完成模型、API、PDF 解析和本地工具配置。</li>
+              <li>导入文献、PDF、Meta 编码表或实验数据后开始使用对应功能。</li>
+            </ol>
+          </div>
+        </section>
+
         {/* FAQ Section */}
-        <div className="bg-white rounded-xl shadow">
+        <section id="faq" className="bg-white rounded-xl shadow scroll-mt-8">
           <div className="border-b border-gray-200 px-6 py-4">
             <h2 className="text-xl font-bold text-gray-900">常见问题</h2>
           </div>
@@ -126,7 +176,7 @@ export default function HelpPage() {
               </div>
             ))}
           </div>
-        </div>
+        </section>
 
         {/* Footer */}
         <div className="mt-12 text-center">

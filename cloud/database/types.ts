@@ -324,7 +324,7 @@ export interface CreateWithdrawInput {
 export interface BetaCode {
   id: string;
   code: string;
-  code_type: 'trial' | 'premium_trial' | 'extended_trial' | 'lifetime_2d' | 'limited_trial_2d_15d';
+  code_type: 'trial' | 'premium_trial' | 'extended_trial' | 'lifetime_2d' | 'lifetime_once' | 'limited_trial_2d_15d';
   validity_days: number;           // 试用天数
   status: 'unused' | 'used' | 'expired' | 'disabled';
   batch_id?: string;
@@ -341,7 +341,7 @@ export interface BetaCode {
 
 export interface CreateBetaCodeInput {
   quantity: number;                // 批量生成数量 (1-100)
-  code_type?: 'trial' | 'premium_trial' | 'extended_trial' | 'lifetime_2d' | 'limited_trial_2d_15d';
+  code_type?: 'trial' | 'premium_trial' | 'extended_trial' | 'lifetime_2d' | 'lifetime_once' | 'limited_trial_2d_15d';
   validity_days?: number;          // 默认 30 天
   batch_id?: string;
   batch_name?: string;

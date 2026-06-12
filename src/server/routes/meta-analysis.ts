@@ -380,6 +380,9 @@ const ROLE_LABELS: Record<keyof MetaOutcomeMapping, string> = {
 };
 
 const MEAN_ONLY_BOOTSTRAP_ITERATIONS = 9999;
+const META_SUBGROUP_MIN_EFFECTS = 3;
+const META_SUBGROUP_MIN_STUDIES = 2;
+const META_SUBGROUP_MAX_PLOT_LEVELS = 12;
 
 function isMeanOnlyMeasure(measure: EffectMeasure | string | undefined): boolean {
   return measure === 'lnRR_mean_only' || measure === 'MD_mean_only';
@@ -2663,7 +2666,8 @@ function summarizeSubgroups(effectRows: EffectRow[], subgroupColumns: string[]):
       });
       if (byLevel.size < 2) return;
       byLevel.forEach((rows, level) => {
-        if (rows.length < 2) return;
+        const studyCount = new Set(rows.map(row => row.study_id)).size;
+        if (rows.length < META_SUBGROUP_MIN_EFFECTS || studyCount < META_SUBGROUP_MIN_STUDIES) return;
         summaries.push({
           ...summarizeEffectGroup(outcomeId, rows),
           subgroupColumn: column,
@@ -2882,13 +2886,22 @@ function buildRunQualityReport(
         if (!level) return;
         levels.set(level, (levels.get(level) || 0) + 1);
       });
-      const usableLevels = Array.from(levels.values()).filter(count => count >= 2).length;
+      const levelStudyCounts = new Map<string, Set<string>>();
+      effectRows.forEach(row => {
+        const level = stringifyCell(row.moderators ? row.moderators[column] : '');
+        if (!level) return;
+        if (!levelStudyCounts.has(level)) levelStudyCounts.set(level, new Set());
+        levelStudyCounts.get(level)?.add(row.study_id);
+      });
+      const usableLevels = Array.from(levels.entries())
+        .filter(([level, count]) => count >= META_SUBGROUP_MIN_EFFECTS && (levelStudyCounts.get(level)?.size || 0) >= META_SUBGROUP_MIN_STUDIES)
+        .length;
       checks.push({
         label: `亚组变量：${column}`,
         status: usableLevels >= 2 ? 'ok' : 'warn',
         message: usableLevels >= 2
-          ? `识别到 ${levels.size} 个水平，其中 ${usableLevels} 个水平有效效应量不少于 2。`
-          : `识别到 ${levels.size} 个水平，但有效水平不足；每个可报告亚组建议至少 2 个效应量。`,
+          ? `识别到 ${levels.size} 个水平，其中 ${usableLevels} 个水平达到可报告门槛（每水平至少 ${META_SUBGROUP_MIN_EFFECTS} 个效应量、${META_SUBGROUP_MIN_STUDIES} 篇研究）。`
+          : `识别到 ${levels.size} 个水平，但有效水平不足；每个可报告亚组默认要求至少 ${META_SUBGROUP_MIN_EFFECTS} 个效应量、${META_SUBGROUP_MIN_STUDIES} 篇研究。`,
       });
     });
   }
@@ -2985,6 +2998,8 @@ function buildMetaAnalysisRCode(config: Required<MetaRunConfig>, effectRows: Eff
     'if (length(missing_optional_packages) > 0) cat("Optional R packages missing:", paste(missing_optional_packages, collapse = ", "), "- cluster-robust tests will be skipped.\\n")',
     'library(metafor)',
     'library(ggplot2)',
+    'pdf_device <- if (isTRUE(capabilities("cairo"))) grDevices::cairo_pdf else grDevices::pdf',
+    'plot_base_family <- if (.Platform$OS.type == "windows") "Microsoft YaHei" else ""',
     'dir.create("plots", showWarnings = FALSE, recursive = TRUE)',
     'safe_plot_height <- function(height, min_height = 3.2, max_height = 48) {',
     '  value <- suppressWarnings(as.numeric(height)[1])',
@@ -3045,6 +3060,9 @@ function buildMetaAnalysisRCode(config: Required<MetaRunConfig>, effectRows: Eff
     '  if (length(y) == 0 || !is.finite(y[1])) return(NA_real_)',
     '  y[1]',
     '}',
+    `min_subgroup_k <- ${META_SUBGROUP_MIN_EFFECTS}`,
+    `min_subgroup_studies <- ${META_SUBGROUP_MIN_STUDIES}`,
+    `max_subgroup_plot_levels <- ${META_SUBGROUP_MAX_PLOT_LEVELS}`,
     `bootstrap_iterations <- ${MEAN_ONLY_BOOTSTRAP_ITERATIONS}`,
     'bootstrap_mean <- function(x, iterations = bootstrap_iterations) {',
     '  x <- x[is.finite(x)]',
@@ -3076,20 +3094,32 @@ function buildMetaAnalysisRCode(config: Required<MetaRunConfig>, effectRows: Eff
     '    stringsAsFactors = FALSE',
     '  )',
     '}',
-    'plot_pooled_effect_summary <- function(summary_table, title_text) {',
+    'plot_label <- function(x, max_chars = 56) {',
+    '  x <- gsub("\\\\s+", " ", as.character(x))',
+    '  x <- trimws(x)',
+    '  ifelse(nchar(x) > max_chars, paste0(substr(x, 1, max_chars - 3), "..."), x)',
+    '}',
+    'plot_pooled_effect_summary <- function(summary_table, title_text, include_subgroup = TRUE, max_rows = max_subgroup_plot_levels) {',
     '  st <- summary_table[is.finite(summary_table$estimate) & is.finite(summary_table$ci_lower) & is.finite(summary_table$ci_upper), , drop = FALSE]',
     '  if (nrow(st) == 0) return(NULL)',
-    '  subgroup_text <- ifelse(!is.na(st$subgroup_column) & st$subgroup_column != "", paste0(" | ", st$subgroup_column, "=", st$subgroup_level), "")',
-    '  st$display_label <- paste0(st$outcome_label, subgroup_text, " (k=", st$k, ", studies=", st$studies, ")")',
-    '  st$row_id <- seq_len(nrow(st))',
-    '  ggplot2::ggplot(st, ggplot2::aes(x = estimate, y = row_id)) +',
+    '  has_subgroup <- include_subgroup && any(!is.na(st$subgroup_column) & st$subgroup_column != "")',
+    '  if (has_subgroup) {',
+    '    st <- st[order(-st$studies, -st$k, st$subgroup_level), , drop = FALSE]',
+    '    if (nrow(st) > max_rows) st <- st[seq_len(max_rows), , drop = FALSE]',
+    '    st <- st[order(st$estimate), , drop = FALSE]',
+    '    st$display_label <- paste0(plot_label(st$subgroup_level), " (k=", st$k, ", studies=", st$studies, ")")',
+    '  } else {',
+    '    st <- st[order(st$estimate), , drop = FALSE]',
+    '    st$display_label <- paste0(plot_label(st$outcome_label), " (k=", st$k, ", studies=", st$studies, ")")',
+    '  }',
+    '  st$display_label <- factor(st$display_label, levels = rev(unique(st$display_label)))',
+    '  ggplot2::ggplot(st, ggplot2::aes(x = estimate, y = display_label)) +',
     '    ggplot2::geom_vline(xintercept = 0, linetype = 2, color = "grey60") +',
-    '    ggplot2::geom_segment(ggplot2::aes(x = ci_lower, xend = ci_upper, y = row_id, yend = row_id), linewidth = 0.8, color = "#334155") +',
+    '    ggplot2::geom_segment(ggplot2::aes(x = ci_lower, xend = ci_upper, yend = display_label), linewidth = 0.8, color = "#334155") +',
     '    ggplot2::geom_point(size = 3.2, color = "#0f766e") +',
-    '    ggplot2::scale_y_continuous(breaks = st$row_id, labels = st$display_label) +',
     '    ggplot2::labs(x = "Pooled effect size", y = NULL, title = title_text, subtitle = "Point = pooled effect; horizontal bar = 95% CI") +',
-    '    ggplot2::theme_bw(base_size = 11) +',
-    '    ggplot2::theme(panel.grid.major.y = ggplot2::element_blank())',
+    '    ggplot2::theme_bw(base_size = 11, base_family = plot_base_family) +',
+    '    ggplot2::theme(panel.grid.major.y = ggplot2::element_blank(), axis.text.y = ggplot2::element_text(size = 9))',
     '}',
     'sink(file.path("plots", "meta_model_summary.txt"))',
     'cat("Scholar Harness Meta Analysis\\n")',
@@ -3098,6 +3128,7 @@ function buildMetaAnalysisRCode(config: Required<MetaRunConfig>, effectRows: Eff
     'cat("Outcomes:", paste(unique(dat$outcome_label), collapse = ", "), "\\n\\n")',
     'model_summaries <- list()',
     'mean_only_summaries <- list()',
+    'overall_effect_summaries <- list()',
     'pooled_effect_summaries <- list()',
     'for (outcome in unique(dat$outcome_id)) {',
     '  d <- dat[dat$outcome_id == outcome, , drop = FALSE]',
@@ -3113,32 +3144,42 @@ function buildMetaAnalysisRCode(config: Required<MetaRunConfig>, effectRows: Eff
     '    mean_row <- make_mean_only_row(d, outcome, label)',
     '    print(mean_row)',
     '    mean_only_summaries[[outcome]] <- mean_row',
+    '    overall_effect_summaries[[outcome]] <- mean_row',
     '    pooled_effect_summaries[[outcome]] <- mean_row',
-    '    p_pooled <- plot_pooled_effect_summary(mean_row, paste("Pooled meta-analysis effect:", label))',
+    '    p_pooled <- plot_pooled_effect_summary(mean_row, paste("Pooled meta-analysis effect:", label), include_subgroup = FALSE)',
     '    if (!is.null(p_pooled)) {',
     '      ggplot2::ggsave(file.path("plots", paste0(slug, "_pooled_effect.png")), p_pooled, width = 8.5, height = 3.8, dpi = 600, bg = "white")',
-    '      ggplot2::ggsave(file.path("plots", paste0(slug, "_pooled_effect.pdf")), p_pooled, width = 8.5, height = 3.8, bg = "white")',
+    '      ggplot2::ggsave(file.path("plots", paste0(slug, "_pooled_effect.pdf")), p_pooled, width = 8.5, height = 3.8, device = pdf_device, bg = "white")',
     '    }',
     '    cat("Individual mean-only effect-size diagnostics plot skipped; reporting pooled and subgroup pooled effects only.\\n")',
     '    for (subgroup_col in subgroup_cols) {',
+    '      if (is.numeric(d[[subgroup_col]])) { cat("Subgroup skipped:", subgroup_col, "is numeric; use moderator/meta-regression or define range groups first.\\n"); next }',
     '      levels <- unique(d[[subgroup_col]][!is.na(d[[subgroup_col]]) & d[[subgroup_col]] != ""])',
     '      if (length(levels) < 2) next',
     '      rows <- list()',
     '      for (level in levels) {',
     '        dd <- d[d[[subgroup_col]] == level, , drop = FALSE]',
-    '        if (nrow(dd) >= 2) rows[[as.character(level)]] <- make_mean_only_row(dd, outcome, label, subgroup_col, as.character(level))',
+    '        studies_n <- length(unique(dd$study_id))',
+    '        if (nrow(dd) >= min_subgroup_k && studies_n >= min_subgroup_studies) {',
+    '          rows[[as.character(level)]] <- make_mean_only_row(dd, outcome, label, subgroup_col, as.character(level))',
+    '        } else {',
+    '          cat("  Skipped", as.character(level), ": k=", nrow(dd), ", studies=", studies_n, "; below subgroup reporting threshold.\\n")',
+    '        }',
     '      }',
-    '      if (length(rows) > 0) {',
+    '      if (length(rows) >= 2) {',
     '        subgroup_table <- do.call(rbind, rows)',
     '        mean_only_summaries[[paste(outcome, subgroup_col, sep = "_")]] <- subgroup_table',
     '        pooled_effect_summaries[[paste(outcome, subgroup_col, "subgroups", sep = "_")]] <- subgroup_table',
     '        subgroup_slug <- safe_slug(paste0(outcome, "_", subgroup_col, "_mean_only_subgroup_pooled"))',
     '        write.csv(subgroup_table, file.path("plots", paste0(subgroup_slug, ".csv")), row.names = FALSE, fileEncoding = "UTF-8")',
-    '        psub <- plot_pooled_effect_summary(subgroup_table, paste("Subgroup pooled effects:", label, "by", subgroup_col))',
+    '        psub <- plot_pooled_effect_summary(subgroup_table, paste("Subgroup pooled effects:", label, "by", subgroup_col), include_subgroup = TRUE)',
     '        if (!is.null(psub)) {',
-    '          ggplot2::ggsave(file.path("plots", paste0(subgroup_slug, ".png")), psub, width = 8.5, height = safe_plot_height(max(4.2, 0.45 * nrow(subgroup_table) + 1.8)), dpi = 600, bg = "white")',
-    '          ggplot2::ggsave(file.path("plots", paste0(subgroup_slug, ".pdf")), psub, width = 8.5, height = safe_plot_height(max(4.2, 0.45 * nrow(subgroup_table) + 1.8)), bg = "white")',
+    '          plot_height <- safe_plot_height(max(4.2, 0.42 * min(nrow(subgroup_table), max_subgroup_plot_levels) + 1.8), max_height = 8.5)',
+    '          ggplot2::ggsave(file.path("plots", paste0(subgroup_slug, ".png")), psub, width = 8.5, height = plot_height, dpi = 600, bg = "white")',
+    '          ggplot2::ggsave(file.path("plots", paste0(subgroup_slug, ".pdf")), psub, width = 8.5, height = plot_height, device = pdf_device, bg = "white")',
     '        }',
+    '      } else {',
+    '        cat("Subgroup analysis skipped for", subgroup_col, ": fewer than 2 reportable subgroup levels.\\n")',
     '      }',
     '    }',
     '    next',
@@ -3149,11 +3190,12 @@ function buildMetaAnalysisRCode(config: Required<MetaRunConfig>, effectRows: Eff
     '  print(summary(fit))',
     '  main_summary_row <- estimate_row(fit, outcome, label, "", "", nrow(d), length(unique(d$study_id)))',
     '  model_summaries[[outcome]] <- main_summary_row',
+    '  overall_effect_summaries[[outcome]] <- main_summary_row',
     '  pooled_effect_summaries[[outcome]] <- main_summary_row',
-    '  p_pooled <- plot_pooled_effect_summary(main_summary_row, paste("Pooled meta-analysis effect:", label))',
+    '  p_pooled <- plot_pooled_effect_summary(main_summary_row, paste("Pooled meta-analysis effect:", label), include_subgroup = FALSE)',
     '  if (!is.null(p_pooled)) {',
     '    ggplot2::ggsave(file.path("plots", paste0(slug, "_pooled_effect.png")), p_pooled, width = 8.5, height = 3.8, dpi = 600, bg = "white")',
-    '    ggplot2::ggsave(file.path("plots", paste0(slug, "_pooled_effect.pdf")), p_pooled, width = 8.5, height = 3.8, bg = "white")',
+    '    ggplot2::ggsave(file.path("plots", paste0(slug, "_pooled_effect.pdf")), p_pooled, width = 8.5, height = 3.8, device = pdf_device, bg = "white")',
     '  }',
     '  if (length(unique(d$study_id)) < nrow(d) && requireNamespace("clubSandwich", quietly = TRUE)) {',
     '    cat("\\nCluster-robust variance by study_id:\\n")',
@@ -3189,6 +3231,7 @@ function buildMetaAnalysisRCode(config: Required<MetaRunConfig>, effectRows: Eff
     '    }',
     '  }',
     '  for (subgroup_col in subgroup_cols) {',
+    '    if (is.numeric(d[[subgroup_col]])) { cat("Subgroup skipped:", subgroup_col, "is numeric; use moderator/meta-regression or define range groups first.\\n"); next }',
     '    group_values <- as.character(d[[subgroup_col]])',
     '    subgroup_levels <- unique(group_values[!is.na(group_values) & group_values != ""])',
     '    if (length(subgroup_levels) < 2) next',
@@ -3196,7 +3239,8 @@ function buildMetaAnalysisRCode(config: Required<MetaRunConfig>, effectRows: Eff
     '    subgroup_rows <- list()',
     '    for (subgroup_level in subgroup_levels) {',
     '      sd <- d[group_values == subgroup_level & !is.na(group_values), , drop = FALSE]',
-    '      if (nrow(sd) < 2) { cat("  Skipped", subgroup_level, ": k < 2\\n"); next }',
+    '      studies_n <- length(unique(sd$study_id))',
+    '      if (nrow(sd) < min_subgroup_k || studies_n < min_subgroup_studies) { cat("  Skipped", subgroup_level, ": k=", nrow(sd), ", studies=", studies_n, "; below subgroup reporting threshold.\\n"); next }',
     '      sub_fit <- try(fit_main_model(sd), silent = TRUE)',
     '      cat("\\nSubgroup:", subgroup_col, "=", subgroup_level, " k=", nrow(sd), " studies=", length(unique(sd$study_id)), "\\n")',
     '      print(sub_fit)',
@@ -3205,21 +3249,20 @@ function buildMetaAnalysisRCode(config: Required<MetaRunConfig>, effectRows: Eff
     '        cat("  Subgroup pooled effect recorded; subgroup row-per-effect forest plot skipped.\\n")',
     '      }',
     '    }',
-    '    if (length(subgroup_rows) > 0) {',
+    '    if (length(subgroup_rows) >= 2) {',
     '      subgroup_table <- do.call(rbind, subgroup_rows)',
     '      pooled_effect_summaries[[paste(outcome, subgroup_col, "subgroups", sep = "_")]] <- subgroup_table',
     '      subgroup_slug <- safe_slug(paste0(outcome, "_", subgroup_col, "_subgroup_summary"))',
     '      write.csv(subgroup_table, file.path("plots", paste0(subgroup_slug, ".csv")), row.names = FALSE, fileEncoding = "UTF-8")',
     '      print(subgroup_table)',
-    '      psub <- ggplot2::ggplot(subgroup_table, ggplot2::aes(x = reorder(subgroup_level, estimate), y = estimate)) +',
-    '        ggplot2::geom_hline(yintercept = 0, linetype = 2, color = "grey55") +',
-    '        ggplot2::geom_errorbar(ggplot2::aes(ymin = ci_lower, ymax = ci_upper), width = 0.18, color = "#4b5563") +',
-    '        ggplot2::geom_point(ggplot2::aes(size = k), color = "#0f766e") +',
-    '        ggplot2::coord_flip() +',
-    '        ggplot2::labs(x = subgroup_col, y = paste0(unique(d$measure)[1], " pooled effect"), title = paste("Subgroup pooled effects:", label), size = "k") +',
-    '        ggplot2::theme_bw(base_size = 11)',
-    '      ggplot2::ggsave(file.path("plots", paste0(subgroup_slug, ".png")), psub, width = 8, height = safe_plot_height(max(4.5, 0.35 * nrow(subgroup_table) + 1.5)), dpi = 600, bg = "white")',
-    '      ggplot2::ggsave(file.path("plots", paste0(subgroup_slug, ".pdf")), psub, width = 8, height = safe_plot_height(max(4.5, 0.35 * nrow(subgroup_table) + 1.5)), bg = "white")',
+    '      psub <- plot_pooled_effect_summary(subgroup_table, paste("Subgroup pooled effects:", label, "by", subgroup_col), include_subgroup = TRUE)',
+    '      if (!is.null(psub)) {',
+    '        plot_height <- safe_plot_height(max(4.2, 0.42 * min(nrow(subgroup_table), max_subgroup_plot_levels) + 1.8), max_height = 8.5)',
+    '        ggplot2::ggsave(file.path("plots", paste0(subgroup_slug, ".png")), psub, width = 8.5, height = plot_height, dpi = 600, bg = "white")',
+    '        ggplot2::ggsave(file.path("plots", paste0(subgroup_slug, ".pdf")), psub, width = 8.5, height = plot_height, device = pdf_device, bg = "white")',
+    '      }',
+    '    } else {',
+    '      cat("Subgroup analysis skipped for", subgroup_col, ": fewer than 2 reportable subgroup levels.\\n")',
     '    }',
     '  }',
     '}',
@@ -3227,14 +3270,15 @@ function buildMetaAnalysisRCode(config: Required<MetaRunConfig>, effectRows: Eff
     'if (length(pooled_effect_summaries) > 0) {',
     '  pooled_effect_table <- do.call(rbind, pooled_effect_summaries)',
     '  write.csv(pooled_effect_table, file.path("plots", "pooled_effect_summary.csv"), row.names = FALSE, fileEncoding = "UTF-8")',
-    '  p_overall <- plot_pooled_effect_summary(pooled_effect_table, "Pooled meta-analysis effects")',
+    '}',
+    'if (length(overall_effect_summaries) > 0) {',
+    '  overall_effect_table <- do.call(rbind, overall_effect_summaries)',
+    '  write.csv(overall_effect_table, file.path("plots", "overall_pooled_effect_summary.csv"), row.names = FALSE, fileEncoding = "UTF-8")',
+    '  p_overall <- plot_pooled_effect_summary(overall_effect_table, "Overall pooled meta-analysis effects", include_subgroup = FALSE, max_rows = 1000)',
     '  if (!is.null(p_overall)) {',
-    '    plot_height <- safe_plot_height(max(4.2, 0.55 * nrow(pooled_effect_table) + 1.8))',
-    '    ggplot2::ggsave(file.path("plots", "pooled_effect_summary_all.png"), p_overall, width = 9.5, height = plot_height, dpi = 600, bg = "white")',
-    '    ggplot2::ggsave(file.path("plots", "pooled_effect_summary_all.pdf"), p_overall, width = 9.5, height = plot_height, bg = "white")',
-    '    png(file.path("plots", "pooled_effect_summary_all_render.png"), width = 2400, height = max(1100, 260 * nrow(pooled_effect_table)), res = 240)',
-    '    print(p_overall)',
-    '    dev.off()',
+    '    plot_height <- safe_plot_height(max(3.8, 0.55 * nrow(overall_effect_table) + 1.8), max_height = 7)',
+    '    ggplot2::ggsave(file.path("plots", "overall_pooled_effect_summary.png"), p_overall, width = 8.5, height = plot_height, dpi = 600, bg = "white")',
+    '    ggplot2::ggsave(file.path("plots", "overall_pooled_effect_summary.pdf"), p_overall, width = 8.5, height = plot_height, device = pdf_device, bg = "white")',
     '  }',
     '}',
     'if (length(mean_only_summaries) > 0) {',
@@ -3308,7 +3352,7 @@ function buildRunMarkdown(
     lines.push('');
   } else if (config.subgroupColumns.length > 0) {
     lines.push('### 亚组分析');
-    lines.push('已选择亚组变量，但有效亚组水平不足 2 个或各水平有效效应量少于 2，未生成可报告的亚组汇总。');
+    lines.push(`已选择亚组变量，但有效亚组水平不足 2 个，或各水平未达到至少 ${META_SUBGROUP_MIN_EFFECTS} 个效应量、${META_SUBGROUP_MIN_STUDIES} 篇研究的默认门槛，未生成可报告的亚组汇总。`);
     lines.push('');
   }
   lines.push('### 数据质量');
