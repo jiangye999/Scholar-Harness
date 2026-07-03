@@ -17,6 +17,12 @@ import {
 import type { LiteratureRecord, OuterTagsConfig } from '../../literature/keyword-library';
 import type { PdfWikiManager } from '../../utils/pdf-wiki-manager';
 import type { ProjectManager } from '../../utils/project-manager';
+import {
+  expandCitations,
+  verifyDois,
+  type CitationExpansionResult,
+  type DoiVerificationResult,
+} from '../../research/literature-review-tools';
 
 const stageIdSchema = z.enum(AUTO_RESEARCH_STAGE_IDS);
 const stageStatusSchema = z.enum(['pending', 'active', 'done', 'blocked']);
@@ -219,6 +225,30 @@ export function createAutoResearchRouter(deps: AutoResearchRouterDependencies): 
         if (deps.saveOuterTagsConfigForUser) deps.saveOuterTagsConfigForUser(userId, outerTags);
         const literatureResult = await deps.manager.syncEmbeddingLibrary(userId, papers, outerTags, project);
         literatureSnapshotId = literatureResult.snapshot.id;
+        const citationGraphTrace = await buildAutoResearchCitationGraphTrace(papers);
+        if (citationGraphTrace.dois.length > 0) {
+          await deps.manager.recordOperation(userId, {
+            kind: 'literature-review.citation-graph-expansion',
+            stageId: 'literature_map',
+            actor: 'system',
+            status: 'completed',
+            input: {
+              literatureSnapshotId,
+              doiCount: citationGraphTrace.dois.length,
+              dois: citationGraphTrace.dois,
+            },
+            output: {
+              doiVerification: citationGraphTrace.doiVerification,
+              citationExpansion: citationGraphTrace.citationExpansion,
+            },
+            toolResults: citationGraphTrace.citationExpansion.map(item => ({
+              doi: item.doi,
+              referenceCount: item.references.length,
+              citedByCount: item.citedBy.length,
+            })),
+            project,
+          });
+        }
         pushAutoResearchProgress(userId, runId, 'run_full', 'running', 42, `文献图谱完成：${literatureResult.snapshot.literatureCount} 篇文献，${literatureResult.snapshot.embeddingCount} 篇带向量`);
       } else {
         pushAutoResearchProgress(userId, runId, 'run_full', 'running', 42, '跳过文献图谱：当前服务未配置 embedding 文献库读取器');
@@ -1118,6 +1148,36 @@ function sanitizeDownloadFilename(value: string): string {
     .replace(/[<>:"/\\|?*\u0000-\u001F]/g, '_')
     .replace(/\s+/g, '_')
     .slice(0, 120) || 'AutoResearch报告';
+}
+
+async function buildAutoResearchCitationGraphTrace(papers: LiteratureRecord[]): Promise<{
+  dois: string[];
+  doiVerification: Record<string, DoiVerificationResult>;
+  citationExpansion: CitationExpansionResult[];
+}> {
+  const dois = Array.from(new Set(
+    papers
+      .map(paper => String((paper as { doi?: unknown }).doi || '').trim())
+      .filter(doi => /^10\.\d{4,9}\//i.test(doi))
+  )).slice(0, 5);
+  if (dois.length === 0) {
+    return { dois: [], doiVerification: {}, citationExpansion: [] };
+  }
+
+  const doiVerification = await verifyDois(dois, { maxDois: dois.length, timeoutMs: 5000 }).catch(error => {
+    logger.warn('[AutoResearch] DOI verification during citation graph expansion failed:', error);
+    return {};
+  });
+  const citationExpansion: CitationExpansionResult[] = [];
+  for (const doi of dois.slice(0, 3)) {
+    try {
+      citationExpansion.push(await expandCitations(doi, 8, 5, 5000));
+    } catch (error) {
+      logger.warn(`[AutoResearch] Citation graph expansion failed for ${doi}:`, error);
+      citationExpansion.push({ doi, references: [], citedBy: [] });
+    }
+  }
+  return { dois, doiVerification, citationExpansion };
 }
 
 function sendAutoResearchError(res: Response, error: unknown, logMessage: string): void {

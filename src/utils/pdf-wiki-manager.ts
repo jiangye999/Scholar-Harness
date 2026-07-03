@@ -68,6 +68,7 @@ export interface PdfWikiSourcePdf {
   extractionParser?: 'codex' | 'liteparse' | 'marker' | 'fast-text' | 'textin' | 'grobid' | 'pdf-parse' | 'qwen-long';
   metaData?: Record<string, unknown>;
   metaDataCachedAt?: string;
+  metaExcluded?: boolean;
 }
 
 export interface PdfWikiReference {
@@ -282,6 +283,26 @@ export interface PdfWikiReidentifyResult {
   referenceCount: number;
   figureCount: number;
   figureError?: string;
+  message: string;
+}
+
+export interface PdfWikiLiteRegisterResult {
+  pdfs: PdfWikiSourcePdf[];
+  uploadedCount: number;
+  parsedCount: number;
+  failedCount: number;
+  referenceCount: number;
+  figureCount: number;
+  figureErrors: Array<{
+    pdfId: string;
+    pdfName: string;
+    error: string;
+  }>;
+  errors: Array<{
+    pdfId: string;
+    pdfName: string;
+    error: string;
+  }>;
   message: string;
 }
 
@@ -549,7 +570,7 @@ const DEFAULT_STATUS: PdfWikiBuildStatus = {
   message: '尚未生成 PDF Wiki',
 };
 
-const PDF_WIKI_OVERVIEW_DIAGRAM_LAYOUT_VERSION = 5;
+const PDF_WIKI_OVERVIEW_DIAGRAM_LAYOUT_VERSION = 7;
 
 const PDF_WIKI_META_ANALYSIS_COLUMNS = [
   'Obs#',
@@ -1255,6 +1276,221 @@ export class PdfWikiManager {
     });
   }
 
+  async registerUploadedPdfsWithLiteParse(
+    userId: string,
+    files: UploadedPdfFile[]
+  ): Promise<PdfWikiLiteRegisterResult> {
+    const safeUserId = sanitizeUserId(userId);
+    if (files.length === 0) {
+      return {
+        pdfs: [],
+        uploadedCount: 0,
+        parsedCount: 0,
+        failedCount: 0,
+        referenceCount: 0,
+        figureCount: 0,
+        figureErrors: [],
+        errors: [],
+        message: '没有需要识别的 PDF',
+      };
+    }
+
+    let result: PdfWikiLiteRegisterResult | null = null;
+    await this.runExclusiveBuild(safeUserId, async () => {
+      const startedAt = new Date().toISOString();
+      await this.saveStatus(safeUserId, {
+        status: 'processing',
+        totalPdfs: files.length,
+        processedPdfs: 0,
+        totalChunks: files.length,
+        processedChunks: 0,
+        entryCount: 0,
+        sentencePointCount: 0,
+        message: '正在使用 LiteParse 快速识别 PDF 文献信息',
+        startedAt,
+        updatedAt: startedAt,
+      });
+
+      const uploadedPdfs = await this.registerPdfFiles(safeUserId, files);
+      const store = await this.loadStore(safeUserId);
+      const pdfById = new Map(store.pdfs.map(pdf => [pdf.id, pdf]));
+      const errors: PdfWikiLiteRegisterResult['errors'] = [];
+      const figureErrors: PdfWikiLiteRegisterResult['figureErrors'] = [];
+      let parsedCount = 0;
+      let figureCount = 0;
+      let processedCount = 0;
+
+      for (const uploadedPdf of uploadedPdfs) {
+        const existing = pdfById.get(uploadedPdf.id);
+        const pdf: PdfWikiSourcePdf = existing
+          ? {
+              ...uploadedPdf,
+              ...existing,
+              originalName: existing.originalName || uploadedPdf.originalName,
+              fileName: existing.fileName || uploadedPdf.fileName,
+              filePath: existing.filePath && fs.existsSync(existing.filePath) ? existing.filePath : uploadedPdf.filePath,
+              size: existing.size || uploadedPdf.size,
+              metaExcluded: existing.metaExcluded === false ? false : true,
+            }
+          : { ...uploadedPdf, metaExcluded: true };
+
+        pdfById.set(pdf.id, pdf);
+
+        try {
+          await this.saveStatus(safeUserId, {
+            status: 'processing',
+            totalPdfs: uploadedPdfs.length,
+            processedPdfs: processedCount,
+            totalChunks: uploadedPdfs.length,
+            processedChunks: processedCount,
+            entryCount: store.entries.length,
+            sentencePointCount: store.sentenceCloud?.points?.length || 0,
+            figureCount,
+            message: `正在使用 LiteParse 识别 PDF 正文和文献信息（${processedCount + 1}/${uploadedPdfs.length}）：${pdf.originalName}`,
+            startedAt,
+            updatedAt: new Date().toISOString(),
+          });
+
+          let parsed = await this.tryExtractPdfWithLiteParse(safeUserId, pdf);
+          if (!parsed) {
+            const text = this.normalizeExtractedText(await this.extractPdfTextWithPdfParse(pdf.filePath));
+            const references = this.parseReferences(text, pdf.id, pdf.originalName);
+            const metadata = await this.enrichSourceMetadataWithDoi(this.cleanSourceMetadata(this.inferSourceMetadata(pdf.originalName, text)), text, pdf.originalName);
+            parsed = {
+              text,
+              metadata,
+              references,
+              parser: 'pdf-parse',
+            };
+            await this.saveParsedTextCache(safeUserId, pdf, {
+              parser: 'pdf-parse',
+              markdown: text,
+              text,
+              references,
+              metadata,
+            });
+          }
+
+          const metadata = this.mergePdfReidentifiedMetadata(pdf, parsed);
+          Object.assign(pdf, metadata);
+          pdf.referenceIndex = this.mergeReferenceIndexes(pdf.referenceIndex || [], parsed.references || []);
+          pdf.textLength = parsed.text.length;
+          pdf.extractionParser = parsed.parser;
+          pdf.processedAt = new Date().toISOString();
+          pdf.metaData = this.buildPdfMetaDataRecord(pdf, parsed, pdf.referenceIndex, pdf.metaData || {});
+          pdf.metaDataCachedAt = pdf.processedAt;
+
+          await this.saveStatus(safeUserId, {
+            status: 'processing',
+            totalPdfs: uploadedPdfs.length,
+            processedPdfs: processedCount,
+            totalChunks: uploadedPdfs.length,
+            processedChunks: processedCount,
+            entryCount: store.entries.length,
+            sentencePointCount: store.sentenceCloud?.points?.length || 0,
+            figureCount,
+            message: `正在提取 PDF 图片（${processedCount + 1}/${uploadedPdfs.length}）：${pdf.originalName}`,
+            startedAt,
+            updatedAt: new Date().toISOString(),
+          });
+
+          const figureResult = await this.extractPdfFiguresForManager(safeUserId, pdf);
+          figureCount += figureResult.figureCount;
+          logger.info(`[PdfWiki] Extracted figures for ${pdf.originalName}: figures=${figureResult.figureCount}${figureResult.error ? `, warning=${figureResult.error}` : ''}`);
+          if (figureResult.sourceFigures.length > 0) {
+            pdf.metaData = {
+              ...pdf.metaData,
+              source_figures: figureResult.sourceFigures,
+            };
+          }
+          if (figureResult.error) {
+            figureErrors.push({
+              pdfId: pdf.id,
+              pdfName: pdf.originalName,
+              error: figureResult.error,
+            });
+          }
+          parsedCount += 1;
+        } catch (error) {
+          const message = (error as Error).message || String(error);
+          errors.push({
+            pdfId: pdf.id,
+            pdfName: pdf.originalName,
+            error: message,
+          });
+          logger.warn(`[PdfWiki] LiteParse lite registration failed for ${pdf.originalName}: ${message}`);
+        }
+
+        processedCount += 1;
+        await this.saveStatus(safeUserId, {
+          status: 'processing',
+          totalPdfs: uploadedPdfs.length,
+          processedPdfs: processedCount,
+          totalChunks: uploadedPdfs.length,
+          processedChunks: processedCount,
+          entryCount: store.entries.length,
+          sentencePointCount: store.sentenceCloud?.points?.length || 0,
+          figureCount,
+          message: `正在使用 LiteParse 快速识别 PDF 文献信息和图片（${processedCount}/${uploadedPdfs.length}）`,
+          startedAt,
+          updatedAt: new Date().toISOString(),
+        });
+      }
+
+      const allPdfs = this.deduplicatePdfs(Array.from(pdfById.values()));
+      const uploadedPdfIds = new Set(uploadedPdfs.map(pdf => pdf.id));
+      const uploadedStoredPdfs = allPdfs.filter(pdf => uploadedPdfIds.has(pdf.id));
+      const referenceIndex = this.mergeReferenceIndexes(
+        store.referenceIndex || [],
+        ...allPdfs.map(pdf => pdf.referenceIndex || [])
+      );
+      const generatedAt = new Date().toISOString();
+
+      await this.saveStore(safeUserId, {
+        ...store,
+        pdfs: allPdfs,
+        referenceIndex,
+        generatedAt,
+      });
+      this.clearEngine(safeUserId);
+      this.removeIndexCache(safeUserId);
+
+      const referenceCount = uploadedStoredPdfs.reduce((sum, pdf) => sum + (pdf.referenceIndex?.length || 0), 0);
+      result = {
+        pdfs: uploadedStoredPdfs,
+        uploadedCount: uploadedPdfs.length,
+        parsedCount,
+        failedCount: errors.length,
+        referenceCount,
+        figureCount,
+        figureErrors,
+        errors,
+        message: `LiteParse 快速识别完成：${parsedCount}/${uploadedPdfs.length} 个 PDF 已提取文献信息和图片，图片 ${figureCount} 张`,
+      };
+
+      await this.saveStatus(safeUserId, {
+        status: errors.length === uploadedPdfs.length ? 'error' : 'completed',
+        totalPdfs: allPdfs.length,
+        processedPdfs: allPdfs.length,
+        failedPdfs: errors.length,
+        totalChunks: uploadedPdfs.length,
+        processedChunks: uploadedPdfs.length,
+        entryCount: store.entries.length,
+        sentencePointCount: store.sentenceCloud?.points?.length || 0,
+        figureCount,
+        message: result.message + (errors.length > 0 ? `；${errors.length} 个 PDF 需要人工检查` : ''),
+        startedAt,
+        updatedAt: generatedAt,
+        error: errors.length === uploadedPdfs.length ? errors.map(item => item.error).join('; ') : undefined,
+      });
+    });
+
+    if (!result) {
+      throw new Error('LiteParse 快速识别没有返回结果');
+    }
+    return result;
+  }
+
   async reidentifyPdfWithLiteParse(userId: string, pdfId: string): Promise<PdfWikiReidentifyResult> {
     const safeUserId = sanitizeUserId(userId);
     const targetPdfId = String(pdfId || '').trim();
@@ -1291,7 +1527,7 @@ export class PdfWikiManager {
       if (!parsed) {
         const text = this.normalizeExtractedText(await this.extractPdfTextWithPdfParse(pdf.filePath));
         const references = this.parseReferences(text, pdf.id, pdf.originalName);
-        const metadata = this.cleanSourceMetadata(this.inferSourceMetadata(pdf.originalName, text));
+        const metadata = await this.enrichSourceMetadataWithDoi(this.cleanSourceMetadata(this.inferSourceMetadata(pdf.originalName, text)), text, pdf.originalName);
         parsed = {
           text,
           metadata,
@@ -1317,6 +1553,7 @@ export class PdfWikiManager {
       pdf.metaDataCachedAt = pdf.processedAt;
 
       const figureResult = await this.extractPdfFiguresForManager(safeUserId, pdf);
+      logger.info(`[PdfWiki] Reidentified figures for ${pdf.originalName}: figures=${figureResult.figureCount}${figureResult.error ? `, warning=${figureResult.error}` : ''}`);
       if (figureResult.sourceFigures.length > 0) {
         pdf.metaData = {
           ...pdf.metaData,
@@ -1380,8 +1617,9 @@ export class PdfWikiManager {
       const targetPdfs = uploadedPdfs.map(pdf => {
         const existing = pdfById.get(pdf.id);
         if (!existing) {
-          pdfById.set(pdf.id, pdf);
-          return pdf;
+          const includedPdf: PdfWikiSourcePdf = { ...pdf, metaExcluded: false };
+          pdfById.set(pdf.id, includedPdf);
+          return includedPdf;
         }
         const merged = {
           ...existing,
@@ -1389,6 +1627,7 @@ export class PdfWikiManager {
           fileName: existing.fileName || pdf.fileName,
           filePath: existing.filePath && fs.existsSync(existing.filePath) ? existing.filePath : pdf.filePath,
           size: existing.size || pdf.size,
+          metaExcluded: false,
         };
         pdfById.set(pdf.id, merged);
         return merged;
@@ -1426,7 +1665,17 @@ export class PdfWikiManager {
       if (targetPdfs.length === 0) {
         throw new Error('未找到需要提取 Meta 数据的 PDF');
       }
-      await this.extractMetaAnalysisOnly(safeUserId, targetPdfs, {
+      const pdfs = store.pdfs.map(pdf => requestedIds.has(pdf.id)
+        ? { ...pdf, metaExcluded: false }
+        : pdf
+      );
+      await this.saveStore(safeUserId, {
+        ...store,
+        pdfs,
+        generatedAt: new Date().toISOString(),
+      });
+      const includedTargets = pdfs.filter(pdf => requestedIds.has(pdf.id));
+      await this.extractMetaAnalysisOnly(safeUserId, includedTargets, {
         ...llmConfig,
         metaAnalysisEnabled: true,
         metaAnalysisEngine: this.getMetaAnalysisEngine(llmConfig) === 'off' ? 'auto' : this.getMetaAnalysisEngine(llmConfig),
@@ -1513,6 +1762,7 @@ export class PdfWikiManager {
 
     pdf.metaData = mergedMeta;
     pdf.metaDataCachedAt = now;
+    pdf.metaExcluded = false;
     store.pdfs[pdfIndex] = pdf;
     store.generatedAt = now;
     await this.saveStore(safeUserId, store);
@@ -1554,17 +1804,19 @@ export class PdfWikiManager {
     if (fs.existsSync(statusPath)) {
       try {
         const status = JSON.parse(await fs.promises.readFile(statusPath, 'utf-8')) as PdfWikiBuildStatus;
-        if (status.status === 'completed' && status.taskKind !== 'meta-analysis' && !status.sentencePointCount) {
+        if (status.status === 'completed' && status.taskKind !== 'meta-analysis') {
           const store = await this.loadStore(userId);
           const sentencePointCount = store.sentenceCloud?.points?.length || 0;
-          if (sentencePointCount > 0) {
-            return {
-              ...status,
-              entryCount: status.entryCount || store.entries.length,
-              sentencePointCount,
-              message: `PDF句子级Wiki论点库已生成，共 ${sentencePointCount} 个句子论点候选，兼容论点组 ${store.entries.length} 个`,
-            };
-          }
+          return {
+            ...status,
+            entryCount: store.entries.length,
+            sentencePointCount,
+            message: sentencePointCount > 0
+              ? `PDF句子级Wiki论点库已生成，共 ${sentencePointCount} 个可作论点句子，兼容论点组 ${store.entries.length} 个`
+              : (store.entries.length > 0
+                ? `PDF Wiki 已生成，兼容论点组 ${store.entries.length} 个；暂未生成可作论点句子`
+                : 'PDF Wiki 处理完成，但未生成可作论点句子'),
+          };
         }
         return this.withStaleProcessingGuard(this.normalizeMetaAnalysisStatus(status));
       } catch (error) {
@@ -1584,7 +1836,7 @@ export class PdfWikiManager {
         entryCount: store.entries.length,
         sentencePointCount,
         message: sentencePointCount > 0
-          ? `PDF句子级Wiki论点库已生成，共 ${sentencePointCount} 个句子论点候选`
+          ? `PDF句子级Wiki论点库已生成，共 ${sentencePointCount} 个可作论点句子`
           : `PDF Wiki 已生成，共 ${store.entries.length} 个论点组`,
         updatedAt: store.generatedAt,
       };
@@ -1599,7 +1851,12 @@ export class PdfWikiManager {
     const updatedAt = status.updatedAt ? Date.parse(status.updatedAt) : NaN;
     if (!Number.isFinite(updatedAt)) return status;
 
-    const staleMs = Math.max(60_000, Number(process.env.PDF_WIKI_STALE_STATUS_MS || 3 * 60_000));
+    const configuredStaleMs = Number(process.env.PDF_WIKI_STALE_STATUS_MS);
+    const defaultStaleMs = status.taskKind === 'meta-analysis' ? 3 * 60_000 : 15 * 60_000;
+    const staleMs = Math.max(
+      60_000,
+      Number.isFinite(configuredStaleMs) && configuredStaleMs > 0 ? configuredStaleMs : defaultStaleMs
+    );
     const elapsedMs = Date.now() - updatedAt;
     if (elapsedMs <= staleMs) return status;
 
@@ -1650,8 +1907,8 @@ export class PdfWikiManager {
     const store = await this.loadStore(userId);
     const requestedIds = new Set((options.pdfIds || []).map(id => String(id || '').trim()).filter(Boolean));
     const pdfs = requestedIds.size > 0
-      ? store.pdfs.filter(pdf => requestedIds.has(pdf.id))
-      : store.pdfs;
+      ? store.pdfs.filter(pdf => requestedIds.has(pdf.id) && pdf.metaExcluded !== true)
+      : store.pdfs.filter(pdf => pdf.metaExcluded !== true);
     const includeDetails = options.includeDetails !== false;
     const items = (await Promise.all(pdfs.map(pdf => this.buildMetaDatabaseItem(userId, pdf, { includeDetails }))))
       .filter((item): item is PdfWikiMetaDatabaseItem => !!item);
@@ -1677,6 +1934,7 @@ export class PdfWikiManager {
       const existingMeta = this.asRecord(pdf.metaData);
       return {
         ...pdf,
+        metaExcluded: true,
         metaData: this.removeUndefinedValues({
           ...existingMeta,
           meta_analysis_enabled: false,
@@ -1784,6 +2042,7 @@ export class PdfWikiManager {
 
       store.pdfs[index] = {
         ...pdf,
+        metaExcluded: false,
         metaData: this.removeUndefinedValues({
           ...baseMeta,
           meta_analysis_rows: rows,
@@ -1885,6 +2144,7 @@ export class PdfWikiManager {
     });
     const updatedPdf: PdfWikiSourcePdf = {
       ...currentPdf,
+      metaExcluded: false,
       metaData: updatedMeta,
       metaDataCachedAt: now,
     };
@@ -1968,6 +2228,7 @@ export class PdfWikiManager {
     const store = await this.loadStore(userId);
     const results: PdfWikiMetaTableExportItem[] = [];
     for (const pdf of store.pdfs) {
+      if (pdf.metaExcluded === true) continue;
       const cached = await this.loadParsedMetaCache(userId, pdf);
       const codexMeta = this.asRecord(await this.readJsonFileIfExists(path.join(this.getCodexPdfWikiTaskDir(userId, pdf), 'meta_data.json')));
       const metaData = this.buildPdfMetaDataRecord(
@@ -1976,6 +2237,7 @@ export class PdfWikiManager {
         pdf.referenceIndex || [],
         this.mergeStoredPdfMetaData(codexMeta, this.asRecord(cached?.metaData), this.asRecord(pdf.metaData))
       );
+      if (!this.shouldIncludePdfInMetaDatabase(pdf, metaData)) continue;
       if (!this.isMetaAnalysisDataEnabled(metaData)) continue;
       const tables = await this.getPdfMetaTables(userId, pdf, metaData);
       for (const table of tables) {
@@ -1998,6 +2260,7 @@ export class PdfWikiManager {
     const results: PdfWikiIntegratedDataTable[] = [];
     for (const pdf of store.pdfs) {
       if (!requestedIds.has(pdf.id)) continue;
+      if (pdf.metaExcluded === true) continue;
       const cached = await this.loadParsedMetaCache(userId, pdf);
       const codexMeta = this.asRecord(await this.readJsonFileIfExists(path.join(this.getCodexPdfWikiTaskDir(userId, pdf), 'meta_data.json')));
       const metaData = this.buildPdfMetaDataRecord(
@@ -2006,6 +2269,7 @@ export class PdfWikiManager {
         pdf.referenceIndex || [],
         this.mergeStoredPdfMetaData(codexMeta, this.asRecord(cached?.metaData), this.asRecord(pdf.metaData))
       );
+      if (!this.shouldIncludePdfInMetaDatabase(pdf, metaData)) continue;
       if (!this.isMetaAnalysisDataEnabled(metaData)) continue;
       results.push(await this.buildPdfIntegratedDataTable(userId, pdf, metaData));
     }
@@ -2020,6 +2284,7 @@ export class PdfWikiManager {
     const results: PdfWikiMetaTableExportItem[] = [];
     for (const pdf of store.pdfs) {
       if (!requestedIds.has(pdf.id)) continue;
+      if (pdf.metaExcluded === true) continue;
       const cached = await this.loadParsedMetaCache(userId, pdf);
       const codexMeta = this.asRecord(await this.readJsonFileIfExists(path.join(this.getCodexPdfWikiTaskDir(userId, pdf), 'meta_data.json')));
       const metaData = this.buildPdfMetaDataRecord(
@@ -2028,6 +2293,7 @@ export class PdfWikiManager {
         pdf.referenceIndex || [],
         this.mergeStoredPdfMetaData(codexMeta, this.asRecord(cached?.metaData), this.asRecord(pdf.metaData))
       );
+      if (!this.shouldIncludePdfInMetaDatabase(pdf, metaData)) continue;
       if (!this.isMetaAnalysisDataEnabled(metaData)) continue;
       const tables = await this.getPdfMetaTables(userId, pdf, metaData);
       for (const table of tables) {
@@ -2053,12 +2319,17 @@ export class PdfWikiManager {
     const pdf = store.pdfs.find(item => item.id === pdfId);
     if (!pdf) return cached;
 
+    const overviewDiagram = this.ensureUsableOverviewDiagram(pdf, null, cached.summaryMarkdown, cached.overviewDiagram);
     const upgraded: PdfWikiDeepAnalysisResult = {
       ...cached,
       pdf,
-      overviewDiagram: this.buildCodePdfOverviewDiagram(pdf, null, cached.summaryMarkdown),
+      overviewDiagram,
     };
     await this.saveDeepAnalysisCache(userId, upgraded);
+    await this.persistOverviewDiagramAsFirstFigure(userId, pdf, overviewDiagram);
+    store.pdfs = store.pdfs.map(item => item.id === pdf.id ? pdf : item);
+    store.generatedAt = new Date().toISOString();
+    await this.saveStore(userId, store);
     return {
       pdfId: upgraded.pdfId,
       parser: upgraded.parser,
@@ -2307,6 +2578,7 @@ export class PdfWikiManager {
       overviewDiagram = await this.buildOverviewDiagramWithSecondaryApi(pdf, parsed, summaryMarkdown, llmConfig)
         || this.buildCodePdfOverviewDiagram(pdf, parsed, summaryMarkdown);
     }
+    overviewDiagram = this.ensureUsableOverviewDiagram(pdf, parsed, summaryMarkdown, overviewDiagram);
     if (overviewDiagram) {
       await this.persistOverviewDiagramAsFirstFigure(userId, pdf, overviewDiagram);
       store.pdfs = store.pdfs.map(item => item.id === pdf.id ? pdf : item);
@@ -2351,6 +2623,69 @@ export class PdfWikiManager {
 
     await this.persistManualStoreUpdate(userId, store, `已删除 ${deletedCount} 个 PDF Wiki 论点组`);
     return { deletedCount, entryCount: store.entries.length };
+  }
+
+  async deletePdfs(userId: string, pdfIds: string[]): Promise<{
+    deletedCount: number;
+    missingCount: number;
+    pdfCount: number;
+    entryCount: number;
+    sentencePointCount: number;
+  }> {
+    const ids = this.unique(pdfIds);
+    if (ids.length === 0) {
+      throw new Error('请选择要删除的 PDF');
+    }
+
+    const store = await this.loadStore(userId);
+    const idSet = new Set(ids);
+    const removedPdfs = store.pdfs.filter(pdf => idSet.has(pdf.id));
+    if (removedPdfs.length === 0) {
+      throw new Error('未找到要删除的 PDF');
+    }
+    const removedPdfIds = new Set(removedPdfs.map(pdf => pdf.id));
+
+    store.pdfs = store.pdfs.filter(pdf => !removedPdfIds.has(pdf.id));
+    store.entries = store.entries.filter(entry => {
+      const sourceIds = Array.isArray(entry.sourcePdfIds) ? entry.sourcePdfIds : [];
+      return !sourceIds.some(pdfId => removedPdfIds.has(pdfId));
+    });
+    const retainedPoints = (store.sentenceCloud?.points || []).filter(point => !removedPdfIds.has(point.sourcePdfId));
+    store.sentenceCloud = this.buildSentenceCloudStore(retainedPoints);
+    store.referenceIndex = this.mergeReferenceIndexes(...store.pdfs.map(pdf => pdf.referenceIndex || []));
+    if (store.readerChatSessions) {
+      removedPdfIds.forEach(pdfId => {
+        delete store.readerChatSessions?.[pdfId];
+      });
+    }
+    store.generatedAt = new Date().toISOString();
+    await this.saveStore(userId, store);
+
+    removedPdfs.forEach(pdf => {
+      this.deletePdfLocalFiles(userId, pdf);
+    });
+    this.clearEngine(userId);
+    this.removeIndexCache(userId);
+
+    await this.saveStatus(userId, {
+      status: 'completed',
+      totalPdfs: store.pdfs.length,
+      processedPdfs: store.pdfs.length,
+      totalChunks: 0,
+      processedChunks: 0,
+      entryCount: store.entries.length,
+      sentencePointCount: store.sentenceCloud?.points?.length || 0,
+      message: `已删除 ${removedPdfs.length} 个 PDF`,
+      updatedAt: store.generatedAt,
+    });
+
+    return {
+      deletedCount: removedPdfs.length,
+      missingCount: ids.length - removedPdfs.length,
+      pdfCount: store.pdfs.length,
+      entryCount: store.entries.length,
+      sentencePointCount: store.sentenceCloud?.points?.length || 0,
+    };
   }
 
   async mergeEntries(
@@ -2474,7 +2809,7 @@ export class PdfWikiManager {
     const store = await this.loadStore(userId);
     const entries = [
       ...store.entries,
-      ...(store.sentenceCloud?.points || []).map(point => this.sentencePointToEntry(point)),
+      ...this.filterPublishableSentencePoints(store.sentenceCloud?.points || []).map(point => this.sentencePointToEntry(point)),
     ];
     return new Map(entries.map(entry => [entry.id, entry]));
   }
@@ -2993,7 +3328,7 @@ export class PdfWikiManager {
         entryCount: allEntries.length,
         sentencePointCount: sentencePointDrafts.length,
         message: this.shouldUseApiForSentenceReferenceMatching(llmConfig) && llmConfig.apiUrl && llmConfig.apiKey
-          ? '阶段 3/3：正在使用 AI 校准引言/讨论/结论句子、文末参考文献与论点候选'
+          ? '阶段 3/3：正在使用 AI 校准引言/讨论/结论句子、文末参考文献与可作论点判断'
           : '阶段 3/3：正在建立引言/讨论/结论句子级Wiki论点库与本地参考文献匹配',
         startedAt,
         updatedAt: new Date().toISOString(),
@@ -3003,19 +3338,84 @@ export class PdfWikiManager {
         retainedReferenceIndex,
         processedPdfs.flatMap(pdf => pdf.referenceIndex || []),
       );
+      await this.saveStatus(userId, {
+        status: 'processing',
+        totalPdfs: pdfs.length,
+        processedPdfs: processedPdfs.length,
+        totalChunks,
+        processedChunks,
+        entryCount: allEntries.length,
+        sentencePointCount: sentencePointDrafts.length,
+        message: '阶段 3/3：正在校准可作论点句子与参考文献索引',
+        startedAt,
+        updatedAt: new Date().toISOString(),
+      });
       const refinedNewSentencePoints = await this.refineSentenceCloudPointsWithAi(
         newSentencePoints,
         allReferenceIndex,
         llmConfig
       );
+      const publishableSentencePoints = this.filterPublishableSentencePoints([...retainedSentencePoints, ...refinedNewSentencePoints]);
+      if (allEntries.length === 0 && publishableSentencePoints.length === 0) {
+        await this.saveStatus(userId, {
+          status: 'error',
+          totalPdfs: pdfs.length,
+          processedPdfs: processedPdfs.length,
+          totalChunks,
+          processedChunks,
+          entryCount: 0,
+          sentencePointCount: 0,
+          message: 'PDF Wiki 生成失败：未能从 PDF 的引言/讨论/结论中提取到可直接作为论点的句子',
+          startedAt,
+          updatedAt: new Date().toISOString(),
+          error: 'NO_PUBLISHABLE_SENTENCE_POINTS',
+        });
+        return;
+      }
+      await this.saveStatus(userId, {
+        status: 'processing',
+        totalPdfs: pdfs.length,
+        processedPdfs: processedPdfs.length,
+        totalChunks,
+        processedChunks,
+        entryCount: allEntries.length,
+        sentencePointCount: publishableSentencePoints.length,
+        message: '阶段 3/3：正在把可作论点句子绑定到全局参考文献',
+        startedAt,
+        updatedAt: new Date().toISOString(),
+      });
       const resolvedEntries = this.attachGlobalReferences(allEntries, allReferenceIndex);
+      await this.saveStatus(userId, {
+        status: 'processing',
+        totalPdfs: pdfs.length,
+        processedPdfs: processedPdfs.length,
+        totalChunks,
+        processedChunks,
+        entryCount: resolvedEntries.length,
+        sentencePointCount: publishableSentencePoints.length,
+        message: '阶段 3/3：正在合并跨 PDF 兼容论点组',
+        startedAt,
+        updatedAt: new Date().toISOString(),
+      });
       const groupedEntries = await this.groupEntriesAcrossPdfs(
         resolvedEntries,
         llmConfig,
         userId,
         this.shouldUseCodexForGrouping(llmConfig) && codexConfig ? codexConfig : undefined
       );
-      const sentenceCloud = this.buildSentenceCloudStore([...retainedSentencePoints, ...refinedNewSentencePoints]);
+      await this.saveStatus(userId, {
+        status: 'processing',
+        totalPdfs: pdfs.length,
+        processedPdfs: processedPdfs.length,
+        totalChunks,
+        processedChunks,
+        entryCount: groupedEntries.length,
+        sentencePointCount: publishableSentencePoints.length,
+        message: '阶段 3/3：正在保存 PDF句子级Wiki论点库',
+        startedAt,
+        updatedAt: new Date().toISOString(),
+      });
+      const sentenceCloud = this.buildSentenceCloudStore(publishableSentencePoints);
       const store: PdfWikiStore = {
         version: 1,
         userId,
@@ -3039,8 +3439,8 @@ export class PdfWikiManager {
         entryCount: store.entries.length,
         sentencePointCount: store.sentenceCloud?.points?.length || 0,
         message: failedPdfs.length > 0
-          ? `PDF句子级Wiki论点库已生成，共 ${store.sentenceCloud?.points?.length || 0} 个句子论点候选，兼容论点组 ${store.entries.length} 个；${failedPdfs.length} 个 PDF 解析失败，可稍后重建`
-          : `PDF句子级Wiki论点库已生成，共 ${store.sentenceCloud?.points?.length || 0} 个句子论点候选，兼容论点组 ${store.entries.length} 个`,
+          ? `PDF句子级Wiki论点库已生成，共 ${store.sentenceCloud?.points?.length || 0} 个可作论点句子，兼容论点组 ${store.entries.length} 个；${failedPdfs.length} 个 PDF 解析失败，可稍后重建`
+          : `PDF句子级Wiki论点库已生成，共 ${store.sentenceCloud?.points?.length || 0} 个可作论点句子，兼容论点组 ${store.entries.length} 个`,
         startedAt,
         updatedAt: store.generatedAt,
         error: failedPdfs.length > 0 ? 'PARTIAL_PDF_FAILURE' : undefined,
@@ -3348,10 +3748,15 @@ export class PdfWikiManager {
           metaAnalysisEngine: metaEngine === 'off' ? 'auto' : metaEngine,
         });
         pdf.metaDataCachedAt = pdf.processedAt;
-        pdfById.set(pdf.id, pdf);
 
         const tables = await this.getPdfMetaTables(userId, pdf, pdf.metaData);
         const rowCount = this.extractExplicitMetaAnalysisRows(pdf.metaData).length;
+        if (rowCount === 0 && !this.isMetaAnalysisRowsUserEdited(pdf.metaData)) {
+          pdf.metaExcluded = true;
+        } else {
+          pdf.metaExcluded = false;
+        }
+        pdfById.set(pdf.id, pdf);
         metaRowCount += rowCount;
         tableCount += codexMetaResult?.tableCount || tables.length;
         figureCount += codexMetaResult?.figureCount || this.firstArray(pdf.metaData.source_figures).length;
@@ -3387,6 +3792,7 @@ export class PdfWikiManager {
       } catch (error) {
         failedPdfs++;
         const previousMeta = this.asRecord(pdf.metaData);
+        const previousRows = this.extractExplicitMetaAnalysisRows(previousMeta);
         pdf.metaData = this.applyMetaAnalysisPreference({
           ...previousMeta,
           extraction_notes: [
@@ -3401,6 +3807,9 @@ export class PdfWikiManager {
           metaAnalysisEngine: metaEngine === 'off' ? 'auto' : metaEngine,
         });
         pdf.metaDataCachedAt = new Date().toISOString();
+        if (previousRows.length === 0 && !this.isMetaAnalysisRowsUserEdited(previousMeta)) {
+          pdf.metaExcluded = true;
+        }
         pdfById.set(pdf.id, pdf);
         updateWorker(workerSlotIndex, {
           status: 'error',
@@ -3621,6 +4030,22 @@ export class PdfWikiManager {
     return enabled !== false;
   }
 
+  private shouldIncludePdfInMetaDatabase(pdf: PdfWikiSourcePdf, metaData: Record<string, unknown>): boolean {
+    if (pdf.metaExcluded === true) return false;
+    if (this.toBoolean(metaData.meta_analysis_deleted ?? metaData.metaAnalysisDeleted) === true) return false;
+
+    const hasRows = this.extractExplicitMetaAnalysisRows(metaData).length > 0;
+    if (hasRows) return true;
+
+    const rowsWereManuallyEdited = this.isMetaAnalysisRowsUserEdited(metaData);
+    if (rowsWereManuallyEdited && pdf.metaExcluded === false) return true;
+
+    // Older PDF-manager records may have meta_analysis_enabled=true by default even
+    // though the user never sent them into the Meta workflow. Empty extraction
+    // attempts are status messages, not usable Meta-analysis data tables.
+    return false;
+  }
+
   private async registerPdfFiles(userId: string, files: UploadedPdfFile[]): Promise<PdfWikiSourcePdf[]> {
     const sourceDir = this.getSourcePdfDir(userId);
     await fs.promises.mkdir(sourceDir, { recursive: true });
@@ -3679,7 +4104,7 @@ export class PdfWikiManager {
       }
 
       const references = this.parseReferences(text, pdf.id, pdf.originalName);
-      const metadata = this.cleanSourceMetadata(this.inferSourceMetadata(pdf.originalName, text));
+      const metadata = await this.enrichSourceMetadataWithDoi(this.cleanSourceMetadata(this.inferSourceMetadata(pdf.originalName, text)), text, pdf.originalName);
       await this.saveParsedTextCache(userId, pdf, {
         parser: 'fast-text',
         markdown: result.markdown,
@@ -3715,7 +4140,7 @@ export class PdfWikiManager {
       }
 
       const references = this.parseReferences(text, pdf.id, pdf.originalName);
-      const metadata = this.cleanSourceMetadata(this.inferSourceMetadata(pdf.originalName, text));
+      const metadata = await this.enrichSourceMetadataWithDoi(this.cleanSourceMetadata(this.inferSourceMetadata(pdf.originalName, text)), text, pdf.originalName);
       await this.saveParsedTextCache(userId, pdf, {
         parser: 'marker',
         markdown: result.markdown,
@@ -3751,7 +4176,7 @@ export class PdfWikiManager {
       }
 
       const references = this.parseReferences(text, pdf.id, pdf.originalName);
-      const metadata = this.cleanSourceMetadata(this.inferSourceMetadata(pdf.originalName, text));
+      const metadata = await this.enrichSourceMetadataWithDoi(this.cleanSourceMetadata(this.inferSourceMetadata(pdf.originalName, text)), text, pdf.originalName);
       await this.saveParsedTextCache(userId, pdf, {
         parser: 'liteparse',
         markdown: result.markdown,
@@ -3789,7 +4214,7 @@ export class PdfWikiManager {
       const text = this.normalizeExtractedText(await this.extractPdfTextWithPdfParse(pdf.filePath));
       if (!text) return null;
       const references = this.parseReferences(text, pdf.id, pdf.originalName);
-      const metadata = this.cleanSourceMetadata(this.inferSourceMetadata(pdf.originalName, text));
+      const metadata = await this.enrichSourceMetadataWithDoi(this.cleanSourceMetadata(this.inferSourceMetadata(pdf.originalName, text)), text, pdf.originalName);
       await this.saveParsedTextCache(userId, pdf, {
         parser: 'pdf-parse',
         markdown: text,
@@ -3858,7 +4283,7 @@ export class PdfWikiManager {
       }
 
       const references = this.parseReferences(text, pdf.id, pdf.originalName);
-      const metadata = this.cleanSourceMetadata(this.inferSourceMetadata(pdf.originalName, text));
+      const metadata = await this.enrichSourceMetadataWithDoi(this.cleanSourceMetadata(this.inferSourceMetadata(pdf.originalName, text)), text, pdf.originalName);
       await this.saveParsedTextCache(userId, pdf, {
         parser: 'textin',
         markdown,
@@ -4985,7 +5410,27 @@ ${content.slice(0, 20000)}`;
 
   private isWeakPdfMetadataValue(value: unknown): boolean {
     const text = typeof value === 'string' ? value.trim() : '';
-    return !text || /^(empty|none|null|n\/a|na|unknown|未知|未解析|无)$/i.test(text);
+    return !text
+      || /^(empty|none|null|n\/a|na|unknown|未知|未解析|无)$/i.test(text)
+      || this.isGarbledPdfMetadataText(text);
+  }
+
+  private isGarbledPdfMetadataText(value: unknown): boolean {
+    const text = typeof value === 'string' ? value.replace(/\s+/g, ' ').trim() : '';
+    if (!text) return false;
+    if (/(?:Thffi|Thffifl|ffl'|GoFf|B9B6)/i.test(text)) return true;
+
+    const visible = text.replace(/\s/g, '');
+    if (visible.length < 12) return false;
+
+    const controlCount = (text.match(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g) || []).length;
+    const replacementCount = (text.match(/[\uFFFD□�]/g) || []).length;
+    if (controlCount + replacementCount >= 2) return true;
+
+    const readableCount = (text.match(/[\p{L}\p{N}]/gu) || []).length;
+    const suspiciousCount = (text.match(/[^\p{L}\p{N}\s.,;:!?'"()[\]{}<>/\\\-–—+±=%&·•°_]/gu) || []).length;
+    if ((controlCount + replacementCount + suspiciousCount) / Math.max(visible.length, 1) > 0.18) return true;
+    return readableCount / Math.max(visible.length, 1) < 0.35 && suspiciousCount >= 4;
   }
 
   private isPdfTitleSameAsFileName(title: unknown, originalName: string): boolean {
@@ -5002,6 +5447,7 @@ ${content.slice(0, 20000)}`;
     if (this.isWeakPdfMetadataValue(title)) return true;
     const text = String(title || '').replace(/\s+/g, ' ').trim();
     const lower = text.toLowerCase();
+    if (this.isGarbledPdfMetadataText(text)) return true;
     if (this.isPdfTitleSameAsFileName(text, originalName)) return true;
     if (this.isLikelyPdfJournalHeaderLine(text)) return true;
     if (this.isLikelyStandaloneJournalNameLine(text)) return true;
@@ -5009,6 +5455,8 @@ ${content.slice(0, 20000)}`;
     if (/^(abstract|keywords?|introduction|materials|methods|results|discussion|conclusions?|references)\b/i.test(text)) return true;
     if (/(contents lists available|journal homepage|sciencedirect|elsevier|springer|wiley|mdpi|frontiers|published by|all rights reserved|creative commons|received|accepted|available online|published online|microsoft word|acrobat|manuscript|full\s*text|doi:|https?:\/\/|www\.)/i.test(text)) return true;
     if (/^(journal|volume|vol\.|issue|issn|isbn)\b/i.test(text)) return true;
+    if (/^(review|article|research article|original article)\s+.+\.\s+[A-Z]/i.test(text)) return true;
+    if (text.length > 90 && /[.!?]\s+[A-Z][a-z]/.test(text)) return true;
     if (/^\d+$/.test(text) || /^[\d\s,.;:()[\]-]+$/.test(text)) return true;
     if (text.length < 18 && text.split(/\s+/).length < 4) return true;
     if (/\b(19|20)\d{2}\b/.test(text) && text.split(/\s+/).length <= 4) return true;
@@ -5139,7 +5587,7 @@ ${content.slice(0, 20000)}`;
     await fs.promises.mkdir(targetFigureDir, { recursive: true });
     await fs.promises.copyFile(pdf.filePath, path.join(sourceDir, this.sanitizeFileName(pdf.originalName || pdf.fileName || 'source.pdf')));
 
-    const maxAssets = Math.max(1, Math.min(80, Number(process.env.PDF_WIKI_REIDENTIFY_MAX_FIGURES || 24) || 24));
+    const maxAssets = Math.max(1, Math.min(200, Number(process.env.PDF_WIKI_REIDENTIFY_MAX_FIGURES || 80) || 80));
     const run = await this.runSimpleProcess(python.command, [...python.argsPrefix, script, workDir, '--max-assets', String(maxAssets)], process.cwd(), 180000);
     if (run.exitCode !== 0) {
       await fs.promises.rm(workDir, { recursive: true, force: true }).catch(() => undefined);
@@ -5968,6 +6416,9 @@ ${metaUserRequirements || '未填写额外要求，按模板和默认 Meta 分�
       references,
       this.mergeStoredPdfMetaData(codexMeta, cachedMeta, baseMeta)
     );
+    if (!this.shouldIncludePdfInMetaDatabase(pdf, metaData)) {
+      return null;
+    }
     if (!this.isMetaAnalysisDataEnabled(metaData)) {
       return null;
     }
@@ -8890,16 +9341,212 @@ ${metaUserRequirements || '未填写额外要求，按模板和默认 Meta 分�
     };
   }
 
+  private isDoiMetadataLookupEnabled(): boolean {
+    return !/^(false|0|off|no)$/i.test(String(process.env.PDF_WIKI_DOI_METADATA_LOOKUP || 'true').trim());
+  }
+
+  private extractDoiFromMetadataOrText(metadata: Partial<PdfWikiSourcePdf>, text: string): string {
+    const fromMetadata = this.normalizeDoi(String(metadata.doi || ''));
+    if (fromMetadata) return fromMetadata;
+    const matches = String(text || '').match(/\b10\.\d{4,9}\/[^\s"'<>\\]+/ig) || [];
+    for (const match of matches) {
+      const doi = this.normalizeDoi(match);
+      if (doi && doi.length >= 8 && !/[<>{}]/.test(doi)) return doi;
+    }
+    return '';
+  }
+
+  private async enrichSourceMetadataWithDoi(
+    metadata: Partial<PdfWikiSourcePdf>,
+    text: string,
+    originalName: string
+  ): Promise<Partial<PdfWikiSourcePdf>> {
+    const cleaned = this.cleanSourceMetadata(metadata);
+    if (!this.isDoiMetadataLookupEnabled()) return cleaned;
+
+    const doiCandidates = this.unique([
+      this.extractDoiFromMetadataOrText(cleaned, text),
+      ...this.inferDoiCandidatesFromFileName(originalName),
+    ].filter(Boolean));
+    if (doiCandidates.length === 0) return cleaned;
+
+    let doi = doiCandidates[0];
+    let external: Partial<PdfWikiSourcePdf> | null = null;
+    for (const candidate of doiCandidates) {
+      external = await this.fetchExternalMetadataByDoi(candidate);
+      if (external?.title) {
+        doi = candidate;
+        break;
+      }
+    }
+    if (!external) {
+      return {
+        ...cleaned,
+        doi: cleaned.doi || doi,
+      };
+    }
+
+    const externalTitle = external.title && !this.isWeakPdfTitleCandidate(external.title, originalName) ? external.title : undefined;
+    return this.cleanSourceMetadata({
+      ...cleaned,
+      title: externalTitle && (this.isWeakPdfTitleCandidate(cleaned.title, originalName) || external.doi)
+        ? externalTitle
+        : cleaned.title,
+      authors: this.isWeakPdfMetadataValue(cleaned.authors) ? external.authors || cleaned.authors : cleaned.authors,
+      year: this.isWeakPdfMetadataValue(cleaned.year) ? external.year || cleaned.year : cleaned.year,
+      journal: this.isWeakPdfMetadataValue(cleaned.journal) ? external.journal || cleaned.journal : cleaned.journal,
+      doi: cleaned.doi || external.doi || doi,
+    });
+  }
+
+  private inferDoiCandidatesFromFileName(originalName: string): string[] {
+    const restored = this.restoreOriginalName(path.basename(originalName || '')).replace(/\.pdf$/i, '').trim();
+    if (!restored) return [];
+
+    const decodedValues = this.unique([
+      restored,
+      restored.replace(/_/g, '/'),
+      restored.replace(/%2[fF]/g, '/'),
+    ]);
+    const candidates: string[] = [];
+    for (const value of decodedValues) {
+      const direct = this.normalizeDoi(value.match(/\b10\.\d{4,9}\/[^\s"'<>\\]+/i)?.[0] || '');
+      if (direct) candidates.push(direct);
+
+      const wiley = value.match(/\bj\.\d{4}-\d{4}\.\d{4}\.\d{4,6}\.x\b/i)?.[0];
+      if (wiley) {
+        candidates.push(`10.1046/${wiley}`);
+        candidates.push(`10.1111/${wiley}`);
+      }
+    }
+    return this.unique(candidates.map(candidate => this.normalizeDoi(candidate)).filter(Boolean));
+  }
+
+  private async fetchExternalMetadataByDoi(doi: string): Promise<Partial<PdfWikiSourcePdf> | null> {
+    const normalizedDoi = this.normalizeDoi(doi);
+    if (!normalizedDoi) return null;
+
+    const crossref = await this.fetchCrossrefMetadataByDoi(normalizedDoi);
+    if (crossref?.title) return crossref;
+
+    return this.fetchOpenAlexMetadataByDoi(normalizedDoi);
+  }
+
+  private async fetchCrossrefMetadataByDoi(doi: string): Promise<Partial<PdfWikiSourcePdf> | null> {
+    const url = `https://api.crossref.org/works/${encodeURIComponent(doi)}`;
+    try {
+      const data = await this.fetchJsonWithTimeout(url, this.getDoiMetadataLookupTimeoutMs());
+      const message = this.asRecord(this.asRecord(data).message);
+      const title = this.firstArray(message.title).map(item => String(item || '').trim()).find(Boolean) || '';
+      const containerTitle = this.firstArray(message['container-title']).map(item => String(item || '').trim()).find(Boolean) || '';
+      const authors = this.formatExternalAuthorList(this.firstArray(message.author));
+      const year = this.extractYearFromCrossrefMessage(message);
+      return this.cleanSourceMetadata({
+        title,
+        authors,
+        year,
+        journal: containerTitle,
+        doi: this.normalizeDoi(this.firstString(message.DOI, doi)),
+      });
+    } catch (error) {
+      logger.debug(`[PdfWiki] Crossref DOI metadata lookup failed for ${doi}: ${(error as Error).message}`);
+      return null;
+    }
+  }
+
+  private async fetchOpenAlexMetadataByDoi(doi: string): Promise<Partial<PdfWikiSourcePdf> | null> {
+    const url = `https://api.openalex.org/works/${encodeURIComponent(`https://doi.org/${doi}`)}`;
+    try {
+      const data = this.asRecord(await this.fetchJsonWithTimeout(url, this.getDoiMetadataLookupTimeoutMs()));
+      const primaryLocation = this.asRecord(data.primary_location);
+      const source = this.asRecord(primaryLocation.source);
+      const authorships = this.firstArray(data.authorships);
+      const authors = authorships
+        .map(item => this.firstString(this.asRecord(this.asRecord(item).author).display_name))
+        .filter(Boolean)
+        .slice(0, 20)
+        .join('; ');
+      return this.cleanSourceMetadata({
+        title: this.firstString(data.title, data.display_name),
+        authors,
+        year: this.firstString(data.publication_year),
+        journal: this.firstString(source.display_name),
+        doi,
+      });
+    } catch (error) {
+      logger.debug(`[PdfWiki] OpenAlex DOI metadata lookup failed for ${doi}: ${(error as Error).message}`);
+      return null;
+    }
+  }
+
+  private async fetchJsonWithTimeout(url: string, timeoutMs: number): Promise<unknown> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const response = await fetch(url, {
+        headers: {
+          Accept: 'application/json',
+          'User-Agent': 'ScholarHarness/1.0 (mailto:sjs@cau.edu.cn)',
+        },
+        signal: controller.signal,
+      });
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+      return response.json();
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  private getDoiMetadataLookupTimeoutMs(): number {
+    const parsed = Number(process.env.PDF_WIKI_DOI_METADATA_TIMEOUT_MS || 7000);
+    return Number.isFinite(parsed) && parsed >= 1000 ? parsed : 7000;
+  }
+
+  private formatExternalAuthorList(values: unknown[]): string {
+    return values
+      .map(item => {
+        const author = this.asRecord(item);
+        return this.firstString(
+          [author.given, author.family].filter(Boolean).join(' '),
+          author.name,
+          author.family
+        );
+      })
+      .filter(Boolean)
+      .slice(0, 20)
+      .join('; ');
+  }
+
+  private extractYearFromCrossrefMessage(message: Record<string, unknown>): string {
+    const dateCandidates = [
+      message.published,
+      message['published-print'],
+      message['published-online'],
+      message.created,
+      message.issued,
+    ];
+    for (const candidate of dateCandidates) {
+      const record = this.asRecord(candidate);
+      const dateParts = this.firstArray(record['date-parts']);
+      const firstPart = this.firstArray(dateParts[0]);
+      const year = this.firstString(firstPart[0]);
+      if (/^(19|20)\d{2}$/.test(year)) return year;
+    }
+    return '';
+  }
+
   private async buildReferenceIndex(input: {
     pdf: PdfWikiSourcePdf;
     text: string;
     llmConfig: PdfWikiLlmConfig;
     parsedContent?: PdfWikiParsedContent;
   }): Promise<PdfWikiReferenceIndexResult> {
-    const localMetadata = this.cleanSourceMetadata({
+    const localMetadata = await this.enrichSourceMetadataWithDoi(this.cleanSourceMetadata({
       ...this.inferSourceMetadata(input.pdf.originalName, input.text),
       ...this.removeEmptyMetadata(input.parsedContent?.metadata || {}),
-    });
+    }), input.text, input.pdf.originalName);
     const localReferences = this.mergeReferenceIndexes(
       input.parsedContent?.references || [],
       this.parseReferences(input.text, input.pdf.id, input.pdf.originalName),
@@ -9945,8 +10592,7 @@ ${referenceLines || '未解析到文末参考文献。'}`;
   }
 
   private buildSentenceCloudStore(points: PdfWikiSentencePoint[]): PdfWikiSentenceCloudStore {
-    const normalizedPoints = points
-      .slice()
+    const normalizedPoints = this.filterPublishableSentencePoints(points)
       .sort((a, b) =>
         a.topicLabel.localeCompare(b.topicLabel, 'zh-CN')
         || a.sourcePdfName.localeCompare(b.sourcePdfName, 'zh-CN')
@@ -9991,6 +10637,20 @@ ${referenceLines || '未解析到文末参考文献。'}`;
     if (/^(figure|table|fig\.|图|表)\s*\d+/i.test(sentence)) return false;
     if (/^(introduction|discussion|conclusion|references|acknowledg)/i.test(sentence)) return false;
     return /[a-zA-Z\u4e00-\u9fa5]/.test(sentence);
+  }
+
+  private filterPublishableSentencePoints(points: PdfWikiSentencePoint[]): PdfWikiSentencePoint[] {
+    return (points || []).filter(point => this.isPublishableSentencePoint(point));
+  }
+
+  private isPublishableSentencePoint(point: PdfWikiSentencePoint | null | undefined): point is PdfWikiSentencePoint {
+    if (!point) return false;
+    if (point.claimCandidate !== true) return false;
+    const claimType = this.normalizeSentenceClaimType(point.claimType);
+    if (claimType === 'method' || claimType === 'non_claim') return false;
+    const claimText = this.cleanSentencePointText(point.claimText || point.sentence || '');
+    if (!claimText) return false;
+    return this.isUsefulSentencePoint(point.sentence || claimText);
   }
 
   private inferSentenceClaimCandidate(
@@ -11895,9 +12555,10 @@ ${promptEntries}
   }
 
   private storeToRetrievalLiteratures(store: PdfWikiStore): UnifiedLiterature[] {
+    const sentencePoints = this.filterPublishableSentencePoints(store.sentenceCloud?.points || []);
     return [
       ...this.entriesToLiteratures(store.entries, 0),
-      ...this.sentencePointsToLiteratures(store.sentenceCloud?.points || [], store.entries.length),
+      ...this.sentencePointsToLiteratures(sentencePoints, store.entries.length),
     ];
   }
 
@@ -11938,13 +12599,13 @@ ${promptEntries}
   }
 
   private sentencePointsToLiteratures(points: PdfWikiSentencePoint[], offset = 0): UnifiedLiterature[] {
-    return points.map((point, index) => {
+    return this.filterPublishableSentencePoints(points).map((point, index) => {
       const references = this.getSentencePointCitationReferences(point);
       const firstRef = references[0];
       const authors = parseAuthorsToString(firstRef?.authors || point.sourcePdfName);
       const year = parseInt(firstRef?.year || '', 10) || new Date().getFullYear();
       const abstract = [
-        `论点候选: ${point.claimCandidate ? '是' : '否'}`,
+        `可作论点: 是`,
         point.claimText ? `可归纳论点: ${point.claimText}` : '',
         `句子: ${point.sentence}`,
         `论点类型: ${point.claimType}`,
@@ -12331,6 +12992,7 @@ ${text}`,
       '论文一览图流程图设计规范：',
       '- 采用学术流程图结构，不做海报式堆字：核心问题 -> 研究设计/方法 -> 数据或样本 -> 主要发现 -> 结论，局限性作为最后的反思节点。',
       '- 每个节点必须有清晰层级：短标题、2-4 条编号要点、必要时用小标签标明“问题/方法/证据/发现/判断/复核”。',
+      '- 主要信息块必须采用两行三列布局：第一行 3 个模块、第二行 3 个模块；两行整体水平居中，第二行三个模块的 x 坐标必须与第一行三个模块一一对齐。',
       '- 版式优先使用左右或蛇形 DAG 阅读路径，节点对齐到网格，箭头只表达主因果/研究路径，尽量避免交叉线。',
       '- 颜色使用深绿色主色、浅绿色节点、少量琥珀/青色强调关键发现，不使用紫色、蓝紫渐变、花哨装饰或随机图标。',
       '- 文字必须放在卡片内部并显式换行；中文每行不要过长，卡片留足内边距，标题、正文、编号之间保持稳定间距。',
@@ -12413,6 +13075,7 @@ overview_diagram.svg 要求：
 - 独立 SVG，建议 viewBox 0 0 1200 780。
 - 用中文概括整篇论文的研究逻辑、方法、主要发现、结论和局限。
 - 视觉上要像一张论文思路一览图：标题、流程箭头、模块卡片、结果/结论强调区。
+- 主体模块必须是两行三列：第一行 3 个卡片、第二行 3 个卡片；每一行整体水平居中，两行的三列 x 坐标必须严格对齐。
 - 整体配色使用深绿色系：深绿色背景/标题/箭头，浅绿色卡片底色，避免紫色、蓝紫渐变或花哨装饰。
 - 每个模块气泡/卡片必须根据内部文字自动留足宽度和高度，文字必须在形状内部换行显示，不能跑出气泡/卡片边界。
 - 如果模块内容是多条要点，必须在气泡/卡片内用“1.”、“2.”、“3.”这样的序号逐条呈现；不要只用无序圆点。
@@ -12508,11 +13171,12 @@ ${excerpt ? `正文摘录：\n${excerpt}` : '未提供正文摘录；请直接�
 2. viewBox 建议为 0 0 1200 780，可根据内容自适应加高。
 3. 覆盖：核心问题、研究设计/方法、数据或样本、主要发现、结论、局限性。
 4. 视觉结构要像论文研究逻辑图：问题 -> 方法 -> 数据 -> 发现 -> 结论 -> 局限。
-5. 使用深绿色系背景/标题/箭头，浅绿色卡片，避免紫色、蓝紫渐变、过度装饰。
-6. 只能使用 SVG 原生元素；禁止 script、foreignObject、外部图片、外部 CSS、onclick/onload、外链。
-7. 所有中文必须在卡片内换行，不得跑出卡片边界；卡片内边距至少 18px。
-8. 箭头小巧，连接线线宽不超过 1.5px。
-9. 不要新增分析文本中没有的信息；缺失信息写“原文未明确提供”。
+5. 主体模块必须是两行三列：第一行 3 个卡片、第二行 3 个卡片；每行整体水平居中，第二行三个卡片的 x 坐标必须与第一行三个卡片一一对齐。
+6. 使用深绿色系背景/标题/箭头，浅绿色卡片，避免紫色、蓝紫渐变、过度装饰。
+7. 只能使用 SVG 原生元素；禁止 script、foreignObject、外部图片、外部 CSS、onclick/onload、外链。
+8. 所有中文必须在卡片内换行，不得跑出卡片边界；卡片内边距至少 18px。
+9. 箭头小巧，连接线线宽不超过 1.5px。
+10. 不要新增分析文本中没有的信息；缺失信息写“原文未明确提供”。
 
 ${this.getPdfOverviewFlowchartDesignGuide()}
 
@@ -12923,9 +13587,130 @@ ${summary}`,
     return cleaned.slice(0, 500000);
   }
 
+  private ensureUsableOverviewDiagram(
+    pdf: PdfWikiSourcePdf,
+    parsed: PdfWikiParsedContent | null,
+    summaryMarkdown: string,
+    candidate: PdfWikiOverviewDiagram | undefined
+  ): PdfWikiOverviewDiagram {
+    if (candidate && this.isUsableOverviewDiagram(candidate)) {
+      return candidate;
+    }
+    if (candidate) {
+      logger.warn(`[PdfWiki] Overview diagram for ${pdf.originalName} failed readability gate; using deterministic code SVG fallback`);
+    }
+    return this.buildCodePdfOverviewDiagram(pdf, parsed, summaryMarkdown);
+  }
+
+  private isUsableOverviewDiagram(diagram: PdfWikiOverviewDiagram | undefined): boolean {
+    const svg = this.sanitizeOverviewSvg(diagram?.svg || '');
+    if (!svg || svg.length < 1800) return false;
+    const textCount = (svg.match(/<text\b/gi) || []).length;
+    const shapeCount = (svg.match(/<(?:rect|path|line|polyline|polygon|circle|ellipse)\b/gi) || []).length;
+    if (textCount < 8 || shapeCount < 8) return false;
+    const bodyText = svg
+      .replace(/<style\b[\s\S]*?<\/style>/gi, '')
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/\s+/g, '')
+      .trim();
+    if (bodyText.length < 80) return false;
+    const colors = Array.from(svg.matchAll(/#([0-9a-f]{3}|[0-9a-f]{6})\b/gi)).map(match => this.normalizeSvgHexColor(match[1]));
+    const darkColors = colors.filter(color => color && this.getSvgColorLuminance(color) < 0.58);
+    if (darkColors.length < 3) return false;
+    const ultraLightTextMatches = Array.from(svg.matchAll(/<text\b[^>]*(?:fill|stroke)\s*=\s*["']#([0-9a-f]{3}|[0-9a-f]{6})["'][^>]*>/gi))
+      .map(match => this.normalizeSvgHexColor(match[1]))
+      .filter(color => color && this.getSvgColorLuminance(color) > 0.86);
+    if (ultraLightTextMatches.length > 0 && ultraLightTextMatches.length >= Math.max(4, Math.ceil(textCount * 0.55))) {
+      return false;
+    }
+    if (diagram?.engine !== 'code' && !this.hasCenteredTwoRowOverviewLayout(svg)) {
+      return false;
+    }
+    return true;
+  }
+
+  private hasCenteredTwoRowOverviewLayout(svg: string): boolean {
+    const cards = Array.from(svg.matchAll(/<rect\b[^>]*>/gi))
+      .map(match => this.parseSvgRectGeometry(match[0]))
+      .filter((rect): rect is { x: number; y: number; width: number; height: number } => {
+        return !!rect
+          && rect.width >= 150
+          && rect.width <= 520
+          && rect.height >= 90
+          && rect.height <= 520;
+      })
+      .sort((a, b) => a.y - b.y || a.x - b.x);
+    if (cards.length < 6) return false;
+
+    const rows: Array<{ y: number; items: Array<{ x: number; y: number; width: number; height: number }> }> = [];
+    for (const card of cards) {
+      let row = rows.find(item => Math.abs(item.y - card.y) <= 90);
+      if (!row) {
+        row = { y: card.y, items: [] };
+        rows.push(row);
+      }
+      row.items.push(card);
+      row.y = row.items.reduce((sum, item) => sum + item.y, 0) / row.items.length;
+    }
+
+    const candidateRows = rows
+      .filter(row => row.items.length >= 3)
+      .sort((a, b) => a.y - b.y)
+      .slice(0, 2);
+    if (candidateRows.length < 2) return false;
+
+    const normalized = candidateRows.map(row => {
+      const sorted = row.items
+        .sort((a, b) => a.x - b.x)
+        .slice(0, 3);
+      const left = Math.min(...sorted.map(item => item.x));
+      const right = Math.max(...sorted.map(item => item.x + item.width));
+      return {
+        center: (left + right) / 2,
+        centers: sorted.map(item => item.x + item.width / 2),
+      };
+    });
+
+    if (normalized.some(row => Math.abs(row.center - 600) > 90)) return false;
+    for (let i = 0; i < 3; i++) {
+      if (Math.abs(normalized[0].centers[i] - normalized[1].centers[i]) > 70) return false;
+    }
+    return true;
+  }
+
+  private parseSvgRectGeometry(tag: string): { x: number; y: number; width: number; height: number } | null {
+    const attr = (name: string): number => {
+      const match = new RegExp(`\\b${name}\\s*=\\s*["']?(-?\\d+(?:\\.\\d+)?)`, 'i').exec(tag);
+      return match ? Number(match[1]) : NaN;
+    };
+    const x = attr('x');
+    const y = attr('y');
+    const width = attr('width');
+    const height = attr('height');
+    if (![x, y, width, height].every(Number.isFinite)) return null;
+    return { x, y, width, height };
+  }
+
+  private normalizeSvgHexColor(value: string): string {
+    const raw = String(value || '').trim().replace(/^#/, '');
+    if (/^[0-9a-f]{3}$/i.test(raw)) {
+      return raw.split('').map(char => `${char}${char}`).join('').toLowerCase();
+    }
+    return /^[0-9a-f]{6}$/i.test(raw) ? raw.toLowerCase() : '';
+  }
+
+  private getSvgColorLuminance(hex: string): number {
+    const normalized = this.normalizeSvgHexColor(hex);
+    if (!normalized) return 1;
+    const channels = [0, 2, 4].map(offset => parseInt(normalized.slice(offset, offset + 2), 16) / 255);
+    const linear = channels.map(value => value <= 0.03928 ? value / 12.92 : Math.pow((value + 0.055) / 1.055, 2.4));
+    return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2];
+  }
+
   private shouldRebuildOverviewDiagram(diagram: PdfWikiOverviewDiagram | undefined): boolean {
     if (!diagram) return true;
-    return diagram.layoutVersion !== PDF_WIKI_OVERVIEW_DIAGRAM_LAYOUT_VERSION;
+    return diagram.layoutVersion !== PDF_WIKI_OVERVIEW_DIAGRAM_LAYOUT_VERSION
+      || !this.isUsableOverviewDiagram(diagram);
   }
 
   private normalizeOverviewDiagram(value: unknown): PdfWikiOverviewDiagram | undefined {
@@ -13679,6 +14464,25 @@ ${content.slice(0, 12000)}`;
     const cacheDir = this.getIndexCacheDir(userId);
     if (fs.existsSync(cacheDir)) {
       fs.rmSync(cacheDir, { recursive: true, force: true });
+    }
+  }
+
+  private deletePdfLocalFiles(userId: string, pdf: PdfWikiSourcePdf): void {
+    const candidates = [
+      pdf.filePath,
+      pdf.parsedMarkdownPath,
+      pdf.parsedTextPath,
+      this.getDeepAnalysisPath(userId, pdf.id),
+    ].filter((item): item is string => typeof item === 'string' && item.trim().length > 0);
+
+    for (const filePath of candidates) {
+      try {
+        if (fs.existsSync(filePath) && fs.statSync(filePath).isFile()) {
+          fs.unlinkSync(filePath);
+        }
+      } catch (error) {
+        logger.warn(`[PdfWiki] Failed to delete local file for removed PDF ${pdf.originalName}: ${filePath}`, error);
+      }
     }
   }
 

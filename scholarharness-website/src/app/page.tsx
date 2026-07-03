@@ -4,20 +4,20 @@ import { useEffect, useState } from "react";
 import Image from "next/image";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { FeatureIcon } from "@/components/feature-icon";
+import { FeatureIcon, type IconName } from "@/components/feature-icon";
 import { productFeatures } from "@/lib/product-features";
 import { getStoredUser, isAuthenticated, logout } from "@/lib/auth";
 import type { User } from "@/lib/auth";
 
 const navItems = [
-  { label: "功能总览", href: "#features" },
-  { label: "全流程能力", href: "#workflow" },
-  { label: "下载安装", href: "#access" },
+  { label: "功能圆盘", href: "#features" },
+  { label: "下载安装", href: "#hero-downloads" },
+  { label: "帮助中心", href: "/help" },
 ];
 
 const windowsDownloadHref = "/downloads/scholar-harness-setup-1.0.2.exe";
-const macArm64DownloadHref = "/downloads/scholar-harness-1.0.2-arm64.dmg";
-const macX64DownloadHref = "/downloads/scholar-harness-1.0.2-x64.dmg";
+const macArm64DownloadHref = "/downloads/scholar-harness-1.0.3-arm64.dmg";
+const macX64DownloadHref = "/downloads/scholar-harness-1.0.3-x64.dmg";
 const manualDownloadHref = "/downloads/scholarharness-user-manual.pdf";
 
 const featureVideos: Record<string, { src: string; title: string }> = {
@@ -49,30 +49,71 @@ const featureVideos: Record<string, { src: string; title: string }> = {
     src: "/videos/data-analysis-r-plot.mp4",
     title: "数据分析 + R 作图演示",
   },
+  "sentence-claim-search": {
+    src: "/videos/ai-pdf-management.mp4",
+    title: "PDF 句子级论点库演示",
+  },
 };
-
-const workflowPillars = [
-  {
-    title: "资料进入系统",
-    body: "文献 PDF、文献计量纯文本、Meta 编码表、实验数据和 Auto Research 调研结果都进入同一个项目上下文。",
-  },
-  {
-    title: "AI 分析与配置",
-    body: "用户选择变量、模型、效应量、文献计量参数或写作目标，系统只调用已经分析好的结构化结果。",
-  },
-  {
-    title: "写作与图件输出",
-    body: "讨论式写作、一键写综述、R 语言作图、Meta 分析图件和文献计量图件统一服务论文草稿。",
-  },
-];
 
 interface AuthState {
   isLoggedIn: boolean;
   user: User | null;
 }
 
+interface OrbitItem {
+  slug: string;
+  title: string;
+  shortTitle: string;
+  kicker: string;
+  icon: IconName;
+  headline: string;
+  homeIntro: string;
+  highlights: string[];
+  outputs: string[];
+}
+
+const orbitItems: OrbitItem[] = [
+  ...productFeatures.map((feature) => ({
+    slug: feature.slug,
+    title: feature.title,
+    shortTitle: feature.shortTitle,
+    kicker: feature.kicker,
+    icon: feature.icon,
+    headline: feature.headline,
+    homeIntro: feature.homeIntro,
+    highlights: feature.highlights,
+    outputs: feature.outputs,
+  })),
+  {
+    slug: "sentence-claim-search",
+    title: "句子级论点检索",
+    shortTitle: "论点检索",
+    kicker: "证据匹配与引用溯源",
+    icon: "book",
+    headline: "输入一句论文论点，快速匹配项目文献库中的支持、反对和相关证据。",
+    homeIntro:
+      "面向写作中的单句证据核查：先解析用户句子，再做关键词候选池和语义相似度重排，最后按支持关系展示可追溯来源。",
+    highlights: ["句子级检索", "支持/反对/相关判断", "摘要折叠与翻译"],
+    outputs: ["证据文献", "摘要与翻译", "支持关系", "可追溯引用线索"],
+  },
+];
+
+const orbitTopPositions = [8, 20, 32, 44, 56, 68, 80, 92];
+
+function getOrbitPosition(index: number) {
+  const top = orbitTopPositions[index] ?? 50;
+  const normalizedY = (top - 50) / 50;
+  const normalizedX = Math.sqrt(Math.max(0, 1 - normalizedY * normalizedY));
+
+  return {
+    left: `${50 + 50 * normalizedX}%`,
+    top: `${top}%`,
+  };
+}
+
 export default function Home() {
   const [authState, setAuthState] = useState<AuthState>({ isLoggedIn: false, user: null });
+  const [activeFeatureSlug, setActiveFeatureSlug] = useState<string | null>(null);
   const router = useRouter();
 
   useEffect(() => {
@@ -96,21 +137,20 @@ export default function Home() {
   const { isLoggedIn, user } = authState;
   const primaryCtaHref = isLoggedIn ? "/dashboard" : "/register";
   const primaryCtaLabel = isLoggedIn ? "进入控制台" : "申请内测";
+  const activeFeature = orbitItems.find((item) => item.slug === activeFeatureSlug) || null;
+  const activeVideo = activeFeature ? featureVideos[activeFeature.slug] : null;
 
   return (
-    <div className="min-h-screen bg-[#f7f8f5] text-[#151815]">
-      <header className="fixed top-0 z-50 w-full border-b border-black/10 bg-[#f7f8f5]/90 backdrop-blur-md">
+    <div className="min-h-screen scroll-smooth bg-[#050706] text-[#f4f7f2]">
+      <header className="fixed top-0 z-50 w-full border-b border-white/10 bg-[#050706]/88 backdrop-blur-md">
         <div className="mx-auto flex h-16 max-w-7xl items-center justify-between px-5 sm:px-6">
           <Link href="/" className="flex items-center gap-3" aria-label="Scholar Harness 首页">
-            <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-[#0b6b5c] text-base font-semibold text-white shadow-sm">
-              S
-            </span>
-            <span className="brand-roman text-lg font-semibold text-[#111411]">Scholar Harness</span>
+            <span className="brand-roman text-lg font-semibold text-[#f4f7f2]">Scholar Harness</span>
           </Link>
 
           <nav className="hidden items-center gap-7 text-sm lg:flex" aria-label="主导航">
             {navItems.map((item) => (
-              <a key={item.href} href={item.href} className="text-[#58625b] transition hover:text-[#111411]">
+              <a key={item.href} href={item.href} className="text-[#9faaa4] transition hover:text-[#f4f7f2]">
                 {item.label}
               </a>
             ))}
@@ -119,25 +159,25 @@ export default function Home() {
           <div className="flex items-center gap-3">
             {isLoggedIn ? (
               <>
-                <Link href="/dashboard" className="hidden text-sm text-[#58625b] transition hover:text-[#111411] sm:block">
+                <Link href="/dashboard" className="hidden text-sm text-[#9faaa4] transition hover:text-[#f4f7f2] sm:block">
                   {user?.username || user?.email || "个人中心"}
                 </Link>
                 <button
                   type="button"
                   onClick={handleLogout}
-                  className="h-9 rounded-lg border border-black/10 px-3 text-sm font-medium text-[#2b332e] transition hover:border-black/20 hover:bg-white"
+                  className="h-9 rounded-lg border border-white/10 px-3 text-sm font-medium text-[#dbe4df] transition hover:border-white/25 hover:bg-[#111813]"
                 >
                   登出
                 </button>
               </>
             ) : (
               <>
-                <Link href="/login" className="text-sm text-[#58625b] transition hover:text-[#111411]">
+                <Link href="/login" className="text-sm text-[#9faaa4] transition hover:text-[#f4f7f2]">
                   登录
                 </Link>
                 <Link
                   href="/register"
-                  className="inline-flex h-9 items-center rounded-lg bg-[#0b6b5c] px-4 text-sm font-medium text-white transition hover:bg-[#084f45]"
+                  className="inline-flex h-9 items-center rounded-lg bg-[#159a82] px-4 text-sm font-medium text-white transition hover:bg-[#1fb99d]"
                 >
                   注册
                 </Link>
@@ -148,7 +188,7 @@ export default function Home() {
       </header>
 
       <main id="main-content">
-        <section className="relative overflow-hidden pt-16">
+        <section id="hero" className="relative min-h-[100svh] overflow-hidden pt-16">
           <div className="absolute inset-0" aria-hidden="true">
             <Image
               src="/scholarharness-workspace-hero.png"
@@ -159,33 +199,38 @@ export default function Home() {
               sizes="100vw"
               className="object-cover object-center"
             />
-            <div className="absolute inset-0 bg-[linear-gradient(90deg,rgba(247,248,245,0.98)_0%,rgba(247,248,245,0.94)_33%,rgba(247,248,245,0.52)_64%,rgba(247,248,245,0.2)_100%)]" />
-            <div className="absolute inset-0 bg-[linear-gradient(180deg,rgba(247,248,245,0.1)_0%,rgba(247,248,245,0.18)_55%,rgba(247,248,245,0.96)_100%)]" />
+            <div className="absolute inset-0 bg-[linear-gradient(90deg,rgba(5,7,6,0.99)_0%,rgba(5,7,6,0.92)_34%,rgba(5,7,6,0.58)_67%,rgba(5,7,6,0.28)_100%)]" />
+            <div className="absolute inset-0 bg-[radial-gradient(circle_at_20%_36%,rgba(94,224,196,0.16),transparent_32%),linear-gradient(180deg,rgba(5,7,6,0.04)_0%,rgba(5,7,6,0.24)_58%,rgba(5,7,6,0.98)_100%)]" />
           </div>
 
-          <div className="relative z-20 mx-auto flex min-h-[78svh] max-w-7xl items-center px-5 py-12 sm:px-6 lg:py-16">
-            <div className="max-w-3xl">
-              <div className="mb-5 inline-flex items-center gap-2 rounded-lg border border-[#0b6b5c]/20 bg-white/65 px-3 py-2 text-sm font-semibold text-[#0b6b5c]">
+          <div className="relative z-20 mx-auto flex min-h-[calc(100svh-4rem)] max-w-7xl items-center px-5 pb-24 pt-12 sm:px-6 lg:pt-16">
+            <div className="max-w-6xl">
+              <div className="mb-7 inline-flex items-center gap-2 rounded-lg border border-[#5ee0c4]/30 bg-[#0b100d]/78 px-4 py-2.5 text-sm font-semibold text-[#5ee0c4] shadow-[0_18px_60px_rgba(0,0,0,0.32)]">
                 <FeatureIcon name="spark" className="h-4 w-4" />
                 面向论文全流程的 AI 学术工作台
               </div>
-              <h1 className="brand-roman text-4xl font-semibold leading-[1.02] text-[#101410] sm:text-6xl lg:text-7xl">
+              <h1 className="brand-roman max-w-4xl text-6xl font-semibold leading-[0.96] text-[#f4f7f2] sm:text-7xl lg:text-8xl">
                 Scholar Harness
               </h1>
-              <p className="mt-6 max-w-2xl text-lg leading-8 text-[#465149] sm:text-xl">
-                把 Auto Research、综述写作、讨论式写作、文献计量、Meta 分析、文献管理、数据分析和 R 语言作图放进同一个科研项目流程。
-              </p>
-              <div className="mt-8 flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:gap-2 lg:w-[min(56rem,calc(100vw-3rem))] lg:flex-nowrap">
+              <div className="mt-8 max-w-6xl space-y-4 text-lg leading-8 text-[#d3ddd7] sm:text-xl sm:leading-9 xl:text-2xl xl:leading-10">
+                <p className="whitespace-nowrap">
+                  集数据自动分析， R 语言一键作图，讨论式辅助写作，meta分析数据提取、分析、作图和写作于一体的科研服务平台。
+                </p>
+                <p className="whitespace-nowrap">
+                  更有Auto Research、综述写作、Ai文献管理、句子级论点查询等实用功能！
+                </p>
+              </div>
+              <div id="hero-downloads" className="mt-9 flex flex-col gap-3 sm:flex-row sm:flex-wrap">
                 <Link
                   href="#features"
-                  className="inline-flex h-12 shrink-0 items-center justify-center gap-2 rounded-lg bg-[#0b6b5c] px-4 text-sm font-semibold text-white shadow-sm transition hover:bg-[#084f45]"
+                  className="inline-flex min-h-[52px] items-center justify-center gap-2 rounded-lg bg-[#159a82] px-5 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-[#1fb99d]"
                 >
                   查看功能
                   <FeatureIcon name="arrow" className="h-4 w-4" />
                 </Link>
                 <Link
                   href={primaryCtaHref}
-                  className="inline-flex h-12 shrink-0 items-center justify-center gap-2 rounded-lg border border-black/15 bg-white/80 px-4 text-sm font-semibold text-[#19221c] transition hover:border-black/30 hover:bg-white"
+                  className="inline-flex min-h-[52px] items-center justify-center gap-2 rounded-lg border border-white/15 bg-[#0b100d]/86 px-5 py-3 text-sm font-semibold text-[#e9f1ec] transition hover:border-white/30 hover:bg-[#111813]"
                 >
                   {primaryCtaLabel}
                   <FeatureIcon name="arrow" className="h-4 w-4" />
@@ -193,7 +238,7 @@ export default function Home() {
                 <a
                   href={manualDownloadHref}
                   download
-                  className="inline-flex h-12 shrink-0 items-center justify-center gap-2 rounded-lg border border-[#0b6b5c]/30 bg-white/90 px-4 text-sm font-semibold text-[#0b6b5c] transition hover:border-[#0b6b5c] hover:bg-white"
+                  className="inline-flex min-h-[52px] items-center justify-center gap-2 rounded-lg border border-[#5ee0c4]/35 bg-[#0b100d]/90 px-5 py-3 text-sm font-semibold text-[#5ee0c4] transition hover:border-[#5ee0c4] hover:bg-[#111813]"
                 >
                   使用说明
                   <FeatureIcon name="file" className="h-4 w-4" />
@@ -201,7 +246,7 @@ export default function Home() {
                 <a
                   href={windowsDownloadHref}
                   download
-                  className="inline-flex h-12 shrink-0 items-center justify-center gap-2 rounded-lg border border-[#0b6b5c]/30 bg-white/90 px-4 text-sm font-semibold text-[#0b6b5c] transition hover:border-[#0b6b5c] hover:bg-white"
+                  className="inline-flex min-h-[52px] items-center justify-center gap-2 rounded-lg border border-[#5ee0c4]/35 bg-[#0b100d]/90 px-5 py-3 text-sm font-semibold text-[#5ee0c4] transition hover:border-[#5ee0c4] hover:bg-[#111813]"
                 >
                   下载 Windows
                   <FeatureIcon name="windows" className="h-4 w-4" />
@@ -209,7 +254,7 @@ export default function Home() {
                 <a
                   href={macArm64DownloadHref}
                   download
-                  className="inline-flex h-12 shrink-0 items-center justify-center gap-2 rounded-lg border border-[#0b6b5c]/30 bg-white/90 px-4 text-sm font-semibold text-[#0b6b5c] transition hover:border-[#0b6b5c] hover:bg-white"
+                  className="inline-flex min-h-[52px] items-center justify-center gap-2 rounded-lg border border-[#5ee0c4]/35 bg-[#0b100d]/90 px-5 py-3 text-sm font-semibold text-[#5ee0c4] transition hover:border-[#5ee0c4] hover:bg-[#111813]"
                 >
                   Mac M 系列
                   <FeatureIcon name="apple" className="h-4 w-4" />
@@ -217,252 +262,222 @@ export default function Home() {
                 <a
                   href={macX64DownloadHref}
                   download
-                  className="inline-flex h-12 shrink-0 items-center justify-center gap-2 rounded-lg border border-[#0b6b5c]/30 bg-white/90 px-4 text-sm font-semibold text-[#0b6b5c] transition hover:border-[#0b6b5c] hover:bg-white"
+                  className="inline-flex min-h-[52px] items-center justify-center gap-2 rounded-lg border border-[#5ee0c4]/35 bg-[#0b100d]/90 px-5 py-3 text-sm font-semibold text-[#5ee0c4] transition hover:border-[#5ee0c4] hover:bg-[#111813]"
                 >
                   Mac Intel
                   <FeatureIcon name="apple" className="h-4 w-4" />
                 </a>
               </div>
-              <div className="mt-[78px] max-w-5xl">
-                <p className="mb-3 text-sm font-semibold text-[#0b6b5c]">七大核心功能</p>
-                <div className="flex flex-nowrap gap-2.5 overflow-x-auto pb-1 lg:overflow-visible lg:pb-0">
-                  {productFeatures.map((feature) => (
-                    <Link
-                      key={feature.slug}
-                      href={`/features/${feature.slug}`}
-                      className="inline-flex h-9 w-max shrink-0 items-center justify-center gap-2 whitespace-nowrap rounded-lg border border-[#0b6b5c]/20 bg-white/78 px-3.5 text-xs font-semibold text-[#243129] shadow-sm backdrop-blur-sm transition hover:border-[#0b6b5c]/45 hover:bg-white hover:text-[#0b6b5c]"
-                    >
-                      <FeatureIcon name={feature.icon} className="h-3.5 w-3.5 shrink-0 text-[#0b6b5c]" />
-                      <span>{feature.shortTitle}</span>
-                    </Link>
-                  ))}
-                </div>
-              </div>
             </div>
           </div>
+
+          <a
+            href="#features"
+            className="absolute bottom-6 left-1/2 z-30 hidden -translate-x-1/2 flex-col items-center gap-2 text-xs font-semibold text-[#9faaa4] transition hover:text-[#5ee0c4] md:flex"
+          >
+            <span>向下滑动查看功能圆盘</span>
+            <span className="flex h-9 w-6 items-start justify-center rounded-full border border-white/20 p-1">
+              <span className="h-2 w-2 animate-bounce rounded-full bg-[#5ee0c4]" />
+            </span>
+          </a>
         </section>
 
-        <section id="features" className="relative z-10 -mt-[200px] bg-[#f7f8f5] px-5 py-16 sm:px-6 lg:py-20">
-          <div className="mx-auto max-w-7xl">
-            <div>
-              <div className="flex flex-wrap items-baseline gap-x-4 gap-y-2">
-                <h2 className="text-3xl font-semibold leading-tight text-[#101410] sm:text-4xl">
-                  每个功能都是独立模块，也能共同组成论文全流程
-                </h2>
-                <p className="text-sm leading-6 text-[#5d675f]">
-                  点击任意功能进入详情页，查看它解决什么问题、怎么使用、能输出什么结果。
-                </p>
+        <section
+          id="features"
+          className="relative min-h-[100svh] scroll-mt-16 overflow-hidden border-t border-white/10 bg-[#050706] px-5 py-10 sm:px-6 lg:flex lg:items-center lg:py-10"
+          onMouseLeave={() => setActiveFeatureSlug(null)}
+        >
+          <div className="absolute inset-0" aria-hidden="true">
+            <div className="absolute left-[-16rem] top-1/2 h-[66svh] min-h-[440px] w-[66svh] min-w-[440px] -translate-y-1/2 rounded-full border border-[#5ee0c4]/20 bg-[radial-gradient(circle_at_70%_50%,rgba(94,224,196,0.14),rgba(11,16,13,0.26)_45%,rgba(5,7,6,0)_72%)]" />
+            <div className="absolute inset-y-0 right-0 w-[62vw] bg-[radial-gradient(circle_at_40%_50%,rgba(94,224,196,0.11),transparent_34%)]" />
+          </div>
+
+          <div className="pointer-events-auto absolute left-0 top-1/2 z-20 hidden h-[66svh] min-h-[440px] w-[66svh] min-w-[440px] -translate-x-1/2 -translate-y-1/2 lg:block">
+            <div className="absolute inset-0 rounded-full border border-[#5ee0c4]/25 shadow-[0_0_90px_rgba(94,224,196,0.08)]" />
+            <div className="absolute left-1/2 top-1/2 h-[58%] w-[58%] -translate-x-1/2 -translate-y-1/2 rounded-full border border-white/10" />
+            <div className="pointer-events-none absolute left-[67%] top-1/2 -translate-x-1/2 -translate-y-1/2 text-center">
+              <div className="text-xs font-semibold text-[#5ee0c4]/70">Scholar Harness</div>
+              <div className="mt-2 whitespace-nowrap text-3xl font-semibold leading-none text-[#f4f7f2]">
+                8大核心功能
+              </div>
+            </div>
+            {orbitItems.map((item, index) => {
+              const isActive = activeFeatureSlug === item.slug;
+              return (
+                <div
+                  key={item.slug}
+                  className="absolute -translate-x-7 -translate-y-1/2"
+                  style={getOrbitPosition(index)}
+                >
+                  <button
+                    type="button"
+                    title={item.title}
+                    aria-label={item.title}
+                    onClick={() => setActiveFeatureSlug(item.slug)}
+                    onMouseEnter={() => setActiveFeatureSlug(item.slug)}
+                    onFocus={() => setActiveFeatureSlug(item.slug)}
+                    className={`group flex h-14 min-w-[184px] items-center gap-3 rounded-full border py-1.5 pl-1.5 pr-4 text-left text-[#f4f7f2] shadow-[0_18px_40px_rgba(0,0,0,0.34)] transition duration-200 focus:outline-none focus:ring-2 focus:ring-[#5ee0c4] ${
+                      isActive
+                        ? "scale-[1.04] border-[#5ee0c4] bg-[#159a82] text-white"
+                        : "border-[#5ee0c4]/28 bg-[#0b100d] hover:scale-[1.02] hover:border-[#5ee0c4] hover:bg-[#111813] hover:text-[#5ee0c4]"
+                    }`}
+                  >
+                    <span className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-full border transition ${
+                      isActive ? "border-white/20 bg-white/10" : "border-[#5ee0c4]/20 bg-[#050706] group-hover:border-[#5ee0c4]/45"
+                    }`}>
+                      <FeatureIcon name={item.icon} className="h-5 w-5" />
+                    </span>
+                    <span className="max-w-[112px] text-sm font-semibold leading-tight">{item.shortTitle}</span>
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+
+          <div className="relative z-10 mx-auto grid w-full max-w-[96rem] gap-6 lg:grid-cols-[0.62fr_1.38fr] lg:items-center xl:gap-8">
+            <div className="pointer-events-none hidden min-h-[64svh] lg:block" aria-hidden="true" />
+
+            <div className="lg:hidden">
+              <p className="text-sm font-semibold text-[#5ee0c4]">核心功能</p>
+              <h2 className="mt-3 text-3xl font-semibold leading-tight text-[#f4f7f2]">
+                选择一个功能查看介绍
+              </h2>
+              <div className="mt-5 flex gap-2 overflow-x-auto pb-2">
+                {orbitItems.map((item) => {
+                  const isActive = activeFeatureSlug === item.slug;
+                  return (
+                    <button
+                      key={item.slug}
+                      type="button"
+                      onClick={() => setActiveFeatureSlug(item.slug)}
+                      className={`inline-flex h-10 shrink-0 items-center gap-2 rounded-lg border px-3 text-xs font-semibold transition ${
+                        isActive
+                          ? "border-[#5ee0c4] bg-[#159a82] text-white"
+                          : "border-[#26332d] bg-[#0b100d] text-[#c4cec8]"
+                      }`}
+                    >
+                      <FeatureIcon name={item.icon} className="h-4 w-4" />
+                      {item.shortTitle}
+                    </button>
+                  );
+                })}
               </div>
             </div>
 
-            <div className="mt-10 grid gap-5">
-              {productFeatures.map((feature, index) => (
-                <article
-                  key={feature.slug}
-                  className="group grid gap-6 rounded-lg border border-black/10 bg-white p-5 shadow-sm transition hover:border-[#0b6b5c]/45 hover:shadow-md md:grid-cols-[0.42fr_1fr] md:p-6"
-                >
-                  <div className="flex flex-col justify-between gap-6 rounded-lg bg-[#eef4f1] p-5">
-                    <div>
-                      <div className="flex h-11 w-11 items-center justify-center rounded-lg bg-white text-[#0b6b5c] shadow-sm">
-                        <FeatureIcon name={feature.icon} />
-                      </div>
-                      <p className="mt-5 text-xs font-semibold uppercase tracking-[0.18em] text-[#69736c]">
-                        {String(index + 1).padStart(2, "0")} / {feature.kicker}
-                      </p>
-                      <h3 className="mt-2 text-2xl font-semibold text-[#101410]">{feature.title}</h3>
-                    </div>
-                    <Link
-                      href={`/features/${feature.slug}`}
-                      className="inline-flex items-center gap-2 text-sm font-semibold text-[#0b6b5c]"
-                    >
-                      进入功能介绍
-                      <FeatureIcon name="arrow" className="h-4 w-4 transition group-hover:translate-x-1" />
-                    </Link>
+            <article className="rounded-[1.5rem] border border-white/10 bg-[#0b100d]/92 p-4 shadow-[0_30px_120px_rgba(0,0,0,0.36)] backdrop-blur-md sm:p-5 lg:max-h-[calc(100svh-6rem)] lg:overflow-hidden xl:-ml-20">
+              {activeFeature ? (
+                <div className="grid gap-4">
+                  <div>
+                    <p className="text-sm font-semibold text-[#5ee0c4]">{activeFeature.kicker}</p>
+                    <h3 className="mt-2 text-3xl font-semibold leading-tight text-[#f4f7f2] sm:text-4xl">
+                      {activeFeature.title}
+                    </h3>
                   </div>
 
-                  <div className="grid gap-6 lg:grid-cols-[1fr_0.9fr]">
-                    <div>
-                      <h4 className="text-xl font-semibold leading-snug text-[#151815]">{feature.headline}</h4>
-                      <p className="mt-4 text-sm leading-7 text-[#5d675f]">{feature.homeIntro}</p>
-                      <div className="mt-6 flex flex-wrap gap-2">
-                        {feature.highlights.map((item) => (
-                          <span key={item} className="rounded-lg border border-[#d5dfd8] bg-[#f8faf8] px-3 py-1 text-xs font-medium text-[#445047]">
-                            {item}
-                          </span>
+                  <div className="grid min-h-0 content-start gap-4">
+                    <div className="rounded-2xl border border-white/10 bg-[#050706] p-4">
+                      <p className="text-sm font-semibold leading-6 text-[#f4f7f2]">{activeFeature.headline}</p>
+                      <p className="mt-2 text-sm leading-6 text-[#a7b4ad]">{activeFeature.homeIntro}</p>
+                      <div className="mt-4 grid gap-4 xl:grid-cols-2">
+                        <div>
+                          <p className="text-xs font-semibold text-[#758078]">关键能力</p>
+                          <div className="mt-2 flex flex-wrap gap-2">
+                            {activeFeature.highlights.map((item) => (
+                              <span key={item} className="rounded-lg border border-[#26332d] bg-[#0c110e] px-2.5 py-1 text-xs font-medium text-[#c4cec8]">
+                                {item}
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+                        <div>
+                          <p className="text-xs font-semibold text-[#758078]">主要输出</p>
+                          <ul className="mt-2 grid gap-1.5 text-sm text-[#c4cec8] sm:grid-cols-2">
+                            {activeFeature.outputs.slice(0, 4).map((item) => (
+                              <li key={item} className="flex gap-2">
+                                <FeatureIcon name="check" className="mt-0.5 h-4 w-4 shrink-0 text-[#5ee0c4]" />
+                                <span>{item}</span>
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="self-start rounded-2xl border border-white/10 bg-black/45 p-2 xl:p-3">
+                      {activeVideo ? (
+                        <>
+                          <p className="px-1 pb-2 text-xs font-semibold text-[#758078]">{activeVideo.title}</p>
+                          <div className="flex items-center justify-center overflow-hidden">
+                            <video
+                              key={activeVideo.src}
+                              className="aspect-video w-full max-h-[50svh] rounded-xl border border-white/10 bg-black object-contain"
+                              autoPlay
+                              muted
+                              loop
+                              playsInline
+                              preload="metadata"
+                              controls
+                            >
+                              <source src={activeVideo.src} type="video/mp4" />
+                            </video>
+                          </div>
+                        </>
+                      ) : null}
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <div className="grid h-full gap-4 lg:grid-rows-[auto_1fr]">
+                  <div>
+                    <p className="text-sm font-semibold text-[#5ee0c4]">项目总览</p>
+                    <h3 className="mt-2 text-3xl font-semibold leading-tight text-[#f4f7f2] sm:text-4xl">
+                      一个科研项目里完成调研、分析、作图和写作
+                    </h3>
+                  </div>
+
+                  <div className="grid min-h-0 gap-4 xl:grid-cols-[0.62fr_1.38fr]">
+                    <div className="rounded-2xl border border-white/10 bg-[#050706] p-4">
+                      <p className="text-sm leading-6 text-[#a7b4ad]">
+                        Scholar Harness 的核心不是单次聊天，而是把文献、数据、Meta 编码表、PDF 解析结果和写作上下文放在同一个本地项目中长期使用。
+                      </p>
+                      <p className="mt-4 text-xs font-semibold text-[#758078]">默认工作路径</p>
+                      <div className="mt-4 grid gap-2.5">
+                        {["导入资料", "结构化分析", "证据检索", "论文写作", "图表输出"].map((item, index) => (
+                          <div key={item} className="flex items-center gap-3 rounded-xl border border-white/10 bg-[#0b100d] p-2.5">
+                            <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[#111813] text-xs font-semibold text-[#5ee0c4]">
+                              {String(index + 1).padStart(2, "0")}
+                            </span>
+                            <span className="text-sm font-medium text-[#dbe4df]">{item}</span>
+                          </div>
                         ))}
                       </div>
                     </div>
 
-                    {featureVideos[feature.slug] ? (
-                      <div className="rounded-lg border border-black/10 bg-[#fbfcfb] p-4">
-                        <p className="text-xs font-semibold text-[#758078]">{featureVideos[feature.slug].title}</p>
-                        <video
-                          className="mt-3 aspect-video w-full rounded-lg border border-black/10 bg-black object-cover"
-                          controls
-                          muted
-                          playsInline
-                          preload="metadata"
-                        >
-                          <source src={featureVideos[feature.slug].src} type="video/mp4" />
-                        </video>
+                    <div className="relative min-h-[320px] overflow-hidden rounded-2xl border border-white/10 bg-black xl:min-h-[420px]">
+                      <Image
+                        src="/scholarharness-workspace-hero.png"
+                        alt="Scholar Harness 工作台界面"
+                        fill
+                        unoptimized
+                        sizes="(min-width: 1024px) 45vw, 100vw"
+                        className="object-cover opacity-70"
+                      />
+                      <div className="absolute inset-0 bg-[linear-gradient(90deg,rgba(5,7,6,0.88),rgba(5,7,6,0.34))]" />
+                      <div className="absolute bottom-5 left-5 right-5">
+                        <p className="text-xs font-semibold text-[#5ee0c4]">本地科研项目工作台</p>
+                        <p className="mt-2 max-w-md text-lg font-semibold leading-snug text-[#f4f7f2]">
+                          资料、分析、证据和草稿在同一个项目里持续沉淀。
+                        </p>
                       </div>
-                    ) : (
-                      <div className="rounded-lg border border-black/10 bg-[#fbfcfb] p-4">
-                        <p className="text-xs font-semibold text-[#758078]">主要输出</p>
-                        <ul className="mt-3 grid gap-2 text-sm text-[#3c463f]">
-                          {feature.outputs.map((item) => (
-                            <li key={item} className="flex gap-2">
-                              <FeatureIcon name="check" className="mt-0.5 h-4 w-4 shrink-0 text-[#0b6b5c]" />
-                              <span>{item}</span>
-                            </li>
-                          ))}
-                        </ul>
-                      </div>
-                    )}
+                    </div>
                   </div>
-                </article>
-              ))}
-            </div>
-          </div>
-        </section>
-
-        <section id="workflow" className="bg-[#111813] px-5 py-20 text-white sm:px-6 lg:py-24">
-          <div className="mx-auto max-w-7xl">
-            <div className="grid gap-10 lg:grid-cols-[0.82fr_1.18fr] lg:items-start">
-              <div>
-                <p className="text-sm font-semibold text-[#79d5c2]">全流程能力</p>
-                <h2 className="mt-3 text-3xl font-semibold leading-tight sm:text-4xl">
-                  从资料、分析到写作，减少工具之间的断点
-                </h2>
-                <p className="mt-4 text-base leading-7 text-[#c7d2ca]">
-                  服务器首页现在突出真实功能链路：用户不是只看“AI 写作”，而是能看见论文从调研、资料管理、统计分析到图文输出的完整路径。
-                </p>
-              </div>
-
-              <div className="grid gap-4 md:grid-cols-3">
-                {workflowPillars.map((item, index) => (
-                  <article key={item.title} className="rounded-lg border border-white/12 bg-white/[0.04] p-5">
-                    <div className="text-sm font-semibold text-[#79d5c2]">{String(index + 1).padStart(2, "0")}</div>
-                    <h3 className="mt-5 text-lg font-semibold">{item.title}</h3>
-                    <p className="mt-3 text-sm leading-6 text-[#c7d2ca]">{item.body}</p>
-                  </article>
-                ))}
-              </div>
-            </div>
-          </div>
-        </section>
-
-        <section id="access" className="border-y border-black/10 bg-white px-5 py-14 sm:px-6">
-          <div className="mx-auto max-w-6xl">
-            <p className="text-center text-sm font-semibold text-[#0b6b5c]">下载安装</p>
-
-            <div className="mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
-              <a
-                href={windowsDownloadHref}
-                download
-                className="flex min-h-[154px] min-w-0 flex-col items-center justify-center rounded-lg border border-[#b8cbc3] bg-[#f8faf8] px-5 py-6 text-center transition hover:border-[#0b6b5c] hover:shadow-sm"
-              >
-                <div className="mx-auto flex h-10 w-10 items-center justify-center rounded-lg bg-white text-[#0b6b5c]">
-                  <FeatureIcon name="windows" />
                 </div>
-                <h3 className="mt-4 max-w-[9rem] text-lg font-semibold leading-snug text-[#151815]">
-                  下载 Windows 桌面端
-                </h3>
-                <p className="mt-3 text-xs font-semibold text-[#0b6b5c]">约 418 MB</p>
-              </a>
-              <a
-                href={macArm64DownloadHref}
-                download
-                className="flex min-h-[154px] min-w-0 flex-col items-center justify-center rounded-lg border border-[#b8cbc3] bg-[#f8faf8] px-5 py-6 text-center transition hover:border-[#0b6b5c] hover:shadow-sm"
-              >
-                <div className="mx-auto flex h-10 w-10 items-center justify-center rounded-lg bg-white text-[#0b6b5c]">
-                  <FeatureIcon name="apple" />
-                </div>
-                <h3 className="mt-4 max-w-[9rem] text-lg font-semibold leading-snug text-[#151815]">
-                  下载 Mac M 系列
-                </h3>
-                <p className="mt-3 text-xs font-semibold text-[#0b6b5c]">约 428 MB</p>
-              </a>
-              <a
-                href={macX64DownloadHref}
-                download
-                className="flex min-h-[154px] min-w-0 flex-col items-center justify-center rounded-lg border border-[#b8cbc3] bg-[#f8faf8] px-5 py-6 text-center transition hover:border-[#0b6b5c] hover:shadow-sm"
-              >
-                <div className="mx-auto flex h-10 w-10 items-center justify-center rounded-lg bg-white text-[#0b6b5c]">
-                  <FeatureIcon name="apple" />
-                </div>
-                <h3 className="mt-4 max-w-[9rem] text-lg font-semibold leading-snug text-[#151815]">
-                  下载 Mac Intel
-                </h3>
-                <p className="mt-3 text-xs font-semibold text-[#0b6b5c]">约 432 MB</p>
-              </a>
-              <a
-                href={manualDownloadHref}
-                download
-                className="flex min-h-[154px] min-w-0 flex-col items-center justify-center rounded-lg border border-[#b8cbc3] bg-[#f8faf8] px-5 py-6 text-center transition hover:border-[#0b6b5c] hover:shadow-sm"
-              >
-                <div className="mx-auto flex h-10 w-10 items-center justify-center rounded-lg bg-white text-[#0b6b5c]">
-                  <FeatureIcon name="file" />
-                </div>
-                <h3 className="mt-4 max-w-[9rem] text-lg font-semibold leading-snug text-[#151815]">
-                  下载使用手册 PDF
-                </h3>
-                <p className="mt-3 text-xs font-semibold text-[#0b6b5c]">PDF 版</p>
-              </a>
-              <Link
-                href="/register"
-                className="flex min-h-[154px] min-w-0 flex-col items-center justify-center rounded-lg border border-[#b8cbc3] bg-[#f8faf8] px-5 py-6 text-center transition hover:border-[#0b6b5c] hover:shadow-sm"
-              >
-                <div className="mx-auto flex h-10 w-10 items-center justify-center rounded-lg bg-white text-[#0b6b5c]">
-                  <FeatureIcon name="spark" />
-                </div>
-                <h3 className="mt-4 max-w-[9rem] text-lg font-semibold leading-snug text-[#151815]">
-                  注册与内测
-                </h3>
-              </Link>
-            </div>
+              )}
+            </article>
           </div>
         </section>
       </main>
 
-      <footer className="border-t border-black/10 bg-white px-5 py-10 sm:px-6">
-        <div className="mx-auto grid max-w-7xl gap-8 md:grid-cols-[1.2fr_0.8fr_0.8fr]">
-          <div>
-            <div className="flex items-center gap-3">
-              <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-[#0b6b5c] text-base font-semibold text-white">
-                S
-              </span>
-              <span className="brand-roman text-lg font-semibold text-[#111411]">Scholar Harness</span>
-            </div>
-            <p className="mt-4 max-w-md text-sm leading-6 text-[#5d675f]">
-              面向科研论文全流程的 AI 学术工作台，覆盖调研、写作、文献管理、文献计量、Meta 分析、数据分析和 R 语言作图。
-            </p>
-          </div>
-
-          <div>
-            <h4 className="text-sm font-semibold text-[#151815]">功能</h4>
-            <ul className="mt-4 space-y-2 text-sm text-[#5d675f]">
-              {productFeatures.slice(0, 4).map((feature) => (
-                <li key={feature.slug}>
-                  <Link href={`/features/${feature.slug}`} className="transition hover:text-[#111411]">
-                    {feature.shortTitle}
-                  </Link>
-                </li>
-              ))}
-            </ul>
-          </div>
-
-          <div>
-            <h4 className="text-sm font-semibold text-[#151815]">账号与条款</h4>
-            <ul className="mt-4 space-y-2 text-sm text-[#5d675f]">
-              <li><Link href="/login" className="transition hover:text-[#111411]">登录</Link></li>
-              <li><Link href="/register" className="transition hover:text-[#111411]">注册</Link></li>
-              <li><Link href="/privacy" className="transition hover:text-[#111411]">隐私政策</Link></li>
-              <li><Link href="/terms" className="transition hover:text-[#111411]">用户协议</Link></li>
-            </ul>
-          </div>
-        </div>
-      </footer>
     </div>
   );
 }

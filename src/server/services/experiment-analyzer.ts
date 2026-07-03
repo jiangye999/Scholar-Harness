@@ -23,6 +23,12 @@ export interface ExperimentAnalysisInput {
   extractedText?: string;
   extractionSource?: string;
   userInstruction?: string;
+  figurePlan?: {
+    originalFileName?: string;
+    figureName?: string;
+    panelLabel?: string;
+    caption?: string;
+  };
 }
 
 export interface ExperimentAnalysisResult {
@@ -75,6 +81,7 @@ export interface ExperimentAnalysisResult {
   };
   analysisProvider?: string;
   fallbackAttempts?: string[];
+  figurePlan?: ExperimentAnalysisInput['figurePlan'];
   error?: string;
 }
 
@@ -212,6 +219,93 @@ const ANALYSIS_PROMPT = `你是一名严谨的学术信息抽取助手。你的�
 
 现在开始处理我接下来提供的论文内容。`;
 
+const IMAGE_INPUT_UNSUPPORTED_RE = /unknown variant [`'"]?image_url|expected [`'"]?text|image_url.*not supported|does not support.*image|vision.*not supported/i;
+
+export function isVisionCapableExperimentModel(model: string): boolean {
+  const normalized = String(model || '').trim().toLowerCase();
+  if (!normalized) return false;
+
+  return [
+    'gpt-4o',
+    'gpt-4.1',
+    'gpt-5',
+    'o3',
+    'o4',
+    'vision',
+    'vl',
+    'ocr',
+    'qwen-vl',
+    'qwen-vl-ocr',
+    'qwen2.5-vl',
+    'qwen2-vl',
+    'qwen3-vl',
+    'qwen3.7-plus',
+    'qwen3.7-max',
+    'qwen3.6-plus',
+    'qwen3.6-flash',
+    'qwen3.5-plus',
+    'qwen3.5-flash',
+    'qwen3.5-ocr',
+    'qwen3.5-omni',
+    'omni',
+    'gemini',
+    'claude-3',
+    'claude-sonnet',
+    'claude-opus',
+    'claude-haiku',
+    'pixtral',
+    'llama-4',
+    'doubao-vision',
+    'moonshot-v1-vision',
+  ].some(token => normalized.includes(token));
+}
+
+function buildEmptyAnalysisResult(args: {
+  fileName: string;
+  fileType: string;
+  uncertainItem: string;
+  error?: string;
+  analysisProvider?: string;
+}): ExperimentAnalysisResult {
+  return {
+    fileName: args.fileName,
+    fileType: args.fileType,
+    paper_title: '',
+    results: [],
+    overall_summary: {
+      main_findings: [],
+      best_model_claims: [],
+      ablation_findings: [],
+      robustness_findings: [],
+      efficiency_findings: [],
+      uncertain_items: [args.uncertainItem],
+    },
+    analysisProvider: args.analysisProvider,
+    error: args.error || args.uncertainItem,
+  };
+}
+
+function describeApiFailure(status: number, errorText: string, model: string): string {
+  if (status === 402 || /insufficient credits|quota|billing/i.test(errorText)) {
+    return `API 额度不足或账号未充值: ${model}`;
+  }
+  if (IMAGE_INPUT_UNSUPPORTED_RE.test(errorText)) {
+    return `当前模型/API 不支持图片输入: ${model}`;
+  }
+  if (status === 401 || status === 403) {
+    return `API 鉴权失败或无权限: ${model}`;
+  }
+  return `API 调用失败: ${status}`;
+}
+
+function getExperimentAnalysisMaxTokens(model: string, fileType: string): number {
+  const normalized = String(model || '').toLowerCase();
+  if (fileType === 'image' && /(qwen|dashscope|vl|ocr|omni)/i.test(normalized)) {
+    return 8192;
+  }
+  return 32000;
+}
+
 // ============ 核心分析函数 ============
 
 /**
@@ -223,6 +317,18 @@ export async function analyzeExperimentResults(input: ExperimentAnalysisInput): 
   logger.info(`[ExperimentAnalyzer] Analyzing ${fileName} (${fileType}, ${fileBuffer.length} bytes)`);
   
   try {
+    if (fileType === 'image' && !isVisionCapableExperimentModel(model)) {
+      const message = `当前模型/API 不支持图片输入: ${model || '未配置模型'}。请配置视觉模型，或先对图片进行 OCR/文本化后再分析。`;
+      logger.warn(`[ExperimentAnalyzer] Skip image API analysis for ${fileName}: ${message}`);
+      return buildEmptyAnalysisResult({
+        fileName,
+        fileType,
+        uncertainItem: message,
+        error: message,
+        analysisProvider: `api:${model || 'unknown'}`,
+      });
+    }
+
     // 构建消息内容
     const messageContent = await buildMessageContent(fileBuffer, fileName, fileType, extractedText, extractionSource, userInstruction);
     
@@ -261,13 +367,14 @@ export async function analyzeExperimentResults(input: ExperimentAnalysisInput): 
           messageContent,
         ],
         temperature: 0.1,  // 低温度确保准确提取
-        max_tokens: 32000,  // 使用项目统一最高输出上限
+        max_tokens: getExperimentAnalysisMaxTokens(model, fileType),
       }),
     });
     
     if (!response.ok) {
       const errorText = await response.text();
       logger.error(`[ExperimentAnalyzer] API error (${response.status}): ${errorText}`);
+      const message = describeApiFailure(response.status, errorText, model);
       return {
         fileName,
         fileType,
@@ -279,9 +386,10 @@ export async function analyzeExperimentResults(input: ExperimentAnalysisInput): 
           ablation_findings: [],
           robustness_findings: [],
           efficiency_findings: [],
-          uncertain_items: [`API 调用失败: ${response.status}`],
+          uncertain_items: [message],
         },
-        error: `API 调用失败: ${response.status}`,
+        analysisProvider: `api:${model}`,
+        error: message,
       };
     }
     
@@ -343,7 +451,8 @@ export async function analyzeExperimentResultsWithCodex(input: ExperimentAnalysi
     const aiResponse = await chatBridge.chat({
       forceProvider: 'codex',
       disableFallback: true,
-      codexTimeoutMs: 300000,
+      codexTimeoutMs: getExperimentCodexTimeoutMs(),
+      codexImages: input.fileType === 'image' && input.savedPath ? [input.savedPath] : undefined,
       messages: [{ role: 'user', content: prompt }],
       temperature: 0.1,
       maxTokens: 32000,
@@ -387,6 +496,14 @@ export async function analyzeExperimentResultsWithCodex(input: ExperimentAnalysi
       error: (error as Error).message,
     };
   }
+}
+
+function getExperimentCodexTimeoutMs(): number {
+  const configured = Number(process.env.EXPERIMENT_CODEX_TIMEOUT_MS || '');
+  if (Number.isFinite(configured) && configured >= 30000) {
+    return configured;
+  }
+  return 300000;
 }
 
 /**
@@ -558,7 +675,9 @@ async function buildCodexAnalysisPrompt(input: ExperimentAnalysisInput): Promise
 本地文件路径: ${input.savedPath || '未保存本地路径'}
 文件大小: ${input.fileBuffer.length} bytes
 
-请优先直接读取本地文件路径中的内容进行分析；如果当前 Codex CLI 环境无法读取图片/PDF/Word 文件，请只输出合法 JSON，并在 overall_summary.uncertain_items 中说明需要降级到小牛马/大牛马 API。`;
+${input.fileType === 'image' && input.savedPath
+  ? '这张图片已通过 Codex CLI 的 -i 参数作为图片附件传入；请直接读取附件图像内容，不要再用命令行重新打开图片。'
+  : '请优先直接读取本地文件路径中的内容进行分析；如果当前 Codex CLI 环境无法读取文件，请只输出合法 JSON，并在 overall_summary.uncertain_items 中说明需要降级到小牛马/大牛马 API。'}`;
   } else {
     userContent = String(messageContent?.content || '');
     if (input.savedPath) {

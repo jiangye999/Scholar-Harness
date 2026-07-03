@@ -2,8 +2,8 @@ import Image from 'next/image';
 
 export function SiteFilingFooter() {
   return (
-    <footer className="border-t border-black/10 bg-white px-5 py-5 sm:px-6">
-      <div className="mx-auto flex max-w-7xl flex-col gap-2 text-sm text-[#6b756d] md:flex-row md:items-center md:justify-between">
+    <footer className="border-t border-white/10 bg-[#050706] px-5 py-5 sm:px-6">
+      <div className="mx-auto flex max-w-7xl flex-col gap-2 text-sm text-[#8f9b94] md:flex-row md:items-center md:justify-between">
         <span>
           © 2026 <span className="brand-roman">Scholar Harness</span>. 保留所有权利。
         </span>
@@ -12,7 +12,7 @@ export function SiteFilingFooter() {
             href="https://beian.miit.gov.cn/#/Integrated/index"
             target="_blank"
             rel="noopener noreferrer"
-            className="transition hover:text-[#111411]"
+            className="transition hover:text-[#f4f7f2]"
           >
             冀ICP备2026002375-2号
           </a>
@@ -20,7 +20,7 @@ export function SiteFilingFooter() {
             href="https://beian.mps.gov.cn/#/query/webSearch"
             target="_blank"
             rel="noopener noreferrer"
-            className="inline-flex items-center gap-1.5 transition hover:text-[#111411]"
+            className="inline-flex items-center gap-1.5 transition hover:text-[#f4f7f2]"
           >
             <Image
               src="/police-badge.png"

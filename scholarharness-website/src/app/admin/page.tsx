@@ -197,7 +197,7 @@ export default function AdminPage() {
   const [activeTab, setActiveTab] = useState<AdminTab>('stats');
 
   // Login state
-  const [loginMode, setLoginMode] = useState<'secret' | 'email'>('secret');
+  const [loginMode, setLoginMode] = useState<'secret' | 'email'>('email');
   const [secretCode, setSecretCode] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -323,6 +323,12 @@ export default function AdminPage() {
     setLoginLoading(true);
 
     try {
+      if (loginMode === 'secret' && /@/.test(secretCode.trim())) {
+        setLoginError('当前是密令登录。管理员邮箱账号请切换到“邮箱登录”。');
+        setLoginLoading(false);
+        return;
+      }
+
       const endpoint = loginMode === 'secret' ? '/admin/login' : '/admin/login-email';
       const body = loginMode === 'secret' 
         ? { secret_code: secretCode }
@@ -933,7 +939,7 @@ export default function AdminPage() {
                       value={email}
                       onChange={(e) => setEmail(e.target.value)}
                       className="w-full border border-gray-300 rounded-lg px-4 py-3 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition"
-                      placeholder="admin@example.com"
+                      placeholder="sjs@cau.edu.cn"
                       required
                     />
                   </div>
@@ -987,7 +993,7 @@ export default function AdminPage() {
 
   // Admin Dashboard
   return (
-    <div className="min-h-screen bg-gray-50 py-8 px-4 sm:px-6 lg:px-8">
+    <div className="min-h-screen bg-gray-50 py-8 px-4 text-gray-900 sm:px-6 lg:px-8">
       <div className="max-w-7xl mx-auto">
         {/* Header */}
         <div className="flex items-center justify-between mb-8">
@@ -1739,7 +1745,7 @@ export default function AdminPage() {
                 </button>
               </div>
             </div>
-            <div className="bg-white rounded-xl shadow overflow-hidden">
+            <div className="bg-white rounded-xl shadow overflow-hidden text-gray-900">
               <div className="px-6 py-4 border-b flex items-center justify-between">
                 <h3 className="text-lg font-bold text-gray-900">内测码列表</h3>
                 <span className="text-sm text-gray-500">共 {betaCodes.length} 条记录</span>
@@ -1747,44 +1753,44 @@ export default function AdminPage() {
               {betaCodes.length === 0 ? (
                 <div className="px-6 py-12 text-center text-gray-500">暂无内测码，请生成</div>
               ) : (
-                <table className="min-w-full divide-y divide-gray-200">
-                  <thead className="bg-gray-50">
+                <table className="min-w-full divide-y divide-gray-200 text-gray-900">
+                  <thead className="bg-gray-100">
                     <tr>
-                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">内测码</th>
-                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">类型</th>
-                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">试用天数</th>
-                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">状态</th>
-                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">批次</th>
-                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">使用者</th>
-                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">创建时间</th>
-                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">操作</th>
+                      <th className="px-4 py-3 text-left text-xs font-semibold text-gray-700 uppercase">内测码</th>
+                      <th className="px-4 py-3 text-left text-xs font-semibold text-gray-700 uppercase">类型</th>
+                      <th className="px-4 py-3 text-left text-xs font-semibold text-gray-700 uppercase">试用天数</th>
+                      <th className="px-4 py-3 text-left text-xs font-semibold text-gray-700 uppercase">状态</th>
+                      <th className="px-4 py-3 text-left text-xs font-semibold text-gray-700 uppercase">批次</th>
+                      <th className="px-4 py-3 text-left text-xs font-semibold text-gray-700 uppercase">使用者</th>
+                      <th className="px-4 py-3 text-left text-xs font-semibold text-gray-700 uppercase">创建时间</th>
+                      <th className="px-4 py-3 text-left text-xs font-semibold text-gray-700 uppercase">操作</th>
                     </tr>
                   </thead>
-                  <tbody className="divide-y divide-gray-200">
+                  <tbody className="divide-y divide-gray-200 bg-white text-gray-900">
                     {betaCodes.map((code) => (
-                      <tr key={code.id}>
+                      <tr key={code.id} className="bg-white hover:bg-gray-50">
                         <td className="px-4 py-3">
                           <div className="flex items-center gap-2">
-                            <span className="font-mono text-sm font-medium bg-gray-100 px-2 py-1 rounded">{code.code}</span>
-                            <button onClick={() => copyBetaCode(code.code)} className="text-gray-400 hover:text-gray-600" title="复制">
+                            <span className="rounded border border-gray-200 bg-gray-100 px-2 py-1 font-mono text-sm font-semibold text-gray-900">{code.code}</span>
+                            <button onClick={() => copyBetaCode(code.code)} className="text-gray-500 hover:text-gray-900" title="复制">
                               <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
                               </svg>
                             </button>
                           </div>
                         </td>
-                        <td className="px-4 py-3 text-sm">
+                        <td className="px-4 py-3 text-sm text-gray-900">
                           {getBetaCodeTypeLabel(code.code_type)}
                         </td>
-                        <td className="px-4 py-3 text-sm">{isPermanentBetaCode(code.code_type) ? '永久权限' : `${code.validity_days}天`}</td>
+                        <td className="px-4 py-3 text-sm text-gray-900">{isPermanentBetaCode(code.code_type) ? '永久权限' : `${code.validity_days}天`}</td>
                         <td className="px-4 py-3">
                           <span className={`px-2 py-1 rounded text-xs font-medium ${code.status === 'unused' ? 'bg-blue-100 text-blue-800' : code.status === 'used' ? 'bg-green-100 text-green-800' : code.status === 'expired' ? 'bg-yellow-100 text-yellow-800' : 'bg-red-100 text-red-800'}`}>
                             {code.status === 'unused' ? '未使用' : code.status === 'used' ? '已使用' : code.status === 'expired' ? '已过期' : '已禁用'}
                           </span>
                         </td>
-                        <td className="px-4 py-3 text-sm">{code.batch_name || code.batch_id}</td>
-                        <td className="px-4 py-3 text-sm text-gray-500">{code.used_by || '-'}</td>
-                        <td className="px-4 py-3 text-sm">{new Date(code.created_at).toLocaleDateString()}</td>
+                        <td className="px-4 py-3 text-sm text-gray-900">{code.batch_name || code.batch_id}</td>
+                        <td className="px-4 py-3 text-sm text-gray-700">{code.used_by || '-'}</td>
+                        <td className="px-4 py-3 text-sm text-gray-900">{new Date(code.created_at).toLocaleDateString()}</td>
                         <td className="px-4 py-3">
                           {code.status === 'unused' && (
                             <button onClick={() => disableBetaCode(code.id)} className="text-red-600 hover:text-red-800 text-sm">禁用</button>

@@ -14,6 +14,7 @@ export interface LLMChatRequest {
   temperature?: number;
   maxTokens?: number;
   stream?: boolean;
+  onProgress?: (chunk: string) => void;
 }
 
 interface ChatCompletionResponse {
@@ -38,6 +39,60 @@ function extractChatCompletionContent(data: ChatCompletionResponse): string {
     return content.map((part) => part?.text || "").join("");
   }
   return choice?.text || choice?.delta?.content || "";
+}
+
+async function readStreamingChatCompletion(
+  response: Response,
+  label?: string,
+  onProgress?: (chunk: string) => void
+): Promise<string> {
+  const reader = response.body?.getReader();
+  if (!reader) {
+    throw new Error(`${label || "LLM"} API returned a streaming response without a readable body`);
+  }
+
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let fullContent = "";
+
+  const consumeEvent = (eventText: string) => {
+    const payload = eventText
+      .split(/\r?\n/)
+      .filter((line) => line.startsWith("data:"))
+      .map((line) => line.replace(/^data:\s?/, ""))
+      .join("\n")
+      .trim();
+    if (!payload || payload === "[DONE]") return;
+
+    const data = JSON.parse(payload) as ChatCompletionResponse;
+    const chunk = extractChatCompletionContent(data);
+    if (!chunk) return;
+    fullContent += chunk;
+    onProgress?.(chunk);
+  };
+
+  while (true) {
+    const chunk = await reader.read();
+    if (chunk.done) break;
+
+    buffer += decoder.decode(chunk.value, { stream: true });
+    const events = buffer.split(/\r?\n\r?\n/);
+    buffer = events.pop() || "";
+    for (const eventText of events) {
+      consumeEvent(eventText);
+    }
+  }
+
+  buffer += decoder.decode();
+  if (buffer.trim()) {
+    consumeEvent(buffer);
+  }
+
+  if (!fullContent) {
+    throw new Error(`${label || "LLM"} API returned empty streaming response`);
+  }
+
+  return fullContent;
 }
 
 export function normalizeChatCompletionUrl(apiUrl: string): string {
@@ -127,6 +182,10 @@ export async function callChatCompletion(
       throw new Error(`${config.label || "LLM"} API error: 402 - 上游模型服务余额不足或 Key 所属账户无可用额度。请充值对应模型平台，或更换有余额的 API Key。`);
     }
     throw new Error(`${config.label || "LLM"} API error: ${response.status} - ${errorText}`);
+  }
+
+  if (options.stream) {
+    return readStreamingChatCompletion(response, config.label, options.onProgress);
   }
 
   const data = await response.json() as ChatCompletionResponse;

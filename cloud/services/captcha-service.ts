@@ -72,6 +72,13 @@ export class CaptchaService {
       const payload = response.Response;
       if (payload?.Error) {
         logger.warn('[CaptchaService] Tencent API error:', payload.Error.Code, payload.Error.Message);
+        if (payload.Error.Code?.includes('AuthFailure')) {
+          return {
+            valid: false,
+            message: formatTencentAuthFailureMessage(payload.Error.Code, payload.Error.Message || ''),
+          };
+        }
+
         if (payload.Error.Code?.includes('UnauthorizedOperation')) {
           if (payload.Error.Message?.includes('套餐') || payload.Error.Message?.includes('欠费')) {
             return {
@@ -101,6 +108,12 @@ export class CaptchaService {
             '腾讯云验证码 AppID、AppSecretKey 与 ticket 不匹配，请确认前端 AppID 和后端验证码应用密钥来自同一个腾讯云验证码应用',
         };
       }
+      if (payload?.CaptchaCode === 15) {
+        return {
+          valid: false,
+          message: '腾讯云验证码解密失败，请确认前端 AppID、后端 CAPTCHA_APP_SECRET_KEY 与同一个验证码应用匹配，且验证码未过期',
+        };
+      }
       return { valid: false, message: payload?.CaptchaMsg || '人机验证校验失败' };
     } catch (error) {
       logger.error('[CaptchaService] Verification error:', error);
@@ -122,7 +135,7 @@ export class CaptchaService {
       if (errorCode.includes('AuthFailure')) {
         return {
           valid: false,
-          message: '验证码服务的腾讯云密钥配置无效，请检查 SecretId/SecretKey 后重试',
+          message: formatTencentAuthFailureMessage(errorCode, getErrorMessage(error)),
         };
       }
       return { valid: false, message: '人机验证校验异常，请重试' };
@@ -257,11 +270,31 @@ function getErrorMessage(error: unknown): string {
   );
 }
 
+function formatTencentAuthFailureMessage(code: string, message: string): string {
+  if (code.includes('SecretIdNotFound')) {
+    return '腾讯云 API SecretId 不存在或不属于当前腾讯云账号，请在腾讯云访问管理 CAM 中重新生成 SecretId/SecretKey，并同步到服务器配置';
+  }
+  if (code.includes('SignatureFailure')) {
+    return '腾讯云 API 签名校验失败，请检查 SecretId/SecretKey 是否成对、是否复制完整';
+  }
+  return message || '验证码服务的腾讯云 API 密钥配置无效，请检查 SecretId/SecretKey 后重试';
+}
+
+function firstEnv(...names: string[]): string {
+  for (const name of names) {
+    const value = process.env[name]?.trim();
+    if (value) {
+      return value;
+    }
+  }
+  return '';
+}
+
 export function createCaptchaServiceFromEnv(): CaptchaService {
   return new CaptchaService({
-    appId: process.env.CAPTCHA_APP_ID || '',
-    appSecretKey: process.env.CAPTCHA_APP_SECRET_KEY || '',
-    secretId: process.env.TENCENT_SECRET_ID || '',
-    secretKey: process.env.TENCENT_SECRET_KEY || '',
+    appId: firstEnv('CAPTCHA_APP_ID', 'TENCENT_CAPTCHA_APP_ID', 'NEXT_PUBLIC_TENCENT_CAPTCHA_APP_ID'),
+    appSecretKey: firstEnv('CAPTCHA_APP_SECRET_KEY', 'TENCENT_CAPTCHA_APP_SECRET_KEY'),
+    secretId: firstEnv('TENCENT_SECRET_ID', 'TENCENTCLOUD_SECRET_ID', 'TENCENT_CLOUD_SECRET_ID', 'CAPTCHA_TENCENT_SECRET_ID'),
+    secretKey: firstEnv('TENCENT_SECRET_KEY', 'TENCENTCLOUD_SECRET_KEY', 'TENCENT_CLOUD_SECRET_KEY', 'CAPTCHA_TENCENT_SECRET_KEY'),
   });
 }

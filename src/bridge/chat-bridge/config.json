@@ -27,5 +27,11 @@
     "api_key": "",
     "model": "gpt-4o",
     "description": "小牛马 - 引用验证、更新记忆"
+  },
+  "secondary_vision": {
+    "api_url": "",
+    "api_key": "",
+    "model": "gpt-4o",
+    "description": "小牛马视觉 - 图片、图表截图、多模态输入"
   }
 }

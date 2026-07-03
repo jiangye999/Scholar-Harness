@@ -53,15 +53,18 @@ router.post('/send-email-code', rateLimitMiddleware(3, 60000), async (req: Reque
 
     const captchaResult = await captchaService.verify(captchaTicket, captchaRandstr, getClientIp(req));
     if (!captchaResult.valid) {
+      logger.warn(`[Verification] Captcha rejected for ${email}: ${captchaResult.message}`);
       return res.status(400).json({
         error: 'Bad Request',
         message: captchaResult.message,
       });
     }
+    logger.info(`[Verification] Captcha accepted for ${email}, type=${type}`);
 
     if (type === 'register') {
       const existingUser = await userStore.findByEmail(email);
       if (existingUser) {
+        logger.info(`[Verification] Email code skipped because user already exists: ${email}`);
         return res.status(409).json({
           error: 'Conflict',
           message: '该邮箱已注册',
@@ -70,16 +73,19 @@ router.post('/send-email-code', rateLimitMiddleware(3, 60000), async (req: Reque
     }
 
     const { code } = await verificationStore.create(email, type);
+    logger.info(`[Verification] Created email verification code for ${email}, type=${type}`);
     const result = await emailService.sendVerificationCode(email, code, type);
 
     if (!result.success) {
       await verificationStore.expirePending(email, type);
+      logger.warn(`[Verification] Email send failed for ${email}, type=${type}: ${result.message}`);
       return res.status(500).json({
         error: 'Internal Server Error',
         message: result.message,
       });
     }
 
+    logger.info(`[Verification] Email verification code sent for ${email}, type=${type}`);
     return res.json({
       success: true,
       message: result.message,

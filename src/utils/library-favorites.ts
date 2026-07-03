@@ -97,3 +97,23 @@ export function toggleLibraryFavorite(
     favoriteIds: saved[kind],
   };
 }
+
+export function removeLibraryFavorites(
+  userId: string,
+  kind: LibraryFavoriteKind,
+  itemIds: string[]
+): { removedCount: number; favoriteIds: string[] } {
+  const ids = new Set(
+    (Array.isArray(itemIds) ? itemIds : [])
+      .map(id => String(id || "").trim())
+      .filter(Boolean)
+  );
+  const favorites = loadLibraryFavorites(userId);
+  const before = favorites[kind].length;
+  favorites[kind] = favorites[kind].filter(id => !ids.has(id));
+  const saved = saveLibraryFavorites(userId, favorites);
+  return {
+    removedCount: before - saved[kind].length,
+    favoriteIds: saved[kind],
+  };
+}

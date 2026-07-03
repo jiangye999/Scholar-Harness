@@ -1,12 +1,15 @@
 export type IconName =
   | "arrow"
+  | "book"
   | "chart"
   | "check"
   | "database"
   | "download"
   | "file"
+  | "mail"
   | "message"
   | "network"
+  | "question"
   | "search"
   | "spark"
   | "windows"
@@ -30,6 +33,15 @@ export function FeatureIcon({ name, className = "h-5 w-5" }: { name: IconName; c
         <svg {...common}>
           <path d="M5 12h14" />
           <path d="m13 6 6 6-6 6" />
+        </svg>
+      );
+    case "book":
+      return (
+        <svg {...common}>
+          <path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H20v16H6.5A2.5 2.5 0 0 0 4 21.5V5.5Z" />
+          <path d="M4 5.5A2.5 2.5 0 0 0 6.5 8H20" />
+          <path d="M8 12h7" />
+          <path d="M8 15h5" />
         </svg>
       );
     case "chart":
@@ -75,6 +87,13 @@ export function FeatureIcon({ name, className = "h-5 w-5" }: { name: IconName; c
           <path d="M9 18h4" />
         </svg>
       );
+    case "mail":
+      return (
+        <svg {...common}>
+          <path d="M4 6h16v12H4z" />
+          <path d="m4 7 8 6 8-6" />
+        </svg>
+      );
     case "message":
       return (
         <svg {...common}>
@@ -95,6 +114,14 @@ export function FeatureIcon({ name, className = "h-5 w-5" }: { name: IconName; c
           <path d="m16.2 8.4-2.7 2.4" />
           <path d="m8.5 16.5 2.1-2.8" />
           <path d="m15.4 15.6-2-2.2" />
+        </svg>
+      );
+    case "question":
+      return (
+        <svg {...common}>
+          <circle cx="12" cy="12" r="9" />
+          <path d="M9.8 9.2a2.6 2.6 0 0 1 4.7 1.6c0 1.6-1.2 2.2-2.1 2.8-.5.3-.8.8-.8 1.4" />
+          <path d="M12 18h.01" />
         </svg>
       );
     case "search":

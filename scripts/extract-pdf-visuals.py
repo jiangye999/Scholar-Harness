@@ -23,7 +23,7 @@ except Exception as exc:  # pragma: no cover - reported to caller
 
 
 CAPTION_RE = re.compile(
-    r"^\s*((?:fig(?:ure)?\.?|table|图表|图|表)\s*"
+    r"(?:^\s*|(?<=[.!?。]\s))((?:(?:fig(?:ure)?\.?|f\s*i\s*g\s*u\s*r\s*e)|(?:table|t\s*a\s*b\s*l\s*e)|图表|图|表)\s*"
     r"(?:\d+(?:[.-]\d+)?|[ivxlcdm]+|[一二三四五六七八九十百]+)\s*\.?)",
     re.IGNORECASE,
 )
@@ -46,7 +46,9 @@ def caption_meta(text: str) -> dict:
     match = CAPTION_RE.search(caption)
     label = clean_text(match.group(1), 80) if match else ""
     title = caption
-    if label and title.lower().startswith(label.lower()):
+    if match:
+        title = clean_text(caption[match.end():].lstrip(" .:：-"), 320)
+    elif label and title.lower().startswith(label.lower()):
         title = clean_text(title[len(label):].lstrip(" .:：-"), 320)
     if not title:
         title = caption[:320]
@@ -80,7 +82,13 @@ def expand_rect(rect: fitz.Rect, page_rect: fitz.Rect, pad: float) -> fitz.Rect:
 
 
 def pixmap_to_png(pix: fitz.Pixmap, output_path: Path) -> tuple[int, int]:
-    if pix.alpha or pix.n >= 5:
+    colorspace_name = getattr(getattr(pix, "colorspace", None), "name", "") or ""
+    needs_rgb = (
+        pix.alpha
+        or pix.n not in (1, 3)
+        or colorspace_name not in ("", "DeviceGray", "DeviceRGB")
+    )
+    if needs_rgb:
         converted = fitz.Pixmap(fitz.csRGB, pix)
         try:
             converted.save(output_path)
@@ -265,6 +273,9 @@ def visual_region_crops(
     for page_index in range(len(doc)):
         if existing + len(items) >= max_assets:
             break
+        page_number = page_index + 1
+        if page_number in pages_with_caption_crop:
+            continue
         page = doc[page_index]
         page_rect = page.rect
         blocks = page_text_blocks(page)
@@ -296,7 +307,7 @@ def visual_region_crops(
             continue
         if rect_area(merged) > page_area * 0.85:
             continue
-        filename = f"{pdf_stem}_p{page_index + 1:03d}_visual_{len(items) + 1:02d}.png"
+        filename = f"{pdf_stem}_p{page_number:03d}_visual_{len(items) + 1:02d}.png"
         output_path = output_dir / filename
         width, height = render_clip(page, merged, output_path)
         context = context_for_rect(blocks, merged)
@@ -304,12 +315,12 @@ def visual_region_crops(
             "filename": filename,
             "absolutePath": str(output_path),
             "sourcePdf": pdf_path.name,
-            "page": page_index + 1,
+            "page": page_number,
             "source": "visual-region",
             **context,
             "width": width,
             "height": height,
-            "description": clean_text(f"Detected visual region on PDF page {page_index + 1}. {context.get('captionTitle') or context.get('nearbyText')}", 360),
+            "description": clean_text(f"Detected visual region on PDF page {page_number}. {context.get('captionTitle') or context.get('nearbyText')}", 360),
             "suggestedUse": "Use after matching its caption/nearby text to a method, result, or discussion slide.",
             "confidence": "medium" if context.get("captionTitle") else "low",
         })
@@ -396,8 +407,9 @@ def embedded_images(
             if xref in seen:
                 continue
             seen.add(xref)
-            pix = fitz.Pixmap(doc, xref)
+            pix = None
             try:
+                pix = fitz.Pixmap(doc, xref)
                 if pix.width < 160 or pix.height < 100:
                     continue
                 digest = hashlib.sha1(pix.samples).hexdigest()
@@ -423,6 +435,8 @@ def embedded_images(
                     "suggestedUse": "Use after matching its caption/nearby text to the slide content.",
                     "confidence": "high" if context.get("captionTitle") else "medium",
                 })
+            except Exception:
+                continue
             finally:
                 pix = None
     return items
@@ -444,7 +458,7 @@ def extract_from_pdf(pdf_path: Path, output_dir: Path, max_assets: int) -> list[
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("project_path", type=Path)
-    parser.add_argument("--max-assets", type=int, default=12)
+    parser.add_argument("--max-assets", type=int, default=80)
     args = parser.parse_args()
 
     project_path = args.project_path.resolve()

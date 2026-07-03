@@ -5,6 +5,7 @@
 
 import { Router, Request, Response } from 'express';
 import { logger } from '../../utils/logger';
+import { researchSessionManager } from '../../research/research-session-manager';
 import {
   getDataDir,
   getMemoryDir,
@@ -102,6 +103,39 @@ export interface UserMemory {
   deletedKeys?: string[];
 }
 
+type MemoryEditAction = 'replace' | 'delete' | 'append';
+
+export interface PendingMemoryEdit {
+  id: string;
+  userId: string;
+  action: MemoryEditAction;
+  targetKey: string;
+  targetLabel: string;
+  instruction: string;
+  beforeValue: string;
+  afterValue: string;
+  summary: string;
+  oldText?: string;
+  newText?: string;
+  createdAt: string;
+  expiresAt: string;
+}
+
+export interface MemoryEditPreviewResult {
+  handled: boolean;
+  pendingEdit?: PendingMemoryEdit;
+  message: string;
+}
+
+export interface MemoryEditApplyResult {
+  applied: boolean;
+  cancelled?: boolean;
+  backupId?: string;
+  targetKey?: string;
+  targetLabel?: string;
+  message: string;
+}
+
 interface MemoryCategoryDefinition {
   id: string;
   label: string;
@@ -157,6 +191,73 @@ const STRUCTURED_SUMMARY_KEY_BY_RAW_KEY: Record<string, string> = {
   experiment_summary: 'experiment_summary_structured',
   data_summary: 'data_summary_structured',
 };
+
+const MEMORY_EDIT_TARGETS: Array<{ key: string; label: string; aliases: string[] }> = [
+  { key: 'experiment_summary_structured', label: '实验资料总结', aliases: ['实验资料总结', '实验资料', '试验资料总结', '试验资料', '实验总结', '研究材料'] },
+  { key: 'data_summary_structured', label: '数据详细总结', aliases: ['数据详细总结', '数据总结', '数据资料', '数据结果', '图片识别内容', '图件总结', '图像识别内容'] },
+  { key: 'writing_progress', label: '写作进度', aliases: ['写作进度', '当前进度', '论文进度', '进度'] },
+  { key: 'completed_chapters', label: '已完成章节', aliases: ['已完成章节', '完成章节', '已经完成'] },
+  { key: 'pending_chapters', label: '待完成章节', aliases: ['待完成章节', '未完成章节', '待写章节', '下一步章节'] },
+  { key: 'draft_progress', label: '论文草稿进度', aliases: ['论文草稿', '草稿', '普通草稿', '草稿进度'] },
+  { key: 'paper_topic', label: '论文主题', aliases: ['论文主题', '研究主题', '主题'] },
+  { key: 'target_journal', label: '目标期刊', aliases: ['目标期刊', '投稿期刊', '期刊'] },
+  { key: 'key_findings', label: '关键发现', aliases: ['关键发现', '主要发现', '研究结论', '核心结论'] },
+  { key: 'research_method', label: '研究方法', aliases: ['研究方法', '方法', '实验方法'] },
+];
+
+const MEMORY_EDIT_CONFIRM_PATTERNS = [
+  /^(确认|确定|同意|执行|应用|保存)(修改|编辑|变更|这个修改)?$/i,
+  /^(确认修改|确认编辑|应用修改|保存修改|执行修改)$/i,
+];
+
+const MEMORY_EDIT_CANCEL_PATTERNS = [
+  /^(取消|不要|放弃|撤销)(修改|编辑|变更)?$/i,
+  /^(取消修改|放弃修改|不要修改)$/i,
+];
+
+const PROTECTED_UPLOAD_SUMMARY_MARKERS = [
+  '【按图件编号整理的结构化数据总结】',
+  '历史实验图片/材料上传记录同步',
+];
+
+function hasProtectedUploadSummaryBlock(value: string): boolean {
+  return PROTECTED_UPLOAD_SUMMARY_MARKERS.some(marker => value.includes(marker));
+}
+
+function extractProtectedUploadSummaryBlocks(value?: string): string[] {
+  const text = String(value || '').trim();
+  if (!text || !hasProtectedUploadSummaryBlock(text)) return [];
+
+  const chunks = text
+    .split(/\n{2}---\n{2}/)
+    .map(chunk => chunk.trim())
+    .filter(Boolean);
+
+  const protectedChunks = chunks.filter(chunk => hasProtectedUploadSummaryBlock(chunk));
+  return protectedChunks.length > 0 ? protectedChunks : [text];
+}
+
+function normalizeProtectedUploadSummaryBlock(value: string): string {
+  return value.replace(/\s+/g, ' ').trim();
+}
+
+function preserveProtectedUploadSummaryBlocks(summary: string, ...sources: Array<string | undefined>): string {
+  let merged = String(summary || '').trim();
+  const existingBlocks = new Set(
+    extractProtectedUploadSummaryBlocks(merged).map(normalizeProtectedUploadSummaryBlock)
+  );
+
+  for (const source of sources) {
+    for (const block of extractProtectedUploadSummaryBlocks(source)) {
+      const normalized = normalizeProtectedUploadSummaryBlock(block);
+      if (!normalized || existingBlocks.has(normalized)) continue;
+      merged = merged ? `${merged}\n\n---\n\n${block}` : block;
+      existingBlocks.add(normalized);
+    }
+  }
+
+  return merged;
+}
 
 const USER_SCOPED_MEMORY_KEYS = new Set([
   'paper_topic',
@@ -565,9 +666,21 @@ router.post('/update', async (req: Request, res: Response) => {
       return { updatedKeys, message: `Memory updated: ${updatedKeys.join(', ')}` };
     });
 
+    const researchSession = await recordMemoryResearchProvenance({
+      userId,
+      researchSessionId: typeof req.body.researchSessionId === 'string' ? req.body.researchSessionId : undefined,
+      userMessage,
+      aiResponse,
+      updatedKeys: result.updatedKeys,
+    }).catch((error) => {
+      logger.warn('[ResearchSession] Failed to record memory provenance:', error);
+      return undefined;
+    });
+
     res.json({
       success: true,
-      ...result
+      ...result,
+      researchSession,
     });
 
   } catch (error) {
@@ -1059,6 +1172,565 @@ const UserMemorySchema = z.object({
   deletedKeys: z.array(z.string()).default([]),
 });
 
+async function writeTextFileAtomic(filePath: string, content: string): Promise<void> {
+  const dir = path.dirname(filePath);
+  await fsp.mkdir(dir, { recursive: true });
+  const tempPath = path.join(dir, `.${path.basename(filePath)}.${process.pid}.${Date.now()}.tmp`);
+
+  await fsp.writeFile(tempPath, content, 'utf-8');
+  await fsp.rename(tempPath, filePath).catch(async (error) => {
+    await fsp.rm(tempPath, { force: true }).catch(() => undefined);
+    throw error;
+  });
+}
+
+async function writeJsonFileAtomic(filePath: string, value: unknown): Promise<void> {
+  const content = JSON.stringify(value, null, 2);
+  JSON.parse(content);
+  await writeTextFileAtomic(filePath, content);
+}
+
+function parseSyncedMemoryFile(content: string, fallbackKey: string): { key: string; value: string; timestamp: string } | null {
+  const trimmed = content.trim();
+  if (!trimmed) return null;
+
+  const match = trimmed.match(/^【[^】]+】\s+更新时间:\s*([^\n]+)\s+来源:\s*([^\n]+)\s+([\s\S]*)$/);
+  if (match?.[3]?.trim()) {
+    return {
+      key: match[2].trim() || fallbackKey,
+      value: match[3].trim(),
+      timestamp: match[1].trim() || new Date().toISOString(),
+    };
+  }
+
+  return {
+    key: fallbackKey,
+    value: trimmed,
+    timestamp: new Date().toISOString(),
+  };
+}
+
+async function recoverMemoryFromSyncedFiles(userId: string): Promise<UserMemory | null> {
+  const userMemoryDir = path.join(memoryDir, userId);
+  const candidates: Array<{ fileName: string; fallbackKey: string }> = [
+    { fileName: '试验资料总结.txt', fallbackKey: 'experiment_summary_structured' },
+    { fileName: '数据详细总结.txt', fallbackKey: 'data_summary_structured' },
+  ];
+  const entries: MemoryEntry[] = [];
+
+  for (const candidate of candidates) {
+    const filePath = path.join(userMemoryDir, candidate.fileName);
+    try {
+      const content = await fsp.readFile(filePath, 'utf-8');
+      const parsed = parseSyncedMemoryFile(content, candidate.fallbackKey);
+      if (!parsed || parsed.value.length <= 10) continue;
+      entries.push({
+        key: parsed.key,
+        value: parsed.value,
+        source: 'recovered-sync-file',
+        timestamp: parsed.timestamp,
+      });
+    } catch (error) {
+      if (!isNodeError(error) || error.code !== 'ENOENT') {
+        logger.warn(`[Memory] Failed to read synced memory file for recovery: ${filePath}`, error);
+      }
+    }
+  }
+
+  if (entries.length === 0) return null;
+  const recovered: UserMemory = {
+    userId,
+    entries,
+    conversations: [],
+    updatedAt: new Date().toISOString(),
+    deletedKeys: [],
+  };
+  logger.warn(`[Memory] Recovered ${entries.length} memory entries for ${userId} from synced txt files`);
+  return recovered;
+}
+
+function compactPreview(value: string, maxChars = 900): string {
+  const text = String(value || '').trim();
+  if (text.length <= maxChars) return text;
+  const half = Math.floor(maxChars / 2);
+  return `${text.slice(0, half)}\n\n...\n\n${text.slice(-half)}`;
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function getPendingMemoryEditPath(userId: string): string {
+  return path.join(memoryDir, userId, 'pending-memory-edit.json');
+}
+
+function getMemoryEditBackupDir(userId: string): string {
+  return path.join(memoryDir, userId, 'edit-backups');
+}
+
+function normalizeEditInstruction(value: string): string {
+  return String(value || '').replace(/\s+/g, ' ').trim();
+}
+
+function matchAnyPattern(value: string, patterns: RegExp[]): boolean {
+  const text = normalizeEditInstruction(value);
+  return patterns.some(pattern => pattern.test(text));
+}
+
+export function isMemoryEditConfirmation(message: string): boolean {
+  return matchAnyPattern(message, MEMORY_EDIT_CONFIRM_PATTERNS);
+}
+
+export function isMemoryEditCancellation(message: string): boolean {
+  return matchAnyPattern(message, MEMORY_EDIT_CANCEL_PATTERNS);
+}
+
+export async function getPendingMemoryEdit(userId: string): Promise<PendingMemoryEdit | null> {
+  const pendingPath = getPendingMemoryEditPath(userId);
+  try {
+    const content = await fsp.readFile(pendingPath, 'utf-8');
+    const pending = JSON.parse(content) as PendingMemoryEdit;
+    if (!pending?.id || !pending?.targetKey) return null;
+    if (pending.expiresAt && Date.now() > new Date(pending.expiresAt).getTime()) {
+      await fsp.rm(pendingPath, { force: true }).catch(() => undefined);
+      return null;
+    }
+    return pending;
+  } catch (error) {
+    if (!isNodeError(error) || error.code !== 'ENOENT') {
+      logger.warn(`[MemoryEdit] Failed to read pending edit for ${userId}:`, error);
+    }
+    return null;
+  }
+}
+
+async function savePendingMemoryEdit(edit: PendingMemoryEdit): Promise<void> {
+  await writeJsonFileAtomic(getPendingMemoryEditPath(edit.userId), edit);
+}
+
+async function clearPendingMemoryEdit(userId: string): Promise<void> {
+  await fsp.rm(getPendingMemoryEditPath(userId), { force: true }).catch(() => undefined);
+}
+
+export function isLikelyMemoryEditInstruction(message: string): boolean {
+  const text = normalizeEditInstruction(message);
+  if (text.length < 4) return false;
+  const hasEditVerb = /(修改|更改|改成|改为|替换|替换为|删除|清空|移除|删掉|补充|追加|添加|合并|更新|设为|设置为)/.test(text);
+  const hasMemoryScope = /(长期记忆|跨会话|记忆|数据详细总结|实验资料总结|试验资料总结|写作进度|论文草稿|草稿进度|目标期刊|论文主题|已完成章节|待完成章节|关键发现)/.test(text);
+  return hasEditVerb && hasMemoryScope;
+}
+
+function detectMemoryEditTarget(instruction: string): { key: string; label: string } | null {
+  const text = normalizeEditInstruction(instruction).toLowerCase();
+  let best: { key: string; label: string; score: number } | null = null;
+  for (const target of MEMORY_EDIT_TARGETS) {
+    let score = 0;
+    for (const alias of target.aliases) {
+      if (text.includes(alias.toLowerCase())) {
+        score = Math.max(score, alias.length);
+      }
+    }
+    if (score > 0 && (!best || score > best.score)) {
+      best = { key: target.key, label: target.label, score };
+    }
+  }
+  return best ? { key: best.key, label: best.label } : null;
+}
+
+function detectMemoryEditAction(instruction: string): MemoryEditAction {
+  const text = normalizeEditInstruction(instruction);
+  if (/(删除|清空|移除|删掉)/.test(text)) return 'delete';
+  if (/(补充|追加|添加|合并|加入)/.test(text)) return 'append';
+  return 'replace';
+}
+
+function stripTargetPrefix(value: string): string {
+  return value
+    .replace(/^(?:把|将)?(?:跨会话)?(?:长期)?记忆(?:里|中|里面|中的)?/i, '')
+    .replace(/^(?:把|将)?(?:实验资料总结|试验资料总结|数据详细总结|数据总结|写作进度|论文草稿|草稿进度|论文主题|目标期刊|已完成章节|待完成章节|关键发现)(?:里|中|里面|中的)?/i, '')
+    .replace(/^(?:修改|更改|更新|设置|设为|改成|改为|替换为|补充|追加|添加|删除|清空|移除|删掉)[：:\s]*/i, '')
+    .trim();
+}
+
+function parseReplacePair(instruction: string): { oldText?: string; newText?: string } {
+  const text = normalizeEditInstruction(instruction);
+  const patterns = [
+    /(?:把|将)(.+?)(?:改成|改为|替换为)(.+)$/i,
+    /(.+?)(?:改成|改为|替换为)(.+)$/i,
+  ];
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    if (!match?.[2]) continue;
+    const oldText = stripTargetPrefix(match[1]).replace(/^(?:里|中|里面|中的)/, '').trim();
+    const newText = match[2].trim();
+    if (newText) return { oldText: oldText || undefined, newText };
+  }
+
+  const setMatch = text.match(/(?:设为|设置为|更新为|修改为)[：:\s]*(.+)$/i);
+  if (setMatch?.[1]) {
+    return { newText: setMatch[1].trim() };
+  }
+  return {};
+}
+
+function parseDeleteNeedle(instruction: string): string | undefined {
+  const text = normalizeEditInstruction(instruction);
+  const match = text.match(/(?:删除|清空|移除|删掉)[：:\s]*(.+)$/i);
+  if (!match?.[1]) return undefined;
+  const candidate = stripTargetPrefix(match[1]).trim();
+  if (!candidate || MEMORY_EDIT_TARGETS.some(target => target.aliases.includes(candidate))) return undefined;
+  return candidate;
+}
+
+function parseAppendText(instruction: string): string | undefined {
+  const text = normalizeEditInstruction(instruction);
+  const match = text.match(/(?:补充|追加|添加|合并|加入)[：:\s]*(.+)$/i);
+  if (!match?.[1]) return undefined;
+  return stripTargetPrefix(match[1]).trim() || undefined;
+}
+
+function applyMemoryEditOperation(input: {
+  action: MemoryEditAction;
+  beforeValue: string;
+  instruction: string;
+  oldText?: string;
+  newText?: string;
+  appendText?: string;
+  deleteNeedle?: string;
+}): { afterValue: string; summary: string; oldText?: string; newText?: string } {
+  const before = input.beforeValue || '';
+  if (input.action === 'delete') {
+    if (input.deleteNeedle && before.includes(input.deleteNeedle)) {
+      const after = before.replace(new RegExp(escapeRegExp(input.deleteNeedle), 'g'), '').replace(/\n{3,}/g, '\n\n').trim();
+      return { afterValue: after, summary: `删除字段内匹配文本：${input.deleteNeedle}`, oldText: input.deleteNeedle };
+    }
+    return { afterValue: '', summary: '清空该长期记忆字段' };
+  }
+
+  if (input.action === 'append') {
+    const appendText = (input.appendText || stripTargetPrefix(input.instruction)).trim();
+    const block = `【用户补充修改】\n${appendText}`;
+    const after = before.trim() ? `${before.trim()}\n\n---\n\n${block}` : appendText;
+    return { afterValue: after, summary: `向字段末尾补充 ${appendText.length} 字`, newText: appendText };
+  }
+
+  const newText = input.newText?.trim();
+  const oldText = input.oldText?.trim();
+  if (oldText && newText && before.includes(oldText)) {
+    return {
+      afterValue: before.replace(new RegExp(escapeRegExp(oldText), 'g'), newText).trim(),
+      summary: `替换字段内文本：“${oldText}” -> “${newText}”`,
+      oldText,
+      newText,
+    };
+  }
+  if (newText && !oldText) {
+    return {
+      afterValue: newText,
+      summary: '将该长期记忆字段整体更新为用户指定内容',
+      newText,
+    };
+  }
+
+  const fallbackText = stripTargetPrefix(input.instruction);
+  return {
+    afterValue: fallbackText,
+    summary: '未识别到明确旧文本，预览为整体更新；请确认后再写入',
+    newText: fallbackText,
+  };
+}
+
+function findEntryValue(memory: UserMemory, key: string): string {
+  const entry = memory.entries.find(item => item.key === key);
+  if (entry?.value) return entry.value;
+  const rawKey = Object.entries(STRUCTURED_SUMMARY_KEY_BY_RAW_KEY).find(([, structuredKey]) => structuredKey === key)?.[0];
+  if (rawKey) {
+    return memory.entries.find(item => item.key === rawKey)?.value || '';
+  }
+  return '';
+}
+
+function formatMemoryEditPreview(edit: PendingMemoryEdit): string {
+  return [
+    '已识别到一条长期记忆编辑指令，先生成预览，尚未写入。',
+    '',
+    `- 编辑对象：${edit.targetLabel}（${edit.targetKey}）`,
+    `- 操作类型：${edit.action === 'delete' ? '删除/清空' : edit.action === 'append' ? '补充/合并' : '替换/更新'}`,
+    `- 修改摘要：${edit.summary}`,
+    '',
+    '修改前预览：',
+    '```text',
+    compactPreview(edit.beforeValue || '（当前为空）', 1000),
+    '```',
+    '',
+    '修改后预览：',
+    '```text',
+    compactPreview(edit.afterValue || '（将清空该字段）', 1000),
+    '```',
+    '',
+    `确认写入请回复：确认修改`,
+    `取消请回复：取消修改`,
+    `编辑编号：${edit.id}`,
+  ].join('\n');
+}
+
+async function inferMemoryEditWithAi(input: {
+  instruction: string;
+  detectedTarget?: { key: string; label: string } | null;
+  action: MemoryEditAction;
+  apiUrl?: string;
+  apiKey?: string;
+  model?: string;
+}): Promise<{ targetKey?: string; action?: MemoryEditAction; oldText?: string; newText?: string; appendText?: string; deleteNeedle?: string; summary?: string } | null> {
+  if (!input.apiUrl || !input.apiKey) return null;
+  const targetList = MEMORY_EDIT_TARGETS.map(target => `- ${target.key}: ${target.label}（别名：${target.aliases.join('、')}）`).join('\n');
+  const prompt = `你是长期记忆编辑指令解析器。请只输出 JSON，不要解释。
+
+可编辑字段：
+${targetList}
+
+用户指令：
+${input.instruction}
+
+请判断：
+- targetKey: 最匹配字段 key
+- action: replace/delete/append
+- oldText: 如果是把 A 改成 B，填 A；如果是整体设置，留空
+- newText: replace 的新内容或整体设置内容
+- appendText: append 的追加内容
+- deleteNeedle: delete 时如果只删除字段内某段文本，填该文本；如果清空整个字段，留空
+- summary: 20字以内中文摘要
+
+输出 JSON 示例：
+{"targetKey":"data_summary_structured","action":"replace","oldText":"Figure 2d（a）","newText":"Figure 2d","summary":"修正图件编号"}`;
+
+  try {
+    const response = await fetch(`${input.apiUrl.replace(/\/$/, '')}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${input.apiKey}`,
+      },
+      body: JSON.stringify({
+        model: input.model || 'gpt-4o-mini',
+        messages: [{ role: 'user', content: prompt }],
+        temperature: 0,
+        max_tokens: 800,
+      }),
+    });
+    if (!response.ok) return null;
+    const data: any = await response.json();
+    const content = String(data.choices?.[0]?.message?.content || '').trim();
+    const jsonMatch = content.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) return null;
+    const parsed = JSON.parse(jsonMatch[0]);
+    return parsed && typeof parsed === 'object' ? parsed : null;
+  } catch (error) {
+    logger.warn('[MemoryEdit] AI instruction parse failed, using rules:', error);
+    return null;
+  }
+}
+
+export async function createMemoryEditPreview(input: {
+  userId: string;
+  instruction: string;
+  apiUrl?: string;
+  apiKey?: string;
+  model?: string;
+}): Promise<MemoryEditPreviewResult> {
+  const instruction = normalizeEditInstruction(input.instruction);
+  if (!isLikelyMemoryEditInstruction(instruction)) {
+    return { handled: false, message: '' };
+  }
+
+  const ruleTarget = detectMemoryEditTarget(instruction);
+  const ruleAction = detectMemoryEditAction(instruction);
+  const ai = await inferMemoryEditWithAi({
+    instruction,
+    detectedTarget: ruleTarget,
+    action: ruleAction,
+    apiUrl: input.apiUrl,
+    apiKey: input.apiKey,
+    model: input.model,
+  });
+
+  const targetKey = String(ai?.targetKey || ruleTarget?.key || '').trim();
+  const target = MEMORY_EDIT_TARGETS.find(item => item.key === targetKey) || ruleTarget;
+  if (!target) {
+    return {
+      handled: true,
+      message: '我识别到你想修改长期记忆，但没有定位到具体字段。请明确说明要修改“实验资料总结、数据详细总结、写作进度、论文草稿进度、论文主题、目标期刊”等哪个部分。',
+    };
+  }
+
+  const memory = await loadUserMemory(input.userId);
+  const beforeValue = findEntryValue(memory, target.key);
+  const parsedPair = parseReplacePair(instruction);
+  const action = (['replace', 'delete', 'append'].includes(String(ai?.action)) ? ai?.action : ruleAction) as MemoryEditAction;
+  const operation = applyMemoryEditOperation({
+    action,
+    beforeValue,
+    instruction,
+    oldText: String(ai?.oldText || parsedPair.oldText || '').trim() || undefined,
+    newText: String(ai?.newText || parsedPair.newText || '').trim() || undefined,
+    appendText: String(ai?.appendText || parseAppendText(instruction) || '').trim() || undefined,
+    deleteNeedle: String(ai?.deleteNeedle || parseDeleteNeedle(instruction) || '').trim() || undefined,
+  });
+
+  const edit: PendingMemoryEdit = {
+    id: `memedit-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    userId: input.userId,
+    action,
+    targetKey: target.key,
+    targetLabel: target.label,
+    instruction,
+    beforeValue,
+    afterValue: operation.afterValue,
+    summary: String(ai?.summary || operation.summary || '长期记忆编辑').trim(),
+    oldText: operation.oldText,
+    newText: operation.newText,
+    createdAt: new Date().toISOString(),
+    expiresAt: new Date(Date.now() + 30 * 60 * 1000).toISOString(),
+  };
+  await savePendingMemoryEdit(edit);
+  return {
+    handled: true,
+    pendingEdit: edit,
+    message: formatMemoryEditPreview(edit),
+  };
+}
+
+async function createMemoryEditBackup(userId: string, edit: PendingMemoryEdit): Promise<string> {
+  const backupId = `backup-${new Date().toISOString().replace(/[:.]/g, '-')}-${edit.id}`;
+  const backupDir = path.join(getMemoryEditBackupDir(userId), backupId);
+  await fsp.mkdir(backupDir, { recursive: true });
+  const userMemoryDir = path.join(memoryDir, userId);
+  const files = ['memory.json', '试验资料总结.txt', '数据详细总结.txt', 'pending-memory-edit.json'];
+  for (const fileName of files) {
+    const source = path.join(userMemoryDir, fileName);
+    const target = path.join(backupDir, fileName);
+    try {
+      await fsp.copyFile(source, target);
+    } catch (error) {
+      if (!isNodeError(error) || error.code !== 'ENOENT') {
+        logger.warn(`[MemoryEdit] Failed to back up ${source}:`, error);
+      }
+    }
+  }
+  await writeJsonFileAtomic(path.join(backupDir, 'metadata.json'), {
+    backupId,
+    userId,
+    edit,
+    createdAt: new Date().toISOString(),
+  });
+  return backupId;
+}
+
+async function removeSyncedFileForMemoryKey(userId: string, key: string): Promise<void> {
+  const fileName = key === 'experiment_summary_structured' || key === 'experiment_summary'
+    ? '试验资料总结.txt'
+    : key === 'data_summary_structured' || key === 'data_summary'
+      ? '数据详细总结.txt'
+      : '';
+  if (!fileName) return;
+  await fsp.rm(path.join(memoryDir, userId, fileName), { force: true }).catch(() => undefined);
+}
+
+export async function applyPendingMemoryEdit(userId: string): Promise<MemoryEditApplyResult> {
+  const pending = await getPendingMemoryEdit(userId);
+  if (!pending) {
+    return { applied: false, message: '没有待确认的长期记忆修改。' };
+  }
+
+  return withMemoryLock(userId, async () => {
+    const currentPending = await getPendingMemoryEdit(userId);
+    if (!currentPending || currentPending.id !== pending.id) {
+      return { applied: false, message: '待确认的长期记忆修改已变化或过期，请重新发起修改。' };
+    }
+
+    const memory = await loadUserMemory(userId);
+    const backupId = await createMemoryEditBackup(userId, currentPending);
+    const existingIndex = memory.entries.findIndex(entry => entry.key === currentPending.targetKey);
+    if (currentPending.afterValue.trim()) {
+      const entry: MemoryEntry = {
+        key: currentPending.targetKey,
+        value: currentPending.afterValue.trim(),
+        source: 'user-memory-edit',
+        timestamp: new Date().toISOString(),
+      };
+      if (existingIndex >= 0) {
+        memory.entries[existingIndex] = entry;
+      } else {
+        memory.entries.push(entry);
+      }
+    } else if (existingIndex >= 0) {
+      memory.entries.splice(existingIndex, 1);
+      await removeSyncedFileForMemoryKey(userId, currentPending.targetKey);
+    }
+
+    await saveUserMemory(memory);
+    await saveMemoryToFiles(userId, memory);
+    await clearPendingMemoryEdit(userId);
+    return {
+      applied: true,
+      backupId,
+      targetKey: currentPending.targetKey,
+      targetLabel: currentPending.targetLabel,
+      message: `已写入长期记忆：${currentPending.targetLabel}。已创建备份：${backupId}`,
+    };
+  });
+}
+
+export async function cancelPendingMemoryEdit(userId: string): Promise<MemoryEditApplyResult> {
+  const pending = await getPendingMemoryEdit(userId);
+  await clearPendingMemoryEdit(userId);
+  return {
+    applied: false,
+    cancelled: true,
+    targetKey: pending?.targetKey,
+    targetLabel: pending?.targetLabel,
+    message: pending ? `已取消长期记忆修改：${pending.targetLabel}` : '没有待取消的长期记忆修改。',
+  };
+}
+
+export async function rollbackMemoryEdit(userId: string, backupId?: string): Promise<{ success: boolean; message: string; backupId?: string }> {
+  const backupRoot = getMemoryEditBackupDir(userId);
+  let selectedBackupId = backupId;
+  if (!selectedBackupId) {
+    try {
+      const backups = (await fsp.readdir(backupRoot, { withFileTypes: true }))
+        .filter(item => item.isDirectory())
+        .map(item => item.name)
+        .sort()
+        .reverse();
+      selectedBackupId = backups[0];
+    } catch (error) {
+      return { success: false, message: '没有可回滚的长期记忆备份。' };
+    }
+  }
+  if (!selectedBackupId) {
+    return { success: false, message: '没有可回滚的长期记忆备份。' };
+  }
+
+  const backupDir = path.join(backupRoot, selectedBackupId);
+  const userMemoryDir = path.join(memoryDir, userId);
+  const memoryBackup = path.join(backupDir, 'memory.json');
+  if (!fs.existsSync(memoryBackup)) {
+    return { success: false, backupId: selectedBackupId, message: '备份缺少 memory.json，无法回滚。' };
+  }
+
+  await fsp.mkdir(userMemoryDir, { recursive: true });
+  for (const fileName of ['memory.json', '试验资料总结.txt', '数据详细总结.txt']) {
+    const source = path.join(backupDir, fileName);
+    const target = path.join(userMemoryDir, fileName);
+    if (fs.existsSync(source)) {
+      await fsp.copyFile(source, target);
+    }
+  }
+  await clearPendingMemoryEdit(userId);
+  return { success: true, backupId: selectedBackupId, message: `已回滚长期记忆到备份：${selectedBackupId}` };
+}
+
 /**
  * 检查某个 memory 键是否已被用户删除（不应自动恢复）
  * @param memory 用户记忆对象
@@ -1120,6 +1792,14 @@ export async function loadUserMemory(userId: string): Promise<UserMemory> {
   
   try {
     const content = await fsp.readFile(memoryFile, 'utf-8');
+    if (!content.trim()) {
+      const recovered = await recoverMemoryFromSyncedFiles(userId);
+      if (recovered) {
+        await saveUserMemory(recovered);
+        return recovered;
+      }
+      throw new Error('memory.json is empty');
+    }
     const parsed = JSON.parse(content);
     const validated = UserMemorySchema.parse(parsed);
     return {
@@ -1132,6 +1812,11 @@ export async function loadUserMemory(userId: string): Promise<UserMemory> {
   } catch (e) {
     if (isNodeError(e) && e.code === 'ENOENT') {
       // 文件不存在
+      const recovered = await recoverMemoryFromSyncedFiles(userId);
+      if (recovered) {
+        await saveUserMemory(recovered);
+        return recovered;
+      }
       // Bug fix: 如果不是 web-user，尝试 fallback 到 web-user 的数据
       if (userId !== 'web-user') {
         try {
@@ -1167,6 +1852,11 @@ export async function loadUserMemory(userId: string): Promise<UserMemory> {
       };
     }
     logger.warn(`[Memory] Failed to load memory for ${userId}:`, e);
+    const recovered = await recoverMemoryFromSyncedFiles(userId);
+    if (recovered) {
+      await saveUserMemory(recovered);
+      return recovered;
+    }
   }
   
   return {
@@ -1193,7 +1883,7 @@ export async function saveUserMemory(memory: UserMemory): Promise<void> {
   memory.updatedAt = new Date().toISOString();
   
   try {
-    await fsp.writeFile(memoryFile, JSON.stringify(memory, null, 2), 'utf-8');
+    await writeJsonFileAtomic(memoryFile, memory);
     logger.info(`[Memory] Saved memory for user: ${memory.userId}`);
   } catch (e) {
     logger.error(`[Memory] Failed to save memory for ${memory.userId}:`, e);
@@ -1393,7 +2083,7 @@ export async function saveMemoryToFiles(userId: string, memory: UserMemory): Pro
     // 以 memory.json 中的当前内容为准，直接覆盖写入
     const finalContent = '【试验资料总结】\n\n更新时间: ' + experimentSummary.timestamp + '\n来源: ' + experimentSummary.key + '\n\n' + experimentSummary.value;
 
-    await fsp.writeFile(summaryFile, finalContent, 'utf-8');
+    await writeTextFileAtomic(summaryFile, finalContent);
     logger.info(`[Memory] Synced 试验资料总结.txt for ${userId} (${experimentSummary.value.length} chars, source: ${experimentSummary.key})`);
   }
 
@@ -1411,7 +2101,7 @@ export async function saveMemoryToFiles(userId: string, memory: UserMemory): Pro
     // 以 memory.json 中的当前内容为准，直接覆盖写入
     const finalContent = '【数据详细总结】\n\n更新时间: ' + dataSummary.timestamp + '\n来源: ' + dataSummary.key + '\n\n' + dataSummary.value;
 
-    await fsp.writeFile(dataFile, finalContent, 'utf-8');
+    await writeTextFileAtomic(dataFile, finalContent);
     logger.info(`[Memory] Synced 数据详细总结.txt for ${userId} (${dataSummary.value.length} chars, source: ${dataSummary.key})`);
   }
 }
@@ -2445,6 +3135,77 @@ router.delete('/clear/:userId', async (req: Request, res: Response) => {
 });
 
 /**
+ * POST /api/memory/edit/preview/:userId
+ * 根据自然语言生成长期记忆修改预览；不会直接写入。
+ */
+router.post('/edit/preview/:userId', async (req: Request, res: Response) => {
+  try {
+    const userId = await resolveUserId(req.params.userId || req.body.userId || 'web-user');
+    const { instruction, apiUrl, apiKey, model } = req.body || {};
+    if (!instruction || typeof instruction !== 'string') {
+      return res.status(400).json({ success: false, error: '请提供长期记忆修改指令' });
+    }
+
+    const result = await createMemoryEditPreview({
+      userId,
+      instruction,
+      apiUrl,
+      apiKey,
+      model,
+    });
+    res.json({ success: true, userId, ...result });
+  } catch (error) {
+    logger.error('[MemoryEdit] Preview route error:', error);
+    res.status(500).json({ success: false, error: (error as Error).message });
+  }
+});
+
+/**
+ * POST /api/memory/edit/confirm/:userId
+ * 确认写入最近一次长期记忆修改预览。
+ */
+router.post('/edit/confirm/:userId', async (req: Request, res: Response) => {
+  try {
+    const userId = await resolveUserId(req.params.userId || req.body.userId || 'web-user');
+    const result = await applyPendingMemoryEdit(userId);
+    res.json({ success: result.applied, userId, ...result });
+  } catch (error) {
+    logger.error('[MemoryEdit] Confirm route error:', error);
+    res.status(500).json({ success: false, error: (error as Error).message });
+  }
+});
+
+/**
+ * POST /api/memory/edit/cancel/:userId
+ * 取消最近一次长期记忆修改预览。
+ */
+router.post('/edit/cancel/:userId', async (req: Request, res: Response) => {
+  try {
+    const userId = await resolveUserId(req.params.userId || req.body.userId || 'web-user');
+    const result = await cancelPendingMemoryEdit(userId);
+    res.json({ success: true, userId, ...result });
+  } catch (error) {
+    logger.error('[MemoryEdit] Cancel route error:', error);
+    res.status(500).json({ success: false, error: (error as Error).message });
+  }
+});
+
+/**
+ * POST /api/memory/edit/rollback/:userId
+ * 回滚到指定备份；未指定 backupId 时回滚最近一次备份。
+ */
+router.post('/edit/rollback/:userId', async (req: Request, res: Response) => {
+  try {
+    const userId = await resolveUserId(req.params.userId || req.body.userId || 'web-user');
+    const result = await rollbackMemoryEdit(userId, req.body?.backupId);
+    res.json({ userId, ...result });
+  } catch (error) {
+    logger.error('[MemoryEdit] Rollback route error:', error);
+    res.status(500).json({ success: false, error: (error as Error).message });
+  }
+});
+
+/**
  * GET /api/memory/:userId
  * 获取用户记忆数据（前端 showExperimentSummary/showDataSummary 使用）
  * 注意：此路由必须在所有特定路由之后定义，否则会先匹配通用的 /:userId
@@ -2985,9 +3746,16 @@ ${effectiveDataContent}
             }
 
             const existingIndex = memory.entries.findIndex(e => e.key === 'data_summary_structured');
+            const currentStructuredData = memory.entries.find(e => e.key === 'data_summary_structured')?.value || '';
+            const protectedSummary = preserveProtectedUploadSummaryBlocks(
+              summary.trim(),
+              existingStructuredData,
+              currentStructuredData,
+              dataContent
+            );
             const newEntry: MemoryEntry = {
               key: "data_summary_structured",
-              value: summary.trim(),
+              value: protectedSummary,
               source: existingStructuredData ? "ai-merged" : "ai-structured",
               timestamp: new Date().toISOString()
             };
@@ -3065,7 +3833,7 @@ export async function loadConversationMessages(
  */
 export async function listConversations(
   userId: string,
-  limit: number = 20
+  limit?: number
 ): Promise<Array<{ id: string; messageCount: number; updatedAt: string }>> {
   const convDir = path.join(memoryDir, userId, 'conversations');
   
@@ -3090,7 +3858,8 @@ export async function listConversations(
     
     // 按更新时间倒序
     conversations.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
-    return conversations.slice(0, limit);
+    const safeLimit = Number.isFinite(limit) && Number(limit) > 0 ? Math.floor(Number(limit)) : 0;
+    return safeLimit > 0 ? conversations.slice(0, safeLimit) : conversations;
   } catch (e) {
     if (isNodeError(e) && e.code === 'ENOENT') {
       return [];
@@ -3165,11 +3934,7 @@ export async function updateConversationSummary(
     memory.conversations.push(convSummary);
   }
   
-  // 保留最近 30 个对话摘要
-  if (memory.conversations.length > 30) {
-    memory.conversations.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
-    memory.conversations = memory.conversations.slice(0, 30);
-  }
+  memory.conversations.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
   
   await saveUserMemory(memory);
   logger.info(`[Memory] Updated conversation summary for ${userId}: ${conversationId} (${messages.length} messages)`);
@@ -3207,7 +3972,8 @@ router.post('/save-conversation', async (req: Request, res: Response) => {
 router.get('/conversations/:userId', async (req: Request, res: Response) => {
   try {
     const userId = req.params.userId;
-    const limit = parseInt(req.query.limit as string) || 20;
+    const limitParam = req.query.limit as string | undefined;
+    const limit = limitParam ? parseInt(limitParam, 10) : undefined;
     
     const conversations = await listConversations(userId, limit);
     const memory = await loadUserMemory(userId);
@@ -3245,5 +4011,57 @@ router.get('/conversation/:userId/:conversationId', async (req: Request, res: Re
     res.status(500).json({ success: false, error: (error as Error).message });
   }
 });
+
+async function recordMemoryResearchProvenance(input: {
+  userId: string;
+  researchSessionId?: string;
+  userMessage: string;
+  aiResponse: string;
+  updatedKeys: string[];
+}): Promise<{ sessionId: string; provenanceRecordId: string; artifactId?: string }> {
+  const memory = await loadUserMemory(input.userId);
+  const updatedEntries = memory.entries.filter(entry => input.updatedKeys.includes(entry.key));
+  const provenance = await researchSessionManager.appendProvenance({
+    userId: input.userId,
+    sessionId: input.researchSessionId,
+    sessionTitle: updatedEntries[0]?.value ? `长期记忆：${updatedEntries[0].key}` : '跨会话长期记忆',
+    targetType: 'memory',
+    targetId: `memory-update-${Date.now()}`,
+    operation: 'memory.update',
+    sourceModule: 'memory',
+    input: {
+      userMessagePreview: input.userMessage.slice(0, 1000),
+      aiResponsePreview: input.aiResponse.slice(0, 1000),
+    },
+    output: {
+      updatedKeys: input.updatedKeys,
+      updatedEntries: updatedEntries.map(entry => ({
+        key: entry.key,
+        source: entry.source,
+        timestamp: entry.timestamp,
+        valuePreview: entry.value.slice(0, 1000),
+      })),
+      memoryUpdatedAt: memory.updatedAt,
+    },
+    sources: updatedEntries.map(entry => ({
+      id: entry.key,
+      sourceType: 'memory' as const,
+      title: entry.key,
+      evidenceSnippet: entry.value.slice(0, 500),
+      metadata: {
+        source: entry.source,
+        timestamp: entry.timestamp,
+      },
+    })),
+    metadata: {
+      updatedKeyCount: input.updatedKeys.length,
+    },
+  });
+
+  return {
+    sessionId: provenance.session.id,
+    provenanceRecordId: provenance.record.id,
+  };
+}
 
 export default router;

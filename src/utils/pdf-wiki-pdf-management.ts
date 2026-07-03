@@ -195,3 +195,21 @@ export function assignPdfWikiPdfGroups(
   store.assignments[pdfKey] = normalizedGroupIds;
   return savePdfWikiPdfManagement(dataDir, userId, store);
 }
+
+export function removePdfWikiPdfAssignments(
+  dataDir: string,
+  userId: string,
+  pdfIds: string[]
+): PdfWikiPdfManagementStore {
+  const ids = new Set(
+    (Array.isArray(pdfIds) ? pdfIds : [])
+      .map(id => String(id || "").trim())
+      .filter(Boolean)
+  );
+  const store = loadPdfWikiPdfManagement(dataDir, userId);
+  if (ids.size === 0) return store;
+  ids.forEach(id => {
+    delete store.assignments[id];
+  });
+  return savePdfWikiPdfManagement(dataDir, userId, store);
+}

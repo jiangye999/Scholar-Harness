@@ -483,11 +483,11 @@ export class AuthGuard {
     } catch (error: any) {
       const status = error?.response?.status;
       const isDefinitiveAuthFailure = status === 400 || status === 401 || status === 403;
-      logger.error('[AuthGuard] Token refresh failed:', error?.message || error);
       if (isDefinitiveAuthFailure) {
+        logger.error('[AuthGuard] Token refresh rejected by cloud:', error?.message || error);
         await this.clearSession();
       } else {
-        logger.warn('[AuthGuard] Token refresh failed without definitive auth rejection; keeping local session for offline grace.');
+        logger.warn('[AuthGuard] Token refresh temporarily unavailable; keeping local session for offline grace:', error?.message || error);
       }
       return false;
     }
@@ -670,10 +670,12 @@ export function authGuardMiddleware(authGuard: AuthGuard) {
         '/api/experiment-results',
         '/api/r-code',
         '/api/data-analysis',
+        '/api/ocr',
         '/api/ppt-master',
         '/api/meta-analysis',
         '/api/academic-research',
         '/api/project-memory',
+        '/api/research-session',
         '/api/bibliometrics',
         '/api/autoresearch',
         '/api/review-writer',
@@ -705,6 +707,17 @@ export function authGuardMiddleware(authGuard: AuthGuard) {
         // 尝试刷新token
         const refreshed = await authGuard.refreshToken();
         if (!refreshed) {
+          const graceSession = await authGuard.getSession();
+          if (graceSession && await authGuard.isWithinOfflineGracePeriod()) {
+            logger.warn('[AuthGuard] Token refresh unavailable; allowing request in offline grace period');
+            (req as any).session = graceSession;
+            (req as any).user = {
+              userId: graceSession.userId,
+              email: graceSession.email,
+              username: graceSession.username,
+            };
+            return next();
+          }
           return res.status(401).json({
             error: 'Unauthorized',
             message: '登录已过期，请重新登录',

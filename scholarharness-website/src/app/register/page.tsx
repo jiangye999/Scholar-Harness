@@ -75,6 +75,8 @@ export default function RegisterPage() {
   const [verificationCodeSending, setVerificationCodeSending] = useState(false);
   const [verificationCodeSent, setVerificationCodeSent] = useState(false);
   const [verificationCodeCountdown, setVerificationCodeCountdown] = useState(0);
+  const [verificationCodeMessage, setVerificationCodeMessage] = useState('');
+  const [verificationCodeError, setVerificationCodeError] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [successMessage, setSuccessMessage] = useState('');
@@ -217,7 +219,7 @@ export default function RegisterPage() {
 
   const sendVerificationCodeAfterCaptcha = async (captcha?: CaptchaVerification) => {
     const shouldStartCountdownImmediately = Boolean(captcha);
-    setSuccessMessage(captcha ? '人机验证通过，正在自动发送邮箱验证码...' : '正在发送邮箱验证码...');
+    setVerificationCodeMessage(captcha ? '人机验证通过，正在自动发送邮箱验证码...' : '正在发送邮箱验证码...');
 
     if (shouldStartCountdownImmediately) {
       startVerificationCodeCountdown();
@@ -240,9 +242,9 @@ export default function RegisterPage() {
       if (codeMatch) {
         const code = codeMatch[1];
         setVerificationCode(code);
-        setSuccessMessage(`测试模式验证码：${code}`);
+        setVerificationCodeMessage(`测试模式验证码：${code}`);
       } else {
-        setSuccessMessage(result.message);
+        setVerificationCodeMessage(result.message);
       }
 
       if (!shouldStartCountdownImmediately) {
@@ -254,35 +256,43 @@ export default function RegisterPage() {
     if (shouldStartCountdownImmediately) {
       stopVerificationCodeCountdown();
     }
+    if (result.status === 409 || result.message.includes('该邮箱已注册')) {
+      setVerificationCodeSent(false);
+      setVerificationCodeMessage('');
+      throw new Error('该邮箱已注册');
+    }
     throw new Error(result.message);
   };
 
   // 发送邮箱验证码
   const handleSendVerificationCode = async () => {
+    setVerificationCodeError('');
+    setVerificationCodeMessage('');
+    setSuccessMessage('');
+
     if (!email) {
-      setError('请先输入邮箱地址');
+      setVerificationCodeError('请先输入邮箱地址');
       return;
     }
 
     if (!validateEmail(email)) {
-      setError('邮箱格式不正确');
+      setVerificationCodeError('邮箱格式不正确');
       return;
     }
 
     setVerificationCodeSending(true);
     setError('');
-    setSuccessMessage('');
 
     try {
       if (CAPTCHA_ENABLED) {
-        setSuccessMessage('请完成人机验证，验证通过后会自动发送邮箱验证码');
+        setVerificationCodeMessage('请完成人机验证，验证通过后会自动发送邮箱验证码');
         await runTencentCaptcha(sendVerificationCodeAfterCaptcha);
       } else {
         await sendVerificationCodeAfterCaptcha();
       }
     } catch (err) {
-      setSuccessMessage('');
-      setError(getErrorMessage(err, '验证码发送失败，请稍后重试'));
+      setVerificationCodeMessage('');
+      setVerificationCodeError(getErrorMessage(err, '验证码发送失败，请稍后重试'));
     } finally {
       setVerificationCodeSending(false);
     }
@@ -539,6 +549,16 @@ export default function RegisterPage() {
               <p className="mt-1 text-xs text-gray-500">
                 验证码将发送至您的邮箱，有效期5分钟
               </p>
+              {verificationCodeMessage && (
+                <p className="mt-2 rounded-md border border-green-200 bg-green-50 px-3 py-2 text-sm text-green-700">
+                  {verificationCodeMessage}
+                </p>
+              )}
+              {verificationCodeError && (
+                <p className="mt-2 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+                  {verificationCodeError}
+                </p>
+              )}
             </div>
 
             {/* Username */}

@@ -11,6 +11,7 @@ import { extractPdfTextWithFastText, isPdfFastTextAvailable, resolvePdfFastTextE
 import { logger } from '../../utils/logger';
 import { callChatCompletion } from '../../utils/llm-client';
 import { getDataDir, sanitizeUserId } from '../../utils/paths';
+import { parseUserSkillInvocation, type UserSkillInvocation } from '../services/user-skills';
 
 const router = Router();
 
@@ -19,6 +20,7 @@ const MAX_UPLOAD_SIZE = 100 * 1024 * 1024;
 const PROCESS_OUTPUT_LIMIT = 80_000;
 const DEFAULT_PROCESS_TIMEOUT_MS = 5 * 60 * 1000;
 const EXPORT_PROCESS_TIMEOUT_MS = 10 * 60 * 1000;
+const MAX_PPT_REQUIREMENTS_CHARS = 24_000;
 
 const ALLOWED_SOURCE_EXTENSIONS = new Set([
   '.md', '.markdown', '.txt', '.csv', '.tsv',
@@ -66,6 +68,8 @@ const projectActionSchema = z.object({
   userId: z.string().optional(),
   projectPath: z.string().min(1),
 });
+
+type PptMasterCreateBody = z.infer<typeof createProjectSchema>;
 
 interface PythonCommand {
   command: string;
@@ -310,11 +314,13 @@ router.post(
   ]),
   async (req, res) => {
     try {
-      const body = createProjectSchema.parse(req.body);
+      let body = createProjectSchema.parse(req.body);
       const userId = sanitizeUserId(body.userId || 'web-user');
       const sourceFiles = getUploadedFiles(req.files, 'sources');
       const templateFiles = getUploadedFiles(req.files, 'templatePptx');
-      const requirements = cleanText(body.requirements, 8000);
+      const userSkillResult = await applyPptMasterUserSkillInvocation(body, userId);
+      body = userSkillResult.body;
+      const requirements = cleanText(body.requirements, MAX_PPT_REQUIREMENTS_CHARS);
 
       if (!sourceFiles.length && !requirements) {
         return res.status(400).json({
@@ -324,6 +330,14 @@ router.post(
       }
 
       const job = createPptMasterJob(userId);
+      if (userSkillResult.invokedSkills.length) {
+        appendPptMasterJobLog(
+          job,
+          `已调用用户 Skill：${userSkillResult.invokedSkills.map((skill) => `/${skill.trigger}`).join('、')}`,
+          'queued',
+          2,
+        );
+      }
       res.json({ success: true, data: job });
 
       const clonedSources = cloneUploadedFiles(sourceFiles);
@@ -348,11 +362,13 @@ router.post(
   ]),
   async (req, res) => {
     try {
-      const body = createProjectSchema.parse(req.body);
+      let body = createProjectSchema.parse(req.body);
       const userId = sanitizeUserId(body.userId || 'web-user');
       const sourceFiles = getUploadedFiles(req.files, 'sources');
       const templateFiles = getUploadedFiles(req.files, 'templatePptx');
-      const requirements = cleanText(body.requirements, 8000);
+      const userSkillResult = await applyPptMasterUserSkillInvocation(body, userId);
+      body = userSkillResult.body;
+      const requirements = cleanText(body.requirements, MAX_PPT_REQUIREMENTS_CHARS);
 
       if (!sourceFiles.length && !requirements) {
         return res.status(400).json({
@@ -443,6 +459,7 @@ router.post(
             init: summarizeProcess(initResult),
             import: importResult ? summarizeProcess(importResult) : null,
           },
+          invokedUserSkills: userSkillResult.invokedSkills,
         },
       });
     } catch (error) {
@@ -533,6 +550,41 @@ router.get('/download', async (req, res) => {
     res.status(500).json({ success: false, error: (error as Error).message });
   }
 });
+
+async function applyPptMasterUserSkillInvocation(
+  body: PptMasterCreateBody,
+  userId: string,
+): Promise<{ body: PptMasterCreateBody; invokedSkills: UserSkillInvocation['invokedSkills'] }> {
+  const rawRequirements = cleanText(body.requirements, MAX_PPT_REQUIREMENTS_CHARS);
+  if (!rawRequirements) {
+    return {
+      body: { ...body, requirements: rawRequirements },
+      invokedSkills: [],
+    };
+  }
+
+  const invocation = await parseUserSkillInvocation(userId, rawRequirements);
+  if (!invocation.invokedSkills.length) {
+    return {
+      body: { ...body, requirements: rawRequirements },
+      invokedSkills: [],
+    };
+  }
+
+  logger.info(`[UserSkills] PPT Master invoked skills: ${invocation.invokedSkills.map((skill) => `/${skill.trigger}`).join(', ')}`);
+  const enrichedRequirements = [
+    invocation.promptBlock,
+    invocation.cleanMessage ? ['## 用户 PPT 汇报要求', invocation.cleanMessage].join('\n') : '',
+  ].filter(Boolean).join('\n\n');
+
+  return {
+    body: {
+      ...body,
+      requirements: cleanText(enrichedRequirements, MAX_PPT_REQUIREMENTS_CHARS),
+    },
+    invokedSkills: invocation.invokedSkills,
+  };
+}
 
 function createPptMasterJob(userId: string): PptMasterJob {
   const now = new Date().toISOString();
@@ -635,7 +687,7 @@ async function runPptMasterAutoJob(
     format: normalizeCanvasFormat(body.format),
     audience: cleanText(body.audience, 500),
     styleRequest: cleanText(body.styleRequest, 1200),
-    requirements: cleanText(body.requirements, 8000),
+    requirements: cleanText(body.requirements, MAX_PPT_REQUIREMENTS_CHARS),
     selectedTemplate: created.selectedTemplate,
     uploadedTemplateDir: created.uploadedTemplate?.outputDir,
     imageAssets: analyzedImageAssets,
@@ -681,7 +733,7 @@ async function createPptMasterProjectArtifacts(
   uploadedTemplate: { originalName: string; outputDir: string; log: ProcessResult } | null;
 }> {
   const userId = sanitizeUserId(body.userId || 'web-user');
-  const requirements = cleanText(body.requirements, 8000);
+  const requirements = cleanText(body.requirements, MAX_PPT_REQUIREMENTS_CHARS);
   const skillDir = resolvePptMasterSkillDir();
   const requestedProjectName = normalizeProjectName(body.projectName);
   const canvasFormat = normalizeCanvasFormat(body.format);
@@ -973,7 +1025,7 @@ async function generateDeckGlobalPlan(input: {
   sourceFilenames: string[];
   imageAssets: DeckImageAsset[];
 }): Promise<DeckGlobalPlan> {
-  const requirements = cleanText(input.body.requirements, 8000);
+  const requirements = cleanText(input.body.requirements, MAX_PPT_REQUIREMENTS_CHARS);
   const pageCount = parseRequestedPageCount(input.body.pageCount, input.sourceBundle.text);
   const fallback = buildFallbackGlobalPlan(input, pageCount);
   const apiUrl = cleanText(input.body.apiUrl, 1000);
@@ -1043,7 +1095,7 @@ async function generateDeckOutline(input: {
   imageAssets: DeckImageAsset[];
   sourceFilenames: string[];
 }): Promise<DeckOutline> {
-  const requirements = cleanText(input.body.requirements, 8000);
+  const requirements = cleanText(input.body.requirements, MAX_PPT_REQUIREMENTS_CHARS);
   const pageCount = parseRequestedPageCount(input.body.pageCount, input.sourceBundle.text);
   const fallback = buildFallbackDeckOutline(input, pageCount);
   const apiUrl = cleanText(input.body.apiUrl, 1000);
@@ -1122,7 +1174,7 @@ async function generateDeckGlobalPlanWithCodex(
 ): Promise<DeckGlobalPlan | null> {
   const available = await isPptMasterCodexAvailable();
   if (!available) return null;
-  const requirements = cleanText(input.body.requirements, 8000);
+  const requirements = cleanText(input.body.requirements, MAX_PPT_REQUIREMENTS_CHARS);
   try {
     const content = await chatBridge.chat({
       forceProvider: 'codex',
@@ -1178,7 +1230,7 @@ async function generateDeckOutlineWithCodex(
 ): Promise<DeckOutline | null> {
   const available = await isPptMasterCodexAvailable();
   if (!available) return null;
-  const requirements = cleanText(input.body.requirements, 8000);
+  const requirements = cleanText(input.body.requirements, MAX_PPT_REQUIREMENTS_CHARS);
   try {
     const content = await chatBridge.chat({
       forceProvider: 'codex',

@@ -36,6 +36,27 @@ const loadingOverlay = document.getElementById('loading-overlay');
 // 检查是否在 Electron 环境
 const isElectron = window.electronAPI && window.electronAPI.getUserInfo;
 
+function localApiUrl(path) {
+  if (window.location && /^https?:$/i.test(window.location.protocol)) {
+    return path;
+  }
+  return `http://127.0.0.1:18789${path}`;
+}
+
+async function fetchJsonWithTimeout(url, options = {}, timeoutMs = 12000) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, {
+      ...options,
+      signal: controller.signal,
+    });
+    return await response.json();
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /**
  * 显示错误消息
  */
@@ -150,8 +171,7 @@ async function loadUserInfo() {
     if (isElectron) {
       userInfoResult = await window.electronAPI.getUserInfo();
     } else {
-      const userInfoResponse = await fetch('http://127.0.0.1:18789/api/auth/me');
-      userInfoResult = await userInfoResponse.json();
+      userInfoResult = await fetchJsonWithTimeout(localApiUrl('/api/auth/me'));
     }
     
     // 处理用户信息
@@ -197,7 +217,8 @@ async function loadUserInfo() {
     
   } catch (error) {
     console.error('[UserInfo] Load failed:', error);
-    showError('加载失败：' + (error.message || String(error)));
+    const message = error && error.name === 'AbortError' ? '请求超时' : (error.message || String(error));
+    showError('加载失败：' + message);
   }
   
   hideLoading();
@@ -232,7 +253,7 @@ async function handleLogout() {
     if (isElectron && window.electronAPI && window.electronAPI.logout) {
       await window.electronAPI.logout();
     } else {
-      await fetch('http://127.0.0.1:18789/api/auth/logout', { method: 'POST' });
+      await fetchJsonWithTimeout(localApiUrl('/api/auth/logout'), { method: 'POST' });
       window.location.reload();
     }
   } catch (error) {

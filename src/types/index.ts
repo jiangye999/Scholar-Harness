@@ -39,11 +39,23 @@ export interface ChatOptions {
    */
   codexTimeoutMs?: number;
   /**
+   * 传给 Codex CLI 的图片附件路径。Codex exec 支持 `-i <file>`，
+   * 图片类任务应使用附件而不是只把路径写进 prompt。
+   */
+  codexImages?: string[];
+  /**
    * 小牛马 API 配置（来自前端 ⚙️ API 设置）
    * 当 forceProvider='api' 或 'secondary' 时优先使用这些配置
    */
   apiUrl?: string;
   apiKey?: string;
+  /**
+   * 含图片/图表截图等视觉输入时优先使用的小牛马多模态配置。
+   */
+  requiresVision?: boolean;
+  visionApiUrl?: string;
+  visionApiKey?: string;
+  visionModel?: string;
 }
 
 export interface Message {

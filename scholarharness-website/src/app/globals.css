@@ -1,12 +1,12 @@
 @import "tailwindcss";
 
 :root {
-  --background: #f7f8f5;
-  --foreground: #151815;
-  --muted-background: #eef2ee;
-  --panel-background: #ffffff;
-  --border-color: #dfe5df;
-  --accent-color: #0b6b5c;
+  --background: #050706;
+  --foreground: #f4f7f2;
+  --muted-background: #0c110e;
+  --panel-background: #0b100d;
+  --border-color: #26332d;
+  --accent-color: #5ee0c4;
 }
 
 @theme inline {
@@ -36,7 +36,7 @@ html {
 }
 
 ::selection {
-  background: rgba(11, 107, 92, 0.18);
+  background: rgba(94, 224, 196, 0.22);
 }
 
 img {

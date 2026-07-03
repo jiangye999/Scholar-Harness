@@ -6,7 +6,29 @@ import {
   anchorPromptWithCurrentRequest,
   getPromptAnchorDiagnostics,
 } from '../../utils/prompt-request-anchor';
-import { loadUserMemory, saveUserMemory, saveMemoryToFiles, withMemoryLock, MemoryEntry, UserMemory, generateStructuredSummaries, extractKeyContent, isKeyDeleted, autoRestoreDeletedKeyIfEmpty, removeFromDeletedKeys, extractMemoryByRules, aiMergeMemoryContent, getStructuredPreferredMemoryEntries } from './memory';
+import {
+  applyPendingMemoryEdit,
+  cancelPendingMemoryEdit,
+  createMemoryEditPreview,
+  getPendingMemoryEdit,
+  isLikelyMemoryEditInstruction,
+  isMemoryEditCancellation,
+  isMemoryEditConfirmation,
+  loadUserMemory,
+  saveUserMemory,
+  saveMemoryToFiles,
+  withMemoryLock,
+  MemoryEntry,
+  UserMemory,
+  generateStructuredSummaries,
+  extractKeyContent,
+  isKeyDeleted,
+  autoRestoreDeletedKeyIfEmpty,
+  removeFromDeletedKeys,
+  extractMemoryByRules,
+  aiMergeMemoryContent,
+  getStructuredPreferredMemoryEntries
+} from './memory';
 import {
   validate,
   chatRequestSchema,
@@ -26,6 +48,7 @@ import * as fs from 'fs';
 import { resolveUserId, getUserIdFromSession } from '../auth-guard-singleton';
 import { getBibliometricWritingContextForUser } from './bibliometrics';
 import { getMetaAnalysisWritingContextForUser } from './meta-analysis';
+import { parseUserSkillInvocation } from '../services/user-skills';
 
 const router = Router();
 
@@ -177,6 +200,17 @@ router.use('/open-page', csrfProtectionLite);
 
 let chatBridgeAdapter: ChatBridgeAdapter | null = null;
 let saveDraftForUser: ((userId: string, section: string, content: string) => Promise<void>) | null = null;
+interface OrdinaryDraftContext {
+  available: boolean;
+  source?: string;
+  chapters?: string[];
+  updatedAt?: string;
+  wordCount?: number;
+  content?: string;
+  reason?: string;
+}
+
+let getDraftContextForUser: ((userId: string, request: string) => Promise<OrdinaryDraftContext | null>) | null = null;
 let compatibleBridgeState = {
   serviceRunning: false,
   paused: false,
@@ -396,10 +430,64 @@ export function initializeChatBridgeRoutes(
   adapter: ChatBridgeAdapter,
   options?: {
     saveDraft?: (userId: string, section: string, content: string) => Promise<void>;
+    getDraftContext?: (userId: string, request: string) => Promise<OrdinaryDraftContext | null>;
   }
 ): void {
   chatBridgeAdapter = adapter;
   saveDraftForUser = options?.saveDraft || null;
+  getDraftContextForUser = options?.getDraftContext || null;
+}
+
+function shouldAttachOrdinaryDraftContext(message: string): boolean {
+  const text = String(message || '').toLowerCase();
+  if (!text.trim()) return false;
+
+  const requiredProgressPatterns = [
+    /写作进度/,
+    /写到哪[了里]?/,
+    /写到什么程度/,
+    /完成到哪/,
+    /完成了哪些/,
+    /还差哪些/,
+    /还有哪些没写/,
+    /草稿进度/,
+    /论文进度/,
+  ];
+  if (requiredProgressPatterns.some(pattern => pattern.test(text))) {
+    return true;
+  }
+
+  const draftRelatedPatterns = [
+    /普通草稿/,
+    /论文草稿/,
+    /当前草稿/,
+    /草稿/,
+    /manuscript/,
+    /draft/,
+    /writing progress/,
+    /progress/,
+    /chapter/,
+    /section/,
+    /章节/,
+    /摘要/,
+    /引言/,
+    /前言/,
+    /方法/,
+    /材料与方法/,
+    /结果/,
+    /讨论/,
+    /结论/,
+    /继续写/,
+    /续写/,
+    /改写/,
+    /修改/,
+    /润色/,
+    /编辑/,
+    /整合/,
+    /保存到草稿/,
+  ];
+
+  return draftRelatedPatterns.some(pattern => pattern.test(text));
 }
 
 router.post('/chat', async (req, res) => {
@@ -421,7 +509,23 @@ router.post('/chat', async (req, res) => {
       return;
     }
 
-    const { message, context = {}, options = {}, stream: rawStream = false, newPage: rawNewPage = false, history = [], forceProvider, apiUrl, apiKey, model, secondaryModel } = validation.data;
+    const {
+      message,
+      context = {},
+      options = {},
+      stream: rawStream = false,
+      newPage: rawNewPage = false,
+      history = [],
+      forceProvider,
+      apiUrl,
+      apiKey,
+      model,
+      secondaryModel,
+      requiresVision,
+      visionApiUrl,
+      visionApiKey,
+      visionModel,
+    } = validation.data;
 
     // 规范化 boolean 字段（处理可能的 string 输入）
     const stream = typeof rawStream === 'boolean' ? rawStream : rawStream === 'true' || rawStream === '1';
@@ -441,6 +545,61 @@ router.post('/chat', async (req, res) => {
     // 不再使用 validateUserId 清理，而是使用 resolveUserId 从 session 获取真实用户 ID
     const userId = await resolveUserId(req.body.userId);
     logger.info(`[ChatBridge Route] User ID: ${userId} (source: session-priority)`);
+
+    const pendingMemoryEdit = await getPendingMemoryEdit(userId);
+    if (pendingMemoryEdit && isMemoryEditConfirmation(message)) {
+      const result = await applyPendingMemoryEdit(userId);
+      res.json({
+        success: true,
+        response: result.message,
+        provider: 'memory-edit',
+        metadata: {
+          mode: 'memory-edit-confirm',
+          memoryEdit: result,
+        },
+      });
+      return;
+    }
+    if (pendingMemoryEdit && isMemoryEditCancellation(message)) {
+      const result = await cancelPendingMemoryEdit(userId);
+      res.json({
+        success: true,
+        response: result.message,
+        provider: 'memory-edit',
+        metadata: {
+          mode: 'memory-edit-cancel',
+          memoryEdit: result,
+        },
+      });
+      return;
+    }
+    if (isLikelyMemoryEditInstruction(message)) {
+      const preview = await createMemoryEditPreview({
+        userId,
+        instruction: message,
+        apiUrl,
+        apiKey,
+        model: secondaryModel || model,
+      });
+      if (preview.handled) {
+        res.json({
+          success: true,
+          response: preview.message,
+          provider: 'memory-edit',
+          metadata: {
+            mode: 'memory-edit-preview',
+            memoryEdit: preview.pendingEdit || null,
+          },
+        });
+        return;
+      }
+    }
+
+    const userSkillInvocation = await parseUserSkillInvocation(userId, message);
+    const messageForTask = userSkillInvocation.cleanMessage || message;
+    if (userSkillInvocation.invokedSkills.length > 0) {
+      logger.info(`[UserSkills] ChatBridge invoked skills: ${userSkillInvocation.invokedSkills.map(skill => `/${skill.trigger}`).join(', ')}`);
+    }
     
     const persistentMemory = await loadUserMemory(userId);
     logger.info(`[ChatBridge Route] Loaded persistent memory: ${persistentMemory.entries.length} entries, ${persistentMemory.conversations.length} conversations`);
@@ -480,7 +639,25 @@ router.post('/chat', async (req, res) => {
     };
 
     const contextForPrompt: any = { ...mergedContext };
-    if (!contextForPrompt.bibliometrics && shouldAutoAttachBibliometricsContext(message)) {
+    if (userSkillInvocation.promptBlock) {
+      const existingUserSkillPrompt = typeof contextForPrompt.userSkillPrompt === 'string'
+        ? contextForPrompt.userSkillPrompt.trim()
+        : '';
+      contextForPrompt.userSkillPrompt = [existingUserSkillPrompt, userSkillInvocation.promptBlock]
+        .filter(Boolean)
+        .join('\n\n');
+      const existingInvokedSkills = Array.isArray(contextForPrompt.invokedUserSkills)
+        ? contextForPrompt.invokedUserSkills
+        : [];
+      const skillByKey = new Map<string, any>();
+      [...existingInvokedSkills, ...userSkillInvocation.invokedSkills].forEach((skill: any) => {
+        const key = String(skill?.id || skill?.trigger || '').toLowerCase();
+        if (key) skillByKey.set(key, skill);
+      });
+      contextForPrompt.invokedUserSkills = Array.from(skillByKey.values());
+    }
+    const bibliometricsSelectedOnComposer = isMainContextSourceSelected(contextForPrompt, 'bibliometrics');
+    if (!contextForPrompt.bibliometrics && (bibliometricsSelectedOnComposer || shouldAutoAttachBibliometricsContext(messageForTask))) {
       try {
         const bibliometricContext = getBibliometricWritingContextForUser(userId);
         if (bibliometricContext) {
@@ -494,15 +671,39 @@ router.post('/chat', async (req, res) => {
             exports: bibliometricContext.exports,
             contextMarkdown: bibliometricContext.contextMarkdown,
           };
-          contextForPrompt.bibliometricsExplicit = false;
-          logger.info('[ChatBridge Route] Auto-attached bibliometrics context on backend');
+          contextForPrompt.bibliometricsExplicit = bibliometricsSelectedOnComposer;
+          contextForPrompt.bibliometricsPinned = bibliometricsSelectedOnComposer;
+          if (bibliometricsSelectedOnComposer) {
+            markServerMainContextAttached(
+              contextForPrompt,
+              'bibliometrics',
+              MAIN_CONTEXT_SOURCE_LABELS.bibliometrics,
+              `后端兜底附加；上下文字符 ${bibliometricContext.contextMarkdown ? bibliometricContext.contextMarkdown.length : 0}`
+            );
+          }
+          logger.info(bibliometricsSelectedOnComposer
+            ? '[ChatBridge Route] Backend attached selected bibliometrics context'
+            : '[ChatBridge Route] Auto-attached bibliometrics context on backend');
+        } else if (bibliometricsSelectedOnComposer) {
+          markServerMainContextMissing(contextForPrompt, 'bibliometrics', MAIN_CONTEXT_SOURCE_LABELS.bibliometrics, '后端也未找到可用文献计量写作上下文');
         }
       } catch (error) {
         logger.warn('[ChatBridge Route] Backend bibliometrics auto-attach failed:', error);
+        if (bibliometricsSelectedOnComposer) {
+          markServerMainContextMissing(contextForPrompt, 'bibliometrics', MAIN_CONTEXT_SOURCE_LABELS.bibliometrics, (error as Error).message || '后端读取文献计量结果失败');
+        }
       }
+    } else if (contextForPrompt.bibliometrics && bibliometricsSelectedOnComposer) {
+      markServerMainContextAttached(
+        contextForPrompt,
+        'bibliometrics',
+        MAIN_CONTEXT_SOURCE_LABELS.bibliometrics,
+        `上下文字符 ${contextForPrompt.bibliometrics.contextMarkdown ? contextForPrompt.bibliometrics.contextMarkdown.length : 0}`
+      );
     }
 
-    if (!contextForPrompt.metaAnalysis && shouldAutoAttachMetaAnalysisContext(message)) {
+    const metaAnalysisSelectedOnComposer = isMainContextSourceSelected(contextForPrompt, 'metaAnalysis');
+    if (!contextForPrompt.metaAnalysis && (metaAnalysisSelectedOnComposer || shouldAutoAttachMetaAnalysisContext(messageForTask))) {
       try {
         const metaAnalysisContext = getMetaAnalysisWritingContextForUser(userId);
         if (metaAnalysisContext) {
@@ -522,11 +723,67 @@ router.post('/chat', async (req, res) => {
             exports: metaAnalysisContext.exports,
             contextMarkdown: metaAnalysisContext.contextMarkdown,
           };
-          contextForPrompt.metaAnalysisExplicit = false;
-          logger.info('[ChatBridge Route] Auto-attached Meta analysis context on backend');
+          contextForPrompt.metaAnalysisExplicit = metaAnalysisSelectedOnComposer;
+          contextForPrompt.metaAnalysisPinned = metaAnalysisSelectedOnComposer;
+          if (metaAnalysisSelectedOnComposer) {
+            markServerMainContextAttached(
+              contextForPrompt,
+              'metaAnalysis',
+              MAIN_CONTEXT_SOURCE_LABELS.metaAnalysis,
+              `后端兜底附加；上下文字符 ${metaAnalysisContext.contextMarkdown ? metaAnalysisContext.contextMarkdown.length : 0}`
+            );
+          }
+          logger.info(metaAnalysisSelectedOnComposer
+            ? '[ChatBridge Route] Backend attached selected Meta analysis context'
+            : '[ChatBridge Route] Auto-attached Meta analysis context on backend');
+        } else if (metaAnalysisSelectedOnComposer) {
+          markServerMainContextMissing(contextForPrompt, 'metaAnalysis', MAIN_CONTEXT_SOURCE_LABELS.metaAnalysis, '后端也未找到可用 Meta 分析写作上下文');
         }
       } catch (error) {
         logger.warn('[ChatBridge Route] Backend Meta analysis auto-attach failed:', error);
+        if (metaAnalysisSelectedOnComposer) {
+          markServerMainContextMissing(contextForPrompt, 'metaAnalysis', MAIN_CONTEXT_SOURCE_LABELS.metaAnalysis, (error as Error).message || '后端读取 Meta 分析结果失败');
+        }
+      }
+    } else if (contextForPrompt.metaAnalysis && metaAnalysisSelectedOnComposer) {
+      markServerMainContextAttached(
+        contextForPrompt,
+        'metaAnalysis',
+        MAIN_CONTEXT_SOURCE_LABELS.metaAnalysis,
+        `上下文字符 ${contextForPrompt.metaAnalysis.contextMarkdown ? contextForPrompt.metaAnalysis.contextMarkdown.length : 0}`
+      );
+    }
+
+    const autoResearchSelectedOnComposer = isMainContextSourceSelected(contextForPrompt, 'autoResearch');
+    if (contextForPrompt.autoResearch && autoResearchSelectedOnComposer) {
+      markServerMainContextAttached(
+        contextForPrompt,
+        'autoResearch',
+        MAIN_CONTEXT_SOURCE_LABELS.autoResearch,
+        `上下文字符 ${contextForPrompt.autoResearch.contextMarkdown ? contextForPrompt.autoResearch.contextMarkdown.length : 0}`
+      );
+    } else if (autoResearchSelectedOnComposer) {
+      markServerMainContextMissing(
+        contextForPrompt,
+        'autoResearch',
+        MAIN_CONTEXT_SOURCE_LABELS.autoResearch,
+        '未随请求收到 Auto Research 写作上下文'
+      );
+    }
+
+    if (!contextForPrompt.ordinaryDraft && getDraftContextForUser && shouldAttachOrdinaryDraftContext(messageForTask)) {
+      try {
+        const draftContext = await getDraftContextForUser(userId, messageForTask);
+        if (draftContext?.available) {
+          contextForPrompt.ordinaryDraft = draftContext;
+          logger.info(
+            `[ChatBridge Route] Auto-attached ordinary draft context: source=${draftContext.source || 'unknown'}, chapters=${draftContext.chapters?.length || 0}, chars=${draftContext.content?.length || 0}`
+          );
+        } else {
+          logger.info(`[ChatBridge Route] Ordinary draft context requested but unavailable: ${draftContext?.reason || 'no draft'}`);
+        }
+      } catch (error) {
+        logger.warn('[ChatBridge Route] Backend ordinary draft auto-attach failed:', error);
       }
     }
     
@@ -545,8 +802,14 @@ router.post('/chat', async (req, res) => {
       hasMetaAnalysis: !!contextForPrompt.metaAnalysis,
       metaAnalysisExplicit: !!contextForPrompt.metaAnalysisExplicit,
       metaAnalysisPinned: !!contextForPrompt.metaAnalysisPinned,
+      hasDiscussionFramework: !!contextForPrompt.discussionFramework,
+      hasRPlot: !!contextForPrompt.rPlot,
       hasAutoResearch: !!contextForPrompt.autoResearch,
       autoResearchPinned: !!contextForPrompt.autoResearchPinned,
+      hasOrdinaryDraft: !!contextForPrompt.ordinaryDraft,
+      hasUserSkillPrompt: !!contextForPrompt.userSkillPrompt,
+      invokedUserSkills: contextForPrompt.invokedUserSkills?.map((skill: any) => skill.trigger),
+      contextSourceStatus: contextForPrompt.contextSourceStatus,
       isFirstMessage: contextForPrompt.isFirstMessage,
       isFirstMessageType: typeof contextForPrompt.isFirstMessage,
       isFirstMessageValue: JSON.stringify(contextForPrompt.isFirstMessage),
@@ -556,10 +819,10 @@ router.post('/chat', async (req, res) => {
     // 日志记录：当前对话状态（用于调试）
     logger.info(`[Debug] history.length=${history.length}, isFirstMessage=${normalizeBooleanFlag(contextForPrompt.isFirstMessage)}`);
     
-    logger.info(`[Debug] Message to buildEnrichedMessage: "${message}" (${message?.length || 0} chars)`);
+    logger.info(`[Debug] Message to buildEnrichedMessage: "${messageForTask}" (${messageForTask?.length || 0} chars)`);
     
     // 策略：每次请求都发送完整上下文，确保跨会话长期记忆完整进入模型提示词。
-    const enrichedMessage = buildEnrichedMessage(message, contextForPrompt, history);
+    const enrichedMessage = buildEnrichedMessage(messageForTask, contextForPrompt, history);
     logger.info(`[Debug] Memory strategy: ALWAYS FULL context (history.length=${history.length})`);
     logger.info(`[Debug] FINAL enrichedMessage (${enrichedMessage.length} chars):`);
     logger.info(`[Debug] === START ===`);
@@ -594,9 +857,13 @@ router.post('/chat', async (req, res) => {
           // 小牛马 API 配置（来自前端 ⚙️ API 设置）
           apiUrl,
           apiKey,
+          requiresVision: Boolean(requiresVision),
+          visionApiUrl,
+          visionApiKey,
+          visionModel,
         });
         
-        response = await postProcessResponse(response, userId, message, contextForPrompt, apiUrl, apiKey, model, secondaryModel);
+        response = await postProcessResponse(response, userId, messageForTask, contextForPrompt, apiUrl, apiKey, model, secondaryModel);
         
         res.write(`data: ${JSON.stringify({ type: 'complete', content: response, provider: 'chat-bridge' })}\n\n`);
         res.end();
@@ -616,9 +883,13 @@ router.post('/chat', async (req, res) => {
         // 小牛马 API 配置（来自前端 ⚙️ API 设置）
         apiUrl,
         apiKey,
+        requiresVision: Boolean(requiresVision),
+        visionApiUrl,
+        visionApiKey,
+        visionModel,
       });
       
-      response = await postProcessResponse(response, userId, message, contextForPrompt, apiUrl, apiKey, model, secondaryModel);
+      response = await postProcessResponse(response, userId, messageForTask, contextForPrompt, apiUrl, apiKey, model, secondaryModel);
 
       res.json({
         success: true,
@@ -1236,6 +1507,130 @@ function resolveAnalysisContextSourceLabel(pinned: unknown, explicit: unknown): 
   return '自动识别';
 }
 
+const MAIN_CONTEXT_SOURCE_LABELS: Record<string, string> = {
+  bibliometrics: '文献计量结果',
+  metaAnalysis: 'Meta 分析结果',
+  autoResearch: 'Auto Research 结果',
+  skills: 'Skill / 写作风格',
+};
+
+function normalizeMainContextStatusEntry(entry: any): { id: string; label: string; detail: string; reason: string } | null {
+  if (!entry || typeof entry !== 'object') return null;
+  const id = String(entry.id || '').trim();
+  const label = String(entry.label || MAIN_CONTEXT_SOURCE_LABELS[id] || id || '').trim();
+  if (!id && !label) return null;
+  return {
+    id,
+    label,
+    detail: String(entry.detail || '').trim(),
+    reason: String(entry.reason || '').trim(),
+  };
+}
+
+function isMainContextSourceSelected(context: any, sourceId: string): boolean {
+  return context?.selectedContextSources?.[sourceId] === true
+    || context?.contextSourceStatus?.selectedSources?.[sourceId] === true;
+}
+
+function ensureMainContextSourceStatus(context: any): {
+  selectedSources: Record<string, boolean>;
+  attached: any[];
+  missing: any[];
+} {
+  if (!context.contextSourceStatus || typeof context.contextSourceStatus !== 'object') {
+    context.contextSourceStatus = {
+      selectedSources: context.selectedContextSources || {},
+      attached: [],
+      missing: [],
+    };
+  }
+  if (!context.contextSourceStatus.selectedSources || typeof context.contextSourceStatus.selectedSources !== 'object') {
+    context.contextSourceStatus.selectedSources = context.selectedContextSources || {};
+  }
+  if (!Array.isArray(context.contextSourceStatus.attached)) context.contextSourceStatus.attached = [];
+  if (!Array.isArray(context.contextSourceStatus.missing)) context.contextSourceStatus.missing = [];
+  return context.contextSourceStatus;
+}
+
+function markServerMainContextAttached(context: any, id: string, label: string, detail?: string): void {
+  const status = ensureMainContextSourceStatus(context);
+  status.missing = status.missing.filter((entry: any) => String(entry?.id || '') !== id);
+  const existing = status.attached.find((entry: any) => String(entry?.id || '') === id);
+  if (existing) {
+    existing.label = label;
+    existing.detail = detail || existing.detail || '';
+    return;
+  }
+  status.attached.push({ id, label, detail: detail || '' });
+}
+
+function markServerMainContextMissing(context: any, id: string, label: string, reason: string): void {
+  const status = ensureMainContextSourceStatus(context);
+  if (status.attached.some((entry: any) => String(entry?.id || '') === id)) return;
+  const existing = status.missing.find((entry: any) => String(entry?.id || '') === id);
+  if (existing) {
+    existing.label = label;
+    existing.reason = reason || existing.reason || '';
+    return;
+  }
+  status.missing.push({ id, label, reason });
+}
+
+function buildMainContextSourceStatusPromptBlock(context: any): string {
+  const status = context?.contextSourceStatus;
+  if (!status || typeof status !== 'object') return '';
+
+  const attached = Array.isArray(status.attached)
+    ? status.attached.map(normalizeMainContextStatusEntry).filter(Boolean) as Array<{ id: string; label: string; detail: string; reason: string }>
+    : [];
+  const missing = Array.isArray(status.missing)
+    ? status.missing.map(normalizeMainContextStatusEntry).filter(Boolean) as Array<{ id: string; label: string; detail: string; reason: string }>
+    : [];
+  const selectedSources = status.selectedSources && typeof status.selectedSources === 'object'
+    ? Object.entries(status.selectedSources)
+        .filter(([, selected]) => selected === true)
+        .map(([id]) => MAIN_CONTEXT_SOURCE_LABELS[id] || id)
+    : [];
+
+  if (attached.length === 0 && missing.length === 0 && selectedSources.length === 0) return '';
+
+  let block = '## 本轮固定上下文状态\n';
+  block += '用户在主输入框上方启用了“持续使用”上下文。以下状态随本轮用户问题一起发送，用于判断哪些项目资料已经进入模型提示词。\n';
+  if (selectedSources.length > 0) {
+    block += `- 已勾选来源：${selectedSources.join('；')}\n`;
+  }
+  if (attached.length > 0) {
+    block += `- 已实际附加：${attached.map(item => item.detail ? `${item.label}（${item.detail}）` : item.label).join('；')}\n`;
+  }
+  if (missing.length > 0) {
+    block += `- 已勾选但未附加：${missing.map(item => item.reason ? `${item.label}（${item.reason}）` : item.label).join('；')}\n`;
+  }
+  block += '使用规则：必须优先使用“已实际附加”的资料；对“已勾选但未附加”的来源，不得假装已读取，必要时提示用户先生成、上传或运行对应分析。\n\n';
+  return block;
+}
+
+function buildOrdinaryDraftPromptBlock(context: any): string {
+  if (!context.ordinaryDraft?.available) return '';
+
+  let block = `## 普通论文草稿（按需读取，优先级最高）\n`;
+  block += `用户本轮问题与草稿、章节、修改、续写或写作进度相关，后端已读取普通草稿。`;
+  block += `如果用户询问写作进度、已完成内容或还缺什么，必须基于本草稿状态回答；普通草稿状态优先于长期记忆中的旧写作进度。\n`;
+  block += `- 来源：${context.ordinaryDraft.source || 'ordinary-draft'}\n`;
+  if (Array.isArray(context.ordinaryDraft.chapters) && context.ordinaryDraft.chapters.length > 0) {
+    block += `- 已保存章节：${context.ordinaryDraft.chapters.join(', ')}\n`;
+  }
+  if (context.ordinaryDraft.updatedAt) {
+    block += `- 最近保存时间：${context.ordinaryDraft.updatedAt}\n`;
+  }
+  if (typeof context.ordinaryDraft.wordCount === 'number') {
+    block += `- 估算字数：${context.ordinaryDraft.wordCount}\n`;
+  }
+  if (context.ordinaryDraft.content) {
+    block += `\n${context.ordinaryDraft.content}\n\n`;
+  }
+  return block;
+}
+
 function buildEnrichedMessage(message: string, context: any, history?: Array<{ role: string; content: string }>): string {
   
   logger.info(`[Debug] buildEnrichedMessage: message="${message.substring(0, 100)}...", history=${history?.length || 0} msgs`);
@@ -1262,23 +1657,50 @@ function buildEnrichedMessage(message: string, context: any, history?: Array<{ r
     enrichedPrompt += `## 👤 用户自定义设定\n${context.soulContent}\n\n`;
   }
 
+  // 2.1 用户显式调用的自定义 Skill
+  if (context.userSkillPrompt) {
+    enrichedPrompt += `${context.userSkillPrompt}\n\n`;
+  }
+
+  const contextSourceStatusBlock = buildMainContextSourceStatusPromptBlock(context);
+  if (contextSourceStatusBlock) {
+    enrichedPrompt += contextSourceStatusBlock;
+  }
+
   // 3. 写作任务类型
   if (context.taskType) {
     enrichedPrompt += `## 🎯 写作任务\n${context.taskType}\n\n`;
   }
 
+  if (context.discussionFramework?.available) {
+    enrichedPrompt += `## 讨论式写作框架\n`;
+    if (context.discussionFramework.contextMarkdown) {
+      enrichedPrompt += `${context.discussionFramework.contextMarkdown}\n\n`;
+    } else {
+      enrichedPrompt += '```json\n';
+      enrichedPrompt += `${JSON.stringify(context.discussionFramework, null, 2)}\n`;
+      enrichedPrompt += '```\n\n';
+    }
+    enrichedPrompt += `使用规则：当前用户在讨论式写作界面手动维护了这个框架。回答章节规划、续写、修改、图表解读和写作进度问题时，优先沿用其中的章节、小节、写作思路和图表数据；未填写的部分不要自行当成事实。\n\n`;
+  }
+
+  const ordinaryDraftPromptBlock = buildOrdinaryDraftPromptBlock(context);
+  if (ordinaryDraftPromptBlock) {
+    enrichedPrompt += ordinaryDraftPromptBlock;
+  }
+
   // 4. 写作进度
-  if (context.memory?.writingProgress) {
+  if (!ordinaryDraftPromptBlock && context.memory?.writingProgress) {
     enrichedPrompt += `## 📝 当前写作进度\n${context.memory.writingProgress}\n\n`;
   }
 
   // 5. 已完成章节
-  if (context.memory?.completedChapters) {
+  if (!ordinaryDraftPromptBlock && context.memory?.completedChapters) {
     enrichedPrompt += `## ✅ 已完成章节\n${context.memory.completedChapters}\n\n`;
   }
 
   // 6. 待完成章节
-  if (context.memory?.pendingChapters) {
+  if (!ordinaryDraftPromptBlock && context.memory?.pendingChapters) {
     enrichedPrompt += `## 📋 待完成章节\n${context.memory.pendingChapters}\n\n`;
   }
 
@@ -1312,6 +1734,10 @@ function buildEnrichedMessage(message: string, context: any, history?: Array<{ r
     enrichedPrompt += `## 🧠 跨会话长期记忆（完整）\n`;
     for (const entry of context.memory.other) {
       if (entry.key && entry.value) {
+        const normalizedKey = String(entry.key || '').toLowerCase();
+        if (ordinaryDraftPromptBlock && ['writing_progress', 'completed_chapters', 'pending_chapters'].includes(normalizedKey)) {
+          continue;
+        }
         const value = typeof entry.value === 'string' ? entry.value : JSON.stringify(entry.value);
         enrichedPrompt += `- **${entry.key}**: ${value}\n`;
       }
@@ -1345,6 +1771,19 @@ function buildEnrichedMessage(message: string, context: any, history?: Array<{ r
     }
   }
 
+  // 10.5 最近一次 R 作图上下文
+  if (context.rPlot?.available) {
+    enrichedPrompt += `## 最近一次 R 作图上下文\n`;
+    if (context.rPlot.contextMarkdown) {
+      enrichedPrompt += `${context.rPlot.contextMarkdown}\n\n`;
+    } else {
+      enrichedPrompt += '```json\n';
+      enrichedPrompt += `${JSON.stringify(context.rPlot, null, 2)}\n`;
+      enrichedPrompt += '```\n\n';
+    }
+    enrichedPrompt += `使用规则：当用户说“刚才的图、这张图、上一次作图、调整图例/颜色/坐标轴/显著性标注”等，必须优先理解为对这次 R 作图结果的连续修改，不要回答不知道上一张图。\n\n`;
+  }
+
   // 11. Auto Research 结果上下文
   if (context.autoResearch) {
     const autoResearchSourceLabel = resolveAnalysisContextSourceLabel(context.autoResearchPinned, context.autoResearchExplicit);
@@ -1364,7 +1803,7 @@ function buildEnrichedMessage(message: string, context: any, history?: Array<{ r
     enrichedPrompt += `${context.webSearchContext}\n\n`;
   }
 
-  // 13. 当前对话历史（每次都发送）
+  // 14. 当前对话历史（每次都发送）
   if (history && history.length > 0) {
     enrichedPrompt += `## 💭 当前对话历史\n`;
     enrichedPrompt += `以下是本次对话中之前的交流内容：\n\n`;
@@ -1380,7 +1819,7 @@ function buildEnrichedMessage(message: string, context: any, history?: Array<{ r
     enrichedPrompt += `---\n\n`;
   }
 
-  // 13. 回答要求（包含长期记忆中的用户相关要求）
+  // 15. 回答要求（包含长期记忆中的用户相关要求）
   enrichedPrompt += `## ⚠️ 重要要求\n`;
   enrichedPrompt += `1. **文献引用（文内）**：必须使用 "(作者, 年份)" 格式，如 "(Wang et al., 2023)"\n`;
   enrichedPrompt += `2. **文献引用（文末尾注）**：文末必须列出所有参考文献的完整尾注信息，包含：作者、年份、标题、期刊、卷号、页码、DOI，格式如下：\n`;
@@ -1433,7 +1872,7 @@ function buildEnrichedMessage(message: string, context: any, history?: Array<{ r
   }
   enrichedPrompt += '\n';
 
-  // 15. 论文草稿功能说明
+  // 16. 论文草稿功能说明
   enrichedPrompt += `## 📝 论文草稿功能\n`;
   enrichedPrompt += `当用户要求"保存到草稿"时，请在回复最后包含以下格式的触发指令：\n`;
   enrichedPrompt += '```\n';
@@ -1448,7 +1887,7 @@ function buildEnrichedMessage(message: string, context: any, history?: Array<{ r
   enrichedPrompt += '```\n\n';
   enrichedPrompt += `**重要**：references 字段必须列出本章节引用的所有文献的完整信息，不要遗漏。\n\n`;
 
-  // 16. 用户请求（检测是否为检索结果消息）
+  // 17. 用户请求（检测是否为检索结果消息）
   const isRetrievalResultMessage = message.includes('🔍 文献检索结果') || 
                                      message.includes('检索论点') ||
                                      message.includes('文献检索结果（自动检索）');
@@ -1781,6 +2220,7 @@ router.post('/open-page', async (req, res) => {
       // 新的双 Agent 配置
       const primaryConfig = data.primary;
       const secondaryConfig = data.secondary;
+      const secondaryVisionConfig = (data as any).secondary_vision;
       const codexConfig = data.codex;
       
       const defaultConfig = {
@@ -1817,6 +2257,12 @@ router.post('/open-page', async (req, res) => {
           model: 'gpt-4o',
           vision_model: 'gpt-4o',
           description: '小牛马 - 执行写作、引用验证',
+        },
+        secondary_vision: {
+          api_url: '',
+          api_key: '',
+          model: 'gpt-4o',
+          description: '小牛马视觉 - 图片、图表截图、多模态输入',
         },
         codex: {
           enabled: false,
@@ -1861,6 +2307,10 @@ router.post('/open-page', async (req, res) => {
           secondary: {
             ...defaultConfig.secondary,
             ...(parsed.secondary || {}),
+          },
+          secondary_vision: {
+            ...defaultConfig.secondary_vision,
+            ...(parsed.secondary_vision || {}),
           },
           codex: {
             ...defaultConfig.codex,
@@ -1951,6 +2401,22 @@ router.post('/open-page', async (req, res) => {
         }
       }
 
+      // 处理 secondary_vision（小牛马视觉/多模态）配置
+      if (secondaryVisionConfig !== undefined) {
+        const { encrypt } = await import('../../utils/encryption');
+
+        config.secondary_vision = {
+          ...config.secondary_vision,
+          ...(secondaryVisionConfig.api_url !== undefined && { api_url: sanitizeUrl(secondaryVisionConfig.api_url) }),
+          ...(secondaryVisionConfig.model !== undefined && { model: sanitizeString(secondaryVisionConfig.model) }),
+          ...(secondaryVisionConfig.description !== undefined && { description: sanitizeString(secondaryVisionConfig.description) }),
+        };
+
+        if (secondaryVisionConfig.api_key !== undefined && secondaryVisionConfig.api_key !== '') {
+          config.secondary_vision.api_key = encrypt(sanitizeString(secondaryVisionConfig.api_key));
+        }
+      }
+
       if (codexConfig !== undefined) {
         const codexConcurrency = codexConfig.pdf_wiki_concurrency ?? codexConfig.concurrency;
         config.codex = {
@@ -1973,7 +2439,8 @@ router.post('/open-page', async (req, res) => {
       // 脱敏日志
       const hasPrimaryApiKey = !!config.primary?.api_key;
       const hasSecondaryApiKey = !!config.secondary?.api_key;
-      logger.info(`[ChatBridge] Config saved: mode=${config.mode}, primary_url=${config.primary?.api_url ? 'configured' : 'empty'}, primary_model=${config.primary?.model}, secondary_url=${config.secondary?.api_url ? 'configured' : 'empty'}, secondary_model=${config.secondary?.model}, codex_prefer=${!!config.codex?.prefer}, has_primary_key=${hasPrimaryApiKey}, has_secondary_key=${hasSecondaryApiKey}`);
+      const hasSecondaryVisionApiKey = !!config.secondary_vision?.api_key;
+      logger.info(`[ChatBridge] Config saved: mode=${config.mode}, primary_url=${config.primary?.api_url ? 'configured' : 'empty'}, primary_model=${config.primary?.model}, secondary_url=${config.secondary?.api_url ? 'configured' : 'empty'}, secondary_model=${config.secondary?.model}, secondary_vision_url=${config.secondary_vision?.api_url ? 'configured' : 'empty'}, secondary_vision_model=${config.secondary_vision?.model}, codex_prefer=${!!config.codex?.prefer}, has_primary_key=${hasPrimaryApiKey}, has_secondary_key=${hasSecondaryApiKey}, has_secondary_vision_key=${hasSecondaryVisionApiKey}`);
       
       if (chatBridgeAdapter) {
         await chatBridgeAdapter.loadConfig();
@@ -1998,6 +2465,12 @@ router.post('/open-page', async (req, res) => {
             vision_model: config.secondary?.vision_model || config.secondary?.model || 'gpt-4o',
             has_api_key: hasSecondaryApiKey,
             description: config.secondary?.description || '',
+          },
+          secondary_vision: {
+            api_url: config.secondary_vision?.api_url || '',
+            model: config.secondary_vision?.model || 'gpt-4o',
+            has_api_key: hasSecondaryVisionApiKey,
+            description: config.secondary_vision?.description || '',
           },
           codex: {
             enabled: !!config.codex?.enabled,
@@ -2068,6 +2541,12 @@ router.get('/config', (req, res) => {
         vision_model: 'gpt-4o',
         description: '小牛马 - 执行写作、引用验证',
       },
+      secondary_vision: {
+        api_url: '',
+        api_key: '',
+        model: 'gpt-4o',
+        description: '小牛马视觉 - 图片、图表截图、多模态输入',
+      },
       codex: {
         enabled: false,
         prefer: false,
@@ -2112,6 +2591,10 @@ router.get('/config', (req, res) => {
           ...defaultConfig.secondary,
           ...(parsed.secondary || {}),
         },
+        secondary_vision: {
+          ...defaultConfig.secondary_vision,
+          ...(parsed.secondary_vision || {}),
+        },
         codex: {
           ...defaultConfig.codex,
           ...(parsed.codex || {}),
@@ -2125,6 +2608,7 @@ router.get('/config', (req, res) => {
     const hasApiKey = !!config.chat.api_key;
     const hasPrimaryApiKey = !!config.primary?.api_key;
     const hasSecondaryApiKey = !!config.secondary?.api_key;
+    const hasSecondaryVisionApiKey = !!(config as any).secondary_vision?.api_key;
     
     res.json({
       success: true,
@@ -2145,6 +2629,12 @@ router.get('/config', (req, res) => {
           vision_model: config.secondary?.vision_model || config.secondary?.model || 'gpt-4o',
           has_api_key: hasSecondaryApiKey,
           description: config.secondary?.description || '',
+        },
+        secondary_vision: {
+          api_url: (config as any).secondary_vision?.api_url || '',
+          model: (config as any).secondary_vision?.model || 'gpt-4o',
+          has_api_key: hasSecondaryVisionApiKey,
+          description: (config as any).secondary_vision?.description || '',
         },
         codex: {
           enabled: !!config.codex?.enabled,
@@ -2209,6 +2699,11 @@ router.post('/models', async (req, res) => {
           model: 'gpt-4o',
           vision_model: 'gpt-4o',
         },
+        secondary_vision: {
+          api_url: '',
+          api_key: '',
+          model: 'gpt-4o',
+        },
       };
       
       let config = { ...defaultConfig };
@@ -2224,11 +2719,17 @@ router.post('/models', async (req, res) => {
             ...defaultConfig.secondary,
             ...(parsed.secondary || {}),
           },
+          secondary_vision: {
+            ...defaultConfig.secondary_vision,
+            ...(parsed.secondary_vision || {}),
+          },
         };
       }
       
       // 选择要使用的 Agent 配置
-      const agentConfig = agent === 'secondary' ? config.secondary : config.primary;
+      const agentConfig = agent === 'secondary_vision'
+        ? config.secondary_vision
+        : (agent === 'secondary' ? config.secondary : config.primary);
       
       // 如果前端没传 URL，使用已保存的
       if (!finalApiUrl) {

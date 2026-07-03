@@ -8,6 +8,7 @@ import { randomUUID } from 'crypto';
 import { createWriteStream, existsSync } from 'fs';
 import * as http from 'http';
 import * as https from 'https';
+import * as zlib from 'zlib';
 import { Router } from 'express';
 import archiver from 'archiver';
 import multer from 'multer';
@@ -16,7 +17,8 @@ import * as fs from 'fs/promises';
 import * as os from 'os';
 import { z } from 'zod';
 import { logger } from '../../utils/logger';
-import { getDataDir, sanitizeUserId } from '../../utils/paths';
+import { getDataDir, getMemoryDir, sanitizeUserId } from '../../utils/paths';
+import { researchSessionManager } from '../../research/research-session-manager';
 
 const router = Router();
 
@@ -69,8 +71,27 @@ new_theme1 <- theme_bw() +
 
 const ACTIVE_R_THEME_NAME = 'new_theme1';
 const DATA_PREVIEW_ROW_LIMIT = 30;
-const R_ARTIFACT_EXTENSIONS = new Set(['.r', '.png', '.pdf', '.svg', '.jpg', '.jpeg', '.tif', '.tiff', '.csv', '.txt', '.md']);
-const R_EXPORT_IMAGE_EXTENSIONS = new Set(['.png', '.pdf', '.svg', '.jpg', '.jpeg', '.tif', '.tiff']);
+const R_ARTIFACT_EXTENSIONS = new Set([
+  '.r', '.rmd', '.png', '.pdf', '.svg', '.jpg', '.jpeg', '.tif', '.tiff',
+  '.csv', '.tsv', '.xls', '.xlsx', '.json', '.txt', '.md', '.html', '.htm',
+  '.doc', '.docx', '.ppt', '.pptx', '.zip',
+]);
+const R_EXPORT_IMAGE_EXTENSIONS = new Set(['.png', '.svg', '.jpg', '.jpeg', '.tif', '.tiff']);
+type RArtifactKind = 'image' | 'pdf' | 'code' | 'data' | 'text' | 'word' | 'presentation' | 'archive' | 'file';
+
+const R_NO_AUTO_INSTALL_OPTIONAL_PACKAGES = new Set([
+  'multcompView',
+  'agricolae',
+  'emmeans',
+  'ggpubr',
+  'ggsignif',
+  'rstatix',
+  'multcomp',
+  'PMCMRplus',
+  'car',
+  'lme4',
+  'lmerTest',
+]);
 
 const R_FONT_GUIDE = `
 ## 字体硬性规则
@@ -79,6 +100,7 @@ const R_FONT_GUIDE = `
 - R 代码中必须设置统一字体变量，例如 \`font_family <- "serif"\`，并在 \`theme(text = element_text(family = font_family), axis.text = ..., axis.title = ..., legend.text = ..., legend.title = ...)\` 中应用。
 - Windows 环境建议加入 \`try(windowsFonts(serif = windowsFont("TT Times New Roman")), silent = TRUE)\`，让 Rscript 使用系统 Times New Roman 映射，同时避免 PDF/PNG 设备报 \`invalid font type\`。
 - 坐标轴数字、刻度标签、图例、显著性标注、标题、分面标签中的英文和数字都要继承 Times New Roman；不要使用默认 sans、Arial 或仅写 \`family = "serif"\`。
+- 不要把 \`family\`、\`fontfamily\`、\`fonts\` 或 \`font\` 作为 \`ggsave()\` / \`safe_ggsave()\` 参数传入；这些参数可能被 PNG 设备拒绝，字体必须通过 ggplot theme 设置。
 `.trim();
 
 const R_LEGEND_PLACEMENT_GUIDE = `
@@ -96,9 +118,216 @@ const R_DATE_AXIS_GUIDE = `
 
 - 如果横坐标是日期、时间、年份、月份、采样日期或形如 \`YYYY-MM-DD\`、\`YYYY/MM/DD\`、Excel 日期序列的字段，必须先把该列转换为 \`Date\` 或 \`POSIXct\`，不要把日期当作普通字符或离散分类变量。
 - 日期列转换需兼容常见格式：\`%Y-%m-%d\`、\`%Y/%m/%d\`、\`%Y.%m.%d\`、\`%Y-%m\`、\`%Y/%m\`、\`%Y\`；如果是 Excel 数字日期，使用 \`as.Date(x, origin = "1899-12-30")\`。
+- 生成代码时优先使用系统注入的 \`scholar_as_date(x)\` 解析日期；不要直接对未知格式的字符/因子日期调用裸 \`as.Date(x)\`。
 - 日期横坐标不能显示每一个日期标签。必须根据时间跨度设置合适的 breaks 和 labels：跨度小于 45 天可按 1 周或 2 周；小于 18 个月可按 1 月或 2 月；多年数据按 6 个月或 1 年；十年以上按 2 年或 5 年。
-- 使用 \`scale_x_date(date_breaks = "...", date_labels = "...")\` 或 \`scale_x_datetime(...)\` 控制日期显示，并用 \`guide_axis(check.overlap = TRUE)\`、\`theme(axis.text.x = element_text(angle = 30, hjust = 1))\` 避免标签重叠。
+- 日期横坐标标签默认必须使用 ISO 格式 \`YYYY-MM-DD\`，即 R 代码中写 \`date_labels = "%Y-%m-%d"\`。不要使用系统 locale 默认格式、\`%b %d\`、\`%m月 %d\`、\`%Y年%m月%d日\` 或 “5月 27” 这类中文月份格式，除非用户明确要求中文日期。
+- 使用 \`scale_x_date(date_breaks = "...", date_labels = "%Y-%m-%d")\` 或 \`scale_x_datetime(..., date_labels = "%Y-%m-%d")\` 控制日期显示，并用 \`guide_axis(check.overlap = TRUE)\`、\`theme(axis.text.x = element_text(angle = 30, hjust = 1))\` 避免标签重叠。
 - 日期趋势图优先使用连续时间轴，不要用 \`factor(date)\` 或 \`scale_x_discrete()\` 把所有日期逐个展开。
+`.trim();
+
+const R_DATA_FORMAT_PLOT_SAFETY_GUIDE = `
+## R 数据整理与作图安全硬性规则
+
+- 生成 R 代码时必须先处理数据格式，再作图。不要直接把原始表头、中文列名、带单位列名、带空格/括号/斜杠/百分号的列名放进 \`aes()\`。
+- 必须保留 \`data_raw\` 原始数据对象，并创建 \`data_clean\` 清洗对象；后续统计分析、汇总和 ggplot 作图都必须使用 \`data_clean\`。
+- 必须保存列名映射表，例如 \`name_map <- data.frame(raw = names(data_raw), clean = make.names(names(data_raw), unique = TRUE))\`；如果表头包含单位，必须保存单位映射，例如 \`var_labels\` 或 \`axis_units\`。
+- 必须显式转换变量类型：数值列用 \`as.numeric()\` 或 \`readr::parse_number()\` 思路安全转换；分类列转 \`factor\`；日期列转 \`Date/POSIXct\`；不要让字符型数字直接进入统计或坐标轴。
+- 必须检查关键列是否存在、清洗后是否为空、分组是否至少有有效水平、数值列是否有有限值；如果条件不满足，必须 \`stop()\` 给出清楚错误，不要保存空白图，也不要让 ggplot 在中途报晦涩错误。
+- 涉及长宽表转换时，必须明确 \`id_vars\`、\`measure_vars\` 和转换后的列名；不要盲目 \`pivot_longer(everything())\` 导致分组列和数值列混在一起。
+- \`ggsave()\` 的 \`width\` 和 \`height\` 必须是英寸，不是像素；常规单图推荐 \`width=8-10\`、\`height=5-8\`，复杂多面板最多不要超过 \`width=14\`、\`height=10\`。禁止写 \`width=800\`、\`height=600\` 这类像素值。
+- 保存图片必须使用 \`safe_ggsave()\` 或等效尺寸保护函数，把异常宽高裁剪到合理英寸范围，避免出现 “Dimensions exceed 50 inches”。
+- 不要重新定义 \`safe_ggsave <- function(...)\`；系统会在执行阶段自动注入安全保存函数。代码中只需要调用 \`safe_ggsave(...)\`。
+- 如果要标注显著性，必须来自用户数据分析结果、用户明确提供的 p 值/字母/星号，或代码中真实计算出的结果；不能编造显著性。
+- 使用 \`scale_color_manual()\`、\`scale_colour_manual()\` 或 \`scale_fill_manual()\` 时，\`values\` 不能为空，且颜色数量必须不少于实际分组水平数；优先使用代码中定义的非空调色板，不要写 \`values = c()\` 或依赖可能为空的变量。
+`.trim();
+
+const R_ERROR_BAR_GUIDE = `
+## 误差棒硬性规则
+
+- 当用户要求“误差棒”“error bar”“每个点加误差棒”“带 SD/SE/CI”时，最终图中必须出现显式误差棒图层，例如 \`geom_errorbar()\`；不能只在文字或注释里说已添加。
+- 添加误差棒前必须先判断当前主图类型，再选择对应的误差计算和图层：
+  - 折线图、点图、散点图：每个已绘制的数据点都必须对应一个误差棒；误差棒数据必须和点图层使用同一粒度的数据，优先使用 \`geom_errorbar()\` 或 \`geom_linerange()\`。
+  - 柱状图、分组柱状图：柱高通常应是均值或汇总值，误差棒应使用同一 x/group 汇总粒度的 SD/SE/CI；分组柱状图必须让 \`geom_col()\` 和 \`geom_errorbar()\` 使用相同的 \`position_dodge(...)\`。
+  - 水平柱状图：误差范围应沿 x 方向表达，优先使用 \`geom_errorbarh()\` 或 \`geom_segment(aes(x = x_value - error_value, xend = x_value + error_value, y = group, yend = group))\`。
+  - 箱线图、小提琴图：这类图已经展示分布；如果用户仍要求误差棒，应添加均值点和均值 ± SD/SE/CI 的 summary overlay，而不是给箱体本身随意添加虚假误差。
+  - 面积图或趋势带：优先使用 \`geom_ribbon(aes(ymin = y_value - error_value, ymax = y_value + error_value), alpha = ...)\` 表达不确定性；除非用户明确要求竖线误差棒。
+  - 热图、饼图等不适合误差棒的图：不要硬塞误差棒；应生成更适合表达误差的配套折线/点图/柱状图，或在代码注释说明该图型不适合直接添加误差棒。
+- 优先使用用户表格中已有误差列，而不是重新计算。常见误差列名包括 \`sd\`、\`SD\`、\`se\`、\`SE\`、\`std\`、\`error\`、\`err\`、\`stderr\`、\`ci\`、\`CI\` 以及 \`*_sd\`、\`*_se\`。清洗列名后也要识别这些列。
+- 如果原始数据已经是一行一个点，并且存在 \`sd\` / \`se\` / \`error\` 列，禁止在 \`group_by(date, treatment)\` 后用 \`sd(y)\` 重新计算误差；这会在单行分组时产生 \`NA\`，导致误差棒不可见。
+- 如果 y 变量做了单位换算，误差列必须做完全相同的换算。例如 \`N2Oflux = N2Oflux * 100\` 时，\`sd = sd * 100\`。
+- 对点加垂直误差棒的推荐写法是：\`geom_errorbar(aes(ymin = y_value - error_value, ymax = y_value + error_value), width = ..., linewidth = ..., na.rm = TRUE)\`；其中 \`error_value\` 必须是有限数值。
+- 只有在表格没有误差列、且同一 x/group 下有多个重复观测时，才可以按组计算 SD 或 SE；代码中应先检查每组样本量，避免单样本组产生不可见误差棒。
+`.trim();
+
+const R_PACKAGE_DEPENDENCY_GUIDE = `
+## R 包依赖硬性规则
+
+- 默认只使用本系统常用基础作图依赖：ggplot2、readxl、dplyr、tidyr、scales、stringr。不要为了显著性标注、字母分组或主题美化默认加载可选包。
+- 写代码前必须参考“本机 R 包长期记忆”。对清单中已安装的包可以直接使用；对清单中没有的非可选必要包，必须写 \`if (!requireNamespace("包名", quietly = TRUE)) install.packages("包名")\` 这类安装检查，并提供安装失败时的清楚提示或降级方案。
+- 禁止默认写 \`library(multcompView)\`、\`library(agricolae)\`、\`library(emmeans)\`、\`library(ggpubr)\`、\`library(ggsignif)\`、\`library(rstatix)\`、\`library(multcomp)\` 或对应的 \`pkg::fun()\` 调用；这些包在用户本机可能未安装，会导致自动出图中断。
+- 如果确实需要可选包，必须先用 \`requireNamespace("包名", quietly = TRUE)\` 判断；缺包时必须降级为 base R/ggplot2 实现或不标注，并在 R 注释中说明，不能 \`stop()\`。
+- abc/compact letter display 如果无法在无额外包条件下可靠计算，就不要标注 abc；不要因为缺少 \`multcompView\`、\`agricolae\` 或 \`emmeans\` 让整张图失败。
+- 统计结果已经由数据分析模块提供时，优先使用提供的 p 值/星号/字母；不要额外安装包重新计算一套不一致的显著性。
+`.trim();
+
+const R_USER_QUERY_PRIORITY_GUIDE = `
+## 用户需求优先级硬性规则
+
+- “额外要求”中的用户原始 query 是最高优先级，必须覆盖自动图表类型、数据分析默认建议、变量类型推断和模型自己的偏好。
+- 如果用户原始 query 明确要求某种图型，例如“折线图”“线图”“趋势图”“line plot”，最终主图必须是该图型；如果上方“图表类型”或数据分析结果与 query 冲突，服从 query。
+- 用户要求折线图时，主图必须使用 \`geom_line()\`，通常配合 \`geom_point()\`；禁止用 \`geom_col()\`、\`geom_bar()\` 或柱状图替代。
+- 用户要求柱状图时才使用 \`geom_col()\` 或 \`geom_bar()\`；不要因为有分类分组变量就擅自把用户要求的折线图改成柱状图。
+- 如果用户要求的图型与数据结构确实不兼容，必须在 R 代码中 \`stop()\` 给出清楚原因，不能静默改成另一种图型。
+`.trim();
+
+const R_SAFE_GGSAVE_HELPER = `
+# Scholar Harness 作图尺寸安全保护：width/height 一律按英寸处理，自动拦截像素误填。
+safe_plot_dimension <- function(value, fallback, min_value = 2.5, max_value = 14) {
+  raw_value <- suppressWarnings(as.numeric(value)[1])
+  if (!is.finite(raw_value) || raw_value <= 0) raw_value <- fallback
+  if (raw_value > 50) {
+    # 常见错误是把像素当作英寸，例如 800 x 600；这里按 100 dpi 粗略折算。
+    raw_value <- if (raw_value >= 300) raw_value / 100 else fallback
+  }
+  max(min_value, min(max_value, raw_value))
+}
+
+safe_ggsave <- function(filename, plot = ggplot2::last_plot(), width = 8, height = 5,
+                        dpi = 600, units = "in", bg = "white", limitsize = FALSE, ...) {
+  width <- safe_plot_dimension(width, fallback = 8, min_value = 3, max_value = 14)
+  height <- safe_plot_dimension(height, fallback = 5, min_value = 3, max_value = 10)
+  extra_args <- list(...)
+  # Font family belongs in ggplot theme(text = element_text(family = ...)).
+  # Several PNG devices reject family/font arguments passed through ggsave(...).
+  unsupported_device_args <- c("family", "fontfamily", "fonts", "font")
+  extra_args[intersect(names(extra_args), unsupported_device_args)] <- NULL
+  ggsave_args <- c(
+    list(
+      filename = filename,
+      plot = plot,
+      width = width,
+      height = height,
+      dpi = dpi,
+      units = "in",
+      bg = bg,
+      limitsize = limitsize
+    ),
+    extra_args
+  )
+  do.call(ggplot2::ggsave, ggsave_args)
+}
+`.trim();
+
+const R_SAFE_DATE_HELPER = `
+# Scholar Harness 日期解析保护：兼容 Excel 数字日期、字符日期、年月/年份和因子日期，避免 charToDate 中断出图。
+scholar_as_date <- function(x, origin = "1899-12-30", ...) {
+  if (inherits(x, "Date")) return(x)
+  if (inherits(x, "POSIXt")) return(as.Date.POSIXct(x))
+  if (is.factor(x)) x <- as.character(x)
+  make_na_date <- function(n) structure(rep(NA_real_, n), class = "Date")
+
+  parse_from_text <- function(value, format = NULL) {
+    value <- trimws(as.character(value))
+    value[value %in% c("", "NA", "NaN", "NULL", "null", "None", "none")] <- NA_character_
+    normalized <- value
+    normalized <- gsub("[年./]", "-", normalized)
+    normalized <- gsub("月", "-", normalized)
+    normalized <- gsub("日", "", normalized)
+    normalized <- gsub("\\\\s+", "", normalized)
+    normalized <- gsub("-+", "-", normalized)
+    normalized <- gsub("-$", "", normalized)
+
+    out <- make_na_date(length(normalized))
+
+    numeric_value <- suppressWarnings(as.numeric(normalized))
+    numeric_text <- !is.na(numeric_value) & grepl("^[-+]?\\\\d+(?:\\\\.\\\\d+)?$", normalized)
+    excel_serial <- numeric_text & numeric_value > 1000 & numeric_value < 100000
+    if (any(excel_serial)) {
+      out[excel_serial] <- suppressWarnings(base::as.Date(numeric_value[excel_serial], origin = origin))
+    }
+    year_text <- numeric_text & numeric_value >= 1000 & numeric_value <= 9999 & is.na(out)
+    if (any(year_text)) {
+      parsed_year <- suppressWarnings(strptime(sprintf("%04d-01-01", as.integer(numeric_value[year_text])), format = "%Y-%m-%d", tz = "UTC"))
+      out[year_text] <- as.Date(parsed_year)
+    }
+
+    text_value <- normalized
+    year_month <- grepl("^\\\\d{4}-\\\\d{1,2}$", text_value)
+    text_value[year_month] <- paste0(text_value[year_month], "-01")
+    year_only <- grepl("^\\\\d{4}$", text_value)
+    text_value[year_only] <- paste0(text_value[year_only], "-01-01")
+
+    formats <- c(format, "%Y-%m-%d", "%Y-%m-%d%H:%M:%S", "%Y%m%d", "%m-%d-%Y", "%d-%m-%Y")
+    formats <- formats[!is.na(formats) & nzchar(formats)]
+    for (fmt in unique(formats)) {
+      pending <- is.na(out) & !is.na(text_value)
+      if (!any(pending)) break
+      parsed <- suppressWarnings(strptime(text_value[pending], format = fmt, tz = "UTC"))
+      parsed_date <- as.Date(parsed)
+      valid <- !is.na(parsed_date)
+      pending_index <- which(pending)
+      if (any(valid)) out[pending_index[valid]] <- parsed_date[valid]
+    }
+    out
+  }
+
+  extra_args <- list(...)
+  explicit_format <- extra_args[["format"]]
+  if (is.numeric(x)) {
+    out <- make_na_date(length(x))
+    finite <- is.finite(x)
+    excel_serial <- finite & x > 1000 & x < 100000
+    if (any(excel_serial)) {
+      out[excel_serial] <- suppressWarnings(base::as.Date(x[excel_serial], origin = origin))
+    }
+    year_value <- finite & x >= 1000 & x <= 9999 & is.na(out)
+    if (any(year_value)) {
+      parsed_year <- suppressWarnings(strptime(sprintf("%04d-01-01", as.integer(x[year_value])), format = "%Y-%m-%d", tz = "UTC"))
+      out[year_value] <- as.Date(parsed_year)
+    }
+    return(out)
+  }
+
+  parse_from_text(x, format = explicit_format)
+}
+
+as.Date.factor <- function(x, ...) scholar_as_date(as.character(x), ...)
+as.Date.character <- function(x, ...) scholar_as_date(x, ...)
+`.trim();
+
+const R_SAFE_MANUAL_SCALE_HELPER = `
+# Scholar Harness 手动配色保护：避免 scale_*_manual(values = character(0)) 中断出图。
+scholar_manual_palette <- c(
+  "#0072B2", "#D55E00", "#009E73", "#CC79A7",
+  "#E69F00", "#56B4E9", "#F0E442", "#000000",
+  "#6A3D9A", "#A6761D", "#666666", "#1B9E77"
+)
+
+scholar_safe_manual_values <- function(values = NULL, min_n = 64) {
+  if (missing(values) || is.null(values)) values <- character(0)
+  if (is.function(values)) {
+    values <- tryCatch(values(min_n), error = function(e) character(0))
+  }
+  values <- tryCatch(as.character(values), error = function(e) character(0))
+  values <- values[nzchar(values)]
+  if (length(values) == 0) values <- scholar_manual_palette
+  if (is.null(names(values)) || all(!nzchar(names(values)))) {
+    values <- rep(values, length.out = max(min_n, length(values)))
+  }
+  values
+}
+
+scholar_scale_color_manual <- function(..., values = scholar_manual_palette) {
+  ggplot2::scale_color_manual(..., values = scholar_safe_manual_values(values))
+}
+
+scholar_scale_colour_manual <- function(..., values = scholar_manual_palette) {
+  ggplot2::scale_colour_manual(..., values = scholar_safe_manual_values(values))
+}
+
+scholar_scale_fill_manual <- function(..., values = scholar_manual_palette) {
+  ggplot2::scale_fill_manual(..., values = scholar_safe_manual_values(values))
+}
 `.trim();
 
 const rExecuteSchema = z.object({
@@ -106,6 +335,8 @@ const rExecuteSchema = z.object({
   rCode: z.string().min(1).max(2_000_000),
   filename: z.string().optional(),
   dataFilename: z.string().optional(),
+  sourceDataFilePath: z.string().optional(),
+  researchSessionId: z.string().optional(),
   timeoutMs: z.coerce.number().int().min(10_000).max(600_000).optional(),
 });
 
@@ -132,8 +363,20 @@ interface RArtifact {
   relativePath: string;
   size: number;
   url: string;
-  kind?: 'image' | 'code' | 'data' | 'text';
+  kind?: RArtifactKind;
   absolutePath?: string;
+}
+
+interface RImageQualityResult {
+  relativePath: string;
+  suspicious: boolean;
+  reason?: string;
+  width?: number;
+  height?: number;
+  nonWhiteRatio?: number;
+  centerInkRatio?: number;
+  centerColoredRatio?: number;
+  error?: string;
 }
 
 interface RExportedFile {
@@ -147,6 +390,26 @@ interface RPluginConfig {
   installDir?: string;
   packageInstallAt?: string;
   updatedAt?: string;
+}
+
+interface RInstalledPackageInfo {
+  name: string;
+  version: string;
+  libPath?: string;
+  priority?: string;
+}
+
+interface RPackageMemory {
+  version: 1;
+  userId: string;
+  updatedAt: string;
+  rscriptPath: string;
+  rVersion?: string;
+  packageCount: number;
+  packages: RInstalledPackageInfo[];
+  error?: string;
+  memoryPath?: string;
+  textPath?: string;
 }
 
 interface RInstallJob {
@@ -166,6 +429,18 @@ interface RInstallJob {
 }
 
 let currentRInstallJob: RInstallJob | null = null;
+
+interface RChatCompletionResponse {
+  choices?: Array<{ message?: { content?: string } }>;
+}
+
+interface HttpJsonResponse {
+  ok: boolean;
+  status: number;
+  statusText: string;
+  text: string;
+  json: unknown;
+}
 
 const NATURE_R_FIGURE_SKILL = `
 ## Nature-skill：Nature 风格科研图形约束
@@ -200,8 +475,155 @@ function enforceLegendPlacement(rCode: string): string {
     .replace(/legend\.position\s*=\s*c\(\s*\.5\s*,\s*\.5\s*\)/gi, 'legend.position = c(0.98, 0.98), legend.justification = c(1, 1)');
 }
 
+function normalizeRManualScaleCallsInCode(code: string): string {
+  return code
+    .replace(/\b(?:ggplot2::)?scale_color_manual\s*\(/gi, 'scholar_scale_color_manual(')
+    .replace(/\b(?:ggplot2::)?scale_colour_manual\s*\(/gi, 'scholar_scale_colour_manual(')
+    .replace(/\b(?:ggplot2::)?scale_fill_manual\s*\(/gi, 'scholar_scale_fill_manual(')
+    .replace(
+      /(scholar_scale_color_manual\s*<-\s*function\s*\([^)]*\)\s*\{\s*)scholar_scale_color_manual\s*\(/gi,
+      '$1ggplot2::scale_color_manual(',
+    )
+    .replace(
+      /(scholar_scale_colour_manual\s*<-\s*function\s*\([^)]*\)\s*\{\s*)scholar_scale_colour_manual\s*\(/gi,
+      '$1ggplot2::scale_colour_manual(',
+    )
+    .replace(
+      /(scholar_scale_fill_manual\s*<-\s*function\s*\([^)]*\)\s*\{\s*)scholar_scale_fill_manual\s*\(/gi,
+      '$1ggplot2::scale_fill_manual(',
+    );
+}
+
+function ensureRManualScaleHelper(code: string): string {
+  const normalized = normalizeRManualScaleCallsInCode(code);
+  if (
+    !/\bscholar_scale_(?:color|colour|fill)_manual\s*\(/i.test(normalized)
+    || /scholar_scale_(?:color|colour|fill)_manual\s*<-/.test(normalized)
+  ) {
+    return normalized;
+  }
+  return `${R_SAFE_MANUAL_SCALE_HELPER}
+
+${normalized}`;
+}
+
+function normalizeRDateCallsInCode(code: string): string {
+  return code.replace(/(?<![A-Za-z0-9_.:])as\.Date\s*\(/g, 'scholar_as_date(');
+}
+
+function normalizeRDateAxisLabelFormatInCode(code: string): string {
+  return replaceRScaleCallArguments(code, /\bscale_x_(?:date|datetime)\s*\(/gi, (args) => {
+    const isoLabel = 'date_labels = "%Y-%m-%d"';
+    let normalizedArgs = args
+      .replace(/\bdate_labels\s*=\s*scales::date_format\s*\([^)]*\)/gi, isoLabel)
+      .replace(/\bdate_labels\s*=\s*date_format\s*\([^)]*\)/gi, isoLabel)
+      .replace(/\bdate_labels\s*=\s*["'][^"']*["']/gi, isoLabel);
+
+    if (/\bdate_labels\s*=/.test(normalizedArgs)) return normalizedArgs;
+
+    normalizedArgs = normalizedArgs
+      .replace(/\blabels\s*=\s*scales::date_format\s*\([^)]*\)/gi, isoLabel)
+      .replace(/\blabels\s*=\s*date_format\s*\([^)]*\)/gi, isoLabel);
+    if (/\bdate_labels\s*=/.test(normalizedArgs)) return normalizedArgs;
+
+    const trimmed = normalizedArgs.trim();
+    return trimmed ? `${normalizedArgs}, ${isoLabel}` : isoLabel;
+  });
+}
+
+function replaceRScaleCallArguments(
+  code: string,
+  callPattern: RegExp,
+  transformArgs: (args: string) => string
+): string {
+  let output = '';
+  let cursor = 0;
+  callPattern.lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = callPattern.exec(code)) !== null) {
+    const openIndex = match.index + match[0].lastIndexOf('(');
+    const closeIndex = findMatchingRParen(code, openIndex);
+    if (closeIndex < 0) continue;
+    output += code.slice(cursor, openIndex + 1);
+    output += transformArgs(code.slice(openIndex + 1, closeIndex));
+    cursor = closeIndex;
+    callPattern.lastIndex = closeIndex + 1;
+  }
+  output += code.slice(cursor);
+  return output;
+}
+
+function findMatchingRParen(code: string, openIndex: number): number {
+  let depth = 0;
+  let quote: '"' | "'" | null = null;
+  let escaped = false;
+  for (let i = openIndex; i < code.length; i++) {
+    const ch = code[i];
+    if (quote) {
+      if (escaped) {
+        escaped = false;
+      } else if (ch === '\\') {
+        escaped = true;
+      } else if (ch === quote) {
+        quote = null;
+      }
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      continue;
+    }
+    if (ch === '(') {
+      depth += 1;
+    } else if (ch === ')') {
+      depth -= 1;
+      if (depth === 0) return i;
+    }
+  }
+  return -1;
+}
+
+function ensureRSafeDateHelper(code: string): string {
+  if (!/\bscholar_as_date\s*\(/.test(code) || /\bscholar_as_date\s*<-/.test(code)) {
+    return code;
+  }
+  return `${R_SAFE_DATE_HELPER}
+
+${code}`;
+}
+
+function looksLikeRStartLine(line: string): boolean {
+  const trimmed = line.trim();
+  return /^(?:#|library\s*\(|require\s*\(|requireNamespace\s*\(|suppressPackageStartupMessages\s*\(|options\s*\(|setwd\s*\(|dir\.create\s*\(|read(?:xl|r)?::|read_|write_|ggplot\s*\(|[A-Za-z.][A-Za-z0-9._]*\s*(?:<-|=|\())/.test(trimmed);
+}
+
+function looksLikeRCodeLine(line: string): boolean {
+  const trimmed = line.trim();
+  if (!trimmed || trimmed.startsWith('#')) return true;
+  if (/^```|^~~~/.test(trimmed)) return false;
+  if (/^[-=]{3,}$/.test(trimmed)) return false;
+  if (/^\d+\.\s+/.test(trimmed)) return false;
+  if (/^(?:修改|说明|注意|主要|原代码|文件名|下面|以上|请|可以|如果|建议|输出格式|保存|显示图形|检查|转换|颜色配色|日期范围)/.test(trimmed)) return false;
+  if (/^[+}),\]]/.test(trimmed)) return true;
+  if (looksLikeRStartLine(trimmed)) return true;
+  if (/(?:<-|->|::|\(|\)|\{|\}|\[|\]|\$|%>%|\|>)/.test(trimmed)) return true;
+  if (/=/.test(trimmed) && /[,)]\s*$/.test(trimmed)) return true;
+  if (/[\u4e00-\u9fff]/.test(trimmed)) return false;
+  return true;
+}
+
+function commentUnsafeRNarrativeLines(code: string): string {
+  return code.split(/\r?\n/).map((line) => {
+    const trimmed = line.trim();
+    if (looksLikeRCodeLine(trimmed)) return line;
+    const indent = line.match(/^\s*/)?.[0] || '';
+    return `${indent}# ${trimmed}`;
+  }).join('\n');
+}
+
 function enforceRCodeGuardrails(rCode: string): string {
-  const legendSafe = enforceLegendPlacement(rCode)
+  const executableCode = normalizeRDateAxisLabelFormatInCode(normalizeRDateCallsInCode(commentUnsafeRNarrativeLines(extractRCode(rCode))));
+  const legendSafe = ensureRManualScaleHelper(enforceLegendPlacement(executableCode))
     .replace(/base_family\s*=\s*["']Arial["']/gi, 'base_family = "Times New Roman"')
     .replace(/family\s*=\s*["']Arial["']/gi, 'family = font_family')
     .replace(/family\s*=\s*["']sans["']/gi, 'family = font_family')
@@ -214,17 +636,47 @@ if (.Platform$OS.type == "windows") {
 }
 
 ${legendSafe}`;
-  if (/scale_x_discrete\s*\(/i.test(withFont) && /(date|time|year|month|日期|时间|年份|月份)/i.test(withFont)) {
-    return `${withFont}
+  const withDateHelper = ensureRSafeDateHelper(withFont);
+  if (/scale_x_discrete\s*\(/i.test(withDateHelper) && /(date|time|year|month|日期|时间|年份|月份)/i.test(withDateHelper)) {
+    return normalizeRPlotSaveCalls(`${withDateHelper}
 
 # Scholar Harness 日期轴检查提示：
 # 当前代码中出现 scale_x_discrete() 且脚本疑似包含日期/时间字段。
 # 如果横坐标是日期，请改用 Date/POSIXct 连续时间轴，并使用 scale_x_date()
-# 或 scale_x_datetime(date_breaks = ..., date_labels = ...) 控制标签密度，
+# 或 scale_x_datetime(date_breaks = ..., date_labels = "%Y-%m-%d") 控制标签密度，
 # 避免把所有日期逐个显示导致重叠。
-`;
+`);
   }
-  return withFont;
+  return normalizeRPlotSaveCalls(withDateHelper);
+}
+
+function normalizeRPlotSaveCallsInCode(code: string): string {
+  const manualSafe = ensureRManualScaleHelper(code);
+  if (!/(?:ggsave|safe_ggsave)\s*\(/i.test(manualSafe)) return manualSafe;
+  const withoutOldHelper = neutralizeUserSafeGgsaveDefinitions(stripScholarSafeGgsaveHelper(manualSafe));
+  const replaced = withoutOldHelper.replace(/(?<![A-Za-z0-9_.:])ggsave\s*\(/g, 'safe_ggsave(');
+  return `${R_SAFE_GGSAVE_HELPER}
+
+${replaced}`;
+}
+
+function neutralizeUserSafeGgsaveDefinitions(code: string): string {
+  return code.replace(/\bsafe_ggsave\s*(<-|=)\s*function\s*\(/gi, 'scholar_ignored_safe_ggsave $1 function(');
+}
+
+function stripScholarSafeGgsaveHelper(code: string): string {
+  return code.replace(
+    /# Scholar Harness 作图尺寸安全保护[\s\S]*?safe_ggsave\s*<-\s*function[\s\S]*?\n}\s*\n?/m,
+    '',
+  ).trimStart();
+}
+
+function normalizeRPlotSaveCalls(raw: string): string {
+  if (!/ggsave\s*\(/i.test(raw) || /safe_ggsave\s*<-/.test(raw)) return raw;
+  const codeBlock = raw.match(/```(?:r|R)?\s*([\s\S]*?)```/);
+  if (!codeBlock) return normalizeRPlotSaveCallsInCode(raw);
+  const normalizedCode = normalizeRPlotSaveCallsInCode((codeBlock[1] || '').trim());
+  return raw.replace(codeBlock[0], `\`\`\`r\n${normalizedCode}\n\`\`\``);
 }
 
 function getThemeDisplayName(themeId?: string): string {
@@ -246,6 +698,148 @@ function getThemeDisplayName(themeId?: string): string {
 
 function buildThemeSkillSection(themeId?: string): string {
   return themeId === 'nature' ? NATURE_R_FIGURE_SKILL.trim() : '';
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function isRetryableAiApiStatus(status: number): boolean {
+  return status === 408 || status === 409 || status === 425 || status === 429 || status >= 500;
+}
+
+function isRetryableAiApiError(error: unknown): boolean {
+  const err = error as NodeJS.ErrnoException & { code?: string; cause?: { code?: string } };
+  const message = String((error as Error)?.message || error || '').toLowerCase();
+  const code = String(err.code || err.cause?.code || '').toUpperCase();
+  return [
+    'ETIMEDOUT',
+    'ECONNRESET',
+    'ECONNREFUSED',
+    'EAI_AGAIN',
+    'ENOTFOUND',
+    'UND_ERR_CONNECT_TIMEOUT',
+    'ECONNABORTED',
+  ].includes(code) || /timeout|timed out|fetch failed|network|socket|connection/i.test(message);
+}
+
+function formatAiApiError(error: unknown, apiUrl: string): string {
+  const err = error as NodeJS.ErrnoException & { code?: string; cause?: { code?: string; message?: string } };
+  const code = String(err.code || err.cause?.code || '').trim();
+  const rawMessage = String(err.cause?.message || (error as Error)?.message || error || 'AI API 请求失败').trim();
+  const host = (() => {
+    try {
+      return new URL(apiUrl).host;
+    } catch {
+      return apiUrl;
+    }
+  })();
+
+  if (/timeout|timed out/i.test(rawMessage) || /TIMEOUT/i.test(code)) {
+    return `AI API 连接超时：无法连接到 ${host}。请检查网络/代理，稍后重试，或切换到可访问的 API 地址。`;
+  }
+  if (/ENOTFOUND|EAI_AGAIN/i.test(code)) {
+    return `AI API 域名解析失败：${host}。请检查网络 DNS、代理或 API 地址。`;
+  }
+  if (/ECONNREFUSED|ECONNRESET|ECONNABORTED/i.test(code)) {
+    return `AI API 连接被中断：${host}。请稍后重试，或切换 API 服务商/代理。`;
+  }
+  return `AI API 请求失败：${rawMessage}`;
+}
+
+async function postJsonWithTimeout(urlString: string, headers: Record<string, string>, payload: unknown, timeoutMs: number): Promise<HttpJsonResponse> {
+  const url = new URL(urlString);
+  const body = JSON.stringify(payload);
+  const transport = url.protocol === 'https:' ? https : http;
+
+  return new Promise((resolve, reject) => {
+    const req = transport.request({
+      protocol: url.protocol,
+      hostname: url.hostname,
+      port: url.port ? Number(url.port) : undefined,
+      method: 'POST',
+      path: `${url.pathname}${url.search}`,
+      headers: {
+        ...headers,
+        'Content-Length': Buffer.byteLength(body),
+      },
+    }, (res) => {
+      const chunks: Buffer[] = [];
+      res.on('data', chunk => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
+      res.on('end', () => {
+        const text = Buffer.concat(chunks).toString('utf-8');
+        let json: unknown = null;
+        if (text.trim()) {
+          try {
+            json = JSON.parse(text);
+          } catch {
+            json = null;
+          }
+        }
+        resolve({
+          ok: !!res.statusCode && res.statusCode >= 200 && res.statusCode < 300,
+          status: res.statusCode || 0,
+          statusText: res.statusMessage || '',
+          text,
+          json,
+        });
+      });
+    });
+
+    req.setTimeout(timeoutMs, () => {
+      req.destroy(new Error(`AI API request timed out after ${Math.round(timeoutMs / 1000)}s`));
+    });
+    req.on('error', reject);
+    req.write(body);
+    req.end();
+  });
+}
+
+async function requestRChatCompletion(
+  chatEndpoint: string,
+  apiKey: string,
+  body: {
+    model: string;
+    messages: Array<{ role: string; content: string }>;
+    temperature: number;
+    max_tokens: number;
+  },
+  logLabel: string,
+): Promise<RChatCompletionResponse> {
+  const attempts = 3;
+  const timeoutMs = 120_000;
+  let lastError: unknown = null;
+
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      logger.info(`[${logLabel}] AI API request attempt ${attempt}/${attempts}, timeout=${timeoutMs}ms`);
+      const response = await postJsonWithTimeout(chatEndpoint, {
+        'Content-Type': 'application/json',
+        Authorization: 'Bearer ' + apiKey,
+      }, body, timeoutMs);
+
+      logger.info(`[${logLabel}] AI API response status: ${response.status}`);
+      if (response.ok) {
+        return response.json as RChatCompletionResponse;
+      }
+
+      const errorText = response.text.slice(0, 1000);
+      lastError = new Error(`AI API 错误: ${response.status}${response.statusText ? ` ${response.statusText}` : ''}${errorText ? ` - ${errorText}` : ''}`);
+      if (!isRetryableAiApiStatus(response.status) || attempt === attempts) {
+        throw lastError;
+      }
+      logger.warn(`[${logLabel}] AI API retryable status ${response.status}, retrying...`);
+    } catch (error) {
+      lastError = error;
+      if (!isRetryableAiApiError(error) || attempt === attempts) {
+        throw new Error(formatAiApiError(error, chatEndpoint));
+      }
+      logger.warn(`[${logLabel}] AI API request failed on attempt ${attempt}/${attempts}: ${(error as Error).message}`);
+    }
+    await sleep(1200 * attempt);
+  }
+
+  throw new Error(formatAiApiError(lastError, chatEndpoint));
 }
 
 /**
@@ -345,6 +939,42 @@ interface DataAnalysisRContext {
   analysisSignificance?: string;
 }
 
+function buildRPackageMemoryPromptSection(memory?: RPackageMemory | null): string {
+  if (!memory) {
+    return `## 本机 R 包长期记忆
+
+- 当前未读取到 R 包清单。生成代码时必须把非基础依赖写成 \`requireNamespace()\` 检查，并提供缺包降级方案。`;
+  }
+
+  const installedNames = new Set(memory.packages.map(pkg => pkg.name.toLowerCase()));
+  const optionalPackages = Array.from(R_NO_AUTO_INSTALL_OPTIONAL_PACKAGES).sort((a, b) => a.localeCompare(b));
+  const installedOptional = optionalPackages.filter(pkg => installedNames.has(pkg.toLowerCase()));
+  const missingOptional = optionalPackages.filter(pkg => !installedNames.has(pkg.toLowerCase()));
+  const packageList = memory.packages
+    .map(pkg => `${pkg.name}${pkg.version ? `(${pkg.version})` : ''}`)
+    .join(', ') || '未检测到已安装 R 包';
+
+  return `## 本机 R 包长期记忆
+
+**清单更新时间**: ${memory.updatedAt}
+**Rscript**: ${memory.rscriptPath || '未检测到'}
+**R 版本**: ${memory.rVersion || '未知'}
+**已安装包数量**: ${memory.packageCount}
+${memory.error ? `**刷新提示**: ${memory.error}` : ''}
+
+**当前已安装包（包名(版本)）**:
+${packageList}
+
+**已安装的可选统计/显著性包**: ${installedOptional.length ? installedOptional.join(', ') : '无'}
+**当前缺失的可选统计/显著性包**: ${missingOptional.length ? missingOptional.join(', ') : '无'}
+
+包依赖要求：
+- 写 R 代码前必须优先参考上面的“当前已安装包”清单。
+- 已安装包可以直接 \`library()\`；未安装包不能直接 \`library()\` 或直接 \`pkg::fun()\`。
+- 如果必须使用未安装包，代码必须包含 \`requireNamespace("包名", quietly = TRUE)\` 判断、\`install.packages("包名")\` 安装提示或安装代码，并且安装失败时有不影响出图的降级方案。
+- 对 multcompView/agricolae/emmeans/ggpubr/ggsignif/rstatix 等可选包，默认不要安装；缺包时跳过对应显著性字母/括号，或用 base R + ggplot2 绘制已经真实存在的标注。`;
+}
+
 /**
  * 构建 AI 提示词
  */
@@ -357,7 +987,8 @@ function buildRCodePrompt(
   dataFilename?: string,
   themeCode?: string,
   themeId?: string,
-  dataAnalysisContext?: DataAnalysisRContext
+  dataAnalysisContext?: DataAnalysisRContext,
+  rPackageMemory?: RPackageMemory | null
 ): string {
   const columnInfo = dataStructure.columns.map(col => 
     `- **${col.name}**: 类型=${col.type}, 样本值=[${col.sampleValues.join(', ')}]`
@@ -420,11 +1051,21 @@ ${linkedAnalysisSection}
 ${themeSkillSection ? `${themeSkillSection}
 ` : ''}
 
+${buildRPackageMemoryPromptSection(rPackageMemory)}
+
+${R_USER_QUERY_PRIORITY_GUIDE}
+
 ${R_FONT_GUIDE}
 
 ${R_LEGEND_PLACEMENT_GUIDE}
 
 ${R_DATE_AXIS_GUIDE}
+
+${R_ERROR_BAR_GUIDE}
+
+${R_PACKAGE_DEPENDENCY_GUIDE}
+
+${R_DATA_FORMAT_PLOT_SAFETY_GUIDE}
 
 ## 必须包含的代码结构
 
@@ -453,7 +1094,7 @@ ${themeSection}
 # --------------------------------------------
 # 3. 数据预处理（如果需要）
 # --------------------------------------------
-# 根据数据类型进行必要的预处理
+# 必须创建 data_raw、name_map 和 data_clean；统一清理列名、单位、缺失值和变量类型
 
 # --------------------------------------------
 # 4. 绘图代码
@@ -463,7 +1104,7 @@ ${themeSection}
 # --------------------------------------------
 # 5. 保存图片
 # --------------------------------------------
-# 保存为 PDF 或 PNG
+# 使用 safe_ggsave() 保存为 PDF 和 PNG，width/height 使用英寸
 \`\`\`
 
 ## 输出要求
@@ -472,15 +1113,17 @@ ${themeSection}
 2. **代码注释**，解释每个关键步骤的作用
 3. **输出格式**：
    - 使用 markdown 代码块格式 (\`\`\`r)
-   - 代码块前简要说明图表设计思路（2-3句话）
-   - 代码块后给出简要的使用说明
+- 代码块前简要说明图表设计思路（2-3句话）
+- 代码块后给出简要的使用说明
 
 ## 注意事项
 
 - 确保代码可以直接运行，不需要额外修改
+- 必须严格执行上面的“R 数据整理与作图安全硬性规则”，先生成稳健的数据清洗代码，再生成统计和作图代码
 - 在作图前必须加入数据预处理与清洗步骤：检查列名、缺失值、重复行、异常类型；将数值列、分类列、日期列转换为适合 R/ggplot2 使用的数据结构；必要时使用 \`make.names()\` 或显式重命名，确保变量名可被 R 代码安全引用
 - 如果用户表头包含单位（例如 \`Yield (kg/ha)\`、\`SOC g/kg\`、\`pH_0-20cm\`、\`温度(℃)\`），代码必须自动识别并分离“变量名”和“单位”：清洗后的列名去掉单位并转为 R 安全变量名；同时保留单位映射（如 \`axis_units\` 或 \`var_labels\`），在 \`labs(x=..., y=...)\`、图例标题或 facet 标签中显示原始变量名和单位，避免因为表头单位、括号、斜杠、百分号等字符导致 R 代码报错
 - 预处理代码应保留原始数据对象，并创建清洗后的数据对象（例如 \`data_clean\`），后续统计整理和 ggplot 作图统一基于清洗后的数据
+- 禁止在未检查关键列、有效行数、分组水平和有限数值的情况下直接作图
 - 使用 ggplot2 包（假设用户已安装）
 - 变量名使用英文，避免中文（以防编码问题）
 - 如果数据结构不适合指定图表类型，请给出替代建议
@@ -488,9 +1131,10 @@ ${themeSection}
 - 图中所有英文字母和数字必须使用 Times New Roman；不要使用默认 sans、Arial 或只写 serif。
 - 应用主题对象 \`${ACTIVE_R_THEME_NAME}\` 到所有 ggplot 图形
 - 如果主题代码中包含 \`nature_palette\`，请在有分组颜色或填充时优先使用该色板
+- 不要默认依赖可选 R 包；尤其不要用 \`multcompView\`、\`agricolae\`、\`emmeans\`、\`ggpubr\`、\`ggsignif\`、\`rstatix\` 作为出图必要条件
 - 图例必须遵守上面的图例位置硬性规则；如果有颜色、填充、线型或形状分组，不要把图例放在图中间遮挡数据。
 - 日期/时间横坐标必须遵守上面的日期/时间坐标轴硬性规则；不要把每个日期都显示出来导致标签重合。
-- 保存图片时使用合理的尺寸（如 width=10, height=8, 单位英寸）
+- 保存图片时必须使用 \`safe_ggsave()\` 或同等保护函数；使用合理的尺寸（如 width=10, height=8，单位英寸），不要把像素当英寸
 
 请开始生成 R 代码：`;
 }
@@ -524,12 +1168,14 @@ ${significance ? significance.slice(0, 12000) : '{}'}
 - 图形必须对应统计分析结果，不要只画泛泛的数据探索图。
 - 如果用户多选了多个数据分析方法，必须把所有选中的分析写入同一个 R 代码文件：包括数据读取/清洗、各分析方法的统计代码、对应图形对象和保存代码；可以输出多个图文件或一个多面板组合图。
 - 对于数据分析结果中标记为“R 代码生成项”的方法，必须在 R 代码中补上对应统计分析代码，但显著性标注仍必须遵守下面的显著性来源规则。
-- 显著性标注必须严格来自“结构化显著性信息”、上面的“数据分析结果”，或用户在“额外要求”中明确提供的显著性说明；三者都没有真实显著性信息时，不得编造星号、字母分组或 p 值，但需要预留显著性标注位置，并统一用文本 \`x\` 作为占位标注。
+- 显著性标注必须严格来自“结构化显著性信息”、上面的“数据分析结果”、用户在“额外要求”中明确提供的显著性说明，或 R 代码中真实计算出的检验结果；三者都没有真实显著性信息时，不得编造星号、字母分组、p 值，也不得用 \`x\`、\`xx\`、\`xxx\` 占位。
 - 如果结构化显著性信息中有 comparisons，必须只标注这些 comparisons 中列出的组间比较；使用其中的 adjustedPFormatted/pFormatted、stars、label，不要自行添加未列出的比较。
-- 如果结构化显著性信息显示 significant=false 或 stars=ns，默认不标星号或 p 值；但仍应预留显著性位置，用 \`x\` 标注该比较或在合适位置标注 \`x\`，表示当前没有可用显著性结果。
-- 如果没有 comparisons 但图形是分组比较图，请根据用于作图的分组变量预留 1-3 个显著性占位位置，标签统一为 \`x\`；代码注释必须写明“x 为显著性占位符，未提供真实显著性结果”。
+- 如果结构化显著性信息显示 significant=false 或 stars=ns，默认不标星号、p 值或字母；不要预留 \`x\` 占位。
+- 如果没有 comparisons 但图形是分组比较图，默认不画显著性括号和字母；只允许在 R 代码注释中说明“未提供真实显著性结果，因此不标注显著性”。
+- abc/字母分组只能来自两类来源：用户明确给出的字母分组，或代码中真实执行 ANOVA/非参数检验 + post-hoc + compact letter display 后计算出的分组。没有 compact letter display 结果时，不要把 pairwise 星号硬转成 a/b/c，也不要写 \`xxx\`。
+- 如果用户明确要求“abc”“字母分组”“显著性字母”，但没有提供现成结果，必须在 R 代码里先计算真实 post-hoc；compact letter display 只能在无需额外可选包或可选包已安装且有降级方案时使用。如果缺少 multcompView/agricolae/emmeans 等可选包、数据条件不足或计算失败，则不标字母，并在代码注释说明原因。
 - 如果用户额外要求中给出了显著性字母、星号或 p 值，以用户说明为准，但必须在代码注释中标明这些标注来自用户补充说明。
-- 优先生成可直接运行的显著性标注代码：可使用 ggpubr::stat_pvalue_manual 或 ggsignif::geom_signif；如果不想依赖额外包，则用 geom_segment + geom_text 手动绘制括号和标签。
+- 优先生成可直接运行且不需要安装新包的显著性标注代码：用 ggplot2 的 geom_segment + geom_text 手动绘制括号和标签；只有在 ggpubr/ggsignif 已安装且有无包降级方案时才可调用。
 - 不要让 R 代码重新计算一套与数据分析结果可能不一致的显著性；只有当用户明确要求重新检验时，才在代码中重新计算，并在注释中说明。
 - 如果分析结果里已有 p 值、相关系数、回归系数、均值或样本量，可以在图注或注释中使用；不要编造未出现的统计量。
 - R 代码仍然需要从本地数据文件读取全量数据，AI 看到的是结构、预览和统计结果，不是代替本地数据计算。
@@ -580,6 +1226,209 @@ async function writeRPluginConfig(config: RPluginConfig): Promise<void> {
   await fs.writeFile(getRPluginConfigPath(), JSON.stringify(next, null, 2), 'utf-8');
 }
 
+function getRPackageMemoryDir(userId: string): string {
+  return path.join(getMemoryDir(), sanitizeUserId(userId || 'web-user'), 'r');
+}
+
+function getRPackageMemoryJsonPath(userId: string): string {
+  return path.join(getRPackageMemoryDir(userId), 'installed-packages.json');
+}
+
+function getRPackageMemoryTextPath(userId: string): string {
+  return path.join(getRPackageMemoryDir(userId), 'R语言已安装包长期记忆.txt');
+}
+
+function buildRPackageInventoryScript(): string {
+  return [
+    'clean_field <- function(x) {',
+    '  x <- ifelse(is.na(x), "", as.character(x))',
+    '  gsub("[\\t\\r\\n]+", " ", x)',
+    '}',
+    'scholar_user_lib <- Sys.getenv("R_LIBS_USER")',
+    'if (!nzchar(scholar_user_lib)) scholar_user_lib <- file.path(Sys.getenv("LOCALAPPDATA"), "ScholarHarness", "R-library")',
+    'if (nzchar(scholar_user_lib) && dir.exists(scholar_user_lib)) .libPaths(unique(c(scholar_user_lib, .libPaths())))',
+    'cat("R_VERSION\\t", clean_field(R.version.string), "\\n", sep = "")',
+    'ip <- installed.packages()',
+    'fields <- c("Package", "Version", "LibPath", "Priority")',
+    'available_fields <- intersect(fields, colnames(ip))',
+    'df <- as.data.frame(ip[, available_fields, drop = FALSE], stringsAsFactors = FALSE)',
+    'for (field in setdiff(fields, names(df))) df[[field]] <- ""',
+    'df <- df[order(tolower(df$Package)), fields, drop = FALSE]',
+    'cat("PACKAGE\\tPackage\\tVersion\\tLibPath\\tPriority\\n")',
+    'for (i in seq_len(nrow(df))) {',
+    '  cat("PACKAGE\\t", clean_field(df$Package[i]), "\\t", clean_field(df$Version[i]), "\\t", clean_field(df$LibPath[i]), "\\t", clean_field(df$Priority[i]), "\\n", sep = "")',
+    '}',
+  ].join('\n');
+}
+
+function parseRPackageInventoryOutput(stdout: string, userId: string, status: RscriptStatus): RPackageMemory {
+  const packages = new Map<string, RInstalledPackageInfo>();
+  let rVersion = status.version;
+  for (const rawLine of stdout.split(/\r?\n/)) {
+    const line = rawLine.trimEnd();
+    if (!line) continue;
+    const parts = line.split('\t');
+    if (parts[0] === 'R_VERSION') {
+      rVersion = parts.slice(1).join('\t').trim() || rVersion;
+      continue;
+    }
+    if (parts[0] !== 'PACKAGE') continue;
+    const name = (parts[1] || '').trim();
+    if (!name || name === 'Package') continue;
+    const version = (parts[2] || '').trim();
+    const key = name.toLowerCase();
+    if (!packages.has(key)) {
+      packages.set(key, {
+        name,
+        version,
+        libPath: (parts[3] || '').trim() || undefined,
+        priority: (parts[4] || '').trim() || undefined,
+      });
+    }
+  }
+
+  const packageList = Array.from(packages.values()).sort((a, b) => a.name.localeCompare(b.name));
+  return {
+    version: 1,
+    userId: sanitizeUserId(userId || 'web-user'),
+    updatedAt: new Date().toISOString(),
+    rscriptPath: status.path,
+    rVersion,
+    packageCount: packageList.length,
+    packages: packageList,
+  };
+}
+
+function renderRPackageMemoryText(memory: RPackageMemory): string {
+  const packageLines = memory.packages.length
+    ? memory.packages.map(pkg => `- ${pkg.name}${pkg.version ? ` ${pkg.version}` : ''}`).join('\n')
+    : '- 未检测到已安装 R 包。';
+  const lines = [
+    '# R语言已安装包长期记忆',
+    '',
+    `用户: ${memory.userId}`,
+    `更新时间: ${memory.updatedAt}`,
+    `Rscript: ${memory.rscriptPath || '未检测到'}`,
+    `R版本: ${memory.rVersion || '未知'}`,
+    `包数量: ${memory.packageCount}`,
+  ];
+  if (memory.error) lines.push(`刷新提示: ${memory.error}`);
+  lines.push(
+    '',
+    '## 使用规则',
+    '',
+    '- 每次生成或修复 R 作图代码前，后端会刷新此文件，并把包清单提供给 AI。',
+    '- 已安装包可以直接使用；未安装包必须先 requireNamespace() 判断，并提供安装代码或无包降级方案。',
+    '- 可选统计/显著性包不能作为出图必要条件；缺包时应跳过对应标注或使用基础 ggplot2 实现。',
+    '- 如果自动执行阶段成功安装了基础依赖，后端会再次刷新本文件。',
+    '',
+    '## 已安装包',
+    '',
+    packageLines,
+    '',
+  );
+  return lines.join('\n');
+}
+
+async function writeRPackageMemory(memory: RPackageMemory): Promise<RPackageMemory> {
+  const userId = sanitizeUserId(memory.userId || 'web-user');
+  const memoryDir = getRPackageMemoryDir(userId);
+  const memoryPath = getRPackageMemoryJsonPath(userId);
+  const textPath = getRPackageMemoryTextPath(userId);
+  const next: RPackageMemory = {
+    ...memory,
+    userId,
+    memoryPath,
+    textPath,
+  };
+  await fs.mkdir(memoryDir, { recursive: true });
+  await fs.writeFile(memoryPath, JSON.stringify(next, null, 2), 'utf-8');
+  await fs.writeFile(textPath, renderRPackageMemoryText(next), 'utf-8');
+  return next;
+}
+
+async function readRPackageMemory(userIdInput: unknown): Promise<RPackageMemory | null> {
+  const userId = sanitizeUserId(typeof userIdInput === 'string' && userIdInput.trim() ? userIdInput : 'web-user');
+  try {
+    const raw = await fs.readFile(getRPackageMemoryJsonPath(userId), 'utf-8');
+    return JSON.parse(raw) as RPackageMemory;
+  } catch {
+    return null;
+  }
+}
+
+async function refreshRPackageMemory(userIdInput: unknown): Promise<RPackageMemory> {
+  const userId = sanitizeUserId(typeof userIdInput === 'string' && userIdInput.trim() ? userIdInput : 'web-user');
+  const status = await getRscriptStatus();
+  if (!status.available) {
+    return writeRPackageMemory({
+      version: 1,
+      userId,
+      updatedAt: new Date().toISOString(),
+      rscriptPath: status.path,
+      rVersion: status.version,
+      packageCount: 0,
+      packages: [],
+      error: status.error || 'Rscript 不可用，无法刷新 R 包清单。',
+    });
+  }
+
+  const memoryDir = path.join(getRPluginRoot(userId), 'package-memory');
+  await fs.mkdir(memoryDir, { recursive: true });
+  const scriptPath = path.join(memoryDir, `installed-packages-${Date.now()}-${randomUUID().slice(0, 6)}.R`);
+  await fs.writeFile(scriptPath, buildRPackageInventoryScript(), 'utf-8');
+  try {
+    const result = await runProcess(status.path, [scriptPath], memoryDir, 30_000);
+    if (result.timedOut) {
+      throw new Error('刷新 R 包清单超时。');
+    }
+    if (result.exitCode !== 0) {
+      throw new Error((result.stderr || result.stdout || `Rscript exited with code ${result.exitCode}`).trim());
+    }
+    const memory = parseRPackageInventoryOutput(result.stdout, userId, status);
+    return writeRPackageMemory(memory);
+  } finally {
+    await fs.unlink(scriptPath).catch(() => undefined);
+  }
+}
+
+async function getRPackageMemoryForPrompt(userIdInput: unknown): Promise<RPackageMemory> {
+  const userId = sanitizeUserId(typeof userIdInput === 'string' && userIdInput.trim() ? userIdInput : 'web-user');
+  try {
+    return await refreshRPackageMemory(userId);
+  } catch (error) {
+    const fallback = await readRPackageMemory(userId);
+    if (fallback) {
+      return {
+        ...fallback,
+        error: `本次刷新失败，沿用上一次包清单：${(error as Error).message}`,
+      };
+    }
+    return writeRPackageMemory({
+      version: 1,
+      userId,
+      updatedAt: new Date().toISOString(),
+      rscriptPath: '',
+      packageCount: 0,
+      packages: [],
+      error: `刷新 R 包清单失败：${(error as Error).message}`,
+    });
+  }
+}
+
+function summarizeRPackageMemoryForResponse(memory?: RPackageMemory | null) {
+  if (!memory) return null;
+  return {
+    updatedAt: memory.updatedAt,
+    rscriptPath: memory.rscriptPath,
+    rVersion: memory.rVersion,
+    packageCount: memory.packageCount,
+    memoryPath: memory.memoryPath,
+    textPath: memory.textPath,
+    error: memory.error,
+  };
+}
+
 function sanitizeRFilename(filename?: string): string {
   const cleaned = path.basename(String(filename || 'scholar-harness-r-job.R'))
     .replace(/[/\\:<>|"?*\x00-\x1F]/g, '_')
@@ -597,31 +1446,126 @@ function sanitizeRDataFilename(filename?: string): string {
 
 function extractRCode(raw: string): string {
   const trimmed = raw.trim();
-  const codeBlock = trimmed.match(/```(?:r|R)?\s*([\s\S]*?)```/);
-  return (codeBlock ? codeBlock[1] : trimmed).trim();
+  const codeBlocks = Array.from(trimmed.matchAll(/```(?:r|R|rscript|Rscript)?\s*([\s\S]*?)```/g));
+  if (codeBlocks.length) {
+    const preferred = codeBlocks.find(match => /\b(?:library|ggplot|ggsave|safe_ggsave|read_|readxl|data\.frame)\b|<-/.test(match[1] || ''));
+    return ((preferred || codeBlocks[0])[1] || '').trim();
+  }
+
+  const lines = trimmed.split(/\r?\n/);
+  const firstCodeLine = lines.findIndex(line => looksLikeRStartLine(line));
+  if (firstCodeLine > 0) {
+    return lines.slice(firstCodeLine).join('\n').trim();
+  }
+  return trimmed;
+}
+
+function extractRRequiredPackages(code: string): string[] {
+  const packages = new Set<string>();
+  const basePackages = new Set([
+    'base',
+    'compiler',
+    'datasets',
+    'graphics',
+    'grDevices',
+    'grid',
+    'methods',
+    'parallel',
+    'splines',
+    'stats',
+    'stats4',
+    'tools',
+    'utils',
+  ]);
+  const patterns = [
+    /\b(?:library|require)\s*\(\s*(?:package\s*=\s*)?["']?([A-Za-z][A-Za-z0-9._]*)["']?/g,
+    /\brequireNamespace\s*\(\s*["']([A-Za-z][A-Za-z0-9._]*)["']/g,
+    /\b([A-Za-z][A-Za-z0-9.]*)::/g,
+  ];
+  for (const pattern of patterns) {
+    let match: RegExpExecArray | null;
+    while ((match = pattern.exec(code)) !== null) {
+      const pkg = match[1];
+      if (!pkg || basePackages.has(pkg)) continue;
+      packages.add(pkg);
+    }
+  }
+  return Array.from(packages).sort();
+}
+
+function buildRDependencyBootstrap(packages: string[]): string {
+  const required = packages
+    .filter(Boolean)
+    .filter(pkg => !R_NO_AUTO_INSTALL_OPTIONAL_PACKAGES.has(pkg))
+    .filter((pkg, index, arr) => arr.indexOf(pkg) === index)
+    .sort();
+  if (!required.length) return '';
+  return [
+    '# Scholar Harness dependency bootstrap',
+    'scholar_cran_repos <- c(',
+    '  "https://mirrors.tuna.tsinghua.edu.cn/CRAN/",',
+    '  "https://mirrors.ustc.edu.cn/CRAN/",',
+    '  "https://cloud.r-project.org",',
+    '  "https://cran.r-project.org"',
+    ')',
+    'options(repos = c(CRAN = scholar_cran_repos[[1]]))',
+    'scholar_user_lib <- Sys.getenv("R_LIBS_USER")',
+    'if (!nzchar(scholar_user_lib)) scholar_user_lib <- file.path(Sys.getenv("LOCALAPPDATA"), "ScholarHarness", "R-library")',
+    'dir.create(scholar_user_lib, recursive = TRUE, showWarnings = FALSE)',
+    '.libPaths(unique(c(scholar_user_lib, .libPaths())))',
+    `scholar_required_packages <- c(${required.map(item => JSON.stringify(item)).join(', ')})`,
+    'scholar_missing_packages <- scholar_required_packages[!vapply(scholar_required_packages, requireNamespace, logical(1), quietly = TRUE)]',
+    'if (length(scholar_missing_packages) > 0) {',
+    '  message("Scholar Harness installing missing R packages: ", paste(scholar_missing_packages, collapse = ", "))',
+    '  for (scholar_repo in scholar_cran_repos) {',
+    '    options(repos = c(CRAN = scholar_repo))',
+    '    message("Scholar Harness CRAN mirror: ", scholar_repo)',
+    '    try(install.packages(scholar_missing_packages, dependencies = TRUE, lib = scholar_user_lib), silent = TRUE)',
+    '    scholar_missing_packages <- scholar_required_packages[!vapply(scholar_required_packages, requireNamespace, logical(1), quietly = TRUE)]',
+    '    if (length(scholar_missing_packages) == 0) break',
+    '  }',
+    '}',
+    'scholar_still_missing <- scholar_required_packages[!vapply(scholar_required_packages, requireNamespace, logical(1), quietly = TRUE)]',
+    'if (length(scholar_still_missing) > 0) {',
+    '  stop(paste("Missing R packages after auto-install:", paste(scholar_still_missing, collapse = ", ")))',
+    '}',
+  ].join('\n');
 }
 
 function wrapExecutableRCode(rawCode: string): string {
-  const code = extractRCode(rawCode);
-  return [
+  const executableUserCode = normalizeRDateAxisLabelFormatInCode(normalizeRDateCallsInCode(commentUnsafeRNarrativeLines(extractRCode(rawCode))));
+  const hasExplicitPlotSave = /\b(?:safe_ggsave|ggsave|pdf|png|jpeg|jpg|tiff|svg)\s*\(/i.test(executableUserCode);
+  const code = normalizeRPlotSaveCallsInCode(ensureRSafeDateHelper(executableUserCode));
+  const saveHelper = /safe_ggsave\s*<-/.test(code) ? '' : R_SAFE_GGSAVE_HELPER;
+  const dependencyBootstrap = buildRDependencyBootstrap(extractRRequiredPackages(code));
+  const lines = [
     '# Scholar Harness R plugin execution wrapper',
     'options(stringsAsFactors = FALSE)',
     'dir.create("plots", showWarnings = FALSE, recursive = TRUE)',
+    dependencyBootstrap,
+    saveHelper,
     '',
     code,
     '',
-    '# Best-effort capture of the last ggplot object when the script did not call ggsave explicitly.',
-    'try({',
-    '  if (requireNamespace("ggplot2", quietly = TRUE)) {',
-    '    p <- ggplot2::last_plot()',
-    '    if (!is.null(p)) {',
-    '      ggplot2::ggsave(file.path("plots", "last_plot.png"), p, width = 8, height = 5, dpi = 600, bg = "white")',
-    '      ggplot2::ggsave(file.path("plots", "last_plot.pdf"), p, width = 8, height = 5, bg = "white")',
-    '    }',
-    '  }',
-    '}, silent = TRUE)',
-    '',
-  ].join('\n');
+  ];
+
+  if (!hasExplicitPlotSave) {
+    lines.push(
+      '# Best-effort capture of the last ggplot object when the script did not call ggsave explicitly.',
+      'try({',
+      '  if (requireNamespace("ggplot2", quietly = TRUE)) {',
+      '    p <- ggplot2::last_plot()',
+      '    if (!is.null(p)) {',
+      '      safe_ggsave(file.path("plots", "last_plot.png"), p, width = 8, height = 5, dpi = 600, bg = "white")',
+      '      safe_ggsave(file.path("plots", "last_plot.pdf"), p, width = 8, height = 5, bg = "white")',
+      '    }',
+      '  }',
+      '}, silent = TRUE)',
+      '',
+    );
+  }
+
+  return lines.join('\n');
 }
 
 async function listRscriptCandidates(): Promise<string[]> {
@@ -833,15 +1777,12 @@ async function collectRArtifacts(rootDir: string, userId: string, jobId: string)
       if (!R_ARTIFACT_EXTENSIONS.has(ext)) continue;
       const stat = await fs.stat(fullPath);
       const relativePath = path.relative(root, fullPath).replace(/\\/g, '/');
-      const kind = R_EXPORT_IMAGE_EXTENSIONS.has(ext)
-        ? 'image'
-        : (ext === '.r' ? 'code' : (ext === '.csv' ? 'data' : 'text'));
       artifacts.push({
         name: entry.name,
         relativePath,
         size: stat.size,
         url: `/api/r-code/artifact/${encodeURIComponent(userId)}/${encodeURIComponent(jobId)}?file=${encodeURIComponent(relativePath)}`,
-        kind,
+        kind: getRArtifactKind(ext),
       });
     }
   }
@@ -861,8 +1802,341 @@ async function collectRArtifacts(rootDir: string, userId: string, jobId: string)
   };
   return artifacts.sort((a, b) => {
     const diff = priority(a) - priority(b);
-    return diff || a.relativePath.localeCompare(b.relativePath);
+    return diff || compareRArtifactPath(a, b);
   });
+}
+
+async function removeRNoiseArtifacts(jobDir: string): Promise<void> {
+  await Promise.all([
+    path.join(jobDir, 'Rplots.pdf'),
+    path.join(jobDir, 'plots', 'Rplots.pdf'),
+  ].map(async target => {
+    try {
+      await fs.unlink(target);
+    } catch {
+      // Optional R default device artifact may not exist.
+    }
+  }));
+}
+
+function selectRVisibleArtifacts(artifacts: RArtifact[], scriptPath?: string, dataFilePath?: string): RArtifact[] {
+  const visible: RArtifact[] = [];
+  const scriptName = scriptPath ? path.basename(scriptPath).toLowerCase() : '';
+  const dataName = dataFilePath ? path.basename(dataFilePath).toLowerCase() : '';
+  const plotFiles = artifacts.filter(file => (file.kind === 'image' || file.kind === 'pdf') && !isRNoisePlotArtifact(file));
+  const imageCandidates = plotFiles.filter(file => file.kind === 'image');
+  const pdfCandidates = plotFiles.filter(file => file.kind === 'pdf');
+
+  if (imageCandidates.length > 1) {
+    const imageStems = new Set(imageCandidates.map(getArtifactStem));
+    imageCandidates
+      .slice()
+      .sort(compareRArtifactPath)
+      .forEach(file => addVisibleRArtifact(visible, file));
+    pdfCandidates
+      .filter(file => imageStems.has(getArtifactStem(file)))
+      .sort(compareRArtifactPath)
+      .forEach(file => addVisibleRArtifact(visible, file));
+  } else {
+    const selectedImage = choosePreferredPlotArtifact(imageCandidates);
+    const selectedPdf = choosePreferredPlotArtifact(
+      selectedImage
+        ? pdfCandidates.filter(file => getArtifactStem(file) === getArtifactStem(selectedImage))
+        : pdfCandidates,
+    ) || choosePreferredPlotArtifact(pdfCandidates);
+    [selectedImage, selectedPdf].forEach(file => addVisibleRArtifact(visible, file));
+  }
+
+  const selectedCode = choosePreferredSupportArtifact(
+    artifacts.filter(file => file.kind === 'code' && /\.r$/i.test(file.name || file.relativePath || '')),
+    scriptName,
+  );
+  const selectedData = choosePreferredSupportArtifact(
+    artifacts.filter(file => file.kind === 'data'),
+    dataName,
+  );
+
+  [selectedCode, selectedData].forEach(file => addVisibleRArtifact(visible, file));
+  return visible;
+}
+
+function addVisibleRArtifact(visible: RArtifact[], file: RArtifact | null): void {
+  if (!file) return;
+  if (!visible.some(item => item.relativePath === file.relativePath)) visible.push(file);
+}
+
+function isRNoisePlotArtifact(file: RArtifact): boolean {
+  const name = path.basename(file.relativePath || file.name || '').toLowerCase();
+  return name === 'rplots.pdf' || name === 'rplots.png';
+}
+
+function choosePreferredPlotArtifact(files: RArtifact[]): RArtifact | null {
+  if (!files.length) return null;
+  const sorted = [...files].sort((a, b) => {
+    const aName = (a.relativePath || a.name || '').toLowerCase();
+    const bName = (b.relativePath || b.name || '').toLowerCase();
+    const aLast = aName.includes('last_plot') ? 1 : 0;
+    const bLast = bName.includes('last_plot') ? 1 : 0;
+    if (aLast !== bLast) return aLast - bLast;
+    const aPlotDir = aName.includes('/plots/') || aName.startsWith('plots/') ? 0 : 1;
+    const bPlotDir = bName.includes('/plots/') || bName.startsWith('plots/') ? 0 : 1;
+    if (aPlotDir !== bPlotDir) return aPlotDir - bPlotDir;
+    return b.size - a.size || compareRArtifactPath(a, b);
+  });
+  return sorted[0] || null;
+}
+
+function choosePreferredSupportArtifact(files: RArtifact[], preferredName: string): RArtifact | null {
+  if (!files.length) return null;
+  const normalizedPreferred = preferredName.toLowerCase();
+  const sorted = [...files].sort((a, b) => {
+    const aBase = path.basename(a.relativePath || a.name || '').toLowerCase();
+    const bBase = path.basename(b.relativePath || b.name || '').toLowerCase();
+    const aPreferred = normalizedPreferred && aBase === normalizedPreferred ? 0 : 1;
+    const bPreferred = normalizedPreferred && bBase === normalizedPreferred ? 0 : 1;
+    if (aPreferred !== bPreferred) return aPreferred - bPreferred;
+    const aRoot = (a.relativePath || '').includes('/') ? 1 : 0;
+    const bRoot = (b.relativePath || '').includes('/') ? 1 : 0;
+    if (aRoot !== bRoot) return aRoot - bRoot;
+    return compareRArtifactPath(a, b);
+  });
+  return sorted[0] || null;
+}
+
+function compareRArtifactPath(a: RArtifact, b: RArtifact): number {
+  const aName = a.relativePath || a.name || '';
+  const bName = b.relativePath || b.name || '';
+  return aName.localeCompare(bName, undefined, { numeric: true, sensitivity: 'base' });
+}
+
+function getArtifactStem(file: RArtifact): string {
+  const base = path.basename(file.relativePath || file.name || '').toLowerCase();
+  return base.replace(/\.[^.]+$/, '');
+}
+
+function getRArtifactKind(ext: string): RArtifactKind {
+  if (R_EXPORT_IMAGE_EXTENSIONS.has(ext)) return 'image';
+  if (ext === '.pdf') return 'pdf';
+  if (ext === '.r' || ext === '.rmd' || ext === '.json') return 'code';
+  if (ext === '.csv' || ext === '.tsv' || ext === '.xls' || ext === '.xlsx') return 'data';
+  if (ext === '.doc' || ext === '.docx') return 'word';
+  if (ext === '.ppt' || ext === '.pptx') return 'presentation';
+  if (ext === '.zip') return 'archive';
+  if (ext === '.txt' || ext === '.md' || ext === '.html' || ext === '.htm') return 'text';
+  return 'file';
+}
+
+function paethPredictor(a: number, b: number, c: number): number {
+  const p = a + b - c;
+  const pa = Math.abs(p - a);
+  const pb = Math.abs(p - b);
+  const pc = Math.abs(p - c);
+  if (pa <= pb && pa <= pc) return a;
+  if (pb <= pc) return b;
+  return c;
+}
+
+function getPngChannelCount(colorType: number): number {
+  if (colorType === 0) return 1;
+  if (colorType === 2) return 3;
+  if (colorType === 3) return 1;
+  if (colorType === 4) return 2;
+  if (colorType === 6) return 4;
+  return 0;
+}
+
+function getPngPixel(
+  row: Buffer,
+  x: number,
+  bitDepth: number,
+  colorType: number,
+  palette: Buffer | null,
+): { r: number; g: number; b: number; a: number } | null {
+  if (colorType === 3) {
+    if (bitDepth !== 8 || !palette) return null;
+    const index = row[x];
+    const paletteOffset = index * 3;
+    if (paletteOffset + 2 >= palette.length) return null;
+    return {
+      r: palette[paletteOffset],
+      g: palette[paletteOffset + 1],
+      b: palette[paletteOffset + 2],
+      a: 255,
+    };
+  }
+
+  const channels = getPngChannelCount(colorType);
+  if (!channels || (bitDepth !== 8 && bitDepth !== 16)) return null;
+  const bytesPerChannel = bitDepth === 16 ? 2 : 1;
+  const offset = x * channels * bytesPerChannel;
+  if (offset + channels * bytesPerChannel > row.length) return null;
+  const readChannel = (channel: number) => row[offset + channel * bytesPerChannel];
+
+  if (colorType === 0) {
+    const gray = readChannel(0);
+    return { r: gray, g: gray, b: gray, a: 255 };
+  }
+  if (colorType === 2) {
+    return { r: readChannel(0), g: readChannel(1), b: readChannel(2), a: 255 };
+  }
+  if (colorType === 4) {
+    const gray = readChannel(0);
+    return { r: gray, g: gray, b: gray, a: readChannel(1) };
+  }
+  if (colorType === 6) {
+    return { r: readChannel(0), g: readChannel(1), b: readChannel(2), a: readChannel(3) };
+  }
+  return null;
+}
+
+async function analyzePngVisualQuality(filePath: string, relativePath: string): Promise<RImageQualityResult> {
+  try {
+    const buffer = await fs.readFile(filePath);
+    const signature = buffer.subarray(0, 8);
+    if (signature.toString('hex') !== '89504e470d0a1a0a') {
+      return { relativePath, suspicious: false, error: 'not a PNG file' };
+    }
+
+    let offset = 8;
+    let width = 0;
+    let height = 0;
+    let bitDepth = 0;
+    let colorType = 0;
+    let interlace = 0;
+    let palette: Buffer | null = null;
+    const idatChunks: Buffer[] = [];
+
+    while (offset + 12 <= buffer.length) {
+      const length = buffer.readUInt32BE(offset);
+      const type = buffer.subarray(offset + 4, offset + 8).toString('ascii');
+      const dataStart = offset + 8;
+      const dataEnd = dataStart + length;
+      if (dataEnd + 4 > buffer.length) break;
+      const data = buffer.subarray(dataStart, dataEnd);
+      if (type === 'IHDR') {
+        width = data.readUInt32BE(0);
+        height = data.readUInt32BE(4);
+        bitDepth = data[8];
+        colorType = data[9];
+        interlace = data[12];
+      } else if (type === 'PLTE') {
+        palette = Buffer.from(data);
+      } else if (type === 'IDAT') {
+        idatChunks.push(Buffer.from(data));
+      } else if (type === 'IEND') {
+        break;
+      }
+      offset = dataEnd + 4;
+    }
+
+    const channels = getPngChannelCount(colorType);
+    if (!width || !height || !channels || !idatChunks.length) {
+      return { relativePath, suspicious: false, width, height, error: 'PNG metadata is incomplete' };
+    }
+    if (interlace !== 0) {
+      return { relativePath, suspicious: false, width, height, error: 'interlaced PNG skipped' };
+    }
+    if (!(bitDepth === 8 || bitDepth === 16 || (colorType === 3 && bitDepth === 8))) {
+      return { relativePath, suspicious: false, width, height, error: `unsupported PNG bit depth ${bitDepth}` };
+    }
+
+    const bitsPerPixel = channels * bitDepth;
+    const scanlineLength = Math.ceil((width * bitsPerPixel) / 8);
+    const bytesPerPixel = Math.max(1, Math.ceil(bitsPerPixel / 8));
+    const inflated = zlib.inflateSync(Buffer.concat(idatChunks));
+    const expectedMin = (scanlineLength + 1) * height;
+    if (inflated.length < expectedMin) {
+      return { relativePath, suspicious: false, width, height, error: 'PNG data is shorter than expected' };
+    }
+
+    const sampleStep = Math.max(1, Math.ceil(Math.sqrt((width * height) / 250_000)));
+    const centerMinX = Math.floor(width * 0.16);
+    const centerMaxX = Math.ceil(width * 0.94);
+    const centerMinY = Math.floor(height * 0.10);
+    const centerMaxY = Math.ceil(height * 0.90);
+    let totalSamples = 0;
+    let totalNonWhite = 0;
+    let centerSamples = 0;
+    let centerInk = 0;
+    let centerColored = 0;
+    let previousRow = Buffer.alloc(scanlineLength);
+
+    for (let y = 0; y < height; y += 1) {
+      const rowOffset = y * (scanlineLength + 1);
+      const filterType = inflated[rowOffset];
+      const row = Buffer.from(inflated.subarray(rowOffset + 1, rowOffset + 1 + scanlineLength));
+      for (let i = 0; i < row.length; i += 1) {
+        const left = i >= bytesPerPixel ? row[i - bytesPerPixel] : 0;
+        const up = previousRow[i] || 0;
+        const upLeft = i >= bytesPerPixel ? previousRow[i - bytesPerPixel] || 0 : 0;
+        if (filterType === 1) row[i] = (row[i] + left) & 0xff;
+        else if (filterType === 2) row[i] = (row[i] + up) & 0xff;
+        else if (filterType === 3) row[i] = (row[i] + Math.floor((left + up) / 2)) & 0xff;
+        else if (filterType === 4) row[i] = (row[i] + paethPredictor(left, up, upLeft)) & 0xff;
+      }
+
+      if (y % sampleStep === 0) {
+        for (let x = 0; x < width; x += sampleStep) {
+          const pixel = getPngPixel(row, x, bitDepth, colorType, palette);
+          if (!pixel || pixel.a <= 16) continue;
+          totalSamples += 1;
+          const maxChannel = Math.max(pixel.r, pixel.g, pixel.b);
+          const minChannel = Math.min(pixel.r, pixel.g, pixel.b);
+          const nonWhite = !(pixel.r >= 248 && pixel.g >= 248 && pixel.b >= 248);
+          const ink = !(pixel.r >= 245 && pixel.g >= 245 && pixel.b >= 245);
+          const colored = maxChannel - minChannel >= 22 && maxChannel < 250;
+          if (nonWhite) totalNonWhite += 1;
+          if (x >= centerMinX && x <= centerMaxX && y >= centerMinY && y <= centerMaxY) {
+            centerSamples += 1;
+            if (ink) centerInk += 1;
+            if (colored) centerColored += 1;
+          }
+        }
+      }
+      previousRow = row;
+    }
+
+    const nonWhiteRatio = totalSamples ? totalNonWhite / totalSamples : 0;
+    const centerInkRatio = centerSamples ? centerInk / centerSamples : 0;
+    const centerColoredRatio = centerSamples ? centerColored / centerSamples : 0;
+    const suspicious = totalSamples > 0 && (
+      nonWhiteRatio < 0.0015 ||
+      (centerInkRatio < 0.00035 && centerColoredRatio < 0.00008)
+    );
+    const reason = suspicious
+      ? `主 PNG 疑似空白或有效绘图内容过少（nonWhite=${nonWhiteRatio.toFixed(5)}, centerInk=${centerInkRatio.toFixed(5)}, centerColor=${centerColoredRatio.toFixed(5)}）`
+      : undefined;
+
+    return {
+      relativePath,
+      suspicious,
+      reason,
+      width,
+      height,
+      nonWhiteRatio,
+      centerInkRatio,
+      centerColoredRatio,
+    };
+  } catch (error) {
+    return {
+      relativePath,
+      suspicious: false,
+      error: (error as Error).message,
+    };
+  }
+}
+
+async function analyzeRImageArtifacts(jobDir: string, artifacts: RArtifact[]): Promise<RImageQualityResult[]> {
+  const root = path.resolve(jobDir);
+  const imageArtifacts = artifacts.filter(file => file.kind === 'image' && /\.png$/i.test(file.relativePath || file.name || ''));
+  const results: RImageQualityResult[] = [];
+  for (const file of imageArtifacts) {
+    const relativePath = file.relativePath || file.name;
+    const fullPath = path.resolve(root, relativePath);
+    if (!fullPath.startsWith(root + path.sep) && fullPath !== root) continue;
+    results.push(await analyzePngVisualQuality(fullPath, relativePath));
+  }
+  return results;
 }
 
 function resolveRArtifactPath(userId: string, jobId: string, file: unknown): string {
@@ -989,11 +2263,18 @@ function buildRPackageInstallScript(): string {
     'patchwork',
     'broom',
     'readr',
+    'agricolae',
+    'multcompView',
+    'emmeans',
     'metafor',
     'clubSandwich',
   ];
   return [
     'options(repos = c(CRAN = "https://cloud.r-project.org"))',
+    'scholar_user_lib <- Sys.getenv("R_LIBS_USER")',
+    'if (!nzchar(scholar_user_lib)) scholar_user_lib <- file.path(Sys.getenv("LOCALAPPDATA"), "ScholarHarness", "R-library")',
+    'dir.create(scholar_user_lib, recursive = TRUE, showWarnings = FALSE)',
+    '.libPaths(unique(c(scholar_user_lib, .libPaths())))',
     `packages <- c(${packages.map(item => JSON.stringify(item)).join(', ')})`,
     'installed <- rownames(installed.packages())',
     'missing <- setdiff(packages, installed)',
@@ -1259,17 +2540,30 @@ router.post('/execute', upload.single('file'), async (req, res) => {
       const dataFilename = sanitizeRDataFilename(parsed.dataFilename || uploadedFile.originalname);
       dataFilePath = path.join(jobDir, dataFilename);
       await fs.writeFile(dataFilePath, uploadedFile.buffer);
-      const originalBasename = sanitizeRDataFilename(uploadedFile.originalname);
-      if (originalBasename !== dataFilename) {
-        await fs.writeFile(path.join(jobDir, originalBasename), uploadedFile.buffer);
+    } else if (parsed.sourceDataFilePath) {
+      const resolvedSourceDataFile = path.resolve(parsed.sourceDataFilePath);
+      if (!existsSync(resolvedSourceDataFile)) {
+        return res.status(400).json({
+          success: false,
+          error: `上一次 R 作图数据文件不存在：${resolvedSourceDataFile}`,
+        });
       }
+      const sourceFilename = sanitizeRDataFilename(parsed.dataFilename || path.basename(resolvedSourceDataFile));
+      dataFilePath = path.join(jobDir, sourceFilename);
+      await fs.copyFile(resolvedSourceDataFile, dataFilePath);
     }
 
     logger.info(`[RCodePlugin] Executing R script: ${scriptPath}`);
     const result = await runProcess(status.path, [scriptPath], jobDir, parsed.timeoutMs || 180_000);
-    const artifacts = await collectRArtifacts(jobDir, userId, jobId);
+    void getRPackageMemoryForPrompt(userId)
+      .then(memory => logger.info(`[RCodePlugin] R package memory refreshed after execution: ${memory.packageCount} packages`))
+      .catch(error => logger.warn(`[RCodePlugin] Failed to refresh R package memory after execution: ${(error as Error).message}`));
+    await removeRNoiseArtifacts(jobDir);
+    const allArtifacts = await collectRArtifacts(jobDir, userId, jobId);
+    const artifacts = selectRVisibleArtifacts(allArtifacts, scriptPath, dataFilePath);
     const imageFiles = artifacts.filter(file => file.kind === 'image');
     const supportFiles = artifacts.filter(file => file.kind !== 'image');
+    const imageQuality = await analyzeRImageArtifacts(jobDir, artifacts);
     const payload = {
       jobId,
       workDir: jobDir,
@@ -1284,6 +2578,7 @@ router.post('/execute', upload.single('file'), async (req, res) => {
       files: artifacts,
       imageFiles,
       supportFiles,
+      imageQuality,
     };
 
     if (result.timedOut || result.exitCode !== 0) {
@@ -1293,8 +2588,33 @@ router.post('/execute', upload.single('file'), async (req, res) => {
         data: payload,
       });
     }
+    if (!imageFiles.length) {
+      return res.status(500).json({
+        success: false,
+        error: 'R 图像质量检查失败：脚本执行成功，但没有生成 PNG/JPG/SVG 等图片文件',
+        data: payload,
+      });
+    }
+    const suspiciousImage = imageQuality.find(item => item.suspicious);
+    if (suspiciousImage) {
+      return res.status(500).json({
+        success: false,
+        error: `R 图像质量检查失败：${suspiciousImage.reason || `${suspiciousImage.relativePath} 疑似空白`}`,
+        data: payload,
+      });
+    }
 
-    res.json({ success: true, data: payload });
+    const researchSession = await recordRExecutionResearchProvenance({
+      userId,
+      researchSessionId: parsed.researchSessionId,
+      parsed,
+      payload,
+    }).catch((error) => {
+      logger.warn('[ResearchSession] Failed to record R execution provenance:', error);
+      return undefined;
+    });
+
+    res.json({ success: true, data: { ...payload, researchSession } });
   } catch (error) {
     logger.error('[RCodePlugin] Execute error:', error);
     const message = error instanceof z.ZodError
@@ -1390,7 +2710,8 @@ router.post('/generate', upload.single('file'), async (req, res) => {
       linkedFromDataAnalysis,
       analysisResult,
       analysisSelections,
-      analysisSignificance
+      analysisSignificance,
+      researchSessionId
     } = req.body;
 
     // 调试日志
@@ -1430,6 +2751,8 @@ router.post('/generate', upload.single('file'), async (req, res) => {
     const effectiveDataFilename = typeof dataFilename === 'string' && dataFilename.trim()
       ? dataFilename.trim()
       : file.originalname;
+    const rPackageMemory = await getRPackageMemoryForPrompt(userId);
+    logger.info(`[RCode] R package memory refreshed: ${rPackageMemory.packageCount} packages${rPackageMemory.error ? `, ${rPackageMemory.error}` : ''}`);
 
     // 构建 AI 提示词（传入用户配置）
     const prompt = buildRCodePrompt(
@@ -1446,7 +2769,8 @@ router.post('/generate', upload.single('file'), async (req, res) => {
         analysisResult: typeof analysisResult === 'string' ? analysisResult : undefined,
         analysisSelections: typeof analysisSelections === 'string' ? analysisSelections : undefined,
         analysisSignificance: typeof analysisSignificance === 'string' ? analysisSignificance : undefined,
-      }
+      },
+      rPackageMemory
     );
 
     // 处理 API URL - 确保格式正确
@@ -1462,33 +2786,13 @@ router.post('/generate', upload.single('file'), async (req, res) => {
 
     logger.info(`[RCode] Calling AI API: ${chatEndpoint}`);
 
-    // 调用 AI API 生成 R 代码
-    const aiResponse = await fetch(chatEndpoint, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: 'Bearer ' + apiKey,
-      },
-      body: JSON.stringify({
-        model: model || 'gpt-4o',
-        messages: [{ role: 'user', content: prompt }],
-        temperature: 0.7,
-        max_tokens: 32000,
-      }),
-    });
-
-    logger.info(`[RCode] AI API response status: ${aiResponse.status}`);
-
-    if (!aiResponse.ok) {
-      const errorText = await aiResponse.text();
-      logger.error('[RCode] AI API error:', errorText.slice(0, 500));
-      return res.status(500).json({
-        success: false,
-        error: `AI API 错误: ${aiResponse.status}`,
-      });
-    }
-
-    const aiData = await aiResponse.json() as { choices?: Array<{ message?: { content?: string } }> };
+    // 调用 AI API 生成 R 代码。使用 http/https 而不是 fetch，避免 undici 默认 10 秒连接超时导致裸 fetch failed。
+    const aiData = await requestRChatCompletion(chatEndpoint, apiKey, {
+      model: model || 'gpt-4o',
+      messages: [{ role: 'user', content: prompt }],
+      temperature: 0.7,
+      max_tokens: 32000,
+    }, 'RCode');
     const rCode = enforceRCodeGuardrails(aiData.choices?.[0]?.message?.content || '');
 
     if (!rCode) {
@@ -1499,6 +2803,29 @@ router.post('/generate', upload.single('file'), async (req, res) => {
     }
 
     logger.info(`[RCode] Generated R code, length: ${rCode.length}`);
+
+    const researchSession = await recordRGenerationResearchProvenance({
+      userId: sanitizeUserId(userId || 'web-user'),
+      researchSessionId: typeof researchSessionId === 'string' ? researchSessionId : undefined,
+      filename: file.originalname,
+      dataFilename: effectiveDataFilename,
+      chartType,
+      analysisType,
+      customRequirements,
+      model: model || 'gpt-4o',
+      prompt,
+      rCode,
+      dataStructure: {
+        columns: dataStructure.columns,
+        rowCount: dataStructure.rowCount,
+        previewRowCount: dataStructure.previewRowCount,
+        sheetNames: dataStructure.sheetNames,
+      },
+      linkedFromDataAnalysis: linkedFromDataAnalysis === 'true' || linkedFromDataAnalysis === true,
+    }).catch((error) => {
+      logger.warn('[ResearchSession] Failed to record R generation provenance:', error);
+      return undefined;
+    });
 
     // 返回结果
     res.json({
@@ -1513,6 +2840,8 @@ router.post('/generate', upload.single('file'), async (req, res) => {
         },
         filename: file.originalname,
         dataFilename: effectiveDataFilename,
+        rPackageMemory: summarizeRPackageMemoryForResponse(rPackageMemory),
+        researchSession,
       },
     });
 
@@ -1576,17 +2905,18 @@ router.post('/save', async (req, res) => {
  */
 router.post('/debug', upload.none(), async (req, res) => {
   try {
-    const { userId, apiUrl, apiKey, model, codePath, customRequirements, dataFilename, themeCode, themeId } = req.body;
+    const { userId, apiUrl, apiKey, model, codePath, existingCode: existingCodeBody, customRequirements, dataFilename, themeCode, themeId } = req.body;
 
     // 调试日志
     logger.info(`[RCodeDebug] Request for user: ${userId}`);
     logger.info(`[RCodeDebug] Code path: ${codePath}`);
     logger.info(`[RCodeDebug] Requirements: ${customRequirements}`);
 
-    if (!codePath) {
+    const inlineExistingCode = typeof existingCodeBody === 'string' ? existingCodeBody.trim() : '';
+    if (!codePath && !inlineExistingCode) {
       return res.status(400).json({
         success: false,
-        error: '请填写 R 代码文件路径',
+        error: '请填写 R 代码文件路径或提供已有 R 代码',
       });
     }
 
@@ -1617,8 +2947,13 @@ router.post('/debug', upload.none(), async (req, res) => {
     // 读取已有的 R 代码文件
     let existingCode = '';
     try {
+      if (inlineExistingCode) {
+        existingCode = inlineExistingCode;
+        logger.info(`[RCodeDebug] Using inline existing code, length: ${existingCode.length}`);
+      } else {
       existingCode = await fs.readFile(codePath, 'utf-8');
       logger.info(`[RCodeDebug] Read existing code, length: ${existingCode.length}`);
+      }
     } catch (readError) {
       logger.error('[RCodeDebug] Failed to read file:', readError);
       return res.status(400).json({
@@ -1630,6 +2965,8 @@ router.post('/debug', upload.none(), async (req, res) => {
     // 构建 AI 提示词（调试模式）
     const normalizedThemeCode = themeCode ? normalizeThemeCode(themeCode) : '';
     const themeSkillSection = buildThemeSkillSection(typeof themeId === 'string' ? themeId : undefined);
+    const rPackageMemory = await getRPackageMemoryForPrompt(userId);
+    logger.info(`[RCodeDebug] R package memory refreshed: ${rPackageMemory.packageCount} packages${rPackageMemory.error ? `, ${rPackageMemory.error}` : ''}`);
     const debugPrompt = `你是一个专业的 R 语言数据可视化专家。用户有一段已有的 R 作图代码，需要根据具体要求进行调整。
 
 ## 已有代码
@@ -1659,11 +2996,21 @@ ${normalizedThemeCode}
 ${themeSkillSection ? `${themeSkillSection}
 ` : ''}
 
+${buildRPackageMemoryPromptSection(rPackageMemory)}
+
+${R_USER_QUERY_PRIORITY_GUIDE}
+
 ${R_FONT_GUIDE}
 
 ${R_LEGEND_PLACEMENT_GUIDE}
 
 ${R_DATE_AXIS_GUIDE}
+
+${R_ERROR_BAR_GUIDE}
+
+${R_PACKAGE_DEPENDENCY_GUIDE}
+
+${R_DATA_FORMAT_PLOT_SAFETY_GUIDE}
 
 ## 任务要求
 
@@ -1675,13 +3022,15 @@ ${R_DATE_AXIS_GUIDE}
 6. **数据预处理与清洗**：如原代码缺少数据检查，请补充列名清理、缺失值检查、重复行检查、变量类型转换和适合 ggplot2 的 \`data_clean\` 数据对象，确保后续作图代码使用结构正确的数据
 7. **表头单位处理**：如果表头包含单位、括号、斜杠、百分号或中文单位，请把单位从代码变量名中分离出来；清洗后的列名用于 R 安全引用，原始变量名和单位保存在标签映射中，并显示在坐标轴标题、图例标题或 facet 标签里
 8. **图例位置**：如原代码把图例放在图中间或遮挡数据，必须改到左上角、右上角、图外顶部或图外右侧；图内位置需要根据数据密度选择较空的一侧
-9. **日期轴处理**：如原代码把日期当作离散字符或显示全部日期标签，必须改成连续日期轴，设置合理的 \`date_breaks\` 和 \`date_labels\`，避免横坐标重叠
+9. **日期轴处理**：如原代码把日期当作离散字符或显示全部日期标签，必须改成连续日期轴，设置合理的 \`date_breaks\` 和 \`date_labels = "%Y-%m-%d"\`，默认用 2026-03-02 这种 ISO 日期格式，避免横坐标重叠和中文月份格式
 10. **字体处理**：所有英文字母和数字必须使用 Times New Roman；如原代码使用 Arial、sans、serif 或默认字体，必须替换为显式 \`font_family <- "Times New Roman"\` 并应用到 theme
+11. **保存尺寸处理**：如原代码的 \`ggsave()\` 使用了像素式宽高或超过 50 英寸的尺寸，必须改为 \`safe_ggsave()\`，并把 width/height 调整为合理英寸范围
 
 ## 输出格式
 
-- 使用 markdown 代码块格式 (\`\`\`r)
-- 代码块前简要说明修改了哪些内容（2-3句话）
+- 只输出一个 markdown 代码块，语言标记为 \`\`\`r
+- 代码块外不要写任何解释、标题、修改说明、注意事项或 markdown 列表
+- 代码内部的说明必须使用 R 注释（以 \`#\` 开头）
 - 确保代码可以直接运行
 
 请开始修改代码：`;
@@ -1698,32 +3047,12 @@ ${R_DATE_AXIS_GUIDE}
     logger.info(`[RCodeDebug] Calling AI API: ${chatEndpoint}`);
 
     // 调用 AI API
-    const aiResponse = await fetch(chatEndpoint, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: 'Bearer ' + apiKey,
-      },
-      body: JSON.stringify({
-        model: model || 'gpt-4o',
-        messages: [{ role: 'user', content: debugPrompt }],
-        temperature: 0.7,
-        max_tokens: 32000,
-      }),
-    });
-
-    logger.info(`[RCodeDebug] AI API response status: ${aiResponse.status}`);
-
-    if (!aiResponse.ok) {
-      const errorText = await aiResponse.text();
-      logger.error('[RCodeDebug] AI API error:', errorText.slice(0, 500));
-      return res.status(500).json({
-        success: false,
-        error: `AI API 错误: ${aiResponse.status}`,
-      });
-    }
-
-    const aiData = await aiResponse.json() as { choices?: Array<{ message?: { content?: string } }> };
+    const aiData = await requestRChatCompletion(chatEndpoint, apiKey, {
+      model: model || 'gpt-4o',
+      messages: [{ role: 'user', content: debugPrompt }],
+      temperature: 0.7,
+      max_tokens: 32000,
+    }, 'RCodeDebug');
     const adjustedCode = enforceRCodeGuardrails(aiData.choices?.[0]?.message?.content || '');
 
     if (!adjustedCode) {
@@ -1742,6 +3071,7 @@ ${R_DATE_AXIS_GUIDE}
         rCode: adjustedCode,
         originalCodePath: codePath,
         requirements: customRequirements,
+        rPackageMemory: summarizeRPackageMemoryForResponse(rPackageMemory),
       },
     });
 
@@ -1792,5 +3122,188 @@ router.get('/chart-types', (req, res) => {
     },
   });
 });
+
+async function recordRGenerationResearchProvenance(input: {
+  userId: string;
+  researchSessionId?: string;
+  filename: string;
+  dataFilename: string;
+  chartType: unknown;
+  analysisType: unknown;
+  customRequirements: unknown;
+  model: string;
+  prompt: string;
+  rCode: string;
+  dataStructure: {
+    columns?: Array<{ name?: string; type?: string }>;
+    rowCount?: number;
+    previewRowCount?: number;
+    sheetNames?: string[];
+  };
+  linkedFromDataAnalysis: boolean;
+}): Promise<{ sessionId: string; provenanceRecordId: string; artifactId: string }> {
+  const dataRef = {
+    label: input.dataFilename || input.filename,
+    columns: Array.isArray(input.dataStructure.columns)
+      ? input.dataStructure.columns.map(column => String(column.name || '')).filter(Boolean)
+      : undefined,
+    rowCount: input.dataStructure.rowCount,
+    metadata: {
+      previewRowCount: input.dataStructure.previewRowCount,
+      sheetNames: input.dataStructure.sheetNames,
+    },
+  };
+  const provenance = await researchSessionManager.appendProvenance({
+    userId: input.userId,
+    sessionId: input.researchSessionId,
+    sessionTitle: `R 作图：${input.filename}`,
+    targetType: 'r-code',
+    targetId: `r-generate-${Date.now()}`,
+    operation: 'r-code.generate',
+    sourceModule: 'r-code',
+    input: {
+      filename: input.filename,
+      chartType: input.chartType,
+      analysisType: input.analysisType,
+      customRequirements: input.customRequirements,
+      dataStructure: input.dataStructure,
+      linkedFromDataAnalysis: input.linkedFromDataAnalysis,
+    },
+    output: {
+      rCode: input.rCode,
+    },
+    model: input.model,
+    prompt: input.prompt,
+    dataRefs: [dataRef],
+    codeRefs: [{ language: 'R', metadata: { generated: true } }],
+    metadata: {
+      linkedFromDataAnalysis: input.linkedFromDataAnalysis,
+    },
+  });
+  const artifact = await researchSessionManager.appendArtifact({
+    userId: input.userId,
+    sessionId: provenance.session.id,
+    kind: 'r-code',
+    name: `${input.filename} R code`,
+    content: input.rCode,
+    contentType: 'text/x-r',
+    input: {
+      chartType: input.chartType,
+      analysisType: input.analysisType,
+      customRequirements: input.customRequirements,
+    },
+    provenanceRecordIds: [provenance.record.id],
+    metadata: {
+      filename: input.filename,
+      dataFilename: input.dataFilename,
+    },
+  });
+  return {
+    sessionId: provenance.session.id,
+    provenanceRecordId: provenance.record.id,
+    artifactId: artifact.artifact.id,
+  };
+}
+
+async function recordRExecutionResearchProvenance(input: {
+  userId: string;
+  researchSessionId?: string;
+  parsed: z.infer<typeof rExecuteSchema>;
+  payload: {
+    jobId: string;
+    workDir: string;
+    scriptPath: string;
+    dataFilePath: string;
+    exitCode: number | null;
+    timedOut: boolean;
+    stdout: string;
+    stderr: string;
+    files: RArtifact[];
+    imageFiles: RArtifact[];
+    imageQuality: unknown[];
+  };
+}): Promise<{ sessionId: string; provenanceRecordId: string; artifactIds: string[]; reviewerReportId: string }> {
+  const codeRef = {
+    language: 'R' as const,
+    filePath: input.payload.scriptPath,
+    command: `Rscript ${input.payload.scriptPath}`,
+    metadata: {
+      jobId: input.payload.jobId,
+      workDir: input.payload.workDir,
+    },
+  };
+  const dataRefs = input.payload.dataFilePath
+    ? [{
+        label: path.basename(input.payload.dataFilePath),
+        filePath: input.payload.dataFilePath,
+      }]
+    : [];
+  const provenance = await researchSessionManager.appendProvenance({
+    userId: input.userId,
+    sessionId: input.researchSessionId,
+    sessionTitle: `R 执行：${input.payload.jobId}`,
+    targetType: 'figure',
+    targetId: input.payload.jobId,
+    operation: 'r-code.execute',
+    sourceModule: 'r-code',
+    input: {
+      filename: input.parsed.filename,
+      timeoutMs: input.parsed.timeoutMs,
+      sourceDataFilePath: input.parsed.sourceDataFilePath,
+    },
+    output: {
+      exitCode: input.payload.exitCode,
+      timedOut: input.payload.timedOut,
+      stdout: input.payload.stdout,
+      stderr: input.payload.stderr,
+      files: input.payload.files,
+      imageQuality: input.payload.imageQuality,
+    },
+    dataRefs,
+    codeRefs: [codeRef],
+    metadata: {
+      imageCount: input.payload.imageFiles.length,
+      fileCount: input.payload.files.length,
+    },
+  });
+  const artifactIds: string[] = [];
+  for (const file of input.payload.imageFiles) {
+    const artifact = await researchSessionManager.appendArtifact({
+      userId: input.userId,
+      sessionId: provenance.session.id,
+      kind: 'figure',
+      name: file.relativePath,
+      filePath: path.join(input.payload.workDir, file.relativePath),
+      contentType: inferRImageContentType(file.relativePath),
+      input: {
+        jobId: input.payload.jobId,
+        scriptPath: input.payload.scriptPath,
+        dataFilePath: input.payload.dataFilePath,
+      },
+      provenanceRecordIds: [provenance.record.id],
+      metadata: {
+        size: file.size,
+        kind: file.kind,
+      },
+    });
+    artifactIds.push(artifact.artifact.id);
+  }
+  const review = await researchSessionManager.runReviewer(input.userId, provenance.session.id);
+  return {
+    sessionId: provenance.session.id,
+    provenanceRecordId: provenance.record.id,
+    artifactIds,
+    reviewerReportId: review.report.id,
+  };
+}
+
+function inferRImageContentType(filePath: string): string {
+  const ext = path.extname(filePath).toLowerCase();
+  if (ext === '.png') return 'image/png';
+  if (ext === '.jpg' || ext === '.jpeg') return 'image/jpeg';
+  if (ext === '.svg') return 'image/svg+xml';
+  if (ext === '.tif' || ext === '.tiff') return 'image/tiff';
+  return 'image/*';
+}
 
 export default router;

@@ -400,7 +400,38 @@ cd /root/website
 sudo npm run build
 ```
 
-### 9.5 nginx 检查
+### 9.5 发布桌面端安装包与更新提示
+
+桌面端软件会读取官网静态文件 `downloads/latest.json` 来判断是否弹出左下角“更新至最新版本”提示。Codex 或人工上传新安装包后，必须同步更新这个文件，否则用户的软件页面不会提示新版本，或者会跳到旧安装包。
+
+必须同时确认：
+
+1. 新安装包已经上传到官网 `public/downloads/` 对应目录，且公网 URL 可访问。
+2. `downloads/latest.json` 的 `version` 必须高于当前客户端 `package.json` 里的版本号。
+3. `downloads/latest.json` 的 `downloadUrl` 必须指向最新安装包的完整公网地址。
+4. `publishedAt` 和 `releaseNotes` 要同步更新，便于用户在更新提示中看到发布时间和更新内容。
+
+示例：
+
+```json
+{
+  "version": "1.0.3",
+  "downloadUrl": "https://scholarharness.com/downloads/scholar-harness-setup-1.0.3.exe",
+  "publishedAt": "2026-07-03",
+  "releaseNotes": "修复已知问题并优化更新提示。"
+}
+```
+
+发布后检查：
+
+```bash
+curl -fsSL https://scholarharness.com/downloads/latest.json
+curl -I https://scholarharness.com/downloads/scholar-harness-setup-1.0.3.exe
+```
+
+如果只上传安装包但忘记更新 `latest.json`，客户端不会认为有新版本；如果 `downloadUrl` 写错，用户点击“更新至最新版本”会打开错误链接。
+
+### 9.6 nginx 检查
 
 修改 nginx 配置后：
 

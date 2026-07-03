@@ -111,6 +111,9 @@ export class ProjectManager {
       { name: 'sessions', source: path.join(this.dataDir, 'sessions') },
       { name: 'output', source: path.join(this.dataDir, 'output') },
       { name: 'autoresearch', source: path.join(this.dataDir, 'autoresearch') },
+      { name: 'research-sessions', source: path.join(this.dataDir, 'research-sessions') },
+      { name: 'r-plugin', source: path.join(this.dataDir, 'r-plugin') },
+      { name: 'obsidian-vaults', source: path.join(this.dataDir, 'obsidian-vaults') },
     ];
   }
 

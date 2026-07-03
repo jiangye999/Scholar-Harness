@@ -8,7 +8,16 @@ import { logger } from '../../utils/logger';
 import { anchorPromptWithCurrentRequest } from '../../utils/prompt-request-anchor';
 import { ChatBridgeAdapter } from '../../bridge/chat-bridge/chat-bridge';
 import { ScholarClawOrchestrator, ProcessingMode } from '../../orchestrator/task-orchestrator';
-import { loadUserMemory } from './memory';
+import {
+  applyPendingMemoryEdit,
+  cancelPendingMemoryEdit,
+  createMemoryEditPreview,
+  getPendingMemoryEdit,
+  isLikelyMemoryEditInstruction,
+  isMemoryEditCancellation,
+  isMemoryEditConfirmation,
+  loadUserMemory,
+} from './memory';
 import { getRetrievalEngine } from './literature';
 import { getUploadDir, getMemoryDir, getDataDir } from '../../utils/paths';
 import { 
@@ -20,10 +29,22 @@ import * as path from 'path';
 import * as fs from 'fs';
 // Bug 修复：从 session 获取 userId，避免账号数据混淆
 import { resolveUserId, getUserIdFromSession } from '../auth-guard-singleton';
+import { parseUserSkillInvocation } from '../services/user-skills';
 
 const router = Router();
 let orchestrator: ScholarClawOrchestrator | null = null;
 let chatBridgeAdapter: ChatBridgeAdapter | null = null;
+interface OrdinaryDraftContext {
+  available: boolean;
+  source?: string;
+  chapters?: string[];
+  updatedAt?: string;
+  wordCount?: number;
+  content?: string;
+  reason?: string;
+}
+
+let getDraftContextForUser: ((userId: string, request: string) => Promise<OrdinaryDraftContext | null>) | null = null;
 
 // 使用统一的路径管理模块（确保 Electron/pkg 打包后路径一致）
 const dataDir = getDataDir();
@@ -55,10 +76,87 @@ function getSkillDir(): string {
 
 const skillDir = getSkillDir();
 
-export function initializeUnifiedChatRoutes(adapter: ChatBridgeAdapter): void {
+export function initializeUnifiedChatRoutes(
+  adapter: ChatBridgeAdapter,
+  options?: {
+    getDraftContext?: (userId: string, request: string) => Promise<OrdinaryDraftContext | null>;
+  }
+): void {
   chatBridgeAdapter = adapter;
+  getDraftContextForUser = options?.getDraftContext || null;
   orchestrator = new ScholarClawOrchestrator(adapter);
   logger.info('[UnifiedChat] Routes initialized with orchestrator');
+}
+
+function shouldAttachOrdinaryDraftContext(message: string): boolean {
+  const text = String(message || '').toLowerCase();
+  if (!text.trim()) return false;
+  return [
+    /写作进度/,
+    /写到哪[了里]?/,
+    /写到什么程度/,
+    /完成到哪/,
+    /完成了哪些/,
+    /还差哪些/,
+    /还有哪些没写/,
+    /草稿进度/,
+    /论文进度/,
+    /普通草稿/,
+    /论文草稿/,
+    /当前草稿/,
+    /草稿/,
+    /manuscript/,
+    /draft/,
+    /writing progress/,
+    /progress/,
+    /chapter/,
+    /section/,
+    /章节/,
+    /摘要/,
+    /引言/,
+    /前言/,
+    /方法/,
+    /材料与方法/,
+    /结果/,
+    /讨论/,
+    /结论/,
+    /继续写/,
+    /续写/,
+    /改写/,
+    /修改/,
+    /润色/,
+    /编辑/,
+    /整合/,
+    /保存到草稿/,
+  ].some(pattern => pattern.test(text));
+}
+
+async function buildOrdinaryDraftPromptContext(userId: string, message: string): Promise<string> {
+  if (!getDraftContextForUser || !shouldAttachOrdinaryDraftContext(message)) {
+    return '';
+  }
+  try {
+    const draftContext = await getDraftContextForUser(userId, message);
+    if (!draftContext?.available) {
+      logger.info(`[UnifiedChat] Ordinary draft requested but unavailable: ${draftContext?.reason || 'no draft'}`);
+      return '';
+    }
+    logger.info(`[UnifiedChat] Auto-attached ordinary draft context: source=${draftContext.source || 'unknown'}, chapters=${draftContext.chapters?.length || 0}`);
+    const lines = [
+      '## 普通论文草稿（按需读取）',
+      '用户本轮问题与草稿、章节、修改、续写或写作进度相关，后端已读取普通草稿。询问写作进度时必须基于该草稿状态回答。',
+      `- 来源：${draftContext.source || 'ordinary-draft'}`,
+      Array.isArray(draftContext.chapters) && draftContext.chapters.length > 0 ? `- 已保存章节：${draftContext.chapters.join(', ')}` : '',
+      draftContext.updatedAt ? `- 最近保存时间：${draftContext.updatedAt}` : '',
+      typeof draftContext.wordCount === 'number' ? `- 估算字数：${draftContext.wordCount}` : '',
+      '',
+      draftContext.content || '',
+    ].filter(Boolean);
+    return lines.join('\n');
+  } catch (error) {
+    logger.warn('[UnifiedChat] Failed to attach ordinary draft context:', error);
+    return '';
+  }
 }
 
 /**
@@ -103,6 +201,56 @@ router.post('/chat', async (req: Request, res: Response) => {
     // Bug 修复：从 session 获取 userId（优先级：session > req.body.userId > 'web-user'）
     const userId = await resolveUserId(bodyUserId);
     logger.info(`[UnifiedChat] Received message from ${userId}: ${message.substring(0, 50)}... (source: session-priority)`);
+
+    const pendingMemoryEdit = await getPendingMemoryEdit(userId);
+    if (pendingMemoryEdit && isMemoryEditConfirmation(message)) {
+      const result = await applyPendingMemoryEdit(userId);
+      return res.json({
+        success: true,
+        response: result.message,
+        metadata: {
+          mode: 'memory-edit-confirm',
+          memoryEdit: result,
+        },
+      });
+    }
+    if (pendingMemoryEdit && isMemoryEditCancellation(message)) {
+      const result = await cancelPendingMemoryEdit(userId);
+      return res.json({
+        success: true,
+        response: result.message,
+        metadata: {
+          mode: 'memory-edit-cancel',
+          memoryEdit: result,
+        },
+      });
+    }
+    if (isLikelyMemoryEditInstruction(message)) {
+      const preview = await createMemoryEditPreview({
+        userId,
+        instruction: message,
+        apiUrl: apiUrl || process.env.API_URL || '',
+        apiKey: apiKey || process.env.API_KEY || '',
+        model: model || process.env.PRIMARY_MODEL || '',
+      });
+      if (preview.handled) {
+        return res.json({
+          success: true,
+          response: preview.message,
+          metadata: {
+            mode: 'memory-edit-preview',
+            memoryEdit: preview.pendingEdit || null,
+          },
+        });
+      }
+    }
+
+    const userSkillInvocation = await parseUserSkillInvocation(userId, message);
+    const messageForTask = userSkillInvocation.cleanMessage || message;
+    const userSkillPrompt = userSkillInvocation.promptBlock;
+    if (userSkillInvocation.invokedSkills.length > 0) {
+      logger.info(`[UserSkills] UnifiedChat invoked skills: ${userSkillInvocation.invokedSkills.map(skill => `/${skill.trigger}`).join(', ')}`);
+    }
     
     // 步骤 0: 服务端加载记忆（确保所有模式都能获取记忆）
     // 修复：之前 HYBRID 和 CHATBRIDGE_ONLY 模式依赖前端传递 memoryContext，现在改为服务端加载
@@ -145,6 +293,12 @@ router.post('/chat', async (req: Request, res: Response) => {
       }
     }
 
+    const ordinaryDraftContext = await buildOrdinaryDraftPromptContext(userId, messageForTask);
+    if (ordinaryDraftContext) {
+      serverWritingProgress = '';
+    }
+    const memoryWithDraftContext = [userSkillPrompt, ordinaryDraftContext, serverMemoryContext].filter(Boolean).join('\n\n');
+
     // 步骤 1: 分析任务，决定处理模式
     let mode: ProcessingMode;
     let analysis;
@@ -153,7 +307,7 @@ router.post('/chat', async (req: Request, res: Response) => {
       mode = forceMode as ProcessingMode;
       logger.info(`[UnifiedChat] Using forced mode: ${mode}`);
     } else {
-      analysis = await orchestrator.analyzeTask(message, history);
+      analysis = await orchestrator.analyzeTask(messageForTask, history);
       mode = analysis.mode;
       logger.info(`[UnifiedChat] Analysis result: ${mode}, reason: ${analysis.reason}`);
     }
@@ -166,12 +320,12 @@ router.post('/chat', async (req: Request, res: Response) => {
       case ProcessingMode.CHATBRIDGE_ONLY:
         // 纯 ChatBridge 模式 - 将记忆上下文拼接到用户消息
         logger.info('[UnifiedChat] Using ChatBridge only mode');
-        let chatBridgeMessage = message;
-        if (serverMemoryContext) {
-          chatBridgeMessage = `${serverMemoryContext}\n\n${serverWritingProgress || ''}\n\n---\n\n用户问题：${message}`;
-          logger.info('[UnifiedChat] ChatBridge mode: memory context injected');
+        let chatBridgeMessage = messageForTask;
+        if (memoryWithDraftContext || serverWritingProgress) {
+          chatBridgeMessage = `${memoryWithDraftContext || ''}\n\n${serverWritingProgress || ''}\n\n---\n\n用户问题：${messageForTask}`;
+          logger.info('[UnifiedChat] ChatBridge mode: memory/draft context injected');
         }
-        chatBridgeMessage = anchorPromptWithCurrentRequest(chatBridgeMessage, message, {
+        chatBridgeMessage = anchorPromptWithCurrentRequest(chatBridgeMessage, messageForTask, {
           source: 'unified-route-chatbridge-only'
         });
         response = await chatBridgeAdapter.chat({
@@ -183,9 +337,9 @@ router.post('/chat', async (req: Request, res: Response) => {
         // 混合模式 - API准备 + ChatBridge生成
         logger.info('[UnifiedChat] Using Hybrid mode');
         const hybridResult = await orchestrator.processHybrid(
-          message,
+          messageForTask,
           {
-            memoryContext: serverMemoryContext || memoryContext,
+            memoryContext: memoryWithDraftContext || serverMemoryContext || memoryContext,
             literatureContext,
             journalStyle,
             writingProgress: serverWritingProgress || writingProgress,
@@ -215,10 +369,14 @@ router.post('/chat', async (req: Request, res: Response) => {
             skillDir: skillDir,
           };
           
+          const processorMessage = ordinaryDraftContext
+            ? `${memoryWithDraftContext}\n\n---\n\n用户问题：${messageForTask}`
+            : (userSkillPrompt ? `${userSkillPrompt}\n\n---\n\n用户问题：${messageForTask}` : messageForTask);
+
           // 调用统一的聊天处理器（userId 已从 session 获取）
           const result = await processUnifiedChatMessage(
             userId, // 使用已从 session 解析的 userId
-            message, 
+            processorMessage, 
             processorConfig,
             { history }
           );
@@ -239,6 +397,7 @@ router.post('/chat', async (req: Request, res: Response) => {
       metadata: {
         mode,
         processingTime: metadata.generationTime || 0,
+        invokedUserSkills: userSkillInvocation.invokedSkills,
         ...metadata,
       },
     });
@@ -285,6 +444,11 @@ router.post('/chat-with-context', async (req: Request, res: Response) => {
     // Bug 修复：从 session 获取 userId
     const resolvedUserId = await resolveUserId(userId);
     logger.info(`[UnifiedChat] Resolved userId: ${resolvedUserId} (source: session-priority)`);
+    const userSkillInvocation = await parseUserSkillInvocation(resolvedUserId, message);
+    const messageForTask = userSkillInvocation.cleanMessage || message;
+    if (userSkillInvocation.invokedSkills.length > 0) {
+      logger.info(`[UserSkills] UnifiedChat context invoked skills: ${userSkillInvocation.invokedSkills.map(skill => `/${skill.trigger}`).join(', ')}`);
+    }
     
     // 准备上下文
     const context: {
@@ -317,7 +481,7 @@ router.post('/chat-with-context', async (req: Request, res: Response) => {
       try {
         const retrievalEngine = getRetrievalEngine();
         const retrieveResult = await retrievalEngine.retrieve({
-          query: message,
+          query: messageForTask,
           topK: 10,
           searchMode: 'hybrid'
         });
@@ -406,9 +570,17 @@ router.post('/chat-with-context', async (req: Request, res: Response) => {
       }
     }
 
+    const ordinaryDraftContext = await buildOrdinaryDraftPromptContext(resolvedUserId, messageForTask);
+    if (ordinaryDraftContext) {
+      context.memoryContext = [ordinaryDraftContext, context.memoryContext].filter(Boolean).join('\n\n');
+    }
+    if (userSkillInvocation.promptBlock) {
+      context.memoryContext = [userSkillInvocation.promptBlock, context.memoryContext].filter(Boolean).join('\n\n');
+    }
+
     // 执行混合处理
     const result = await orchestrator.processHybrid(
-      message,
+      messageForTask,
       context,
       async (enrichedPrompt) => enrichedPrompt
     );
@@ -421,7 +593,7 @@ router.post('/chat-with-context', async (req: Request, res: Response) => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           userId: resolvedUserId, // 使用从 session 解析的 userId
-          userMessage: message,
+          userMessage: messageForTask,
           aiResponse: result.response,
           apiUrl: req.body.apiUrl || process.env.API_URL || '',
           apiKey: req.body.apiKey || process.env.API_KEY || '',
@@ -437,7 +609,10 @@ router.post('/chat-with-context', async (req: Request, res: Response) => {
     res.json({
       success: true,
       response: result.response,
-      metadata: result.metadata,
+      metadata: {
+        ...result.metadata,
+        invokedUserSkills: userSkillInvocation.invokedSkills,
+      },
     });
 
   } catch (error) {
@@ -476,6 +651,11 @@ router.post('/chat-stream', async (req: Request, res: Response) => {
   // Bug 修复：从 session 获取 userId
   const userId = await resolveUserId(bodyUserId);
   logger.info(`[UnifiedChat] Stream request from ${userId}: ${message.substring(0, 50)}... (source: session-priority)`);
+  const userSkillInvocation = await parseUserSkillInvocation(userId, message);
+  const messageForTask = userSkillInvocation.cleanMessage || message;
+  if (userSkillInvocation.invokedSkills.length > 0) {
+    logger.info(`[UserSkills] UnifiedChat stream invoked skills: ${userSkillInvocation.invokedSkills.map(skill => `/${skill.trigger}`).join(', ')}`);
+  }
 
   // 设置 SSE headers
   res.writeHead(200, {
@@ -508,9 +688,12 @@ router.post('/chat-stream', async (req: Request, res: Response) => {
         logger.warn(`[UnifiedChat] Failed to load memory for ${userId}:`, error);
       }
     }
+    if (userSkillInvocation.promptBlock) {
+      context.memoryContext = [userSkillInvocation.promptBlock, context.memoryContext].filter(Boolean).join('\n\n');
+    }
 
     // 构建增强提示词
-    const enrichedPrompt = orchestrator.buildEnrichedPrompt(message, context);
+    const enrichedPrompt = orchestrator.buildEnrichedPrompt(messageForTask, context);
 
     // 发送开始信号
     res.write(`data: ${JSON.stringify({ type: 'start' })}\n\n`);

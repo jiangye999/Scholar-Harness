@@ -2,6 +2,7 @@ export const DEFAULT_PROJECT_WRITING_PROFILE_ID = 'paper-writing';
 
 export type ProjectWritingProfileId =
   | 'paper-writing'
+  | 'thesis-writing'
   | 'paper-review'
   | 'grant-writing'
   | 'patent-writing'
@@ -52,6 +53,29 @@ export const PROJECT_WRITING_PROFILES: ProjectWritingProfile[] = [
       { id: 'conclusion', title: 'Conclusion', purpose: '结论、贡献和未来方向' },
     ],
     skillGuide: '使用严谨学术论文写作方式。所有事实性论断都需要证据支撑，优先遵守 Auto Research 给出的 paperTopicReview、paperWritingBlueprint、contentEnhancementReport、证据层级、支持主张和 claimsToAvoid；避免泛泛综述、不受引用支持的强断言，以及把弱证据写成强结论。',
+  },
+  {
+    id: 'thesis-writing',
+    label: '大论文辅助写作',
+    shortLabel: '大论文写作',
+    topicLabel: '大论文题目或研究方向',
+    requirementLabel: '大论文写作要求',
+    oneClickTitle: '一键写大论文',
+    oneClickAction: '开始写大论文',
+    documentType: 'graduate thesis or dissertation',
+    retrievalFocus: 'thesis-level research background, dissertation structure, chapter coherence, methods, results, discussion, citation-claim alignment',
+    outlineInstruction: '规划为大论文结构，优先覆盖摘要、绪论/引言、文献综述、材料与方法/研究方法、结果、讨论、结论与展望等章节；需要体现章节之间的递进关系和整篇论文主线。',
+    qualityInstruction: '严格执行大论文质量门：研究问题清晰、章节主线一致、方法和结果对应、讨论回扣研究假设、结论不过度外推、参考文献能支撑关键论断。',
+    sections: [
+      { id: 'abstract', title: '摘要 / Abstract', purpose: '概括研究背景、目的、方法、主要结果、结论和创新点' },
+      { id: 'introduction', title: '绪论 / Introduction', purpose: '研究背景、科学问题、研究意义、目标和论文结构' },
+      { id: 'literature-review', title: '文献综述 / Literature Review', purpose: '系统梳理研究进展、争议、空白和理论基础' },
+      { id: 'methods', title: '材料与方法 / Methods', purpose: '研究区、材料、实验设计、指标测定、数据处理和统计方法' },
+      { id: 'results', title: '结果 / Results', purpose: '按研究目标呈现实验结果、图表和统计发现' },
+      { id: 'discussion', title: '讨论 / Discussion', purpose: '解释机制、比较前人研究、说明贡献、限制和不确定性' },
+      { id: 'conclusion', title: '结论与展望 / Conclusion', purpose: '总结核心结论、创新贡献、实践意义和未来研究方向' },
+    ],
+    skillGuide: '使用大论文写作方式。需要维护“总研究问题-分章节问题-方法-结果-讨论-结论”的长链条一致性；章节之间要有承接，不要把综述、结果和讨论写成互不相关的短论文拼盘。所有关键论断必须有文献或用户数据支撑，缺少证据时标注待补充。',
   },
   {
     id: 'paper-review',

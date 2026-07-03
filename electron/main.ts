@@ -27,6 +27,17 @@ interface AppUpdateManifest {
   publishedAt?: string;
 }
 
+interface AppUpdateCheckResult {
+  success: boolean;
+  updateAvailable: boolean;
+  currentVersion: string;
+  latestVersion?: string;
+  downloadUrl?: string;
+  releaseNotes?: string;
+  publishedAt?: string;
+  error?: string;
+}
+
 let updateCheckInProgress = false;
 let startupUpdateCheckScheduled = false;
 
@@ -177,6 +188,33 @@ async function fetchUpdateManifest(): Promise<AppUpdateManifest> {
   return manifest;
 }
 
+async function getAppUpdateInfo(): Promise<AppUpdateCheckResult> {
+  const currentVersion = app.getVersion();
+  try {
+    const manifest = await fetchUpdateManifest();
+    const latestVersion = manifest.version || '';
+    const downloadUrl = manifest.downloadUrl || '';
+    return {
+      success: true,
+      updateAvailable: compareVersions(latestVersion, currentVersion) > 0,
+      currentVersion,
+      latestVersion,
+      downloadUrl,
+      releaseNotes: manifest.releaseNotes || '',
+      publishedAt: manifest.publishedAt || '',
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    startupLog(`Update check failed: ${message}`);
+    return {
+      success: false,
+      updateAvailable: false,
+      currentVersion,
+      error: message,
+    };
+  }
+}
+
 function getDialogParent(): BrowserWindow | undefined {
   return BrowserWindow.getFocusedWindow() || mainWindow || loginWindow || activationWindow || userInfoWindow || undefined;
 }
@@ -191,22 +229,18 @@ async function checkForAppUpdate(options: { silent?: boolean } = {}): Promise<vo
 
   updateCheckInProgress = true;
   try {
-    const manifest = await fetchUpdateManifest();
-    const latestVersion = manifest.version;
-    const downloadUrl = manifest.downloadUrl;
-    if (!latestVersion || !downloadUrl) {
-      throw new Error('更新清单缺少必要字段');
+    const updateInfo = await getAppUpdateInfo();
+    if (!updateInfo.success) {
+      throw new Error(updateInfo.error || '更新检查失败');
     }
 
-    const currentVersion = app.getVersion();
-
-    if (compareVersions(latestVersion, currentVersion) <= 0) {
+    if (!updateInfo.updateAvailable) {
       if (!options.silent) {
         await showMessageBox({
           type: 'info',
           title: '检查更新',
           message: '当前已是最新版本',
-          detail: `当前版本：${currentVersion}`,
+          detail: `当前版本：${updateInfo.currentVersion}`,
           buttons: ['确定'],
         });
       }
@@ -214,16 +248,16 @@ async function checkForAppUpdate(options: { silent?: boolean } = {}): Promise<vo
     }
 
     const detailLines = [
-      `当前版本：${currentVersion}`,
-      `最新版本：${latestVersion}`,
-      manifest.publishedAt ? `发布时间：${manifest.publishedAt}` : '',
-      manifest.releaseNotes ? `\n更新说明：\n${manifest.releaseNotes}` : '',
+      `当前版本：${updateInfo.currentVersion}`,
+      `最新版本：${updateInfo.latestVersion}`,
+      updateInfo.publishedAt ? `发布时间：${updateInfo.publishedAt}` : '',
+      updateInfo.releaseNotes ? `\n更新说明：\n${updateInfo.releaseNotes}` : '',
     ].filter(Boolean);
 
     const result = await showMessageBox({
       type: 'info',
       title: '发现新版本',
-      message: `发现 Scholar Harness ${latestVersion}`,
+      message: `发现 Scholar Harness ${updateInfo.latestVersion}`,
       detail: detailLines.join('\n'),
       buttons: ['立即下载', '稍后'],
       defaultId: 0,
@@ -231,7 +265,7 @@ async function checkForAppUpdate(options: { silent?: boolean } = {}): Promise<vo
     });
 
     if (result.response === 0) {
-      await shell.openExternal(downloadUrl);
+      await shell.openExternal(updateInfo.downloadUrl || UPDATE_MANIFEST_URL);
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -255,7 +289,7 @@ function scheduleStartupUpdateCheck(): void {
 
   startupUpdateCheckScheduled = true;
   setTimeout(() => {
-    checkForAppUpdate({ silent: true }).catch(error => {
+    getAppUpdateInfo().catch(error => {
       startupLog(`Scheduled update check failed: ${(error as Error).message}`);
     });
   }, 12000);
@@ -759,6 +793,8 @@ function createWindow(): void {
     minWidth: 1000,
     minHeight: 700,
     title: 'Scholar Harness - 学术论文写作助手',
+    autoHideMenuBar: true,
+    frame: false,
     icon: app.isPackaged
       ? path.join(process.resourcesPath, 'app.asar.unpacked', 'dist', 'electron', 'icon.ico')
       : path.join(__dirname, 'icon.ico'),
@@ -775,6 +811,9 @@ function createWindow(): void {
     },
     show: false,
   });
+
+  mainWindow.setAutoHideMenuBar(true);
+  mainWindow.setMenuBarVisibility(false);
 
   let mainWindowShown = false;
   const showMainWindow = (reason: string): void => {
@@ -905,8 +944,9 @@ function createWindow(): void {
     },
   ];
   
-  const menu = Menu.buildFromTemplate(menuTemplate);
-  Menu.setApplicationMenu(menu);
+  // The visible menu row is rendered in the app chrome so controls can share the same line.
+  Menu.buildFromTemplate(menuTemplate);
+  Menu.setApplicationMenu(null);
   
   mainWindow.on('closed', () => {
     mainWindow = null;
@@ -1616,6 +1656,194 @@ ipcMain.handle('open-external', async (event, url: string) => {
 });
 
 /**
+ * 检查服务器发布的最新安装包版本
+ */
+ipcMain.handle('app-update-check', async () => {
+  return getAppUpdateInfo();
+});
+
+/**
+ * 打开最新版本安装包下载链接
+ */
+ipcMain.handle('app-update-open-download', async (_event, downloadUrl?: string) => {
+  try {
+    const targetUrl = typeof downloadUrl === 'string' && /^https?:\/\//i.test(downloadUrl)
+      ? downloadUrl
+      : (await getAppUpdateInfo()).downloadUrl;
+    if (!targetUrl || !/^https?:\/\//i.test(targetUrl)) {
+      return { success: false, error: '未找到有效下载链接' };
+    }
+    await shell.openExternal(targetUrl);
+    return { success: true };
+  } catch (error) {
+    console.error('[Electron] Failed to open update download:', error);
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : '打开更新下载链接失败',
+    };
+  }
+});
+
+/**
+ * 用系统默认程序打开本地文件
+ */
+ipcMain.handle('open-path', async (event, targetPath: string) => {
+  try {
+    if (!targetPath || typeof targetPath !== 'string') {
+      return { success: false, error: 'Invalid file path' };
+    }
+    const resolved = path.resolve(targetPath);
+    if (!fs.existsSync(resolved)) {
+      return { success: false, error: 'File does not exist' };
+    }
+    const openError = await shell.openPath(resolved);
+    if (openError) {
+      return { success: false, error: openError };
+    }
+    return { success: true };
+  } catch (error) {
+    console.error('[Electron] Failed to open path:', error);
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : 'Failed to open file',
+    };
+  }
+});
+
+/**
+ * 在系统文件管理器中定位本地文件
+ */
+ipcMain.handle('open-containing-folder', async (event, targetPath: string) => {
+  try {
+    if (!targetPath || typeof targetPath !== 'string') {
+      return { success: false, error: 'Invalid file path' };
+    }
+    const resolved = path.resolve(targetPath);
+    if (fs.existsSync(resolved)) {
+      const stat = fs.statSync(resolved);
+      if (stat.isDirectory()) {
+        const openError = await shell.openPath(resolved);
+        return openError ? { success: false, error: openError } : { success: true };
+      }
+      shell.showItemInFolder(resolved);
+      return { success: true };
+    }
+    const parentDir = path.dirname(resolved);
+    if (parentDir && fs.existsSync(parentDir)) {
+      const openError = await shell.openPath(parentDir);
+      return openError ? { success: false, error: openError } : { success: true };
+    }
+    return { success: false, error: 'File or folder does not exist' };
+  } catch (error) {
+    console.error('[Electron] Failed to open containing folder:', error);
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : 'Failed to open folder',
+    };
+  }
+});
+
+/**
+ * 自定义无边框窗口控制
+ */
+ipcMain.handle('window-control', async (event, action: string) => {
+  try {
+    const targetWindow = BrowserWindow.fromWebContents(event.sender) || mainWindow;
+    if (!targetWindow || targetWindow.isDestroyed()) {
+      return { success: false, error: 'Window is not available' };
+    }
+
+    switch (action) {
+      case 'minimize':
+        targetWindow.minimize();
+        break;
+      case 'maximize':
+        if (targetWindow.isMaximized()) {
+          targetWindow.unmaximize();
+        } else {
+          targetWindow.maximize();
+        }
+        break;
+      case 'close':
+        targetWindow.close();
+        break;
+      default:
+        return { success: false, error: 'Unknown window action' };
+    }
+
+    return { success: true, maximized: targetWindow.isMaximized() };
+  } catch (error) {
+    console.error('[Electron] Window control failed:', action, error);
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : 'Window control failed',
+    };
+  }
+});
+
+/**
+ * 顶部应用菜单命令
+ */
+ipcMain.handle('app-menu-command', async (event, command: string) => {
+  try {
+    const targetWindow = mainWindow;
+    const webContents = targetWindow?.webContents;
+
+    switch (command) {
+      case 'reload':
+        targetWindow?.reload();
+        break;
+      case 'force-reload':
+        webContents?.reloadIgnoringCache();
+        break;
+      case 'quit':
+        app.quit();
+        break;
+      case 'devtools':
+        webContents?.toggleDevTools();
+        break;
+      case 'reset-zoom':
+        webContents?.setZoomLevel(0);
+        break;
+      case 'zoom-in':
+        if (webContents) webContents.setZoomLevel(webContents.getZoomLevel() + 0.5);
+        break;
+      case 'zoom-out':
+        if (webContents) webContents.setZoomLevel(webContents.getZoomLevel() - 0.5);
+        break;
+      case 'fullscreen':
+        if (targetWindow) targetWindow.setFullScreen(!targetWindow.isFullScreen());
+        break;
+      case 'about':
+        await showMessageBox({
+          type: 'info',
+          title: '关于 Scholar Harness',
+          message: `Scholar Harness v${app.getVersion()}`,
+          detail: '对话式学术论文写作助手\n\n开发团队：中国农业大学',
+          buttons: ['确定'],
+        });
+        break;
+      case 'check-updates':
+        await checkForAppUpdate({ silent: false });
+        break;
+      case 'docs':
+        await shell.openExternal('https://github.com/your-repo/scholar-harness');
+        break;
+      default:
+        return { success: false, error: 'Unknown command' };
+    }
+
+    return { success: true };
+  } catch (error) {
+    console.error('[Electron] App menu command failed:', command, error);
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : 'Command failed',
+    };
+  }
+});
+
+/**
  * 刷新验证套餐状态
  */
 ipcMain.handle('refresh-subscription', async () => {
@@ -1745,7 +1973,7 @@ ipcMain.handle('get-user-info', async () => {
         resolve({ error: '网络连接失败' });
       });
       
-      req.setTimeout(5000, () => {
+      req.setTimeout(12000, () => {
         req.destroy();
         resolve({ error: '请求超时' });
       });

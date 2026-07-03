@@ -1,6 +1,6 @@
 {
-  "version": "1.0.2",
-  "downloadUrl": "https://scholarharness.com/downloads/scholar-harness-setup-1.0.2.exe",
-  "publishedAt": "2026-06-11",
-  "releaseNotes": "更新 Meta 分析工作区布局，修复 R 出图输出重点，并同步最新网页控制台。"
+  "version": "1.0.3",
+  "downloadUrl": "https://scholarharness.com/downloads/scholar-harness-setup-1.0.3.exe",
+  "publishedAt": "2026-07-03",
+  "releaseNotes": "新增软件内左下角更新提示，优化持续使用上下文传递，并补充安装包发布部署说明。"
 }

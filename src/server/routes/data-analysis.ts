@@ -7,8 +7,11 @@
 
 import { Router } from 'express';
 import multer from 'multer';
+import * as fs from 'fs/promises';
 import * as path from 'path';
 import { logger } from '../../utils/logger';
+import { getUserUploadDir, sanitizeUserId } from '../../utils/paths';
+import { researchSessionManager } from '../../research/research-session-manager';
 import {
   loadUserMemory,
   saveMemoryToFiles,
@@ -123,6 +126,16 @@ interface AnalysisSignificance {
   note?: string;
 }
 
+interface DatasetSummaryForOverview {
+  filename: string;
+  sheetName: string;
+  sheetNames: string[];
+  rowCount: number;
+  columnCount: number;
+  variables: DataVariable[];
+  previewRows: string[][];
+}
+
 router.post('/inspect', upload.single('file'), async (req, res) => {
   try {
     if (!req.file) {
@@ -165,7 +178,8 @@ router.post('/analyze', upload.single('file'), async (req, res) => {
     if (extraQuery) {
       result.markdown = `${result.markdown}\n\n## 用户额外要求\n\n${extraQuery}`;
     }
-    const userId = readBodyString(req.body.userId) || 'web-user';
+    const userId = sanitizeUserId(readBodyString(req.body.userId) || 'web-user');
+    const datasetSummary = toDatasetSummary(dataset);
     const memoryUpdate = await updateDataAnalysisMemory({
       userId,
       dataset,
@@ -177,14 +191,40 @@ router.post('/analyze', upload.single('file'), async (req, res) => {
       logger.warn('[DataAnalysis] Failed to update memory:', error);
       return { dataUpdated: false, experimentUpdated: false, error: (error as Error).message };
     });
+    const researchSession = await recordDataAnalysisResearchProvenance({
+      userId,
+      researchSessionId: readBodyString(req.body.researchSessionId),
+      datasetSummary,
+      methods,
+      options,
+      result,
+      extraQuery,
+      memoryUpdate,
+    }).catch((error) => {
+      logger.warn('[ResearchSession] Failed to record data-analysis provenance:', error);
+      return undefined;
+    });
+    await writeDataAnalysisOverviewStatus({
+      userId,
+      datasetSummary,
+      methods,
+      options,
+      result,
+      extraQuery,
+      memoryUpdate,
+      researchSession,
+    }).catch((error) => {
+      logger.warn('[DataAnalysis] Failed to persist overview status:', error);
+    });
     res.json({
       success: true,
       data: {
-        dataset: toDatasetSummary(dataset),
+        dataset: datasetSummary,
         method,
         methods,
         result,
         memoryUpdate,
+        researchSession,
       },
     });
   } catch (error) {
@@ -318,6 +358,78 @@ function toDatasetSummary(dataset: ParsedDataset): {
   };
 }
 
+function getAnalysisMethodLabel(method: string): string {
+  const labels: Record<string, string> = {
+    descriptive: '描述性统计',
+    independent_t: '独立样本 t 检验',
+    paired_t: '配对样本 t 检验',
+    anova: '单因素方差分析',
+    correlation: '相关分析',
+    regression: '线性回归',
+    chi_square: '卡方检验',
+    visualization: '图表建议',
+    normality: '正态性检验',
+    variance_homogeneity: '方差齐性检验',
+    nonparametric: '非参数检验',
+    two_way_anova: '双因素方差分析',
+    pca: '主成分分析 PCA',
+    cluster: '聚类分析',
+    mixed_effects: '混合效应模型',
+    survival: '生存分析',
+  };
+  return labels[method] || method;
+}
+
+async function writeDataAnalysisOverviewStatus(input: {
+  userId: string;
+  datasetSummary: DatasetSummaryForOverview;
+  methods: string[];
+  options: Record<string, unknown>;
+  result: AnalysisResult;
+  extraQuery?: string;
+  memoryUpdate: unknown;
+  researchSession?: { sessionId: string; provenanceRecordId: string; artifactId: string };
+}): Promise<void> {
+  const dir = path.join(getUserUploadDir(input.userId), 'data-analysis');
+  const status = {
+    version: 1,
+    userId: sanitizeUserId(input.userId),
+    updatedAt: new Date().toISOString(),
+    dataset: {
+      filename: input.datasetSummary.filename,
+      sheetName: input.datasetSummary.sheetName,
+      sheetNames: input.datasetSummary.sheetNames,
+      rowCount: input.datasetSummary.rowCount,
+      columnCount: input.datasetSummary.columnCount,
+      variableCount: input.datasetSummary.variables.length,
+      numericVariableCount: input.datasetSummary.variables.filter(variable => variable.type === 'numeric').length,
+      categoricalVariableCount: input.datasetSummary.variables.filter(variable => variable.type === 'categorical').length,
+      variables: input.datasetSummary.variables.slice(0, 80).map(variable => ({
+        name: variable.name,
+        type: variable.type,
+        missingCount: variable.missingCount,
+        nonMissingCount: variable.nonMissingCount,
+        uniqueCount: variable.uniqueCount,
+      })),
+    },
+    methods: input.methods,
+    methodLabels: input.methods.map(getAnalysisMethodLabel),
+    options: input.options,
+    result: {
+      title: input.result.title,
+      warningCount: input.result.warnings.length,
+      warnings: input.result.warnings.slice(0, 20),
+      significance: input.result.significance,
+      markdownPreview: input.result.markdown.slice(0, 8000),
+    },
+    extraQuery: input.extraQuery || '',
+    memoryUpdate: input.memoryUpdate,
+    researchSession: input.researchSession,
+  };
+  await fs.mkdir(dir, { recursive: true });
+  await fs.writeFile(path.join(dir, 'latest-analysis.json'), JSON.stringify(status, null, 2), 'utf-8');
+}
+
 function runAnalysis(
   dataset: ParsedDataset,
   method: AnalysisMethod,
@@ -405,7 +517,7 @@ function runAnalyses(
           method: 'multiple analyses',
           significant: significanceAnalyses.some(item => item.significant),
           analyses: significanceAnalyses,
-          note: 'When generating linked R plots, use only the listed analyses/comparisons for real significance labels. If a selected method has no significance result, reserve x placeholders.',
+          note: 'When generating linked R plots, use only the listed analyses/comparisons for real significance labels. If a selected method has no real significance result, do not draw x/xx/xxx placeholders or invented letter groups.',
         }
       : undefined,
   };
@@ -1101,7 +1213,7 @@ ${variableHint}
 ${methodInstructions[method] || '请在 R 代码中生成对应分析。'}
 
 ## 显著性规则
-该方法当前没有本地计算出的结构化显著性结果。生成作图代码时不得编造显著性；如用户未补充真实显著性，请在图中预留显著性位置并用 x 标注。`;
+该方法当前没有本地计算出的结构化显著性结果。生成作图代码时不得编造显著性；如用户未补充真实显著性，请不要在图中标注 x、xx、xxx、星号、p 值或 abc 字母占位，只能在代码注释中说明没有真实显著性结果。`;
 
   return {
     title: name,
@@ -1588,6 +1700,89 @@ function regularizedGammaQContinuedFraction(a: number, x: number): number {
   }
 
   return Math.exp(-x + a * Math.log(x) - logGamma(a)) * h;
+}
+
+async function recordDataAnalysisResearchProvenance(input: {
+  userId: string;
+  researchSessionId?: string;
+  datasetSummary: unknown;
+  methods: string[];
+  options: Record<string, unknown>;
+  result: AnalysisResult;
+  extraQuery?: string;
+  memoryUpdate: unknown;
+}): Promise<{ sessionId: string; provenanceRecordId: string; artifactId: string }> {
+  const dataset = input.datasetSummary as {
+    filename?: string;
+    sheetName?: string;
+    rowCount?: number;
+    columnCount?: number;
+    columns?: Array<{ name?: string; type?: string }>;
+  };
+  const dataRef = {
+    label: dataset.filename || 'uploaded dataset',
+    sheetName: dataset.sheetName,
+    columns: Array.isArray(dataset.columns)
+      ? dataset.columns.map(column => String(column.name || '')).filter(Boolean)
+      : undefined,
+    rowCount: typeof dataset.rowCount === 'number' ? dataset.rowCount : undefined,
+    statistic: input.result.significance?.method || input.methods.join(', '),
+    pValue: input.result.significance?.pValue,
+    metadata: {
+      columnCount: dataset.columnCount,
+      significance: input.result.significance,
+    },
+  };
+  const provenance = await researchSessionManager.appendProvenance({
+    userId: input.userId,
+    sessionId: input.researchSessionId,
+    sessionTitle: dataset.filename ? `数据分析：${dataset.filename}` : '数据分析科研会话',
+    targetType: 'data-analysis',
+    targetId: dataset.filename || `data-analysis-${Date.now()}`,
+    operation: 'data-analysis.analyze',
+    sourceModule: 'data-analysis',
+    input: {
+      dataset: input.datasetSummary,
+      methods: input.methods,
+      options: input.options,
+      extraQuery: input.extraQuery,
+    },
+    output: {
+      title: input.result.title,
+      markdown: input.result.markdown,
+      warnings: input.result.warnings,
+      significance: input.result.significance,
+      memoryUpdate: input.memoryUpdate,
+    },
+    dataRefs: [dataRef],
+    metadata: {
+      memoryUpdate: input.memoryUpdate,
+      warningCount: input.result.warnings.length,
+    },
+  });
+  const artifact = await researchSessionManager.appendArtifact({
+    userId: input.userId,
+    sessionId: provenance.session.id,
+    kind: 'data-analysis',
+    name: input.result.title || dataRef.label,
+    content: input.result.markdown,
+    contentType: 'text/markdown',
+    input: {
+      dataset: input.datasetSummary,
+      methods: input.methods,
+      options: input.options,
+    },
+    provenanceRecordIds: [provenance.record.id],
+    metadata: {
+      warningCount: input.result.warnings.length,
+      pValue: input.result.significance?.pValue,
+    },
+  });
+  return {
+    sessionId: provenance.session.id,
+    provenanceRecordId: provenance.record.id,
+    artifactId: artifact.artifact.id,
+  };
 }
 
 export default router;

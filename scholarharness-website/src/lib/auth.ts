@@ -151,6 +151,7 @@ export async function sendEmailVerificationCode(
 ): Promise<{
   success: boolean;
   message: string;
+  status?: number;
   expiresIn?: number;
 }> {
   const response = await fetch(`${API_BASE_URL}/verification/send-email-code`, {
@@ -172,6 +173,7 @@ export async function sendEmailVerificationCode(
     return {
       success: false,
       message: data.message || '验证码发送失败',
+      status: response.status,
     };
   }
 
@@ -199,8 +201,9 @@ export async function register(
   }
 
   const normalizedBetaCode = betaCode?.trim().toUpperCase() || '';
-  if (!normalizedBetaCode) {
-    throw new Error('注册必须填写授权码/内测码');
+  const normalizedReferralCode = referralCode?.trim().toUpperCase() || '';
+  if (!normalizedBetaCode && !normalizedReferralCode) {
+    throw new Error('注册必须填写授权码/内测码或好友邀请码');
   }
 
   // 合规验证：必须提供同意选项
@@ -227,8 +230,8 @@ export async function register(
       accept_cross_border_transfer: agreementOptions.accept_cross_border_transfer || false,
       privacy_policy_version: agreementOptions.privacy_policy_version || 'V1.3',
       user_agreement_version: agreementOptions.user_agreement_version || 'V1.3',
-      beta_code: normalizedBetaCode,
-      referral_code: referralCode?.trim().toUpperCase() || undefined,
+      beta_code: normalizedBetaCode || undefined,
+      referral_code: normalizedReferralCode || undefined,
     }),
   });
 
@@ -668,4 +671,204 @@ export function formatWordCount(count: number): string {
     return `${(count / 10000).toFixed(1)}万字`;
   }
   return `${count}字`;
+}
+
+export interface ApiBalance {
+  balance_cents?: number;
+  balance_yuan?: number;
+  total_recharged_cents?: number;
+  total_used_cents?: number;
+  total_available_words?: number;
+  used_words?: number;
+  remaining_words?: number;
+}
+
+export interface RechargeTier {
+  amount: number;
+  label?: string;
+  bonus?: number;
+  words?: number;
+}
+
+export interface BillingRules {
+  minimum_recharge: number;
+  maximum_recharge: number;
+  custom_amount_allowed: boolean;
+  base_price_per_1k: number;
+  cost_ratio: number;
+  currency: string;
+}
+
+export interface DistributedApiKey {
+  id: string;
+  key_name: string;
+  key_type?: string;
+  status?: string;
+  created_at?: string;
+  last_used_at?: string | null;
+  usage_count?: number;
+}
+
+export interface DistributedApiKeyType {
+  type: string;
+  label: string;
+  description?: string;
+}
+
+export interface ApiPricingModel {
+  model: string;
+  label?: string;
+  price_per_1k?: number;
+}
+
+export interface ApiUsageLog {
+  id: string;
+  model?: string;
+  word_count?: number;
+  cost_cents?: number;
+  created_at?: string;
+}
+
+async function authedFetch(path: string, init: RequestInit = {}): Promise<Response> {
+  const token = getAccessToken();
+  if (!token) {
+    throw new Error('请先登录');
+  }
+
+  const headers = new Headers(init.headers || {});
+  headers.set('Authorization', `Bearer ${token}`);
+
+  return fetch(`${API_BASE_URL}${path}`, {
+    ...init,
+    headers,
+  });
+}
+
+async function parseApiResponse<T>(response: Response, fallbackMessage: string): Promise<T> {
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(data.message || fallbackMessage);
+  }
+  return data as T;
+}
+
+export async function getApiBalance(): Promise<ApiBalance> {
+  return parseApiResponse<ApiBalance>(
+    await authedFetch('/api-pricing/balance'),
+    '获取API余额失败'
+  );
+}
+
+export async function getRechargeTiers(): Promise<{ tiers: RechargeTier[]; billing_rules: BillingRules }> {
+  const response = await fetch(`${API_BASE_URL}/api-pricing/recharge-tiers`);
+  if (!response.ok) {
+    return {
+      tiers: [],
+      billing_rules: {
+        minimum_recharge: 1,
+        maximum_recharge: 10000,
+        custom_amount_allowed: true,
+        base_price_per_1k: 0.025,
+        cost_ratio: 0.5,
+        currency: 'CNY',
+      },
+    };
+  }
+  return response.json();
+}
+
+export async function createApiRecharge(
+  amount: number,
+  paymentMethod: string
+): Promise<{ payment_url?: string; order_id?: string; message?: string }> {
+  return parseApiResponse(
+    await authedFetch('/api-pricing/recharge', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ amount, payment_method: paymentMethod }),
+    }),
+    '充值请求失败'
+  );
+}
+
+export async function getApiPricing(): Promise<{ models: ApiPricingModel[]; base_price_per_1k?: number }> {
+  const response = await fetch(`${API_BASE_URL}/api-pricing/models`);
+  if (!response.ok) {
+    return { models: [], base_price_per_1k: 0.025 };
+  }
+  return response.json();
+}
+
+export async function getApiUsageLogs(limit?: number): Promise<{ logs: ApiUsageLog[] }> {
+  const query = limit ? `?limit=${encodeURIComponent(String(limit))}` : '';
+  return parseApiResponse<{ logs: ApiUsageLog[] }>(
+    await authedFetch(`/api-pricing/usage-logs${query}`),
+    '获取API用量日志失败'
+  );
+}
+
+export async function getMyDistributedApiKeys(): Promise<{ keys: DistributedApiKey[] }> {
+  return parseApiResponse<{ keys: DistributedApiKey[] }>(
+    await authedFetch('/distributed-api-keys/my-keys'),
+    '获取API密钥列表失败'
+  );
+}
+
+export async function getDistributedApiKeyTypes(): Promise<{
+  types: DistributedApiKeyType[];
+  max_keys_per_user: number;
+}> {
+  const response = await fetch(`${API_BASE_URL}/distributed-api-keys/types`);
+  if (!response.ok) {
+    return { types: [], max_keys_per_user: 5 };
+  }
+  return response.json();
+}
+
+export async function createDistributedApiKey(
+  keyName: string,
+  keyType: string
+): Promise<{ api_key?: string; key?: DistributedApiKey; message?: string }> {
+  return parseApiResponse(
+    await authedFetch('/distributed-api-keys/create', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ key_name: keyName, key_type: keyType }),
+    }),
+    '创建API密钥失败'
+  );
+}
+
+export async function revealDistributedApiKey(keyId: string): Promise<{ api_key: string }> {
+  return parseApiResponse<{ api_key: string }>(
+    await authedFetch(`/distributed-api-keys/reveal/${encodeURIComponent(keyId)}`),
+    '获取API密钥失败'
+  );
+}
+
+export async function revokeDistributedApiKey(keyId: string): Promise<void> {
+  await parseApiResponse(
+    await authedFetch(`/distributed-api-keys/revoke/${encodeURIComponent(keyId)}`, {
+      method: 'POST',
+    }),
+    '撤销API密钥失败'
+  );
+}
+
+export async function disableDistributedApiKey(keyId: string): Promise<void> {
+  await parseApiResponse(
+    await authedFetch(`/distributed-api-keys/disable/${encodeURIComponent(keyId)}`, {
+      method: 'POST',
+    }),
+    '禁用API密钥失败'
+  );
+}
+
+export async function enableDistributedApiKey(keyId: string): Promise<void> {
+  await parseApiResponse(
+    await authedFetch(`/distributed-api-keys/enable/${encodeURIComponent(keyId)}`, {
+      method: 'POST',
+    }),
+    '启用API密钥失败'
+  );
 }

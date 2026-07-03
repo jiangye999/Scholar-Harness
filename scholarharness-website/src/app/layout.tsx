@@ -116,7 +116,7 @@ export default function RootLayout({
         {/* Skip Link - 跳过导航，符合 WCAG 可访问性标准 */}
         <a
           href="#main-content"
-          className="sr-only focus:not-sr-only focus:absolute focus:top-4 focus:left-4 focus:z-50 focus:px-3 focus:py-2 focus:bg-blue-600 focus:text-white focus:rounded-lg"
+          className="sr-only focus:not-sr-only focus:absolute focus:top-4 focus:left-4 focus:z-50 focus:px-3 focus:py-2 focus:bg-[#159a82] focus:text-white focus:rounded-lg"
         >
           跳过导航
         </a>
@@ -126,3 +126,4 @@ export default function RootLayout({
     </html>
   );
 }
+

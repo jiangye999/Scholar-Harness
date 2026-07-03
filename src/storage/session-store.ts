@@ -4,8 +4,6 @@ import { logger } from '../utils/logger';
 import { sanitizeUserId } from '../utils/paths';
 import type { UserState } from '../types';
 
-// 会话默认过期时间（毫秒）- 7天
-const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const DEFAULT_DRAFT_CHAPTER_NAME = 'section';
 
 export function sanitizeDraftChapterName(chapterName: unknown): string {
@@ -59,13 +57,6 @@ export class SessionStore {
       const content = await fs.readFile(filePath, 'utf-8');
       const data = JSON.parse(content);
       
-      // 检查会话是否过期
-      const updatedAt = new Date(data.updatedAt);
-      if (Date.now() - updatedAt.getTime() > SESSION_TTL_MS) {
-        await this.delete(userId);
-        return null;
-      }
-      
       // Restore Map objects from plain objects
       if (data.chapterPlans && typeof data.chapterPlans === 'object') {
         data.chapterPlans = new Map(Object.entries(data.chapterPlans));
@@ -113,20 +104,9 @@ export class SessionStore {
     }
   }
 
-  // 清理过期会话
+  // 历史会话永久保留；仅保留该方法用于兼容旧调用。
   async cleanExpired(): Promise<number> {
-    const userIds = await this.list();
-    let cleaned = 0;
-    
-    for (const userId of userIds) {
-      const state = await this.load(userId);
-      // load 内部已处理过期逻辑，如果返回 null 则已清理
-      if (!state) {
-        cleaned++;
-      }
-    }
-    
-    return cleaned;
+    return 0;
   }
 
   // 保存草稿到独立文件

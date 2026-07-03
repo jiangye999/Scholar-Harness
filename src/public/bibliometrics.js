@@ -9,16 +9,30 @@
     networkDrag: null,
     paperDraft: null,
     paperDraftLoading: false,
+    paperDraftProgressText: '',
+    paperDraftProgressStep: 0,
     rPluginResult: null,
     rPluginLoading: false,
     dataset: null,
     artifacts: null,
     journalQualityTable: null,
     keywordMerges: { mergedTags: [], promotedTags: [] },
-    keywordMergeCandidates: []
+    keywordMergeCandidates: [],
+    writingPrepActiveBubble: 'draft'
   };
 
+  var PAPER_DRAFT_PROGRESS_STEPS = [
+    '正在读取文献计量统计表、网络表和质量报告',
+    '正在整理 Methods、Results、Discussion 的写作证据',
+    '正在匹配 figure1 至 figure14 的正文引用位置',
+    '正在生成论文标题、摘要、方法、结果和讨论',
+    '正在检查图注、局限性和投稿前补充项',
+    '正在合并最终 Markdown 草稿'
+  ];
+  var paperDraftProgressTimer = null;
+
   function closeBibliometricsDialog() {
+    stopPaperDraftProgress();
     var modal = document.getElementById('bibliometricsModal');
     if (modal) modal.remove();
   }
@@ -441,42 +455,157 @@
       '</div>';
   }
 
+  function writingPrepBubbleStyle(active) {
+    return 'width:100%;min-height:58px;text-align:left;padding:9px 11px;border:1px solid ' +
+      (active ? 'rgba(0,136,110,0.42)' : 'var(--border-color)') +
+      ';border-radius:999px;background:' + (active ? 'rgba(0,136,110,0.12)' : 'var(--bg-secondary)') +
+      ';color:' + (active ? 'var(--accent-color)' : 'var(--text-primary)') +
+      ';cursor:pointer;display:flex;flex-direction:column;justify-content:center;gap:3px;min-width:0;box-shadow:' +
+      (active ? '0 8px 22px rgba(0,136,110,0.10)' : 'none') + ';';
+  }
+
+  function renderWritingPrepBubble(key, label, hint) {
+    var active = (bibliometricsState.writingPrepActiveBubble || 'draft') === key;
+    return '<button type="button" data-bibliometrics-writing-bubble="' + attr(key) + '" onmouseenter="showBibliometricsWritingPrepBubble(\'' + attr(key) + '\')" onclick="showBibliometricsWritingPrepBubble(\'' + attr(key) + '\')" onfocus="showBibliometricsWritingPrepBubble(\'' + attr(key) + '\')" aria-selected="' + (active ? 'true' : 'false') + '" style="' + writingPrepBubbleStyle(active) + '">' +
+      '<span style="display:block;font-size:12px;font-weight:820;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + escape(label) + '</span>' +
+      '<span style="display:block;font-size:10px;color:var(--text-secondary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + escape(hint || '') + '</span>' +
+    '</button>';
+  }
+
+  function writingPrepPage(key, body) {
+    var active = (bibliometricsState.writingPrepActiveBubble || 'draft') === key;
+    return '<div data-bibliometrics-writing-page="' + attr(key) + '" style="display:' + (active ? 'block' : 'none') + ';min-width:0;">' + body + '</div>';
+  }
+
+  function writingPrepContentPage(title, body, rightHtml) {
+    return '<section style="min-height:430px;border:1px solid var(--border-color);border-radius:8px;background:var(--bg-secondary);padding:14px;min-width:0;">' +
+      '<div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:12px;">' +
+        '<div style="min-width:0;font-size:14px;font-weight:820;color:var(--text-primary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + escape(title) + '</div>' +
+        (rightHtml || '') +
+      '</div>' +
+      body +
+    '</section>';
+  }
+
+  function renderWritingPrepBubbleStage(prep, readiness, draft) {
+    return '<div id="bibliometricsWritingPrepStage" style="min-height:470px;border:1px dashed rgba(127,127,127,0.28);border-radius:8px;background:var(--modal-bg);padding:12px;margin-top:12px;">' +
+      writingPrepPage('draft',
+        (bibliometricsState.paperDraftLoading ? '<div style="margin-bottom:12px;">' + renderPaperDraftProgress() + '</div>' : '') +
+        renderPaperDraftWorkspace(draft)
+      ) +
+      writingPrepPage('readiness',
+        '<div style="display:grid;grid-template-columns:minmax(0,1.15fr) minmax(300px,0.85fr);gap:14px;align-items:start;">' +
+          writingPrepContentPage('10项分析就绪度', readinessList(readiness)) +
+          '<div style="display:flex;flex-direction:column;gap:14px;min-width:0;">' +
+            panel('还需要补齐的数据', sectionList(prep.requiredSupplementaryData || [])) +
+            panel('R 图表插件', renderRPluginResult()) +
+          '</div>' +
+        '</div>'
+      ) +
+      writingPrepPage('methods',
+        writingPrepContentPage('方法部分可写内容', sectionList(prep.methodsOutline || []))
+      ) +
+      writingPrepPage('results',
+        writingPrepContentPage('结果部分可写内容', sectionList(prep.resultsOutline || []))
+      ) +
+      writingPrepPage('discussion',
+        writingPrepContentPage('讨论角度', sectionList(prep.discussionAngles || []))
+      ) +
+      writingPrepPage('limitations',
+        writingPrepContentPage('局限性', sectionList(prep.limitations || []))
+      ) +
+    '</div>';
+  }
+
+  window.showBibliometricsWritingPrepBubble = function(key) {
+    var allowed = { draft: true, readiness: true, methods: true, results: true, discussion: true, limitations: true };
+    if (!allowed[key]) key = 'draft';
+    bibliometricsState.writingPrepActiveBubble = key;
+    var bubbles = document.querySelectorAll('[data-bibliometrics-writing-bubble]');
+    Array.prototype.forEach.call(bubbles, function(button) {
+      var active = button.getAttribute('data-bibliometrics-writing-bubble') === key;
+      button.style.cssText = writingPrepBubbleStyle(active);
+      button.setAttribute('aria-selected', active ? 'true' : 'false');
+    });
+    var pages = document.querySelectorAll('[data-bibliometrics-writing-page]');
+    Array.prototype.forEach.call(pages, function(page) {
+      page.style.display = page.getAttribute('data-bibliometrics-writing-page') === key ? 'block' : 'none';
+    });
+  };
+
   function renderWritingPrep() {
     var analysis = bibliometricsState.analysis || {};
     var prep = analysis.writingPreparation || {};
     var draft = bibliometricsState.paperDraft;
+    var readiness = analysis.readiness || [];
+    var readyCount = readiness.filter(function(item) { return item.status === 'ready'; }).length;
     return '' +
-      '<div style="display:flex;justify-content:space-between;gap:12px;align-items:center;margin-bottom:12px;">' +
+      '<div style="border:1px solid var(--border-color);border-radius:8px;background:var(--modal-bg);padding:14px;margin-bottom:14px;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:14px;align-items:start;">' +
         '<div style="min-width:0;">' +
-          '<div style="font-size:15px;font-weight:760;color:var(--text-primary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + escape(prep.suggestedTitle || '计量学论文写作准备') + '</div>' +
-          '<div style="font-size:12px;color:var(--text-secondary);margin-top:4px;">内置写作器会直接调用文献计量分析库里的统计表、网络表和质量报告生成草稿。</div>' +
+          '<div style="display:inline-flex;max-width:100%;align-items:center;padding:9px 13px;border:1px solid rgba(0,136,110,0.34);border-radius:999px;background:rgba(0,136,110,0.10);color:var(--accent-color);font-size:16px;font-weight:840;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + escape(prep.suggestedTitle || '基于文献计量学的研究热点、主题演化与知识结构分析') + '</div>' +
+          '<div style="display:grid;grid-template-columns:repeat(6,minmax(118px,1fr));gap:9px;margin-top:12px;">' +
+            renderWritingPrepBubble('draft', '计量学论文草稿', draft ? (draft.provider || '已生成') : (bibliometricsState.paperDraftLoading ? '生成中' : '未生成')) +
+            renderWritingPrepBubble('readiness', '10项分析就绪度', readiness.length ? (readyCount + '/' + readiness.length + ' 项就绪') : '暂无就绪度') +
+            renderWritingPrepBubble('methods', '方法部分可写内容', (prep.methodsOutline || []).length + ' 条') +
+            renderWritingPrepBubble('results', '结果部分可写内容', (prep.resultsOutline || []).length + ' 条') +
+            renderWritingPrepBubble('discussion', '讨论角度', (prep.discussionAngles || []).length + ' 条') +
+            renderWritingPrepBubble('limitations', '局限性', (prep.limitations || []).length + ' 条') +
+          '</div>' +
         '</div>' +
-        '<div style="display:flex;align-items:center;gap:8px;flex-shrink:0;">' +
-          '<button type="button" onclick="copyBibliometricsWritingPrep()" style="height:32px;padding:0 11px;border:1px solid var(--border-color);border-radius:6px;background:var(--bg-secondary);color:var(--text-primary);cursor:pointer;">复制框架</button>' +
-          '<button type="button" onclick="showBibliometricsJournalStyleDialog()" style="height:32px;padding:0 11px;border:1px solid var(--border-color);border-radius:6px;background:var(--bg-secondary);color:var(--text-primary);cursor:pointer;">提取期刊风格</button>' +
-          '<button type="button" onclick="generateBibliometricsPaperDraft()" style="height:32px;padding:0 11px;border:1px solid var(--accent-color);border-radius:6px;background:var(--accent-color);color:white;cursor:pointer;">' + (bibliometricsState.paperDraftLoading ? '生成中...' : '生成论文草稿') + '</button>' +
-          '<button type="button" onclick="downloadBibliometricsPaperDraft()" style="height:32px;padding:0 11px;border:1px solid var(--border-color);border-radius:6px;background:var(--bg-secondary);color:var(--text-primary);cursor:pointer;">下载 MD</button>' +
+        '<div style="display:flex;align-items:center;justify-content:flex-end;gap:8px;flex-wrap:wrap;max-width:430px;">' +
+          renderWritingPrepActions() +
         '</div>' +
       '</div>' +
-      '<div style="display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:14px;margin-bottom:14px;">' +
-        panel('10 项分析就绪度', readinessList(analysis.readiness || [])) +
-        panel('还需要补齐的数据', sectionList(prep.requiredSupplementaryData || [])) +
+      renderWritingPrepBubbleStage(prep, readiness, draft);
+  }
+
+  function renderWritingPrepActions() {
+    var loading = !!bibliometricsState.paperDraftLoading;
+    var disabledAttr = loading ? ' disabled' : '';
+    var generateStyle = 'height:32px;padding:0 11px;border:1px solid var(--accent-color);border-radius:6px;background:var(--accent-color);color:white;cursor:' + (loading ? 'wait' : 'pointer') + ';opacity:' + (loading ? '0.72' : '1') + ';';
+    return '' +
+      '<button type="button" onclick="copyBibliometricsWritingPrep()" style="height:32px;padding:0 11px;border:1px solid var(--border-color);border-radius:6px;background:var(--bg-secondary);color:var(--text-primary);cursor:pointer;">复制框架</button>' +
+      '<button type="button" onclick="showBibliometricsJournalStyleDialog()" style="height:32px;padding:0 11px;border:1px solid var(--border-color);border-radius:6px;background:var(--bg-secondary);color:var(--text-primary);cursor:pointer;">提取期刊风格</button>' +
+      '<button type="button" onclick="generateBibliometricsPaperDraft()" style="' + generateStyle + '"' + disabledAttr + '>' + (loading ? '生成中...' : '生成论文草稿') + '</button>' +
+      '<button type="button" onclick="downloadBibliometricsPaperDraft()" style="height:32px;padding:0 11px;border:1px solid var(--border-color);border-radius:6px;background:var(--bg-secondary);color:var(--text-primary);cursor:pointer;">下载 MD</button>';
+  }
+
+  function renderPaperDraftWorkspace(draft) {
+    if (!draft) {
+      return panel('计量学论文草稿',
+        '<div style="min-height:360px;border:1px dashed var(--border-color);border-radius:8px;background:var(--modal-bg);display:flex;align-items:center;justify-content:center;padding:24px;text-align:center;">' +
+          '<div style="max-width:430px;">' +
+            '<div style="font-size:15px;font-weight:800;color:var(--text-primary);margin-bottom:8px;">' + (bibliometricsState.paperDraftLoading ? '正在生成草稿' : '草稿尚未生成') + '</div>' +
+            '<div style="font-size:12px;line-height:1.7;color:var(--text-secondary);">生成完成后会在这里打开可编辑的 Markdown 草稿，下载 MD 和复制全文仍使用同一份编辑内容。</div>' +
+          '</div>' +
+        '</div>'
+      );
+    }
+    return panel('计量学论文草稿',
+      '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:8px;">' +
+        '<div style="font-size:12px;color:var(--text-secondary);min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + escape(draft.title || '文献计量论文草稿') + ' · ' + escape(draft.provider || '内置模板') + '</div>' +
+        '<button type="button" onclick="copyBibliometricsPaperDraft()" style="height:28px;padding:0 9px;border:1px solid var(--border-color);border-radius:6px;background:var(--modal-bg);color:var(--text-primary);cursor:pointer;font-size:12px;flex-shrink:0;">复制全文</button>' +
       '</div>' +
-      (draft ? '<div style="margin-bottom:14px;">' + panel('计量学论文草稿（可查看编辑）',
-        '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:8px;">' +
-          '<div style="font-size:12px;color:var(--text-secondary);min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + escape(draft.title || '文献计量论文草稿') + ' · ' + escape(draft.provider || '内置模板') + '</div>' +
-          '<button type="button" onclick="copyBibliometricsPaperDraft()" style="height:28px;padding:0 9px;border:1px solid var(--border-color);border-radius:6px;background:var(--modal-bg);color:var(--text-primary);cursor:pointer;font-size:12px;">复制全文</button>' +
-        '</div>' +
-        ((draft.fallbackAttempts || []).length ? '<div style="margin-bottom:8px;font-size:12px;line-height:1.6;color:var(--warning-color);">' + escape((draft.fallbackAttempts || []).join('；')) + '</div>' : '') +
-        '<textarea id="bibliometricsPaperDraftEditor" style="width:100%;height:420px;resize:vertical;border:1px solid var(--border-color);border-radius:8px;background:var(--modal-bg);color:var(--text-primary);padding:12px;font-size:12px;line-height:1.65;font-family:Consolas,monospace;">' + escape(draft.markdown || '') + '</textarea>'
-      ) + '</div>' : '') +
-      '<div style="margin-bottom:14px;">' + panel('R 图表插件', renderRPluginResult()) + '</div>' +
-      '<div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;">' +
-        panel('方法部分可写内容', sectionList(prep.methodsOutline || [])) +
-        panel('结果部分可写内容', sectionList(prep.resultsOutline || [])) +
-        panel('讨论角度', sectionList(prep.discussionAngles || [])) +
-        panel('局限性', sectionList(prep.limitations || [])) +
-      '</div>';
+      ((draft.fallbackAttempts || []).length ? '<div style="margin-bottom:8px;font-size:12px;line-height:1.6;color:var(--warning-color);">' + escape((draft.fallbackAttempts || []).join('；')) + '</div>' : '') +
+      '<textarea id="bibliometricsPaperDraftEditor" style="width:100%;min-height:540px;resize:vertical;border:1px solid var(--border-color);border-radius:8px;background:var(--modal-bg);color:var(--text-primary);padding:12px;font-size:12px;line-height:1.65;font-family:Consolas,monospace;">' + escape(draft.markdown || '') + '</textarea>'
+    );
+  }
+
+  function renderPaperDraftProgress() {
+    var activeStep = bibliometricsState.paperDraftProgressStep || 0;
+    var text = bibliometricsState.paperDraftProgressText || PAPER_DRAFT_PROGRESS_STEPS[0];
+    return '<div style="border:1px solid #000000;border-radius:8px;background:var(--bg-secondary);padding:11px 12px;">' +
+      '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:9px;">' +
+        '<div id="bibliometricsPaperDraftProgressText" style="min-height:20px;font-size:12px;font-weight:750;color:var(--text-primary);font-family:Consolas,monospace;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + escape(text) + '</div>' +
+        '<div id="bibliometricsPaperDraftProgressIndex" style="font-size:11px;color:var(--text-secondary);white-space:nowrap;">' + (Math.min(activeStep + 1, PAPER_DRAFT_PROGRESS_STEPS.length)) + '/' + PAPER_DRAFT_PROGRESS_STEPS.length + '</div>' +
+      '</div>' +
+      '<div id="bibliometricsPaperDraftProgressBars" style="display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:5px;">' +
+        PAPER_DRAFT_PROGRESS_STEPS.map(function(step, index) {
+          var active = index <= activeStep;
+          return '<div title="' + attr(step) + '" style="height:4px;border-radius:99px;background:' + (active ? '#000000' : 'rgba(127,127,127,0.18)') + ';"></div>';
+        }).join('') +
+      '</div>' +
+    '</div>';
   }
 
   function metricCard(label, value, hint) {
@@ -503,7 +632,7 @@
         '<div style="color:var(--text-secondary);">' + (index + 1) + '</div>' +
         '<div style="min-width:0;">' +
           '<div style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--text-primary);">' + escape(row.label) + '</div>' +
-          '<div style="height:5px;background:rgba(127,127,127,0.16);border-radius:99px;margin-top:4px;overflow:hidden;"><div style="height:100%;width:' + width + '%;background:var(--accent-color);border-radius:99px;"></div></div>' +
+          '<div style="height:5px;background:rgba(127,127,127,0.16);border-radius:99px;margin-top:4px;overflow:hidden;"><div style="height:100%;width:' + width + '%;background:#000000;border-radius:99px;"></div></div>' +
         '</div>' +
         '<div style="text-align:right;color:var(--text-secondary);">' + escape(row.count || 0) + '</div>' +
       '</div>';
@@ -515,7 +644,7 @@
     return '<div style="display:flex;flex-direction:column;gap:10px;">' + rows.map(function(row) {
       return '<div style="display:grid;grid-template-columns:92px minmax(0,1fr) 80px;gap:9px;align-items:center;font-size:12px;">' +
         '<div style="color:var(--text-primary);">' + escape(row.label) + '</div>' +
-        '<div style="height:8px;background:rgba(127,127,127,0.16);border-radius:99px;overflow:hidden;"><div style="height:100%;width:' + Math.max(1, Math.min(100, row.percentage || 0)) + '%;background:var(--accent-color);"></div></div>' +
+        '<div style="height:8px;background:rgba(127,127,127,0.16);border-radius:99px;overflow:hidden;"><div style="height:100%;width:' + Math.max(1, Math.min(100, row.percentage || 0)) + '%;background:#000000;"></div></div>' +
         '<div style="text-align:right;color:var(--text-secondary);">' + escape(row.count || 0) + ' · ' + escape(row.percentage || 0) + '%</div>' +
       '</div>';
     }).join('') + '</div>';
@@ -664,7 +793,7 @@
     return '' +
       '<div style="margin-bottom:12px;">' +
         '<div style="display:flex;align-items:center;justify-content:space-between;font-size:12px;margin-bottom:6px;"><span style="color:var(--text-primary);font-weight:720;">检索质量分</span><span style="color:var(--accent-color);font-weight:760;">' + score + '/100</span></div>' +
-        '<div style="height:8px;background:rgba(127,127,127,0.16);border-radius:99px;overflow:hidden;"><div style="height:100%;width:' + score + '%;background:var(--accent-color);"></div></div>' +
+        '<div style="height:8px;background:rgba(127,127,127,0.16);border-radius:99px;overflow:hidden;"><div style="height:100%;width:' + score + '%;background:#000000;"></div></div>' +
       '</div>' +
       '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">' +
         '<div>' +
@@ -1577,7 +1706,7 @@
         '</div>' +
         '<div id="bibliometricsStyleProgress" style="display:none;border:1px solid var(--border-color);border-radius:8px;background:var(--bg-secondary);padding:12px;margin-bottom:12px;">' +
           '<div id="bibliometricsStyleProgressText" style="font-size:12px;color:var(--text-secondary);line-height:1.6;margin-bottom:8px;">正在准备...</div>' +
-          '<div style="height:8px;background:rgba(127,127,127,0.18);border-radius:99px;overflow:hidden;margin-bottom:8px;"><div id="bibliometricsStyleProgressBar" style="height:100%;width:0%;background:var(--accent-color);transition:width 0.25s ease;"></div></div>' +
+          '<div style="height:8px;background:rgba(127,127,127,0.18);border-radius:99px;overflow:hidden;margin-bottom:8px;"><div id="bibliometricsStyleProgressBar" style="height:100%;width:0%;background:#000000;transition:width 0.25s ease;"></div></div>' +
           '<div id="bibliometricsStyleProgressLog" style="max-height:150px;overflow:auto;font-size:11px;line-height:1.65;color:var(--text-secondary);"></div>' +
         '</div>' +
         '<div style="display:flex;align-items:center;justify-content:flex-end;gap:8px;">' +
@@ -1862,13 +1991,17 @@
   window.generateBibliometricsPaperDraft = async function() {
     if (bibliometricsState.paperDraftLoading) return;
     bibliometricsState.paperDraftLoading = true;
+    bibliometricsState.activeTab = 'writing';
     renderBibliometrics();
+    startPaperDraftProgress();
     try {
       var response = await fetch('/api/bibliometrics/paper-draft?' + bibliometricsQuery('engine=ai'));
       var data = await response.json();
       if (!response.ok || !data.success) throw new Error(data.error || '计量学论文草稿生成失败');
+      stopPaperDraftProgress('草稿生成完成，正在打开编辑器');
       bibliometricsState.paperDraft = data.draft;
     } catch (e) {
+      stopPaperDraftProgress('生成失败：' + (e.message || e));
       alert('生成失败：' + (e.message || e));
     } finally {
       bibliometricsState.paperDraftLoading = false;
@@ -1876,6 +2009,53 @@
       renderBibliometrics();
     }
   };
+
+  function startPaperDraftProgress() {
+    stopPaperDraftProgress();
+    var startedAt = Date.now();
+    var stepDuration = 2600;
+    bibliometricsState.paperDraftProgressStep = 0;
+    bibliometricsState.paperDraftProgressText = '';
+    function tick() {
+      var elapsed = Date.now() - startedAt;
+      var step = Math.min(PAPER_DRAFT_PROGRESS_STEPS.length - 1, Math.floor(elapsed / stepDuration));
+      var message = PAPER_DRAFT_PROGRESS_STEPS[step] || PAPER_DRAFT_PROGRESS_STEPS[0];
+      var charCount = Math.min(message.length, Math.max(1, Math.floor((elapsed % stepDuration) / 42)));
+      var cursor = Math.floor(elapsed / 360) % 2 === 0 ? ' ▌' : '  ';
+      bibliometricsState.paperDraftProgressStep = step;
+      bibliometricsState.paperDraftProgressText = message.slice(0, charCount) + cursor;
+      updatePaperDraftProgressDom();
+    }
+    tick();
+    paperDraftProgressTimer = window.setInterval(tick, 70);
+  }
+
+  function stopPaperDraftProgress(finalText) {
+    if (paperDraftProgressTimer) {
+      window.clearInterval(paperDraftProgressTimer);
+      paperDraftProgressTimer = null;
+    }
+    if (finalText) {
+      bibliometricsState.paperDraftProgressStep = PAPER_DRAFT_PROGRESS_STEPS.length - 1;
+      bibliometricsState.paperDraftProgressText = finalText;
+      updatePaperDraftProgressDom();
+    }
+  }
+
+  function updatePaperDraftProgressDom() {
+    var textEl = document.getElementById('bibliometricsPaperDraftProgressText');
+    if (textEl) textEl.textContent = bibliometricsState.paperDraftProgressText || PAPER_DRAFT_PROGRESS_STEPS[0];
+    var indexEl = document.getElementById('bibliometricsPaperDraftProgressIndex');
+    if (indexEl) {
+      indexEl.textContent = (Math.min((bibliometricsState.paperDraftProgressStep || 0) + 1, PAPER_DRAFT_PROGRESS_STEPS.length)) + '/' + PAPER_DRAFT_PROGRESS_STEPS.length;
+    }
+    var bars = document.getElementById('bibliometricsPaperDraftProgressBars');
+    if (bars) {
+      Array.prototype.slice.call(bars.children || []).forEach(function(child, index) {
+        child.style.background = index <= (bibliometricsState.paperDraftProgressStep || 0) ? '#000000' : 'rgba(127,127,127,0.18)';
+      });
+    }
+  }
 
   window.downloadBibliometricsPaperDraft = function() {
     var editor = document.getElementById('bibliometricsPaperDraftEditor');

@@ -14,6 +14,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // 打开外部链接 (通过 IPC 用主进程，更可靠)
   openExternal: (url: string) => 
     ipcRenderer.invoke('open-external', url),
+
+  // 用系统默认程序打开本地文件
+  openPath: (targetPath: string) =>
+    ipcRenderer.invoke('open-path', targetPath),
+
+  // 在系统文件管理器中定位本地文件
+  openContainingFolder: (targetPath: string) =>
+    ipcRenderer.invoke('open-containing-folder', targetPath),
   
   // 监听登录错误
   onLoginError: (callback: (error: string) => void) => {
@@ -77,6 +85,22 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // 打开用户信息窗口
   openUserInfoWindow: () => 
     ipcRenderer.invoke('open-user-info-window'),
+
+  // 顶部应用菜单命令
+  appMenuCommand: (command: string) =>
+    ipcRenderer.invoke('app-menu-command', command),
+
+  // 应用更新检查
+  checkAppUpdate: () =>
+    ipcRenderer.invoke('app-update-check'),
+
+  // 打开最新版本下载地址
+  openAppUpdateDownload: (downloadUrl?: string) =>
+    ipcRenderer.invoke('app-update-open-download', downloadUrl),
+
+  // 自定义窗口控制
+  windowControl: (action: 'minimize' | 'maximize' | 'close') =>
+    ipcRenderer.invoke('window-control', action),
   
   // === R 代码文件保存相关 ===
   
@@ -127,6 +151,8 @@ export interface ElectronAPI {
     };
   }>;
   openExternal: (url: string) => Promise<void>;
+  openPath: (targetPath: string) => Promise<{ success: boolean; error?: string }>;
+  openContainingFolder: (targetPath: string) => Promise<{ success: boolean; error?: string }>;
   onLoginError: (callback: (error: string) => void) => void;
   removeLoginErrorListener: () => void;
   checkActivation: () => Promise<{ valid: boolean; message: string }>;
@@ -169,6 +195,23 @@ export interface ElectronAPI {
   }>;
   openPurchasePage: (amountCNY: number) => Promise<{ success: boolean; error?: string }>;
   openUserInfoWindow: () => Promise<{ success: boolean }>;
+  appMenuCommand: (command: string) => Promise<{ success: boolean; error?: string }>;
+  checkAppUpdate: () => Promise<{
+    success: boolean;
+    updateAvailable: boolean;
+    currentVersion: string;
+    latestVersion?: string;
+    downloadUrl?: string;
+    releaseNotes?: string;
+    publishedAt?: string;
+    error?: string;
+  }>;
+  openAppUpdateDownload: (downloadUrl?: string) => Promise<{ success: boolean; error?: string }>;
+  windowControl: (action: 'minimize' | 'maximize' | 'close') => Promise<{
+    success: boolean;
+    maximized?: boolean;
+    error?: string;
+  }>;
   // R 代码文件保存
   saveFileToDesktop: (filename: string, content: string) => Promise<{
     success: boolean;

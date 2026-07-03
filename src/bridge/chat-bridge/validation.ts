@@ -112,6 +112,8 @@ export const saveConfigSchema = z.object({
   primary: agentApiConfigSchema.optional(),
   // 小牛马 API 配置（执行写作、引用验证）
   secondary: agentApiConfigSchema.optional(),
+  // 小牛马视觉/多模态 API 配置（图片、图表截图等）
+  secondary_vision: agentApiConfigSchema.optional(),
   // Codex CLI 配置（作为大牛马的本机执行入口）
   codex: codexCliConfigSchema.optional(),
   // 浏览器配置
@@ -166,8 +168,17 @@ export const chatRequestSchema = z.object({
     writingSkill: z.any().optional(),
     bibliometrics: z.any().optional(),
     bibliometricsExplicit: z.boolean().optional(),
+    bibliometricsPinned: z.boolean().optional(),
     metaAnalysis: z.any().optional(),
     metaAnalysisExplicit: z.boolean().optional(),
+    metaAnalysisPinned: z.boolean().optional(),
+    autoResearch: z.any().optional(),
+    autoResearchExplicit: z.boolean().optional(),
+    autoResearchPinned: z.boolean().optional(),
+    contextSourceStatus: z.any().optional(),
+    userSkillPrompt: z.string().optional(),
+    invokedUserSkills: z.array(z.any()).optional(),
+    discussionFramework: z.any().optional(),
     relevantLiterature: z.string().nullable().optional(),
     webSearchContext: z.string().nullable().optional(),
     isFirstMessage: z.any().optional(),
@@ -202,6 +213,13 @@ export const chatRequestSchema = z.object({
    * 来自前端 ⚙️ API 设置中的 secondary model 配置
    */
   secondaryModel: z.string().optional(),
+  /**
+   * 当请求包含图片、图表截图等视觉输入时，优先使用小牛马视觉 API 配置。
+   */
+  requiresVision: coerceBoolean,
+  visionApiUrl: z.string().optional(),
+  visionApiKey: z.string().optional(),
+  visionModel: z.string().optional(),
 });
 
 /**

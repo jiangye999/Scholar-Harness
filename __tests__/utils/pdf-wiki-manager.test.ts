@@ -244,6 +244,71 @@ describe('PdfWikiManager', () => {
     expect(store.points[0]).toHaveProperty('topicLabel');
   });
 
+  it('keeps only publishable argument sentences in the sentence cloud and retrieval output', () => {
+    const basePoint = {
+      sourcePdfId: 'pdf-1',
+      sourcePdfName: 'source.pdf',
+      sourcePdfTitle: 'Nitrogen study',
+      section: 'Discussion',
+      sentenceIndex: 1,
+      citations: ['[1]'],
+      references: [{
+        id: 'ref-1',
+        raw: 'Smith J. 2020. Nitrogen fertilizer and N2O emissions. Soil.',
+        sourcePdfId: 'pdf-1',
+        sourcePdfName: 'source.pdf',
+        index: 1,
+        title: 'Nitrogen fertilizer and N2O emissions',
+        matchType: 'citation',
+      }],
+      referenceCount: 1,
+      topicKey: 'n2o-emission',
+      topicLabel: 'N2O 排放',
+      keywords: ['N2O'],
+      x: 50,
+      y: 50,
+      radius: 13,
+      matchMethod: 'citation',
+      confidence: 0.95,
+    };
+    const publishable = {
+      ...basePoint,
+      id: 'sent_publishable',
+      sentence: 'Optimized nitrogen fertilizer management reduced nitrate accumulation and mitigated cropland N2O emissions [1].',
+      claimCandidate: true,
+      claimText: 'Optimized nitrogen fertilizer management mitigates cropland N2O emissions.',
+      claimType: 'result',
+      claimReason: '该句表达结果判断，并有句尾显式引用。',
+    };
+    const reviewOnly = {
+      ...basePoint,
+      id: 'sent_review_only',
+      sentence: 'This long contextual sentence is descriptive and should be reviewed before being used as a claim [1].',
+      claimCandidate: false,
+      claimText: '',
+      claimType: 'non_claim',
+      claimReason: '句子缺少明确判断，需要人工复核后再转为论点。',
+    };
+    const methodOnly = {
+      ...basePoint,
+      id: 'sent_method_only',
+      sentence: 'Samples were measured using a static chamber method according to the experimental protocol [1].',
+      claimCandidate: true,
+      claimText: 'Samples were measured using a static chamber method.',
+      claimType: 'method',
+      claimReason: '方法描述不进入论点库。',
+    };
+
+    const store = (manager as any).buildSentenceCloudStore([publishable, reviewOnly, methodOnly]);
+    const literatures = (manager as any).sentencePointsToLiteratures([publishable, reviewOnly, methodOnly], 0);
+
+    expect(store.points.map((point: any) => point.id)).toEqual(['sent_publishable']);
+    expect(store.clouds).toHaveLength(1);
+    expect(literatures.map((item: any) => item.id)).toEqual(['sent_publishable']);
+    expect(literatures[0].abstract).toContain('可作论点: 是');
+    expect(literatures[0].abstract).not.toContain('论点候选: 否');
+  });
+
   it('refines sentence cloud reference matches with AI when configured', async () => {
     const point = {
       id: 'sent_test',

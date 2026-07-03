@@ -194,6 +194,12 @@ export interface ChatBridgeConfig {
     vision_model?: string;
     description?: string;
   };
+  secondary_vision?: {
+    api_url?: string;
+    api_key?: string;
+    model?: string;
+    description?: string;
+  };
   codex?: {
     enabled?: boolean;
     prefer?: boolean;
@@ -289,6 +295,12 @@ export class ChatBridgeAdapter {
           vision_model: 'gpt-4o',
           description: '小牛马 - 引用验证、更新记忆',
         },
+        secondary_vision: {
+          api_url: '',
+          api_key: '',
+          model: 'gpt-4o',
+          description: '小牛马视觉 - 图片、图表截图、多模态输入',
+        },
         codex: {
           enabled: false,
           prefer: false,
@@ -331,6 +343,7 @@ export class ChatBridgeAdapter {
         service: { ...defaults.service, ...(parsed.service || {}) },
         primary: { ...defaults.primary, ...(parsed.primary || {}) },
         secondary: { ...defaults.secondary, ...(parsed.secondary || {}) },
+        secondary_vision: { ...defaults.secondary_vision, ...(parsed.secondary_vision || {}) },
         codex: { ...defaults.codex, ...(parsed.codex || {}) },
       } as ChatBridgeConfig;
       
@@ -379,12 +392,23 @@ export class ChatBridgeAdapter {
           logger.warn('[ChatBridge] Failed to decrypt secondary.api_key, using as-is');
         }
       }
+
+      // 解密加密字段 - secondary_vision 配置
+      if (this.config.secondary_vision?.api_key && isEncrypted(this.config.secondary_vision.api_key)) {
+        try {
+          this.config.secondary_vision.api_key = decrypt(this.config.secondary_vision.api_key);
+          logger.info('[ChatBridge] secondary_vision.api_key decrypted successfully');
+        } catch (e) {
+          logger.warn('[ChatBridge] Failed to decrypt secondary_vision.api_key, using as-is');
+        }
+      }
       
       const maskedEmail = maskEmail(this.config.chat?.credentials?.email);
       const hasPrimaryConfig = !!this.config.primary?.api_url && !!this.config.primary?.api_key;
       const hasSecondaryConfig = !!this.config.secondary?.api_url && !!this.config.secondary?.api_key;
-      const codexPreferred = !!this.config.codex?.prefer;
-      logger.info(`[ChatBridge] 配置加载完成 | mode=${this.config.mode} | primary_valid=${hasPrimaryConfig} | secondary_valid=${hasSecondaryConfig} | codex_prefer=${codexPreferred ? 'enabled' : 'disabled'} | primary_model=${this.config.primary?.model} | secondary_model=${this.config.secondary?.model}`);
+      const hasSecondaryVisionConfig = !!this.config.secondary_vision?.api_url && !!this.config.secondary_vision?.api_key;
+      const codexPreferred = this.config.codex?.enabled !== false && !!this.config.codex?.prefer;
+      logger.info(`[ChatBridge] 配置加载完成 | mode=${this.config.mode} | primary_valid=${hasPrimaryConfig} | secondary_valid=${hasSecondaryConfig} | secondary_vision_valid=${hasSecondaryVisionConfig} | codex_prefer=${codexPreferred ? 'enabled' : 'disabled'} | primary_model=${this.config.primary?.model} | secondary_model=${this.config.secondary?.model} | secondary_vision_model=${this.config.secondary_vision?.model || this.config.secondary?.vision_model}`);
       
       return this.config;
     } catch (error) {
@@ -554,10 +578,19 @@ export class ChatBridgeAdapter {
     if (codexConfig.reasoning_effort) {
       args.push('-c', `model_reasoning_effort="${codexConfig.reasoning_effort}"`);
     }
+    const codexImages = (options.codexImages || [])
+      .map(imagePath => String(imagePath || '').trim())
+      .filter(imagePath => imagePath && existsSync(imagePath));
+    Array.from(new Set(codexImages.map(imagePath => path.dirname(imagePath)))).forEach(dir => {
+      if (dir && existsSync(dir)) args.push('--add-dir', dir);
+    });
+    codexImages.forEach(imagePath => {
+      args.push('-i', imagePath);
+    });
     args.push('-');
 
     const prompt = this.buildCodexPrompt(options);
-    logger.info(`[ChatBridge] Codex CLI 调用 | command=${executable} | model=${codexConfig.model || 'default'} | effort=${codexConfig.reasoning_effort || 'default'} | prompt=${prompt.length} chars`);
+    logger.info(`[ChatBridge] Codex CLI 调用 | command=${executable} | model=${codexConfig.model || 'default'} | effort=${codexConfig.reasoning_effort || 'default'} | prompt=${prompt.length} chars | images=${codexImages.length}`);
 
     try {
       const content = await new Promise<string>((resolve, reject) => {
@@ -630,9 +663,11 @@ export class ChatBridgeAdapter {
 
   private async chatWithSecondaryFallback(options: ChatOptions, reason: string): Promise<string> {
     logger.warn(`[ChatBridge] ${reason}，降级使用小牛马`);
-    const secondaryApiUrl = options.apiUrl || this.config?.secondary?.api_url || '';
-    const secondaryApiKey = options.apiKey || this.config?.secondary?.api_key || '';
-    const secondaryModel = options.model || this.config?.secondary?.model || 'gpt-4o';
+    const useVisionSecondary = !!options.requiresVision && !!this.config?.secondary_vision?.api_url && !!this.config?.secondary_vision?.api_key;
+    const secondaryConfig = useVisionSecondary ? this.config?.secondary_vision : this.config?.secondary;
+    const secondaryApiUrl = (options.requiresVision ? options.visionApiUrl : '') || options.apiUrl || secondaryConfig?.api_url || '';
+    const secondaryApiKey = (options.requiresVision ? options.visionApiKey : '') || options.apiKey || secondaryConfig?.api_key || '';
+    const secondaryModel = (options.requiresVision ? options.visionModel : '') || options.model || secondaryConfig?.model || this.config?.secondary?.vision_model || 'gpt-4o';
     const primaryApiUrl = this.config?.primary?.api_url || '';
     const primaryApiKey = this.config?.primary?.api_key || '';
     const primaryModel = this.config?.primary?.model || 'claude-sonnet-4-5';
@@ -644,7 +679,7 @@ export class ChatBridgeAdapter {
           {
             apiUrl: secondaryApiUrl,
             apiKey: secondaryApiKey,
-            label: 'ChatBridge Secondary Fallback',
+            label: useVisionSecondary ? 'ChatBridge Secondary Vision Fallback' : 'ChatBridge Secondary Fallback',
             defaultModel: secondaryModel,
           },
           {
@@ -652,12 +687,10 @@ export class ChatBridgeAdapter {
             messages: options.messages,
             temperature: options.temperature,
             maxTokens: options.maxTokens,
-            stream: false,
+            stream: !!options.onProgress,
+            onProgress: options.onProgress,
           }
         );
-        if (options.onProgress) {
-          options.onProgress(content);
-        }
         return content;
       } catch (error) {
         attempts.push(`小牛马 API: ${(error as Error).message}`);
@@ -680,12 +713,10 @@ export class ChatBridgeAdapter {
           messages: options.messages,
           temperature: options.temperature,
           maxTokens: options.maxTokens,
-          stream: false,
+          stream: !!options.onProgress,
+          onProgress: options.onProgress,
         }
       );
-      if (options.onProgress) {
-        options.onProgress(content);
-      }
       return content;
     }
 
@@ -724,7 +755,13 @@ export class ChatBridgeAdapter {
       let selectedApiUrl: string;
       let selectedApiKey: string;
       let selectedModel: string;
-      const preferCodex = !!this.config?.codex?.prefer;
+      const preferCodex = this.config?.codex?.enabled !== false && !!this.config?.codex?.prefer;
+      const requiresVision = !!options.requiresVision;
+      const secondaryVisionConfigured = !!this.config?.secondary_vision?.api_url && !!this.config?.secondary_vision?.api_key;
+      const savedSecondaryForRequest = requiresVision && secondaryVisionConfigured
+        ? this.config?.secondary_vision
+        : this.config?.secondary;
+      const savedSecondaryVisionModel = this.config?.secondary_vision?.model || this.config?.secondary?.vision_model || this.config?.secondary?.model || 'gpt-4o';
       const shouldTryCodex =
         options.forceProvider === 'codex' ||
         (!options.forceProvider && preferCodex) ||
@@ -759,24 +796,28 @@ export class ChatBridgeAdapter {
           throw new Error('大牛马 API 未配置。请在 AI 桥接设置中配置大牛马的 API URL 和 Key。');
         }
       } else if (options.forceProvider === 'secondary') {
-        // 小牛马：优先使用请求中的配置，其次使用 secondary 配置
-        selectedApiUrl = options.apiUrl || this.config?.secondary?.api_url || '';
-        selectedApiKey = options.apiKey || this.config?.secondary?.api_key || '';
-        selectedModel = options.model || this.config?.secondary?.model || 'gpt-4o';
-        logger.info(`[ChatBridge] forceProvider=secondary，使用小牛马配置 | url: ${selectedApiUrl} | model: ${selectedModel}`);
+        // 小牛马：纯文本走 secondary；视觉输入优先走 secondary_vision
+        selectedApiUrl = (requiresVision ? options.visionApiUrl : '') || options.apiUrl || savedSecondaryForRequest?.api_url || '';
+        selectedApiKey = (requiresVision ? options.visionApiKey : '') || options.apiKey || savedSecondaryForRequest?.api_key || '';
+        selectedModel = (requiresVision ? options.visionModel : '') || options.model || (requiresVision ? savedSecondaryVisionModel : savedSecondaryForRequest?.model) || 'gpt-4o';
+        logger.info(`[ChatBridge] forceProvider=secondary，使用小牛马${requiresVision ? '视觉' : '文本'}配置 | url: ${selectedApiUrl} | model: ${selectedModel}`);
         
         if (!selectedApiUrl || !selectedApiKey) {
-          throw new Error('小牛马 API 未配置。请在前端 ⚙️ API 设置或 AI 桥接设置中配置小牛马的 API。');
+          throw new Error(requiresVision
+            ? '小牛马视觉 API 未配置。请在小牛马配置中填写“视觉多模态 API”。'
+            : '小牛马文本 API 未配置。请在前端 ⚙️ API 设置或 AI 桥接设置中配置小牛马的 API。');
         }
       } else if (options.forceProvider === 'api') {
-        // 向后兼容：使用前端传入的配置
-        selectedApiUrl = options.apiUrl || this.config?.secondary?.api_url || this.config?.chat?.api_url || '';
-        selectedApiKey = options.apiKey || this.config?.secondary?.api_key || this.config?.chat?.api_key || '';
-        selectedModel = options.model || this.config?.secondary?.model || 'gpt-4o';
-        logger.info(`[ChatBridge] forceProvider=api，使用前端传入配置 | url: ${selectedApiUrl} | model: ${selectedModel}`);
+        // 向后兼容：纯文本使用前端传入配置；视觉输入优先使用前端视觉配置或 secondary_vision
+        selectedApiUrl = (requiresVision ? options.visionApiUrl : '') || options.apiUrl || savedSecondaryForRequest?.api_url || this.config?.chat?.api_url || '';
+        selectedApiKey = (requiresVision ? options.visionApiKey : '') || options.apiKey || savedSecondaryForRequest?.api_key || this.config?.chat?.api_key || '';
+        selectedModel = (requiresVision ? options.visionModel : '') || options.model || (requiresVision ? savedSecondaryVisionModel : savedSecondaryForRequest?.model) || 'gpt-4o';
+        logger.info(`[ChatBridge] forceProvider=api，使用${requiresVision ? '视觉' : '文本'} API 配置 | url: ${selectedApiUrl} | model: ${selectedModel}`);
         
         if (!selectedApiUrl || !selectedApiKey) {
-          throw new Error('API 未配置。请在前端 ⚙️ API 设置中配置 API URL 和 Key。');
+          throw new Error(requiresVision
+            ? '视觉 API 未配置。请在小牛马配置中填写“视觉多模态 API”。'
+            : 'API 未配置。请在前端 ⚙️ API 设置中配置 API URL 和 Key。');
         }
       } else if (options.forceProvider === 'codex') {
         return this.chatWithSecondaryFallback(options, 'Codex CLI 不可用或执行失败');
@@ -791,11 +832,11 @@ export class ChatBridgeAdapter {
           throw new Error('大牛马 API 未配置。请在 AI 桥接设置中配置大牛马的 API URL 和 Key。');
         }
       } else {
-        // 自动选择：默认使用 secondary（小牛马）
-        selectedApiUrl = options.apiUrl || this.config?.secondary?.api_url || '';
-        selectedApiKey = options.apiKey || this.config?.secondary?.api_key || '';
-        selectedModel = options.model || this.config?.secondary?.model || 'gpt-4o';
-        logger.info(`[ChatBridge] 自动选择小牛马配置 | url: ${selectedApiUrl} | model: ${selectedModel}`);
+        // 自动选择：纯文本默认使用 secondary；视觉输入优先使用 secondary_vision
+        selectedApiUrl = (requiresVision ? options.visionApiUrl : '') || options.apiUrl || savedSecondaryForRequest?.api_url || '';
+        selectedApiKey = (requiresVision ? options.visionApiKey : '') || options.apiKey || savedSecondaryForRequest?.api_key || '';
+        selectedModel = (requiresVision ? options.visionModel : '') || options.model || (requiresVision ? savedSecondaryVisionModel : savedSecondaryForRequest?.model) || 'gpt-4o';
+        logger.info(`[ChatBridge] 自动选择小牛马${requiresVision ? '视觉' : '文本'}配置 | url: ${selectedApiUrl} | model: ${selectedModel}`);
         
         if (!selectedApiUrl || !selectedApiKey) {
           // 回退到 primary
@@ -826,15 +867,12 @@ export class ChatBridgeAdapter {
             messages: options.messages,
             temperature: options.temperature,
             maxTokens: options.maxTokens,
-            stream: false,
+            stream: !!options.onProgress,
+            onProgress: options.onProgress,
           }
         );
 
         logger.info(`[ChatBridge] API 模式成功 | 响应长度: ${content.length}`);
-        
-        if (options.onProgress) {
-          options.onProgress(content);
-        }
         
         return content;
       } catch (apiError) {
