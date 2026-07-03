@@ -415,8 +415,8 @@ sudo npm run build
 
 ```json
 {
-  "version": "1.0.3",
-  "downloadUrl": "https://scholarharness.com/downloads/scholar-harness-setup-1.0.3.exe",
+  "version": "1.0.4",
+  "downloadUrl": "https://scholarharness.com/downloads/scholar-harness-setup-1.0.4.exe",
   "publishedAt": "2026-07-03",
   "releaseNotes": "修复已知问题并优化更新提示。"
 }
@@ -426,7 +426,7 @@ sudo npm run build
 
 ```bash
 curl -fsSL https://scholarharness.com/downloads/latest.json
-curl -I https://scholarharness.com/downloads/scholar-harness-setup-1.0.3.exe
+curl -I https://scholarharness.com/downloads/scholar-harness-setup-1.0.4.exe
 ```
 
 如果只上传安装包但忘记更新 `latest.json`，客户端不会认为有新版本；如果 `downloadUrl` 写错，用户点击“更新至最新版本”会打开错误链接。

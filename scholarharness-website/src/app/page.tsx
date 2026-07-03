@@ -15,9 +15,9 @@ const navItems = [
   { label: "帮助中心", href: "/help" },
 ];
 
-const windowsDownloadHref = "/downloads/scholar-harness-setup-1.0.2.exe";
-const macArm64DownloadHref = "/downloads/scholar-harness-1.0.3-arm64.dmg";
-const macX64DownloadHref = "/downloads/scholar-harness-1.0.3-x64.dmg";
+const windowsDownloadHref = "/downloads/scholar-harness-setup-1.0.4.exe";
+const macArm64DownloadHref = "/downloads/scholar-harness-1.0.4-arm64.dmg";
+const macX64DownloadHref = "/downloads/scholar-harness-1.0.4-x64.dmg";
 const manualDownloadHref = "/downloads/scholarharness-user-manual.pdf";
 
 const featureVideos: Record<string, { src: string; title: string }> = {

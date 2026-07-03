@@ -1,6 +1,6 @@
 {
-  "version": "1.0.3",
-  "downloadUrl": "https://scholarharness.com/downloads/scholar-harness-setup-1.0.3.exe",
+  "version": "1.0.4",
+  "downloadUrl": "https://scholarharness.com/downloads/scholar-harness-setup-1.0.4.exe",
   "publishedAt": "2026-07-03",
-  "releaseNotes": "新增软件内左下角更新提示，优化持续使用上下文传递，并补充安装包发布部署说明。"
+  "releaseNotes": "重新打包 Windows 和 macOS 安装包，修复桌面快捷方式与应用包图标显示。"
 }

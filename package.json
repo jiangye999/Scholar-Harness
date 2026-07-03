@@ -1,6 +1,6 @@
 {
   "name": "scholar-harness",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "description": "Scholar Harness - 对话式学术论文写作助手",
   "author": "sjs@cau.edu.cn",
   "main": "dist/electron/main.js",
