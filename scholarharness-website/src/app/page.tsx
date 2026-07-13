@@ -16,8 +16,8 @@ const navItems = [
 ];
 
 const windowsDownloadHref = "/downloads/scholar-harness-setup-1.0.6.exe";
-const macArm64DownloadHref = "/downloads/scholar-harness-1.0.4-arm64.dmg";
-const macX64DownloadHref = "/downloads/scholar-harness-1.0.4-x64.dmg";
+const macArm64DownloadHref = "/downloads/scholar-harness-1.0.6-arm64.dmg";
+const macX64DownloadHref = "/downloads/scholar-harness-1.0.6-x64.dmg";
 const manualDownloadHref = "/downloads/scholarharness-user-manual.pdf";
 const apiBaseUrl = (process.env.NEXT_PUBLIC_API_BASE_URL || "/api/v1").replace(/\/$/, "");
 

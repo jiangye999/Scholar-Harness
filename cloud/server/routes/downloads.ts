@@ -39,13 +39,13 @@ const DOWNLOAD_ASSETS: DownloadAsset[] = [
     key: 'mac-arm64',
     label: 'Mac M 系列',
     platform: 'macos-arm64',
-    downloadUrl: '/downloads/scholar-harness-1.0.4-arm64.dmg',
+    downloadUrl: '/downloads/scholar-harness-1.0.6-arm64.dmg',
   },
   {
     key: 'mac-x64',
     label: 'Mac Intel',
     platform: 'macos-x64',
-    downloadUrl: '/downloads/scholar-harness-1.0.4-x64.dmg',
+    downloadUrl: '/downloads/scholar-harness-1.0.6-x64.dmg',
   },
   {
     key: 'manual',
