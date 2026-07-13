@@ -11,6 +11,7 @@ import { extractPdfTextWithFastText, isPdfFastTextAvailable, resolvePdfFastTextE
 import { logger } from '../../utils/logger';
 import { callChatCompletion } from '../../utils/llm-client';
 import { getDataDir, sanitizeUserId } from '../../utils/paths';
+import { buildToolRuntimeEnv } from '../../utils/tool-runtime-env';
 import { parseUserSkillInvocation, type UserSkillInvocation } from '../services/user-skills';
 
 const router = Router();
@@ -2560,11 +2561,11 @@ async function runProcess(
     const child = spawn(command, args, {
       cwd: options.cwd,
       windowsHide: true,
-      env: {
+      env: buildToolRuntimeEnv({
         ...process.env,
         PYTHONUTF8: '1',
         PYTHONIOENCODING: 'utf-8',
-      },
+      }),
     });
 
     const timer = setTimeout(() => {

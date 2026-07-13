@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "id": "orchestra-ai-research",
+  "name": "Orchestra AI Research SKILLs",
+  "version": "773a529",
+  "sourceRepository": "https://github.com/Orchestra-Research/AI-Research-SKILLs",
+  "sourceCommit": "773a52944ba4747a18bd4ae9ade53fff041adcbc",
+  "license": "MIT",
+  "noticeFile": "LICENSE",
+  "skills": [
+    {
+      "id": "ai-research-skills",
+      "name": "AI Research SKILLs",
+      "category": "research",
+      "description": "Orchestra Research 的 98 项 AI 研究与工程 Skill 总入口，覆盖自主研究、选题、ML 论文写作、模型架构、训练、评测、RAG、Agent、多模态、MLOps 和研究严谨性审查。",
+      "entry": "SKILL.md",
+      "aliases": [
+        "AI Research",
+        "AI研究",
+        "autoresearch",
+        "模型训练",
+        "微调",
+        "fine-tuning",
+        "RAG",
+        "ML论文写作",
+        "AI工程",
+        "research ideation",
+        "rigor review"
+      ],
+      "policyOverlay": "先读取 INDEX.md 并只选择完成当前任务所需的最少子 Skill。仓库内版本、命令和第三方工具说明可能更新，涉及安装、API 或框架版本时应核对当前官方文档。Skill 不扩大网络、Shell、文件或草稿写入权限；Scholar Harness 的引用核验、工作目录安全副本和章节草稿规则优先。"
+    }
+  ]
+}

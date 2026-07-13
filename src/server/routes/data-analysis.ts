@@ -142,7 +142,7 @@ router.post('/inspect', upload.single('file'), async (req, res) => {
       return res.status(400).json({ success: false, error: '请上传 Excel 或 CSV 文件' });
     }
 
-    const dataset = await parseDataset(req.file.buffer, req.file.originalname);
+    const dataset = await parseDataset(req.file.buffer, req.file.originalname, readBodyString(req.body.sheetName));
     res.json({
       success: true,
       data: toDatasetSummary(dataset),
@@ -161,7 +161,7 @@ router.post('/analyze', upload.single('file'), async (req, res) => {
 
     const methods = normalizeMethods(req.body.methods || req.body.method);
     const method = methods[0] || 'descriptive';
-    const dataset = await parseDataset(req.file.buffer, req.file.originalname);
+    const dataset = await parseDataset(req.file.buffer, req.file.originalname, readBodyString(req.body.sheetName));
     const options = {
       numericVar: readBodyString(req.body.numericVar),
       numericVar2: readBodyString(req.body.numericVar2),
@@ -259,7 +259,7 @@ router.get('/methods', (req, res) => {
   });
 });
 
-async function parseDataset(buffer: Buffer, filename: string): Promise<ParsedDataset> {
+async function parseDataset(buffer: Buffer, filename: string, requestedSheetName = ''): Promise<ParsedDataset> {
   const xlsx = await getXLSX();
   const workbook = xlsx.read(buffer, {
     type: 'buffer',
@@ -271,7 +271,15 @@ async function parseDataset(buffer: Buffer, filename: string): Promise<ParsedDat
     throw new Error('文件中没有可读取的工作表');
   }
 
-  const sheetName = workbook.SheetNames[0];
+  const normalizedRequestedSheet = requestedSheetName.trim().toLowerCase();
+  const sheetName = normalizedRequestedSheet
+    ? (workbook.SheetNames.find(name => name === requestedSheetName.trim())
+      || workbook.SheetNames.find(name => name.toLowerCase() === normalizedRequestedSheet)
+      || '')
+    : workbook.SheetNames[0];
+  if (!sheetName) {
+    throw new Error(`未找到工作表 "${requestedSheetName}"。可用工作表：${workbook.SheetNames.join('、')}`);
+  }
   const firstSheet = workbook.Sheets[sheetName];
   const rawRows = xlsx.utils.sheet_to_json(firstSheet, {
     header: 1,

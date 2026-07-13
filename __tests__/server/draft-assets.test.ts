@@ -1,11 +1,21 @@
 import { describe, expect, it } from 'vitest';
-import { buildFigureDraftBlock, insertFigureBlockIntoDraft, normalizeDraftAssetChapterKey } from '../../src/server/routes/draft-assets';
+import {
+  buildDraftFigureFileStem,
+  buildFigureDraftBlock,
+  insertFigureBlockIntoDraft,
+  normalizeDraftAssetChapterKey,
+} from '../../src/server/routes/draft-assets';
 
 describe('draft figure assets', () => {
   it('normalizes common chapter names to existing draft keys', () => {
     expect(normalizeDraftAssetChapterKey('Results')).toBe('results');
     expect(normalizeDraftAssetChapterKey('讨论')).toBe('discussion');
     expect(normalizeDraftAssetChapterKey('../自定义章节')).toBe('_自定义章节');
+  });
+
+  it('builds a stable paper figure file name from user metadata', () => {
+    expect(buildDraftFigureFileStem('Figure 2(a)', 'Seasonal N2O flux', '')).toBe('Figure_2(a)_Seasonal_N2O_flux');
+    expect(buildDraftFigureFileStem('Figure 2', 'ignored', 'spring maize: N2O?.png')).toBe('spring_maize_N2O_');
   });
 
   it('inserts a figure block into an existing subsection', () => {

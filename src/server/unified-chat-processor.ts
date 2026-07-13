@@ -14,6 +14,10 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { logger } from '../utils/logger';
 import { callChatCompletion } from '../utils/llm-client';
+import { normalizeAuthorYearCitationText } from '../utils/citation-format';
+import { parseDraftSaveBlocks } from '../utils/draft-save-block';
+import { mergeDraftChapterContent } from '../utils/draft-content-merger';
+import { createDynamicDraftChapter } from '../utils/draft-section-classifier';
 import type { Message } from '../types';
 import {
   anchorPromptWithCurrentRequest,
@@ -22,7 +26,7 @@ import {
 } from '../utils/prompt-request-anchor';
 import { AUTO_RESEARCH_PAPER_TOPIC_CONTENT_SKILL_FOR_WRITING } from '../config/auto-research-paper-topic-skill';
 import { REFERENCE_RELEVANCE_WRITING_RULES } from '../config/reference-relevance-constraint-skill';
-import { SessionStore } from '../storage/session-store';
+import { SessionStore, sanitizeDraftChapterName } from '../storage/session-store';
 import type { HybridRetrievalEngine } from '../literature/retrieval';
 import {
   buildBilingualRetrievalQueries,
@@ -81,7 +85,8 @@ function deduplicateReferences(referencesText: string): string {
   }
 
   // 解析参考文献列表（支持多种格式）
-  const lines = referencesText.split('\n').filter(line => line.trim().length > 0);
+  const normalizedReferencesText = normalizeAuthorYearCitationText(referencesText);
+  const lines = normalizedReferencesText.split('\n').filter(line => line.trim().length > 0);
   const refs: Array<{
     original: string;
     authorYear: string;
@@ -99,9 +104,16 @@ function deduplicateReferences(referencesText: string): string {
     // 尝试匹配多种格式
     let author = '';
     let year = '';
+
+    // 标准文末条目：Yang, X., Li, S. (2024)...，不依赖已废弃的 (Yang et al., 2024) 前缀。
+    const standardReferenceMatch = trimmedLine.match(/^(?:[-*•]\s*)?(?:\[\d+\]\s*)?([A-Za-z][A-Za-z'’.-]*(?:\s+[A-Za-z][A-Za-z'’.-]*)?),[\s\S]*?\(((?:19|20)\d{2}[a-z]?)\)/i);
+    if (standardReferenceMatch) {
+      author = standardReferenceMatch[1].trim();
+      year = standardReferenceMatch[2].trim();
+    }
     
     // 格式1: [作者, 年份]
-    const bracketMatch = trimmedLine.match(/\[([^,]+),\s*(\d{4}[a-z]?)\]/);
+    const bracketMatch = !author ? trimmedLine.match(/\[([^,]+),\s*(\d{4}[a-z]?)\]/) : null;
     if (bracketMatch) {
       author = bracketMatch[1].trim();
       year = bracketMatch[2].trim();
@@ -194,7 +206,7 @@ function deduplicateReferences(referencesText: string): string {
   const dedupedText = processedRefs.join('\n');
   logger.info(`[References] Deduplicated: ${refs.length} refs -> ${processedRefs.length} refs`);
   
-  return dedupedText;
+  return normalizeAuthorYearCitationText(dedupedText);
 }
 
 // ============ 类型定义 ============
@@ -328,6 +340,7 @@ const conversationHistories = new Map<string, ConversationHistoryItem[]>();
 
 // 会话存储
 let sessionStore: SessionStore;
+let onDraftSaved: ((userId: string, section: string, content: string) => Promise<void>) | null = null;
 
 // 检索引擎
 let retrievalEngine: HybridRetrievalEngine | null = null;
@@ -343,6 +356,25 @@ let collaborationWorkflow: AgentCollaborationWorkflow | null = null;
 // Soul 内容
 let soulContent: string = '';
 
+function getCanonicalDraftSectionName(section: string): string {
+  const sanitized = sanitizeDraftChapterName(section || 'section');
+  const normalized = sanitized.toLowerCase().replace(/[.\s]+/g, '_').replace(/_+/g, '_');
+  const compact = normalized.replace(/[-_]+/g, '_');
+  const aliasPatterns: Array<[RegExp, string]> = [
+    [/^(title|题目|标题)(?:[_-].*)?$/, 'title'],
+    [/^(abstract|摘要)(?:[_-].*)?$/, 'abstract'],
+    [/^(intro|introduction|绪论|引言)(?:[_-].*)?$/, 'introduction'],
+    [/^(method|methods|materials_methods|materials_and_methods|材料|方法|材料与方法)(?:[_-].*)?$/, 'methods'],
+    [/^(result|results|结果)(?:[_-].*)?$/, 'results'],
+    [/^(discussion|讨论)(?:[_-].*)?$/, 'discussion'],
+    [/^(conclusion|conclusions|结论|展望)(?:[_-].*)?$/, 'conclusion'],
+  ];
+  for (const [pattern, canonical] of aliasPatterns) {
+    if (pattern.test(compact)) return canonical;
+  }
+  return sanitized;
+}
+
 // ============ 初始化函数 ============
 
 export function initializeUnifiedChatProcessor(config: {
@@ -351,8 +383,10 @@ export function initializeUnifiedChatProcessor(config: {
   cowAgent?: { execute(sentences: Array<{ sentence: string; keywords: string[] }>): Promise<CowAgentResult> };
   collaborationWorkflow?: AgentCollaborationWorkflow;
   soulContent?: string;
+  onDraftSaved?: (userId: string, section: string, content: string) => Promise<void>;
 }): void {
   sessionStore = config.sessionStore;
+  onDraftSaved = config.onDraftSaved || null;
   retrievalEngine = config.retrievalEngine ?? null;
   cowAgent = config.cowAgent ?? null;
   collaborationWorkflow = config.collaborationWorkflow ?? null;
@@ -1026,10 +1060,10 @@ ${taskHint}
 
 ## 回答要求
 1. 回答必须有文献依据
-2. **文内引用**：必须使用 "(作者，年份)" 格式引用具体文献，如 "(Wang et al., 2023)"
-3. **文末尾注**：文末必须列出所有参考文献的完整尾注信息，包含：作者、年份、标题、期刊、卷号、页码、DOI，格式如下：
-   - "[序号] 作者全名. (年份). 论文标题. 期刊名, 卷号(期号), 页码. DOI: xxx"
-   - 示例："[1] Smith, J. et al. (2023). Intervention effects on target outcomes in applied research. Journal of Applied Research, 12(3), 101-115. DOI: 10.0000/example.2023.001"
+2. **文内引用**：必须使用圆括号作者-年份格式，如 "(Zhang et al., 2026)"；必须写第一作者完整姓氏，禁止方括号、数字编号以及 M、EW、JQ 等首字母作者
+3. **文末参考文献**：每条直接从完整作者信息开始，再列出年份、标题、期刊、卷期页码和 DOI；不得在条目前重复添加正文使用的圆括号作者-年份标签：
+   - "全部作者. (年份). 论文标题. 期刊名, 卷号(期号), 页码. DOI: xxx"
+   - 示例："Smith, J., Jones, M., Brown, T. (2023). Intervention effects on target outcomes in applied research. Journal of Applied Research, 12(3), 101-115. DOI: 10.0000/example.2023.001"
 4. 如果用户提供了文献，必须引用；不要编造引用
 5. 使用专业的学术表达
 6. 结构清晰，逻辑严密
@@ -1046,11 +1080,12 @@ content: |
 section: [章节名]
 references: |
 [参考文献完整列表]
-- [序号] 作者全名. (年份). 论文标题. 期刊名, 卷号(期号), 页码. DOI: xxx
-- 示例：[1] Smith, J. et al. (2023). Intervention effects on target outcomes in applied research. Journal of Applied Research, 12(3), 101-115. DOI: 10.0000/example.2023.001
+- 全部作者. (年份). 论文标题. 期刊名, 卷号(期号), 页码. DOI: xxx
+- 示例：Smith, J., Jones, M., Brown, T. (2023). Intervention effects on target outcomes in applied research. Journal of Applied Research, 12(3), 101-115. DOI: 10.0000/example.2023.001
 \`\`\`
 
 **重要**：references 字段必须列出本章节引用的所有文献完整信息，包括作者、年份、标题、期刊、卷号、页码、DOI。
+普通 save_draft 按增量内容处理：应用会将本轮新段落合并进已有章节，并把 References 保持在章节末尾，不会直接清空整章。
 
 ## 写作流程要求
 不要一次性生成整个章节！采用渐进式写作：
@@ -1307,42 +1342,55 @@ async function processToolCalls(
   }
   
   // 处理草稿保存
-  const draftMatch = response.match(/```[\s\S]*?🔧 调用工具：save_draft[\s\S]*?```/);
-  if (draftMatch && sessionStore) {
-    const draftBlock = draftMatch[0];
-    const contentMatch = draftBlock.match(/content:\s*\|\s*([\s\S]*?)(?=\n\s*(?:section|references):)/);
-    const sectionMatch = draftBlock.match(/section:\s*(\w+)/);
-    const referencesMatch = draftBlock.match(/references:\s*\|\s*([\s\S]*?)(?=```|$)/);
-    
-    if (contentMatch && sectionMatch) {
-      let draftContent = contentMatch[1].trim();
-      const section = sectionMatch[1];
+  const draftSaveParseResult = parseDraftSaveBlocks(response);
+  if (sessionStore) {
+    for (const draftBlock of draftSaveParseResult.blocks) {
+      let draftContent = draftBlock.content;
+      const rawSection = sanitizeDraftChapterName(draftBlock.section);
+      const section = createDynamicDraftChapter(getCanonicalDraftSectionName(rawSection))?.key || '';
       let referencesContent = '';
       
       // 提取参考文献内容
-      if (referencesMatch) {
-        const rawReferences = referencesMatch[1].trim();
+      if (draftBlock.references) {
+        const rawReferences = draftBlock.references;
         // 去重并添加字母标注
         referencesContent = deduplicateReferences(rawReferences);
         logger.info(`[UnifiedChat] Extracted references: ${referencesContent.length} chars (after dedup)`);
       }
       
-      draftContent = draftContent.replace(/^```/, '').replace(/```$/,'').trim();
+      draftContent = normalizeAuthorYearCitationText(
+        draftContent.replace(/^```/, '').replace(/```$/,'').trim()
+      );
       
       // 将参考文献附加到内容末尾（如果有）
       const finalContent = referencesContent 
         ? `${draftContent}\n\n\\section*{References}\n${referencesContent}`
         : draftContent;
-      
-      try {
-        await sessionStore.saveDraft(userId, section, finalContent);
+
+      if (!section) {
+        logger.warn(`[UnifiedChat] AI requested an invalid top-level draft chapter: ${rawSection}`);
+        response = response.replace(
+          draftBlock.raw,
+          `\n⚠️ 未保存草稿：${rawSection} 不是有效的顶级章节名称。\n`
+        );
+      } else try {
+        const savedDraft = await sessionStore.updateDraft(userId, section, current => (
+          mergeDraftChapterContent(current?.content || '', finalContent, 'merge')
+        ));
+        const contentToSave = savedDraft.content;
+        if (onDraftSaved) {
+          await onDraftSaved(userId, section, contentToSave);
+        }
         const refsInfo = referencesContent ? '（含参考文献）' : '';
-        response = response.replace(draftMatch[0], `\n✅ 已保存到 ${section} 草稿${refsInfo}\n`);
+        response = response.replace(draftBlock.raw, `\n✅ 已保存到 ${section} 草稿 ${section}.txt${refsInfo}\n`);
         logger.info(`[UnifiedChat] Draft saved: ${section} for ${userId}${refsInfo}`);
       } catch (e) {
         logger.error('[UnifiedChat] Failed to save draft:', e);
-        response = response.replace(draftMatch[0], `\n⚠️ 草稿保存失败：${(e as Error).message}\n`);
+        response = response.replace(draftBlock.raw, `\n⚠️ 草稿保存失败：${(e as Error).message}\n`);
       }
+    }
+    if (draftSaveParseResult.markerCount > 0 && draftSaveParseResult.blocks.length === 0) {
+      response += '\n\n⚠️ 未保存草稿：检测到 save_draft 标记，但 content 或 section 字段缺失。';
     }
   }
   

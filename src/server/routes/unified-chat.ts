@@ -132,19 +132,19 @@ function shouldAttachOrdinaryDraftContext(message: string): boolean {
 }
 
 async function buildOrdinaryDraftPromptContext(userId: string, message: string): Promise<string> {
-  if (!getDraftContextForUser || !shouldAttachOrdinaryDraftContext(message)) {
+  if (!getDraftContextForUser) {
     return '';
   }
   try {
     const draftContext = await getDraftContextForUser(userId, message);
     if (!draftContext?.available) {
-      logger.info(`[UnifiedChat] Ordinary draft requested but unavailable: ${draftContext?.reason || 'no draft'}`);
+      logger.info(`[UnifiedChat] Latest ordinary draft unavailable: ${draftContext?.reason || 'no draft'}`);
       return '';
     }
-    logger.info(`[UnifiedChat] Auto-attached ordinary draft context: source=${draftContext.source || 'unknown'}, chapters=${draftContext.chapters?.length || 0}`);
+    logger.info(`[UnifiedChat] Attached latest ordinary draft context: source=${draftContext.source || 'unknown'}, chapters=${draftContext.chapters?.length || 0}`);
     const lines = [
-      '## 普通论文草稿（按需读取）',
-      '用户本轮问题与草稿、章节、修改、续写或写作进度相关，后端已读取普通草稿。询问写作进度时必须基于该草稿状态回答。',
+      '## 普通论文草稿（每轮默认读取）',
+      '后端已读取当前用户最新分章节草稿和写作进度。回答任何写作、修改、续写、评价、结构或进度问题时，必须以这里的草稿为准。',
       `- 来源：${draftContext.source || 'ordinary-draft'}`,
       Array.isArray(draftContext.chapters) && draftContext.chapters.length > 0 ? `- 已保存章节：${draftContext.chapters.join(', ')}` : '',
       draftContext.updatedAt ? `- 最近保存时间：${draftContext.updatedAt}` : '',

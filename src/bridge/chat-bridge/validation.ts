@@ -82,7 +82,7 @@ const codexCliConfigSchema = z.object({
   prefer: z.boolean().optional(),
   command: z.string().optional(),
   model: z.string().optional(),
-  reasoning_effort: z.enum(['low', 'medium', 'high', 'xhigh']).optional(),
+  reasoning_effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max', 'ultra']).optional(),
   sandbox: z.enum(['read-only', 'workspace-write', 'danger-full-access']).optional(),
   pdf_wiki_sandbox: z.enum(['workspace-write', 'danger-full-access']).optional(),
   timeout_ms: z.number().int().min(10000).max(1800000).optional(),
@@ -201,6 +201,14 @@ export const chatRequestSchema = z.object({
    * - 'codex': 使用本机 Codex CLI
    */
   forceProvider: z.enum(['browser', 'api', 'primary', 'secondary', 'codex']).optional(),
+  workspaceDirectory: z.object({
+    enabled: coerceBoolean,
+    path: z.string().optional(),
+    root: z.string().optional(),
+    permission: z.enum(['read-only', 'workspace-write', 'danger-full-access']).optional(),
+  }).passthrough().optional(),
+  queryEnvelope: z.any().optional(),
+  frontendState: z.any().optional(),
   /**
    * 小牛马 API 配置（来自前端 ⚙️ API 设置）
    * 当 forceProvider='api' 或 'secondary' 时使用这些配置
@@ -220,6 +228,15 @@ export const chatRequestSchema = z.object({
   visionApiUrl: z.string().optional(),
   visionApiKey: z.string().optional(),
   visionModel: z.string().optional(),
+  codexImages: z.array(z.string()).optional(),
+  visionImages: z.array(z.string()).optional(),
+  chatAttachments: z.array(z.object({
+    name: z.string().optional(),
+    path: z.string().optional(),
+    type: z.string().optional(),
+    size: z.number().optional(),
+    previewUrl: z.string().optional(),
+  }).passthrough()).optional(),
 });
 
 /**

@@ -21,6 +21,7 @@ import verificationRoutes, { initializeVerificationRoutes } from './routes/verif
 import promptRoutes, { initializePromptRoutes } from './routes/prompts';
 import securityRoutes, { initializeSecurityRoutes } from './routes/security';
 import adminRoutes, { initializeAdminRoutes } from './routes/admin';
+import downloadRoutes, { initializeDownloadRoutes } from './routes/downloads';
 import { publicRouter as feedbackRoutes, adminRouter as feedbackAdminRoutes, initializeFeedbackRoutes } from './routes/feedback';
 import { publicRouter as betaCodeRoutes, adminRouter as betaCodeAdminRoutes, initializeBetaCodeRoutes } from './routes/beta-codes';
 import { SubscriptionStore } from '../storage/subscription-store';
@@ -55,6 +56,7 @@ async function initializeApp(): Promise<void> {
     initializePromptRoutes(db);
     initializeSecurityRoutes(db);
     await initializeAdminRoutes(db);
+    await initializeDownloadRoutes(db);
     initializeFeedbackRoutes(db);
     initializeBetaCodeRoutes(db);
     logger.info('[Server] Routes initialized');
@@ -133,6 +135,7 @@ async function initializeApp(): Promise<void> {
     apiRouter.use('/admin/security', securityRoutes);
     apiRouter.use('/verification', verificationRoutes);
     apiRouter.use('/prompts', promptRoutes);
+    apiRouter.use('/downloads', downloadRoutes);
 
     app.use(`/api/${API_VERSION}`, apiRouter);
 

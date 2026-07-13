@@ -2,12 +2,17 @@ import { Router, Request, Response } from 'express';
 import { ZodError } from 'zod';
 import { logger } from '../../utils/logger';
 import { resolveUserId } from '../auth-guard-singleton';
+import { listAvailableAgentSkills } from '../services/agent-skills';
 import {
   createUserSkill,
   deleteUserSkill,
+  discoverAcademicWritingSkills,
   importUserSkillFromGitHubUrl,
   listUserSkills,
+  researchTargetVenueRequirements,
+  targetVenueRequirementSchema,
   updateUserSkill,
+  userSkillDiscoverySchema,
   userSkillImportUrlSchema,
   userSkillInputSchema,
   userSkillUpdateSchema,
@@ -37,6 +42,17 @@ router.get('/:userId', async (req: Request, res: Response) => {
   }
 });
 
+router.get('/:userId/available', async (req: Request, res: Response) => {
+  try {
+    const userId = await resolveRouteUserId(req);
+    const skills = await listAvailableAgentSkills(userId);
+    res.json({ success: true, userId, skills });
+  } catch (error) {
+    logger.error('[UserSkills] Failed to list available agent skills:', error);
+    res.status(500).json({ success: false, error: formatSkillError(error) });
+  }
+});
+
 router.post('/:userId', async (req: Request, res: Response) => {
   try {
     const userId = await resolveRouteUserId(req);
@@ -56,9 +72,43 @@ router.post('/:userId/import-url', async (req: Request, res: Response) => {
     const input = userSkillImportUrlSchema.parse(req.body || {});
     const result = await importUserSkillFromGitHubUrl(userId, input);
     const skills = await listUserSkills(userId);
-    res.json({ success: true, userId, skill: result.skill, source: result.source, skills });
+    res.json({
+      success: true,
+      userId,
+      skill: result.skill,
+      importedSkills: result.skills,
+      createdCount: result.createdCount,
+      updatedCount: result.updatedCount,
+      failedFiles: result.failedFiles,
+      source: result.source,
+      skills,
+    });
   } catch (error) {
     logger.warn('[UserSkills] Failed to import skill from GitHub URL:', error);
+    res.status(400).json({ success: false, error: formatSkillError(error) });
+  }
+});
+
+router.post('/:userId/discover', async (req: Request, res: Response) => {
+  try {
+    const userId = await resolveRouteUserId(req);
+    const input = userSkillDiscoverySchema.parse(req.body || {});
+    const result = await discoverAcademicWritingSkills(userId, input);
+    res.json({ success: true, userId, ...result });
+  } catch (error) {
+    logger.warn('[UserSkills] Failed to discover academic writing skills:', error);
+    res.status(400).json({ success: false, error: formatSkillError(error) });
+  }
+});
+
+router.post('/:userId/target-venue-requirements', async (req: Request, res: Response) => {
+  try {
+    const userId = await resolveRouteUserId(req);
+    const input = targetVenueRequirementSchema.parse(req.body || {});
+    const result = await researchTargetVenueRequirements(input);
+    res.json({ success: true, userId, ...result });
+  } catch (error) {
+    logger.warn('[UserSkills] Failed to research target venue requirements:', error);
     res.status(400).json({ success: false, error: formatSkillError(error) });
   }
 });

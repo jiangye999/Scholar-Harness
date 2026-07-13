@@ -53,6 +53,7 @@ interface ExperimentFigurePlan {
   originalFileName?: string;
   figureName?: string;
   panelLabel?: string;
+  title?: string;
   caption?: string;
 }
 
@@ -71,6 +72,7 @@ function readExperimentFigurePlan(value: unknown): ExperimentFigurePlan | undefi
       originalFileName: readUploadText((parsed as Record<string, unknown>).originalFileName, 300),
       figureName: readUploadText((parsed as Record<string, unknown>).figureName, 120),
       panelLabel: readUploadText((parsed as Record<string, unknown>).panelLabel, 40),
+      title: readUploadText((parsed as Record<string, unknown>).title, 500),
       caption: readUploadText((parsed as Record<string, unknown>).caption, 1200),
     };
     return Object.values(plan).some(Boolean) ? plan : undefined;
@@ -84,6 +86,7 @@ function buildFigurePlanInstruction(plan?: ExperimentFigurePlan): string {
   const lines = [
     plan.figureName ? `- Figure 分组/图片名称：${plan.figureName}` : '',
     plan.panelLabel ? `- 小图标签：${plan.panelLabel}` : '',
+    plan.title ? `- 用户填写的图片标题：${plan.title}` : '',
     plan.caption ? `- 用户填写的图注/注释：${plan.caption}` : '',
   ].filter(Boolean);
   if (lines.length === 0) return '';
@@ -749,6 +752,9 @@ router.post('/upload', upload.array('files', 20), async (req, res) => {
     const userInstruction = readUploadText(req.body.userInstruction || req.body.userMessage || req.body.extraQuery);
     const workflowIntent = readUploadText(req.body.workflowIntent, 2000);
     const figurePlan = readExperimentFigurePlan(req.body.figurePlan);
+    const sourceFileName = readUploadText(req.body.sourceFileName, 300);
+    const sourceFilePath = readUploadText(req.body.sourceFilePath, 2400);
+    const inputSource = readUploadText(req.body.inputSource, 40);
     
     const files = req.files as Express.Multer.File[];
     
@@ -802,7 +808,14 @@ router.post('/upload', upload.array('files', 20), async (req, res) => {
     
     // 处理每个文件
     const results: ExperimentAnalysisResult[] = [];
-    const savedFiles: Array<{ originalName: string; savedPath: string; type: string; figurePlan?: ExperimentFigurePlan }> = [];
+    const savedFiles: Array<{
+      originalName: string;
+      originalPath?: string;
+      inputSource?: string;
+      savedPath: string;
+      type: string;
+      figurePlan?: ExperimentFigurePlan;
+    }> = [];
     for (const file of files) {
       let fileType = detectExperimentFileType(file.originalname);
       let savedPath = '';
@@ -811,7 +824,15 @@ router.post('/upload', upload.array('files', 20), async (req, res) => {
         const fileFigurePlan = figurePlan && (!figurePlan.originalFileName || figurePlan.originalFileName === file.originalname)
           ? figurePlan
           : undefined;
-        const fileUserInstruction = mergeInstructionWithFigurePlan(userInstruction, fileFigurePlan);
+        const sourceTrace = [
+          inputSource === 'drop' ? '该文件由用户拖入页面。' : '',
+          sourceFileName ? `用户提供时的原始文件名：${sourceFileName}` : '',
+          sourceFilePath ? `用户提供时的原始本地路径：${sourceFilePath}` : '',
+        ].filter(Boolean).join('\n');
+        const fileUserInstruction = [
+          mergeInstructionWithFigurePlan(userInstruction, fileFigurePlan),
+          sourceTrace,
+        ].filter(Boolean).join('\n\n');
         const timestamp = Date.now();
         const savedName = `${timestamp}-${file.originalname}`;
         savedPath = path.join(experimentDir, savedName);
@@ -820,7 +841,9 @@ router.post('/upload', upload.array('files', 20), async (req, res) => {
         await fs.writeFile(savedPath, file.buffer);
         
         savedFiles.push({
-          originalName: file.originalname,
+          originalName: sourceFileName || file.originalname,
+          originalPath: sourceFilePath || undefined,
+          inputSource: inputSource || undefined,
           savedPath,
           type: fileType,
           figurePlan: fileFigurePlan,
@@ -1108,7 +1131,18 @@ router.post('/upload', upload.array('files', 20), async (req, res) => {
       success: true,
       results,
       combinedSummary,
-      savedFiles: savedFiles.map(f => ({ name: f.originalName, type: f.type, figurePlan: f.figurePlan })),
+      savedFiles: savedFiles.map(f => ({
+        name: f.originalName,
+        originalName: f.originalName,
+        originalPath: f.originalPath || '',
+        inputSource: f.inputSource || '',
+        type: f.type,
+        figurePlan: f.figurePlan,
+        source: {
+          kind: 'experiment-results',
+          originalPath: f.savedPath,
+        },
+      })),
       userInstruction,
       workflowIntent,
     });

@@ -4,6 +4,7 @@ import * as path from 'path';
 import { spawn } from 'child_process';
 import { logger } from './logger';
 import { getDataDir } from './paths';
+import { buildToolRuntimeEnv } from './tool-runtime-env';
 
 export interface PdfFastTextResult {
   markdown: string;
@@ -190,11 +191,11 @@ export async function extractPdfTextWithFastText(
   await new Promise<void>((resolve, reject) => {
     const child = spawn(executable, args, {
       windowsHide: true,
-      env: {
+      env: buildToolRuntimeEnv({
         ...process.env,
         PYTHONIOENCODING: 'utf-8',
         PYTHONUTF8: '1',
-      },
+      }),
     });
 
     let stdout = '';

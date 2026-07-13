@@ -4,6 +4,7 @@ import * as path from 'path';
 import { spawn } from 'child_process';
 import { getDataDir } from './paths';
 import { logger } from './logger';
+import { buildToolRuntimeEnv } from './tool-runtime-env';
 
 export interface PdfMarkerResult {
   markdown: string;
@@ -265,11 +266,11 @@ async function runProcess(
     const child = spawn(executable, args, {
       cwd,
       windowsHide: true,
-      env: {
+      env: buildToolRuntimeEnv({
         ...process.env,
         PYTHONIOENCODING: 'utf-8',
         PYTHONUTF8: '1',
-      },
+      }),
     });
 
     let stdout = '';

@@ -417,6 +417,13 @@ function getSkillDir(): string {
   return path.join(process.cwd(), 'sci_writing_skills');
 }
 
+function getAgentSkillPackDir(): string {
+  if (app.isPackaged) {
+    return path.join(process.resourcesPath, 'skill-packs');
+  }
+  return path.join(process.cwd(), 'skill-packs');
+}
+
 function getServerPath(): string {
   if (app.isPackaged) {
     // Server JS is unpacked from asar (see asarUnpack in package.json)
@@ -572,6 +579,7 @@ function startServer(): Promise<void> {
     }
     
     const skillDir = getSkillDir();
+    const agentSkillPackDir = getAgentSkillPackDir();
     const publicDir = app.isPackaged 
       ? path.join(process.resourcesPath, 'app.asar.unpacked', 'dist', 'src', 'public')
       : path.join(process.cwd(), 'dist', 'src', 'public');
@@ -602,6 +610,7 @@ function startServer(): Promise<void> {
       PORT: String(PORT),
       DATA_DIR: dataDir,
       SKILL_DIR: skillDir,
+      AGENT_SKILL_PACK_DIR: agentSkillPackDir,
       PUBLIC_DIR: publicDir,
       OPENCLAW_DIR: openclawDir,
       CHAT_BRIDGE_CONFIG_PATH: getChatBridgeUserConfigPath(),

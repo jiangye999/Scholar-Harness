@@ -5,6 +5,8 @@ import { sanitizeUserId } from '../../utils/paths';
 import {
   researchSessionManager,
   summarizeSession,
+  type ResearchReviewerReport,
+  type ResearchSession,
   type ResearchSessionSourceSnapshot,
 } from '../../research/research-session-manager';
 import type { UserMemory } from './memory';
@@ -116,6 +118,7 @@ const reviewSchema = z.object({
   projectId: projectIdSchema,
   sessionId: z.string().optional(),
   artifactId: z.string().optional(),
+  useAi: z.boolean().optional(),
 });
 
 const ledgerQuerySchema = z.object({
@@ -129,6 +132,13 @@ interface ResearchSessionRouterDeps {
   getPdfWikiStatus?: (userId: string) => Promise<Record<string, unknown>>;
   readUserLiteratureRecords?: (userId: string) => unknown[];
   getCurrentProject?: () => Record<string, unknown>;
+  runAiReviewer?: (input: {
+    userId: string;
+    projectId: string;
+    session: ResearchSession;
+    report: ResearchReviewerReport;
+    artifactId?: string;
+  }) => Promise<{ markdown: string; provider: string; model: string }>;
 }
 
 export function createResearchSessionRouter(deps: ResearchSessionRouterDeps = {}): Router {
@@ -222,7 +232,39 @@ export function createResearchSessionRouter(deps: ResearchSessionRouterDeps = {}
       const userId = sanitizeUserId(body.userId || 'web-user');
       const projectId = resolveProjectIdFromRequest(req, deps, body.projectId);
       const result = await researchSessionManager.runReviewer(userId, body.sessionId, body.artifactId, projectId);
-      res.json({ success: true, report: result.report, summary: summarizeSession(result.session) });
+      let aiReview: { markdown: string; provider: string; model: string; artifactId?: string } | null = null;
+      let aiWarning = '';
+      if (body.useAi !== false && deps.runAiReviewer) {
+        try {
+          const aiResult = await deps.runAiReviewer({
+            userId,
+            projectId,
+            session: result.session,
+            report: result.report,
+            artifactId: body.artifactId,
+          });
+          const artifact = await researchSessionManager.appendArtifact({
+            userId,
+            projectId,
+            sessionId: result.session.id,
+            kind: 'review',
+            name: `AI 审稿人 Agent 报告 - ${result.report.id}`,
+            content: aiResult.markdown,
+            contentType: 'text/markdown; charset=utf-8',
+            reviewerReportIds: [result.report.id],
+            metadata: {
+              provider: aiResult.provider,
+              model: aiResult.model,
+              localReviewerReportId: result.report.id,
+            },
+          });
+          aiReview = { ...aiResult, artifactId: artifact.artifact.id };
+        } catch (error) {
+          aiWarning = error instanceof Error ? error.message : String(error);
+          logger.warn('[ResearchSession] AI reviewer failed, returning local reviewer report:', error);
+        }
+      }
+      res.json({ success: true, report: result.report, aiReview, aiWarning, summary: summarizeSession(result.session) });
     } catch (error) {
       sendResearchSessionError(res, error, '[ResearchSession] Review error:');
     }

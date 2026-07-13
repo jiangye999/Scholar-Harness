@@ -12,6 +12,7 @@ import { logger } from '../../utils/logger';
 const MANIFEST_VERSION = 1;
 const DEFAULT_SUBSECTION_KEY = 'section';
 const FIGURE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.webp', '.svg', '.tif', '.tiff', '.bmp', '.gif', '.pdf']);
+const draftFigureManifestLocks = new Map<string, Promise<void>>();
 
 export interface DraftFigureAsset {
   id: string;
@@ -22,18 +23,21 @@ export interface DraftFigureAsset {
   subsectionTitle?: string;
   subsectionKey: string;
   figureLabel: string;
+  title: string;
   caption: string;
+  originalFileName: string;
   fileName: string;
   filePath: string;
   relativePath: string;
   url: string;
   source: {
-    kind: 'r-code' | 'experiment-results';
+    kind: 'r-code' | 'experiment-results' | 'chat-upload';
     jobId?: string;
     relativePath?: string;
     originalPath?: string;
     url?: string;
   };
+  draftLinked: boolean;
   createdAt: string;
 }
 
@@ -49,14 +53,27 @@ const saveDraftFigureSchema = z.object({
   subsectionId: z.string().max(160).optional().default(''),
   subsectionTitle: z.string().max(260).optional().default(''),
   figureLabel: z.string().max(120).optional().default('Figure'),
+  title: z.string().max(500).optional().default(''),
   caption: z.string().max(2000).optional().default(''),
+  requestedFileName: z.string().max(260).optional().default(''),
   source: z.object({
-    kind: z.enum(['r-code', 'experiment-results']),
+    kind: z.enum(['r-code', 'experiment-results', 'chat-upload']),
     jobId: z.string().max(120).optional(),
     relativePath: z.string().max(500).optional(),
     originalPath: z.string().max(1000).optional(),
     url: z.string().max(1000).optional(),
   }),
+});
+
+const savePaperFigureSchema = saveDraftFigureSchema.omit({ chapterName: true }).extend({
+  chapterName: z.string().max(160).optional().default(''),
+});
+
+const updatePaperFigureSchema = z.object({
+  userId: z.string().optional(),
+  figureLabel: z.string().max(120).optional(),
+  title: z.string().max(500).optional(),
+  caption: z.string().max(2000).optional(),
 });
 
 export function normalizeDraftAssetChapterKey(value: unknown): string {
@@ -121,7 +138,34 @@ async function saveDraftFigureManifest(userId: string, manifest: DraftFigureMani
   const manifestPath = getDraftFigureManifestPath(userId);
   await fs.mkdir(path.dirname(manifestPath), { recursive: true });
   manifest.updatedAt = new Date().toISOString();
-  await fs.writeFile(manifestPath, JSON.stringify(manifest, null, 2), 'utf-8');
+  const temporaryPath = `${manifestPath}.${process.pid}.${randomUUID().slice(0, 8)}.tmp`;
+  await fs.writeFile(temporaryPath, JSON.stringify(manifest, null, 2), 'utf-8');
+  try {
+    await fs.rename(temporaryPath, manifestPath);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code !== 'EEXIST' && code !== 'EPERM' && code !== 'EACCES') throw error;
+    await fs.rm(manifestPath, { force: true });
+    await fs.rename(temporaryPath, manifestPath);
+  }
+}
+
+async function withDraftFigureManifestLock<T>(userId: string, task: () => Promise<T>): Promise<T> {
+  const lockKey = sanitizeUserId(userId);
+  const previous = (draftFigureManifestLocks.get(lockKey) || Promise.resolve()).catch(() => undefined);
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => {
+    release = resolve;
+  });
+  const tail = previous.then(() => gate);
+  draftFigureManifestLocks.set(lockKey, tail);
+  await previous;
+  try {
+    return await task();
+  } finally {
+    release();
+    if (draftFigureManifestLocks.get(lockKey) === tail) draftFigureManifestLocks.delete(lockKey);
+  }
 }
 
 export async function loadDraftFigureAssetsForUser(userId: string): Promise<DraftFigureAsset[]> {
@@ -173,10 +217,22 @@ function resolveExperimentSourceFigure(userId: string, source: z.infer<typeof sa
   return requested;
 }
 
+function resolveChatUploadSourceFigure(userId: string, source: z.infer<typeof saveDraftFigureSchema>['source']): string {
+  const attachmentRoot = path.resolve(getDataDir(), 'chat-attachments', sanitizeUserId(userId));
+  const requested = path.resolve(String(source.originalPath || ''));
+  const relative = path.relative(attachmentRoot, requested);
+  if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) {
+    throw new Error('聊天上传图件只能从当前用户的 chat-attachments 目录保存');
+  }
+  return requested;
+}
+
 async function resolveSourceFigure(userId: string, source: z.infer<typeof saveDraftFigureSchema>['source']): Promise<string> {
   const sourcePath = source.kind === 'r-code'
     ? resolveRSourceFigure(userId, source)
-    : resolveExperimentSourceFigure(userId, source);
+    : (source.kind === 'chat-upload'
+        ? resolveChatUploadSourceFigure(userId, source)
+        : resolveExperimentSourceFigure(userId, source));
   const stat = await fs.stat(sourcePath);
   if (!stat.isFile()) throw new Error('源图件不是文件');
   const ext = path.extname(sourcePath).toLowerCase();
@@ -184,6 +240,18 @@ async function resolveSourceFigure(userId: string, source: z.infer<typeof saveDr
     throw new Error(`不支持保存该图件格式：${ext || 'unknown'}`);
   }
   return sourcePath;
+}
+
+export function buildDraftFigureFileStem(figureLabel: unknown, title: unknown, requestedFileName: unknown): string {
+  const requestedStem = path.parse(String(requestedFileName || '').trim()).name;
+  const combined = requestedStem || [figureLabel, title].map(value => String(value || '').trim()).filter(Boolean).join('_');
+  return (combined || 'Figure')
+    .replace(/[<>:"/\\|?*\x00-\x1F]/g, '_')
+    .replace(/[\s.]+$/g, '')
+    .replace(/\s+/g, '_')
+    .replace(/_+/g, '_')
+    .slice(0, 120)
+    || 'Figure';
 }
 
 function toManifestRelativePath(assetRoot: string, filePath: string): string {
@@ -296,13 +364,22 @@ async function copyFigureToDraftAssets(input: {
   sourcePath: string;
   chapterKey: string;
   subsectionKey: string;
+  figureLabel?: string;
+  title?: string;
+  requestedFileName?: string;
 }): Promise<{ id: string; filePath: string; relativePath: string; fileName: string }> {
   const assetRoot = getDraftAssetRoot(input.userId);
   const ext = path.extname(input.sourcePath).toLowerCase();
   const id = `fig_${randomUUID().replace(/-/g, '').slice(0, 16)}`;
-  const fileName = `${id}${ext}`;
   const targetDir = path.join(assetRoot, input.chapterKey, input.subsectionKey);
   await fs.mkdir(targetDir, { recursive: true });
+  const stem = buildDraftFigureFileStem(input.figureLabel, input.title, input.requestedFileName);
+  let fileName = `${stem}${ext}`;
+  let suffix = 2;
+  while (fsSync.existsSync(path.join(targetDir, fileName))) {
+    fileName = `${stem}-${suffix}${ext}`;
+    suffix += 1;
+  }
   const filePath = path.join(targetDir, fileName);
   await fs.copyFile(input.sourcePath, filePath);
   return {
@@ -314,17 +391,20 @@ async function copyFigureToDraftAssets(input: {
 }
 
 async function appendFigureToDraft(sessionStore: SessionStore, asset: DraftFigureAsset): Promise<boolean> {
-  const existing = await sessionStore.loadDraft(asset.userId, asset.chapterKey);
   const figureBlock = buildFigureDraftBlock(asset);
-  const nextContent = insertFigureBlockIntoDraft(
-    existing?.content || '',
-    figureBlock,
-    asset.subsectionId || '',
-    asset.subsectionTitle || ''
-  );
-  if (nextContent === (existing?.content || '')) return false;
-  await sessionStore.saveDraft(asset.userId, asset.chapterKey, nextContent);
-  return true;
+  let changed = false;
+  await sessionStore.updateDraft(asset.userId, asset.chapterKey, current => {
+    const existingContent = current?.content || '';
+    const nextContent = insertFigureBlockIntoDraft(
+      existingContent,
+      figureBlock,
+      asset.subsectionId || '',
+      asset.subsectionTitle || ''
+    );
+    changed = nextContent !== existingContent;
+    return nextContent;
+  });
+  return changed;
 }
 
 function getContentTypeForAsset(filePath: string): string {
@@ -339,20 +419,37 @@ function getContentTypeForAsset(filePath: string): string {
   return 'image/png';
 }
 
-export function createDraftAssetsRouter(options: { sessionStore: SessionStore }): Router {
+export function createDraftAssetsRouter(options: {
+  sessionStore: SessionStore;
+  onDraftUpdated?: (userId: string, chapterKey: string) => Promise<void>;
+  resolveUserId?: (requestedUserId: string) => Promise<string>;
+}): Router {
   const router = Router();
+  const resolveDraftAssetUserId = async (value: unknown) => {
+    const requested = sanitizeUserId(value || 'web-user');
+    return sanitizeUserId(options.resolveUserId ? await options.resolveUserId(requested) : requested);
+  };
 
   router.post('/figures', async (req, res) => {
     try {
       const body = saveDraftFigureSchema.parse(req.body || {});
-      const userId = sanitizeUserId(body.userId || 'web-user');
+      const userId = await resolveDraftAssetUserId(body.userId);
       const chapterKey = normalizeDraftAssetChapterKey(body.chapterName);
       const chapterName = normalizeDisplayText(body.chapterName, chapterKey, 160);
       const subsectionKey = sanitizeDraftChapterName(body.subsectionId || body.subsectionTitle || DEFAULT_SUBSECTION_KEY);
       const sourcePath = await resolveSourceFigure(userId, body.source);
-      const copied = await copyFigureToDraftAssets({ userId, sourcePath, chapterKey, subsectionKey });
       const figureLabel = normalizeDisplayText(body.figureLabel, 'Figure', 120);
+      const title = normalizeDisplayText(body.title, '', 500);
       const caption = normalizeDisplayText(body.caption, figureLabel, 2000);
+      const copied = await copyFigureToDraftAssets({
+        userId,
+        sourcePath,
+        chapterKey,
+        subsectionKey,
+        figureLabel,
+        title,
+        requestedFileName: body.requestedFileName,
+      });
       const asset: DraftFigureAsset = {
         id: copied.id,
         userId,
@@ -362,19 +459,27 @@ export function createDraftAssetsRouter(options: { sessionStore: SessionStore })
         subsectionTitle: normalizeDisplayText(body.subsectionTitle, '', 260),
         subsectionKey,
         figureLabel,
+        title,
         caption,
+        originalFileName: path.basename(sourcePath),
         fileName: copied.fileName,
         filePath: copied.filePath,
         relativePath: copied.relativePath,
         url: `/api/draft-assets/figure/${encodeURIComponent(userId)}/${encodeURIComponent(copied.id)}`,
         source: body.source,
+        draftLinked: true,
         createdAt: new Date().toISOString(),
       };
 
-      const manifest = await loadDraftFigureManifest(userId);
-      manifest.figures.push(asset);
-      await saveDraftFigureManifest(userId, manifest);
+      await withDraftFigureManifestLock(userId, async () => {
+        const manifest = await loadDraftFigureManifest(userId);
+        manifest.figures.push(asset);
+        await saveDraftFigureManifest(userId, manifest);
+      });
       const draftUpdated = await appendFigureToDraft(options.sessionStore, asset);
+      if (draftUpdated && options.onDraftUpdated) {
+        await options.onDraftUpdated(userId, chapterKey);
+      }
 
       logger.info(`[DraftAssets] Saved ${asset.id} to ${userId}/${chapterKey}/${subsectionKey}`);
       res.json({ success: true, asset, draftUpdated });
@@ -385,16 +490,99 @@ export function createDraftAssetsRouter(options: { sessionStore: SessionStore })
     }
   });
 
+  router.post('/figures/library', async (req, res) => {
+    try {
+      const body = savePaperFigureSchema.parse(req.body || {});
+      const userId = await resolveDraftAssetUserId(body.userId);
+      const chapterKey = body.chapterName ? normalizeDraftAssetChapterKey(body.chapterName) : 'paper-figures';
+      const chapterName = normalizeDisplayText(body.chapterName, '论文图片', 160);
+      const subsectionKey = sanitizeDraftChapterName(body.subsectionId || body.subsectionTitle || 'library');
+      const sourcePath = await resolveSourceFigure(userId, body.source);
+      const figureLabel = normalizeDisplayText(body.figureLabel, 'Figure', 120);
+      const title = normalizeDisplayText(body.title, '', 500);
+      const caption = normalizeDisplayText(body.caption, title || figureLabel, 2000);
+      const copied = await copyFigureToDraftAssets({
+        userId,
+        sourcePath,
+        chapterKey,
+        subsectionKey,
+        figureLabel,
+        title,
+        requestedFileName: body.requestedFileName,
+      });
+      const asset: DraftFigureAsset = {
+        id: copied.id,
+        userId,
+        chapterName,
+        chapterKey,
+        subsectionId: normalizeDisplayText(body.subsectionId, '', 160),
+        subsectionTitle: normalizeDisplayText(body.subsectionTitle, '', 260),
+        subsectionKey,
+        figureLabel,
+        title,
+        caption,
+        originalFileName: path.basename(sourcePath),
+        fileName: copied.fileName,
+        filePath: copied.filePath,
+        relativePath: copied.relativePath,
+        url: `/api/draft-assets/figure/${encodeURIComponent(userId)}/${encodeURIComponent(copied.id)}`,
+        source: body.source,
+        draftLinked: false,
+        createdAt: new Date().toISOString(),
+      };
+
+      await withDraftFigureManifestLock(userId, async () => {
+        const manifest = await loadDraftFigureManifest(userId);
+        manifest.figures.push(asset);
+        await saveDraftFigureManifest(userId, manifest);
+      });
+
+      logger.info(`[DraftAssets] Archived paper figure ${asset.id} for ${userId}`);
+      res.json({ success: true, asset, draftUpdated: false });
+    } catch (error) {
+      logger.error('[DraftAssets] Archive paper figure failed:', error);
+      const status = error instanceof z.ZodError ? 400 : 500;
+      res.status(status).json({ success: false, error: (error as Error).message || '保存论文图片失败' });
+    }
+  });
+
+  router.patch('/figures/:assetId', async (req, res) => {
+    try {
+      const body = updatePaperFigureSchema.parse(req.body || {});
+      const userId = await resolveDraftAssetUserId(body.userId);
+      const assetId = String(req.params.assetId || '').replace(/[^a-zA-Z0-9_-]/g, '');
+      const asset = await withDraftFigureManifestLock(userId, async () => {
+        const manifest = await loadDraftFigureManifest(userId);
+        const index = manifest.figures.findIndex(item => item.id === assetId);
+        if (index < 0) throw new Error('图件不存在');
+        const current = manifest.figures[index];
+        manifest.figures[index] = {
+          ...current,
+          ...(body.figureLabel !== undefined ? { figureLabel: normalizeDisplayText(body.figureLabel, 'Figure', 120) } : {}),
+          ...(body.title !== undefined ? { title: normalizeDisplayText(body.title, '', 500) } : {}),
+          ...(body.caption !== undefined ? { caption: normalizeDisplayText(body.caption, current.figureLabel || 'Figure', 2000) } : {}),
+        };
+        await saveDraftFigureManifest(userId, manifest);
+        return manifest.figures[index];
+      });
+      res.json({ success: true, asset });
+    } catch (error) {
+      logger.error('[DraftAssets] Update paper figure failed:', error);
+      const status = error instanceof z.ZodError ? 400 : ((error as Error).message === '图件不存在' ? 404 : 500);
+      res.status(status).json({ success: false, error: (error as Error).message || '更新论文图片失败' });
+    }
+  });
+
   router.get('/figures', async (req, res) => {
     try {
-      const userId = sanitizeUserId(req.query.userId || 'web-user');
+      const userId = await resolveDraftAssetUserId(req.query.userId);
       const chapterKey = req.query.chapterName ? normalizeDraftAssetChapterKey(req.query.chapterName) : '';
       const subsectionKey = req.query.subsectionId ? sanitizeDraftChapterName(req.query.subsectionId) : '';
       const figures = (await loadDraftFigureManifest(userId)).figures.filter(asset => {
         if (chapterKey && asset.chapterKey !== chapterKey) return false;
         if (subsectionKey && asset.subsectionKey !== subsectionKey) return false;
         return true;
-      });
+      }).sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime());
       res.json({ success: true, figures });
     } catch (error) {
       logger.error('[DraftAssets] List figures failed:', error);
@@ -404,7 +592,7 @@ export function createDraftAssetsRouter(options: { sessionStore: SessionStore })
 
   router.get('/figure/:userId/:assetId', async (req, res) => {
     try {
-      const userId = sanitizeUserId(req.params.userId || 'web-user');
+      const userId = await resolveDraftAssetUserId(req.params.userId);
       const assetId = String(req.params.assetId || '').replace(/[^a-zA-Z0-9_-]/g, '');
       const asset = (await loadDraftFigureManifest(userId)).figures.find(item => item.id === assetId);
       if (!asset) {

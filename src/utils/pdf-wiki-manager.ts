@@ -12,6 +12,7 @@ import { extractPdfTextWithFastText, isPdfFastTextAvailable } from './pdf-fast-t
 import { extractPdfTextWithLiteParse, isLiteParseAvailable } from './pdf-liteparse';
 import { extractPdfTextWithMarker, isPdfMarkerAvailable } from './pdf-marker';
 import { sanitizeUserId } from './paths';
+import { buildToolRuntimeEnv } from './tool-runtime-env';
 
 export type PdfWikiStatusName = 'idle' | 'processing' | 'completed' | 'error';
 
@@ -319,7 +320,7 @@ interface PdfWikiCodexConfig {
   prefer: boolean;
   command: string;
   model: string;
-  reasoningEffort: 'low' | 'medium' | 'high' | 'xhigh';
+  reasoningEffort: 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultra';
   sandbox: 'read-only' | 'workspace-write' | 'danger-full-access';
   timeoutMs: number;
   concurrency: number;
@@ -4716,7 +4717,7 @@ export class PdfWikiManager {
       || savedCodex.reasoning_effort
       || 'xhigh'
     ).trim().toLowerCase();
-    const reasoningEffort = (['low', 'medium', 'high', 'xhigh'].includes(effort)
+    const reasoningEffort = (['low', 'medium', 'high', 'xhigh', 'max', 'ultra'].includes(effort)
       ? effort
       : 'xhigh') as PdfWikiCodexConfig['reasoningEffort'];
 
@@ -4822,13 +4823,14 @@ export class PdfWikiManager {
   }
 
   private spawnCodexProcess(executable: string, args: string[]): ReturnType<typeof spawn> {
+    const env = buildToolRuntimeEnv(process.env);
     const isWindowsPowerShellScript = process.platform === 'win32' && /\.ps1$/i.test(executable);
     if (isWindowsPowerShellScript) {
       return spawn('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', executable, ...args], {
         cwd: process.cwd(),
         shell: false,
         windowsHide: true,
-        env: process.env,
+        env,
       });
     }
 
@@ -4838,7 +4840,7 @@ export class PdfWikiManager {
         cwd: process.cwd(),
         shell: false,
         windowsHide: true,
-        env: process.env,
+        env,
       });
     }
 
@@ -4846,7 +4848,7 @@ export class PdfWikiManager {
       cwd: process.cwd(),
       shell: false,
       windowsHide: true,
-      env: process.env,
+      env,
     });
   }
 
@@ -5530,14 +5532,15 @@ ${content.slice(0, 20000)}`;
       let stdout = '';
       let stderr = '';
       let timedOut = false;
+      const env = buildToolRuntimeEnv({
+        ...process.env,
+        PYTHONUTF8: '1',
+        PYTHONIOENCODING: 'utf-8',
+      });
       const child = spawn(command, args, {
         cwd,
         windowsHide: true,
-        env: {
-          ...process.env,
-          PYTHONUTF8: '1',
-          PYTHONIOENCODING: 'utf-8',
-        },
+        env,
       });
       const timer = setTimeout(() => {
         timedOut = true;

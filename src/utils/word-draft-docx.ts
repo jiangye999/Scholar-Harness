@@ -1,5 +1,7 @@
 import type { Response } from "express";
 import archiver from "archiver";
+import { mkdir, writeFile } from "fs/promises";
+import path from "path";
 import { logger } from "./logger";
 
 interface WordReferenceEntry {
@@ -51,7 +53,7 @@ function escapeHtmlForWord(value: string): string {
 }
 
 function escapeTextWithWordFonts(value: string): string {
-  return escapeHtmlForWord(value).replace(/([\u3400-\u9fff\u3000-\u303f\uff00-\uffef]+)/g, '<span class="cjk">$1</span>');
+  return escapeHtmlForWord(value);
 }
 
 function escapeXmlForWord(value: string): string {
@@ -728,22 +730,18 @@ body {
   font-family: "Times New Roman", serif;
   mso-ascii-font-family: "Times New Roman";
   mso-hansi-font-family: "Times New Roman";
-  mso-fareast-font-family: SimSun;
+  mso-fareast-font-family: "Times New Roman";
   font-size: 12pt;
   line-height: 1.6;
   color: #000;
-}
-.cjk {
-  font-family: SimSun;
-  mso-fareast-font-family: SimSun;
 }
 .section {
   page: WordSection1;
   margin-bottom: 18pt;
 }
 h1 {
-  font-family: "Times New Roman", SimSun, serif;
-  mso-fareast-font-family: SimSun;
+  font-family: "Times New Roman", serif;
+  mso-fareast-font-family: "Times New Roman";
   font-size: 16pt;
   font-weight: bold;
   margin: 18pt 0 12pt 0;
@@ -754,15 +752,15 @@ h1 {
   margin: 0 0 18pt 0;
 }
 h2 {
-  font-family: "Times New Roman", SimSun, serif;
-  mso-fareast-font-family: SimSun;
+  font-family: "Times New Roman", serif;
+  mso-fareast-font-family: "Times New Roman";
   font-size: 14pt;
   font-weight: bold;
   margin: 14pt 0 10pt 0;
 }
 h3 {
-  font-family: "Times New Roman", SimSun, serif;
-  mso-fareast-font-family: SimSun;
+  font-family: "Times New Roman", serif;
+  mso-fareast-font-family: "Times New Roman";
   font-size: 12pt;
   font-weight: bold;
   margin: 12pt 0 8pt 0;
@@ -834,7 +832,7 @@ function wordRunXml(text: string, options: WordParagraphOptions = {}): string {
 
   return `<w:r>
 <w:rPr>
-<w:rFonts w:ascii="Times New Roman" w:hAnsi="Times New Roman" w:eastAsia="SimSun" w:cs="Times New Roman"/>
+<w:rFonts w:ascii="Times New Roman" w:hAnsi="Times New Roman" w:eastAsia="Times New Roman" w:cs="Times New Roman"/>
 ${options.bold ? '<w:b/><w:bCs/>' : ''}
 <w:sz w:val="${size}"/>
 <w:szCs w:val="${size}"/>
@@ -1017,13 +1015,13 @@ ${body.join('\n')}
 </w:document>`;
 }
 
-function wordDraftStylesXml(): string {
+export function buildWordDraftStylesXml(): string {
   return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
 <w:docDefaults>
 <w:rPrDefault>
 <w:rPr>
-<w:rFonts w:ascii="Times New Roman" w:hAnsi="Times New Roman" w:eastAsia="SimSun" w:cs="Times New Roman"/>
+<w:rFonts w:ascii="Times New Roman" w:hAnsi="Times New Roman" w:eastAsia="Times New Roman" w:cs="Times New Roman"/>
 <w:sz w:val="24"/>
 <w:szCs w:val="24"/>
 </w:rPr>
@@ -1036,7 +1034,7 @@ function wordDraftStylesXml(): string {
 <w:jc w:val="both"/>
 </w:pPr>
 <w:rPr>
-<w:rFonts w:ascii="Times New Roman" w:hAnsi="Times New Roman" w:eastAsia="SimSun" w:cs="Times New Roman"/>
+<w:rFonts w:ascii="Times New Roman" w:hAnsi="Times New Roman" w:eastAsia="Times New Roman" w:cs="Times New Roman"/>
 <w:sz w:val="24"/>
 <w:szCs w:val="24"/>
 </w:rPr>
@@ -1054,7 +1052,7 @@ function wordDraftStylesXml(): string {
 <w:rPr>
 <w:b/>
 <w:bCs/>
-<w:rFonts w:ascii="Times New Roman" w:hAnsi="Times New Roman" w:eastAsia="SimSun" w:cs="Times New Roman"/>
+<w:rFonts w:ascii="Times New Roman" w:hAnsi="Times New Roman" w:eastAsia="Times New Roman" w:cs="Times New Roman"/>
 <w:sz w:val="36"/>
 <w:szCs w:val="36"/>
 </w:rPr>
@@ -1072,7 +1070,7 @@ function wordDraftStylesXml(): string {
 <w:rPr>
 <w:b/>
 <w:bCs/>
-<w:rFonts w:ascii="Times New Roman" w:hAnsi="Times New Roman" w:eastAsia="SimSun" w:cs="Times New Roman"/>
+<w:rFonts w:ascii="Times New Roman" w:hAnsi="Times New Roman" w:eastAsia="Times New Roman" w:cs="Times New Roman"/>
 <w:sz w:val="32"/>
 <w:szCs w:val="32"/>
 </w:rPr>
@@ -1090,7 +1088,7 @@ function wordDraftStylesXml(): string {
 <w:rPr>
 <w:b/>
 <w:bCs/>
-<w:rFonts w:ascii="Times New Roman" w:hAnsi="Times New Roman" w:eastAsia="SimSun" w:cs="Times New Roman"/>
+<w:rFonts w:ascii="Times New Roman" w:hAnsi="Times New Roman" w:eastAsia="Times New Roman" w:cs="Times New Roman"/>
 <w:sz w:val="28"/>
 <w:szCs w:val="28"/>
 </w:rPr>
@@ -1108,7 +1106,7 @@ function wordDraftStylesXml(): string {
 <w:rPr>
 <w:b/>
 <w:bCs/>
-<w:rFonts w:ascii="Times New Roman" w:hAnsi="Times New Roman" w:eastAsia="SimSun" w:cs="Times New Roman"/>
+<w:rFonts w:ascii="Times New Roman" w:hAnsi="Times New Roman" w:eastAsia="Times New Roman" w:cs="Times New Roman"/>
 <w:sz w:val="24"/>
 <w:szCs w:val="24"/>
 </w:rPr>
@@ -1123,6 +1121,7 @@ function wordDraftStylesXml(): string {
 <w:rPr>
 <w:b/>
 <w:bCs/>
+<w:rFonts w:ascii="Times New Roman" w:hAnsi="Times New Roman" w:eastAsia="Times New Roman" w:cs="Times New Roman"/>
 <w:sz w:val="21"/>
 <w:szCs w:val="21"/>
 </w:rPr>
@@ -1135,6 +1134,7 @@ function wordDraftStylesXml(): string {
 <w:jc w:val="left"/>
 </w:pPr>
 <w:rPr>
+<w:rFonts w:ascii="Times New Roman" w:hAnsi="Times New Roman" w:eastAsia="Times New Roman" w:cs="Times New Roman"/>
 <w:sz w:val="21"/>
 <w:szCs w:val="21"/>
 </w:rPr>
@@ -1174,6 +1174,45 @@ function wordDraftDocumentRelsXml(): string {
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"/>`;
 }
 
+function appendWordDraftArchiveEntries(archive: ReturnType<typeof archiver>, content: string): void {
+  archive.append(wordDraftContentTypesXml(), { name: '[Content_Types].xml' });
+  archive.append(wordDraftRootRelsXml(), { name: '_rels/.rels' });
+  archive.append(buildWordDraftDocumentXml(content), { name: 'word/document.xml' });
+  archive.append(buildWordDraftStylesXml(), { name: 'word/styles.xml' });
+  archive.append(wordDraftSettingsXml(), { name: 'word/settings.xml' });
+  archive.append(wordDraftDocumentRelsXml(), { name: 'word/_rels/document.xml.rels' });
+}
+
+export function buildWordDraftDocxBuffer(content: string): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    const archive = archiver('zip', { zlib: { level: 9 } });
+    const chunks: Buffer[] = [];
+
+    archive.on('data', (chunk: Buffer | Uint8Array) => {
+      chunks.push(Buffer.from(chunk));
+    });
+    archive.on('end', () => resolve(Buffer.concat(chunks)));
+    archive.on('error', reject);
+
+    appendWordDraftArchiveEntries(archive, content);
+    void archive.finalize().catch(reject);
+  });
+}
+
+export async function writeWordDraftDocx(filePath: string, content: string): Promise<void> {
+  const resolvedPath = path.resolve(String(filePath || '').trim());
+  if (!resolvedPath || path.extname(resolvedPath).toLowerCase() !== '.docx') {
+    throw new Error('Word 草稿输出路径必须是 .docx 文件');
+  }
+  if (!String(content || '').trim()) {
+    throw new Error('草稿内容为空，无法生成 Word 文件');
+  }
+
+  await mkdir(path.dirname(resolvedPath), { recursive: true });
+  const buffer = await buildWordDraftDocxBuffer(content);
+  await writeFile(resolvedPath, buffer);
+}
+
 export function sendWordDraftDocx(res: Response, content: string): void {
   const archive = archiver('zip', { zlib: { level: 9 } });
 
@@ -1188,11 +1227,6 @@ export function sendWordDraftDocx(res: Response, content: string): void {
   res.setHeader('Content-Disposition', 'attachment; filename="paper-draft.docx"');
 
   archive.pipe(res);
-  archive.append(wordDraftContentTypesXml(), { name: '[Content_Types].xml' });
-  archive.append(wordDraftRootRelsXml(), { name: '_rels/.rels' });
-  archive.append(buildWordDraftDocumentXml(content), { name: 'word/document.xml' });
-  archive.append(wordDraftStylesXml(), { name: 'word/styles.xml' });
-  archive.append(wordDraftSettingsXml(), { name: 'word/settings.xml' });
-  archive.append(wordDraftDocumentRelsXml(), { name: 'word/_rels/document.xml.rels' });
+  appendWordDraftArchiveEntries(archive, content);
   void archive.finalize();
 }

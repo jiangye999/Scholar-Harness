@@ -428,7 +428,7 @@ export default function RegisterPage() {
   };
 
   return (
-    <div className="min-h-screen bg-white py-12 px-4 sm:px-6 lg:px-8">
+    <div className="min-h-screen bg-white py-12 px-4 text-gray-900 sm:px-6 lg:px-8">
       <div className="mx-auto grid w-full max-w-6xl items-start gap-10 lg:grid-cols-[0.95fr_1.05fr]">
         <aside className="space-y-6 lg:sticky lg:top-10">
           <div className="space-y-3">

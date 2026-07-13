@@ -3,7 +3,7 @@
  * 在渲染进程和主进程之间建立安全的通信桥梁
  */
 
-import { contextBridge, ipcRenderer, shell } from 'electron';
+import { contextBridge, ipcRenderer, shell, webUtils } from 'electron';
 
 // 暴露给渲染进程的 API
 contextBridge.exposeInMainWorld('electronAPI', {
@@ -22,6 +22,15 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // 在系统文件管理器中定位本地文件
   openContainingFolder: (targetPath: string) =>
     ipcRenderer.invoke('open-containing-folder', targetPath),
+
+  // Electron 32+ 不再可靠地暴露 File.path；通过 webUtils 获取拖拽/选择文件的真实本地路径。
+  getPathForFile: (file: Parameters<typeof webUtils.getPathForFile>[0]) => {
+    try {
+      return webUtils.getPathForFile(file);
+    } catch {
+      return '';
+    }
+  },
   
   // 监听登录错误
   onLoginError: (callback: (error: string) => void) => {
@@ -153,6 +162,7 @@ export interface ElectronAPI {
   openExternal: (url: string) => Promise<void>;
   openPath: (targetPath: string) => Promise<{ success: boolean; error?: string }>;
   openContainingFolder: (targetPath: string) => Promise<{ success: boolean; error?: string }>;
+  getPathForFile: (file: Parameters<typeof webUtils.getPathForFile>[0]) => string;
   onLoginError: (callback: (error: string) => void) => void;
   removeLoginErrorListener: () => void;
   checkActivation: () => Promise<{ valid: boolean; message: string }>;

@@ -2,6 +2,29 @@ export interface APIClient {
   chat(options: ChatOptions): Promise<string>;
 }
 
+export interface CodexBridgeToolDefinition {
+  type: 'function';
+  function: {
+    name: string;
+    description?: string;
+    parameters?: Record<string, unknown>;
+  };
+}
+
+export interface CodexBridgeToolCall {
+  id: string;
+  type: 'function';
+  function: {
+    name: string;
+    arguments: string;
+  };
+}
+
+export interface CodexBridgeToolSet {
+  definitions: CodexBridgeToolDefinition[];
+  execute: (call: CodexBridgeToolCall) => Promise<unknown>;
+}
+
 /**
  * 单个 Agent 的 API 配置
  */
@@ -16,6 +39,8 @@ export interface AgentApiConfig {
 export interface ChatOptions {
   model?: string;
   messages: Message[];
+  userId?: string;
+  conversationId?: string | null;
   temperature?: number;
   maxTokens?: number;
   onProgress?: (chunk: string) => void;
@@ -43,6 +68,71 @@ export interface ChatOptions {
    * 图片类任务应使用附件而不是只把路径写进 prompt。
    */
   codexImages?: string[];
+  /**
+   * OpenAI-compatible 视觉模型可读取的图片附件路径。
+   * 本地服务会把这些路径转为 data URL 后放入 image_url content part。
+   */
+  visionImages?: string[];
+  /**
+   * 可自动识别的 Agent Skill 紧凑目录。API provider 通过原生 load_skill
+   * 工具加载；Codex CLI 通过目录中的入口路径使用自身文件工具读取。
+   */
+  agentSkillCatalogPrompt?: string;
+  /** Codex CLI 首轮需要授权读取的 Skill 包和用户 Skill 镜像目录。 */
+  agentSkillRoots?: string[];
+  /** Codex resume 轮次需要重新附加的用户显式斜杠 Skill 内容。 */
+  explicitAgentSkillPrompt?: string;
+  /**
+   * 用户授权的本地工作目录。Codex 通过 --cd/--add-dir 访问；
+   * 小牛马/大牛马通过后端原生工具循环访问。
+   */
+  workspaceDirectory?: {
+    root?: string;
+    path?: string;
+    permission?: 'read-only' | 'workspace-write' | 'danger-full-access';
+    aiWorkRoot?: string;
+    safeWorkRoot?: string;
+  };
+  queryEnvelope?: {
+    id?: string;
+    sessionId?: string;
+    text?: string;
+    originalText?: string;
+    delivery?: 'steer' | 'queue';
+    provider?: 'browser' | 'api' | 'primary' | 'secondary' | 'codex' | 'auto';
+    parts?: unknown[];
+    workspace?: {
+      root?: string;
+      path?: string;
+      permission?: 'read-only' | 'workspace-write' | 'danger-full-access';
+    };
+    contextFlags?: Record<string, boolean>;
+    createdAt?: string;
+  };
+  /** Lightweight page state needed by Codex resume turns. */
+  draftContext?: {
+    articleWritingProgress?: {
+      available?: boolean;
+      completedChapterCount?: number;
+      totalChapterCount?: number;
+      totalSubsectionCount?: number;
+      activeTarget?: {
+        chapterKey?: string;
+        chapterTitle?: string;
+        subsectionId?: string;
+        subsectionTitle?: string;
+        subsectionIndex?: number;
+      } | null;
+    };
+    [key: string]: unknown;
+  };
+  /** Recent Scholar Harness-visible turns, including API fallback output not present in a Codex thread. */
+  conversationHandoff?: Array<{
+    role: 'user' | 'assistant' | 'system';
+    content: string;
+  }>;
+  /** Codex App Server 专用的 Scholar Harness 原生工具桥；API provider 不读取此字段。 */
+  codexToolSet?: CodexBridgeToolSet;
   /**
    * 小牛马 API 配置（来自前端 ⚙️ API 设置）
    * 当 forceProvider='api' 或 'secondary' 时优先使用这些配置

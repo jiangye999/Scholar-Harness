@@ -46,6 +46,14 @@ export interface OpenProjectResult {
   clientState?: unknown;
 }
 
+export interface CloneProjectResult {
+  project: ProjectSummary;
+  sourceProjectId: string;
+  copiedProjectDir: string;
+  savedSourceProjectId?: string;
+  savedSourceProjectName?: string;
+}
+
 export interface CurrentProjectInfo {
   projectId?: string;
   name?: string;
@@ -513,6 +521,59 @@ export class ProjectManager {
       savedCurrentProjectName: savedCurrentProject?.savedExistingProjectName,
       restoredPaths,
       clientState,
+    };
+  }
+
+  cloneProject(projectId: string, options: NewProjectOptions): CloneProjectResult {
+    const safeProjectId = this.validateProjectId(projectId);
+    const sourceProjectDir = this.getProjectDir(safeProjectId);
+    const sourceManifest = this.getProjectManifest(safeProjectId);
+    const currentProject = this.getCurrentProject();
+    let savedSource: NewProjectResult | null = null;
+
+    if (currentProject.isArchivedProject && currentProject.projectId === safeProjectId) {
+      savedSource = this.saveCurrentWorkspaceToProject(
+        safeProjectId,
+        options,
+        `Saved source project ${safeProjectId} before cloning.`,
+      );
+    }
+
+    const cloneProjectId = this.createProjectId();
+    const cloneProjectDir = this.getProjectDir(cloneProjectId);
+    fs.cpSync(sourceProjectDir, cloneProjectDir, { recursive: true, force: true });
+
+    const now = new Date().toISOString();
+    const cloneName = options.name?.trim() || `${sourceManifest.name || safeProjectId} 副本`;
+    const cloneManifest: ProjectManifest = {
+      ...sourceManifest,
+      projectId: cloneProjectId,
+      name: cloneName,
+      userId: options.userId || sourceManifest.userId || 'web-user',
+      archivedAt: now,
+      lastSavedAt: now,
+      notes: `Cloned from ${safeProjectId} at ${now}. ${sourceManifest.notes || ''}`.trim(),
+      writingProfileId: normalizeProjectWritingProfileId(sourceManifest.writingProfileId),
+    };
+    this.writeProjectManifest(cloneProjectId, cloneManifest);
+
+    logger.info(`[Project] Cloned ${safeProjectId} to ${cloneProjectId}`);
+
+    const profile = getProjectWritingProfile(cloneManifest.writingProfileId);
+    return {
+      sourceProjectId: safeProjectId,
+      copiedProjectDir: cloneProjectDir,
+      savedSourceProjectId: savedSource?.projectId,
+      savedSourceProjectName: savedSource?.savedExistingProjectName,
+      project: {
+        projectId: cloneProjectId,
+        name: cloneManifest.name,
+        userId: cloneManifest.userId,
+        archivedAt: cloneManifest.archivedAt,
+        projectDir: cloneProjectDir,
+        writingProfileId: profile.id,
+        writingProfileLabel: profile.label,
+      },
     };
   }
 

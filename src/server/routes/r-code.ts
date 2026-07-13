@@ -18,6 +18,7 @@ import * as os from 'os';
 import { z } from 'zod';
 import { logger } from '../../utils/logger';
 import { getDataDir, getMemoryDir, sanitizeUserId } from '../../utils/paths';
+import { buildToolRuntimeEnv } from '../../utils/tool-runtime-env';
 import { researchSessionManager } from '../../research/research-session-manager';
 
 const router = Router();
@@ -975,6 +976,25 @@ ${packageList}
 - 对 multcompView/agricolae/emmeans/ggpubr/ggsignif/rstatix 等可选包，默认不要安装；缺包时跳过对应显著性字母/括号，或用 base R + ggplot2 绘制已经真实存在的标注。`;
 }
 
+function buildTreatmentPalettePromptSection(treatmentPaletteConfig?: string): string {
+  const config = typeof treatmentPaletteConfig === 'string' ? treatmentPaletteConfig.trim().slice(0, 12000) : '';
+  if (!config) return '';
+  return `## 处理/分组颜色一致性（最高优先级）
+
+前端已让用户确认或采用系统推荐的顶刊常用处理配色。生成或修改 R 代码时必须执行下面的颜色配置，不要让 ggplot 使用默认灰色、默认离散色或随机颜色。
+
+\`\`\`json
+${config}
+\`\`\`
+
+硬性要求：
+- 如果配置中有 \`variable\`，该变量就是优先的颜色/填充分组变量；如果列名清洗后发生变化，必须用 name_map 找到对应清洗列名。
+- 如果配置中有 \`assignments\`，必须在 R 代码中定义命名向量，例如 \`scholar_user_palette <- c("Control" = "#0072B2", "Treatment" = "#D55E00")\`。
+- 所有涉及同一处理/组别的 \`color\`、\`colour\`、\`fill\` scale 都必须使用同一命名向量，优先使用 \`scholar_scale_color_manual(values = scholar_user_palette)\`、\`scholar_scale_colour_manual(values = scholar_user_palette)\` 和 \`scholar_scale_fill_manual(values = scholar_user_palette)\`。
+- 多张图、多面板图、显著性标注和图例中，同一处理名称必须保持同一个 HEX 颜色。
+- 如果实际数据出现未列出的新增水平，只能从配置的推荐色板或 Okabe-Ito 色板追加颜色，不能改变已列出处理的颜色。`;
+}
+
 /**
  * 构建 AI 提示词
  */
@@ -988,6 +1008,7 @@ function buildRCodePrompt(
   themeCode?: string,
   themeId?: string,
   dataAnalysisContext?: DataAnalysisRContext,
+  treatmentPaletteConfig?: string,
   rPackageMemory?: RPackageMemory | null
 ): string {
   const columnInfo = dataStructure.columns.map(col => 
@@ -1023,6 +1044,7 @@ ${normalizedThemeCode}
 `;
   const themeSkillSection = buildThemeSkillSection(themeId);
   const linkedAnalysisSection = buildLinkedDataAnalysisPromptSection(dataAnalysisContext);
+  const treatmentPaletteSection = buildTreatmentPalettePromptSection(treatmentPaletteConfig);
 
   return `你是一个专业的 R 语言数据可视化专家。请根据用户提供的数据结构和作图需求，生成完整的、可直接运行的 R 语言作图代码。
 
@@ -1047,6 +1069,9 @@ ${linkedAnalysisSection}
 **分析类型**: ${analysisType}
 **作图主题**: ${getThemeDisplayName(themeId)}
 **额外要求**: ${customRequirements || '无特殊要求'}
+
+${treatmentPaletteSection ? `${treatmentPaletteSection}
+` : ''}
 
 ${themeSkillSection ? `${themeSkillSection}
 ` : ''}
@@ -1697,7 +1722,7 @@ function runProcess(command: string, args: string[], cwd: string, timeoutMs: num
       cwd,
       shell: false,
       windowsHide: true,
-      env: process.env,
+      env: buildToolRuntimeEnv(process.env),
     });
     let stdout = '';
     let stderr = '';
@@ -1783,6 +1808,7 @@ async function collectRArtifacts(rootDir: string, userId: string, jobId: string)
         size: stat.size,
         url: `/api/r-code/artifact/${encodeURIComponent(userId)}/${encodeURIComponent(jobId)}?file=${encodeURIComponent(relativePath)}`,
         kind: getRArtifactKind(ext),
+        absolutePath: fullPath,
       });
     }
   }
@@ -2631,6 +2657,9 @@ router.post('/execute', upload.single('file'), async (req, res) => {
 router.get('/artifact/:userId/:jobId', (req, res) => {
   try {
     const target = resolveRArtifactPath(req.params.userId, req.params.jobId, req.query.file);
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
     res.sendFile(target);
   } catch (error) {
     res.status(400).json({ success: false, error: (error as Error).message });
@@ -2711,18 +2740,42 @@ router.post('/generate', upload.single('file'), async (req, res) => {
       analysisResult,
       analysisSelections,
       analysisSignificance,
-      researchSessionId
+      treatmentPaletteConfig,
+      researchSessionId,
+      sourceDataFilePath
     } = req.body;
 
     // 调试日志
-    logger.info(`[RCode] Request body fields: ${JSON.stringify({ userId, chartType, analysisType, workDir, dataFilename, themeId })}`);
+    logger.info(`[RCode] Request body fields: ${JSON.stringify({ userId, chartType, analysisType, workDir, dataFilename, themeId, sourceDataFilePath: sourceDataFilePath ? 'set' : '' })}`);
     logger.info(`[RCode] File received: ${file ? file.originalname : 'NO FILE'}`);
     logger.info(`[RCode] Theme code provided: ${themeCode ? 'YES' : 'NO'}`);
 
-    if (!file) {
+    let dataBuffer: Buffer | null = file?.buffer || null;
+    let originalFilename = file?.originalname || '';
+    let resolvedSourceDataFile = '';
+    if (!dataBuffer && typeof sourceDataFilePath === 'string' && sourceDataFilePath.trim()) {
+      resolvedSourceDataFile = path.resolve(sourceDataFilePath.trim());
+      if (!existsSync(resolvedSourceDataFile)) {
+        return res.status(400).json({
+          success: false,
+          error: `数据文件不存在：${resolvedSourceDataFile}`,
+        });
+      }
+      const ext = path.extname(resolvedSourceDataFile).toLowerCase();
+      if (!['.xlsx', '.xls', '.csv', '.tsv', '.txt'].includes(ext)) {
+        return res.status(400).json({
+          success: false,
+          error: `当前 R 作图生成仅支持 Excel/CSV/TXT/TSV 数据文件：${path.basename(resolvedSourceDataFile)}`,
+        });
+      }
+      dataBuffer = await fs.readFile(resolvedSourceDataFile);
+      originalFilename = path.basename(resolvedSourceDataFile);
+    }
+
+    if (!dataBuffer || !originalFilename) {
       return res.status(400).json({
         success: false,
-        error: '请上传 Excel 或 CSV 文件',
+        error: '请上传 Excel/CSV 文件，或提供 sourceDataFilePath',
       });
     }
 
@@ -2741,16 +2794,16 @@ router.post('/generate', upload.single('file'), async (req, res) => {
       });
     }
 
-    logger.info(`[RCode] Processing file: ${file.originalname} for user: ${userId}`);
+    logger.info(`[RCode] Processing file: ${originalFilename} for user: ${userId}${resolvedSourceDataFile ? ` | source=${resolvedSourceDataFile}` : ''}`);
     logger.info(`[RCode] Chart type: ${chartType}, Analysis: ${analysisType}`);
     logger.info(`[RCode] API URL: ${apiUrl}, Model: ${model}`);
 
     // 解析 Excel 数据结构
-    const dataStructure = await parseExcelStructure(file.buffer, file.originalname);
+    const dataStructure = await parseExcelStructure(dataBuffer, originalFilename);
     logger.info(`[RCode] Parsed ${dataStructure.rowCount} rows, ${dataStructure.columns.length} columns`);
     const effectiveDataFilename = typeof dataFilename === 'string' && dataFilename.trim()
       ? dataFilename.trim()
-      : file.originalname;
+      : originalFilename;
     const rPackageMemory = await getRPackageMemoryForPrompt(userId);
     logger.info(`[RCode] R package memory refreshed: ${rPackageMemory.packageCount} packages${rPackageMemory.error ? `, ${rPackageMemory.error}` : ''}`);
 
@@ -2770,6 +2823,7 @@ router.post('/generate', upload.single('file'), async (req, res) => {
         analysisSelections: typeof analysisSelections === 'string' ? analysisSelections : undefined,
         analysisSignificance: typeof analysisSignificance === 'string' ? analysisSignificance : undefined,
       },
+      typeof treatmentPaletteConfig === 'string' ? treatmentPaletteConfig : undefined,
       rPackageMemory
     );
 
@@ -2807,7 +2861,7 @@ router.post('/generate', upload.single('file'), async (req, res) => {
     const researchSession = await recordRGenerationResearchProvenance({
       userId: sanitizeUserId(userId || 'web-user'),
       researchSessionId: typeof researchSessionId === 'string' ? researchSessionId : undefined,
-      filename: file.originalname,
+      filename: originalFilename,
       dataFilename: effectiveDataFilename,
       chartType,
       analysisType,
@@ -2838,8 +2892,9 @@ router.post('/generate', upload.single('file'), async (req, res) => {
           previewRowCount: dataStructure.previewRowCount,
           sheetNames: dataStructure.sheetNames,
         },
-        filename: file.originalname,
+        filename: originalFilename,
         dataFilename: effectiveDataFilename,
+        sourceDataFilePath: resolvedSourceDataFile || undefined,
         rPackageMemory: summarizeRPackageMemoryForResponse(rPackageMemory),
         researchSession,
       },
@@ -2905,7 +2960,7 @@ router.post('/save', async (req, res) => {
  */
 router.post('/debug', upload.none(), async (req, res) => {
   try {
-    const { userId, apiUrl, apiKey, model, codePath, existingCode: existingCodeBody, customRequirements, dataFilename, themeCode, themeId } = req.body;
+    const { userId, apiUrl, apiKey, model, codePath, existingCode: existingCodeBody, customRequirements, dataFilename, themeCode, themeId, treatmentPaletteConfig } = req.body;
 
     // 调试日志
     logger.info(`[RCodeDebug] Request for user: ${userId}`);
@@ -2965,6 +3020,7 @@ router.post('/debug', upload.none(), async (req, res) => {
     // 构建 AI 提示词（调试模式）
     const normalizedThemeCode = themeCode ? normalizeThemeCode(themeCode) : '';
     const themeSkillSection = buildThemeSkillSection(typeof themeId === 'string' ? themeId : undefined);
+    const treatmentPaletteSection = buildTreatmentPalettePromptSection(typeof treatmentPaletteConfig === 'string' ? treatmentPaletteConfig : undefined);
     const rPackageMemory = await getRPackageMemoryForPrompt(userId);
     logger.info(`[RCodeDebug] R package memory refreshed: ${rPackageMemory.packageCount} packages${rPackageMemory.error ? `, ${rPackageMemory.error}` : ''}`);
     const debugPrompt = `你是一个专业的 R 语言数据可视化专家。用户有一段已有的 R 作图代码，需要根据具体要求进行调整。
@@ -2978,6 +3034,9 @@ ${existingCode}
 ## 用户需求
 
 ${customRequirements}
+
+${treatmentPaletteSection ? `${treatmentPaletteSection}
+` : ''}
 
 ## 附加配置
 

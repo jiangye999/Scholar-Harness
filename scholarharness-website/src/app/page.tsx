@@ -15,10 +15,11 @@ const navItems = [
   { label: "帮助中心", href: "/help" },
 ];
 
-const windowsDownloadHref = "/downloads/scholar-harness-setup-1.0.4.exe";
+const windowsDownloadHref = "/downloads/scholar-harness-setup-1.0.6.exe";
 const macArm64DownloadHref = "/downloads/scholar-harness-1.0.4-arm64.dmg";
 const macX64DownloadHref = "/downloads/scholar-harness-1.0.4-x64.dmg";
 const manualDownloadHref = "/downloads/scholarharness-user-manual.pdf";
+const apiBaseUrl = (process.env.NEXT_PUBLIC_API_BASE_URL || "/api/v1").replace(/\/$/, "");
 
 const featureVideos: Record<string, { src: string; title: string }> = {
   "auto-research": {
@@ -58,6 +59,13 @@ const featureVideos: Record<string, { src: string; title: string }> = {
 interface AuthState {
   isLoggedIn: boolean;
   user: User | null;
+}
+
+interface DownloadStatsState {
+  loaded: boolean;
+  pageViewTotalCount: number | null;
+  installerTotalCount: number | null;
+  assetCounts: Record<string, number>;
 }
 
 interface OrbitItem {
@@ -111,9 +119,20 @@ function getOrbitPosition(index: number) {
   };
 }
 
+function formatDownloadCount(value: number | null): string {
+  if (value === null || !Number.isFinite(value)) return "";
+  return new Intl.NumberFormat("zh-CN").format(value);
+}
+
 export default function Home() {
   const [authState, setAuthState] = useState<AuthState>({ isLoggedIn: false, user: null });
   const [activeFeatureSlug, setActiveFeatureSlug] = useState<string | null>(null);
+  const [downloadStats, setDownloadStats] = useState<DownloadStatsState>({
+    loaded: false,
+    pageViewTotalCount: null,
+    installerTotalCount: null,
+    assetCounts: {},
+  });
   const router = useRouter();
 
   useEffect(() => {
@@ -128,10 +147,83 @@ export default function Home() {
     return () => window.clearTimeout(timer);
   }, []);
 
+  useEffect(() => {
+    let cancelled = false;
+    const trackPageView = () => {
+      const storageKey = "scholarharness_home_page_view_tracked";
+      try {
+        if (window.sessionStorage.getItem(storageKey) === "1") return;
+        window.sessionStorage.setItem(storageKey, "1");
+      } catch {
+        // 如果 sessionStorage 不可用，仍允许后端记录一次页面加载。
+      }
+
+      fetch(`${apiBaseUrl}/downloads/page-view`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pageKey: "home", path: window.location.pathname }),
+        keepalive: true,
+      })
+        .then((response) => (response.ok ? response.json() : null))
+        .then((data) => {
+          if (cancelled || !data?.success || !data.page) return;
+          setDownloadStats((current) => ({
+            ...current,
+            pageViewTotalCount: Number(data.page.totalCount || 0),
+          }));
+        })
+        .catch(() => {});
+    };
+
+    fetch(`${apiBaseUrl}/downloads/stats`, { cache: "no-store" })
+      .then((response) => (response.ok ? response.json() : null))
+      .then((data) => {
+        if (cancelled || !data?.success || !Array.isArray(data.assets)) return;
+        const assetCounts: Record<string, number> = {};
+        for (const asset of data.assets) {
+          if (asset?.key) assetCounts[String(asset.key)] = Number(asset.totalCount || 0);
+        }
+        setDownloadStats({
+          loaded: true,
+          pageViewTotalCount: Number(data.pageViewTotalCount || data.pageViews?.totalCount || 0),
+          installerTotalCount: Number(data.installerTotalCount || 0),
+          assetCounts,
+        });
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setDownloadStats((current) => ({ ...current, loaded: false }));
+        }
+      });
+
+    trackPageView();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const handleLogout = () => {
     logout();
     setAuthState({ isLoggedIn: false, user: null });
     router.refresh();
+  };
+
+  const trackDownload = (assetKey: string) => {
+    const payload = JSON.stringify({ assetKey });
+    const url = `${apiBaseUrl}/downloads/track`;
+
+    if (navigator.sendBeacon) {
+      navigator.sendBeacon(url, new Blob([payload], { type: "application/json" }));
+      return;
+    }
+
+    fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: payload,
+      keepalive: true,
+    }).catch(() => {});
   };
 
   const { isLoggedIn, user } = authState;
@@ -139,6 +231,12 @@ export default function Home() {
   const primaryCtaLabel = isLoggedIn ? "进入控制台" : "申请内测";
   const activeFeature = orbitItems.find((item) => item.slug === activeFeatureSlug) || null;
   const activeVideo = activeFeature ? featureVideos[activeFeature.slug] : null;
+  const installerDownloadText = downloadStats.loaded && downloadStats.installerTotalCount !== null
+    ? formatDownloadCount(downloadStats.installerTotalCount)
+    : "";
+  const pageViewText = downloadStats.pageViewTotalCount !== null
+    ? formatDownloadCount(downloadStats.pageViewTotalCount)
+    : "";
 
   return (
     <div className="min-h-screen scroll-smooth bg-[#050706] text-[#f4f7f2]">
@@ -238,6 +336,7 @@ export default function Home() {
                 <a
                   href={manualDownloadHref}
                   download
+                  onClick={() => trackDownload("manual")}
                   className="inline-flex min-h-[52px] items-center justify-center gap-2 rounded-lg border border-[#5ee0c4]/35 bg-[#0b100d]/90 px-5 py-3 text-sm font-semibold text-[#5ee0c4] transition hover:border-[#5ee0c4] hover:bg-[#111813]"
                 >
                   使用说明
@@ -246,6 +345,7 @@ export default function Home() {
                 <a
                   href={windowsDownloadHref}
                   download
+                  onClick={() => trackDownload("windows")}
                   className="inline-flex min-h-[52px] items-center justify-center gap-2 rounded-lg border border-[#5ee0c4]/35 bg-[#0b100d]/90 px-5 py-3 text-sm font-semibold text-[#5ee0c4] transition hover:border-[#5ee0c4] hover:bg-[#111813]"
                 >
                   下载 Windows
@@ -254,6 +354,7 @@ export default function Home() {
                 <a
                   href={macArm64DownloadHref}
                   download
+                  onClick={() => trackDownload("mac-arm64")}
                   className="inline-flex min-h-[52px] items-center justify-center gap-2 rounded-lg border border-[#5ee0c4]/35 bg-[#0b100d]/90 px-5 py-3 text-sm font-semibold text-[#5ee0c4] transition hover:border-[#5ee0c4] hover:bg-[#111813]"
                 >
                   Mac M 系列
@@ -262,11 +363,33 @@ export default function Home() {
                 <a
                   href={macX64DownloadHref}
                   download
+                  onClick={() => trackDownload("mac-x64")}
                   className="inline-flex min-h-[52px] items-center justify-center gap-2 rounded-lg border border-[#5ee0c4]/35 bg-[#0b100d]/90 px-5 py-3 text-sm font-semibold text-[#5ee0c4] transition hover:border-[#5ee0c4] hover:bg-[#111813]"
                 >
                   Mac Intel
                   <FeatureIcon name="apple" className="h-4 w-4" />
                 </a>
+              </div>
+              <div className="mt-4 flex flex-wrap items-center gap-2 text-xs font-medium text-[#9faaa4]">
+                <span className="rounded-lg border border-white/10 bg-[#0b100d]/78 px-3 py-2 text-[#dbe4df]">
+                  网页浏览量 {pageViewText || "统计中"} 次
+                </span>
+                <span className="rounded-lg border border-white/10 bg-[#0b100d]/78 px-3 py-2 text-[#dbe4df]">
+                  安装包累计下载 {installerDownloadText || "统计中"} 次
+                </span>
+                {downloadStats.loaded ? (
+                  <>
+                    <span className="rounded-lg border border-white/10 bg-[#0b100d]/62 px-3 py-2">
+                      Windows {formatDownloadCount(downloadStats.assetCounts.windows ?? 0)}
+                    </span>
+                    <span className="rounded-lg border border-white/10 bg-[#0b100d]/62 px-3 py-2">
+                      Mac M {formatDownloadCount(downloadStats.assetCounts["mac-arm64"] ?? 0)}
+                    </span>
+                    <span className="rounded-lg border border-white/10 bg-[#0b100d]/62 px-3 py-2">
+                      Mac Intel {formatDownloadCount(downloadStats.assetCounts["mac-x64"] ?? 0)}
+                    </span>
+                  </>
+                ) : null}
               </div>
             </div>
           </div>

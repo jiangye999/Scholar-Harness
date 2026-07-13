@@ -2272,11 +2272,18 @@ router.get('/detail/:userId', async (req: Request, res: Response) => {
     
     // 2. 论文草稿
     const draftsDir = path.join(dataDir, 'sessions', userId, 'drafts');
-    const webUserDraftsDir = path.join(dataDir, 'sessions', 'web-user', 'drafts');
-    const draftsCheck = checkPathWithFallback(draftsDir, webUserDraftsDir);
+    const draftsCheck = {
+      foundPath: draftsDir,
+      exists: fs.existsSync(draftsDir),
+      sourceUserId: userId,
+    };
     
     if (draftsCheck.exists) {
-      const files = fs.readdirSync(draftsCheck.foundPath!).filter(f => f.endsWith('.json'));
+      const directoryFiles = fs.readdirSync(draftsCheck.foundPath!);
+      const txtFiles = directoryFiles.filter(file => file.toLowerCase().endsWith('.txt'));
+      const files = txtFiles.length > 0
+        ? txtFiles
+        : directoryFiles.filter(file => file.toLowerCase().endsWith('.json'));
       let totalSize = 0;
       for (const file of files) {
         const filePath = path.join(draftsCheck.foundPath!, file);

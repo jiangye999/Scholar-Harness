@@ -34,8 +34,23 @@ import {
   buildAnchoredUserMessage,
   getPromptAnchorDiagnostics,
 } from "../utils/prompt-request-anchor";
-import { SessionStore, sanitizeDraftChapterName } from "../storage/session-store";
+import { DraftConflictError, SessionStore, sanitizeDraftChapterName } from "../storage/session-store";
+import { normalizeAuthorYearCitationText } from "../utils/citation-format";
+import { parseDraftSaveBlocks } from "../utils/draft-save-block";
+import {
+  extractEmbeddedTitleFromAbstractDraft,
+  mergeDraftChapterContent,
+  type DraftSaveMode,
+} from "../utils/draft-content-merger";
 import { BackupManager } from "../utils/backup-manager";
+import {
+  createDynamicDraftChapter,
+  findAllowedDraftChapter,
+  includeCreatableCanonicalDraftChapters,
+  normalizeAllowedDraftChapters,
+  normalizeDraftSection,
+  resolveDraftSaveTarget,
+} from "../utils/draft-section-classifier";
 import { ProjectManager } from "../utils/project-manager";
 import { AutoResearchManager } from "../utils/autoresearch-manager";
 import { PdfWikiManager, type PdfWikiEntry, type PdfWikiReference, type PdfWikiSentencePoint, type PdfWikiSourcePdf, type PdfWikiStore, type PdfWikiViewpoint } from "../utils/pdf-wiki-manager";
@@ -60,6 +75,16 @@ import {
   getUserLiteratureTxtPath,
   sanitizeUserId,
 } from "../utils/paths";
+import {
+  normalizeDraftChapterContent,
+  normalizeNestedDraftSectionMarkup,
+} from "../utils/draft-chapter-normalizer";
+import {
+  extractDraftSubsectionContent,
+  upsertDraftSubsectionContent,
+  type DraftSubsectionTarget,
+} from "../utils/draft-subsection-target";
+import { buildToolRuntimeEnv } from "../utils/tool-runtime-env";
 import { detectPdfFastTextStatus, isPdfFastTextAvailable } from "../utils/pdf-fast-text";
 import { extractPdfTextWithLiteParse, isLiteParseAvailable } from "../utils/pdf-liteparse";
 import { isPdfMarkerAvailable } from "../utils/pdf-marker";
@@ -94,6 +119,8 @@ import unifiedChatRoutes, { initializeUnifiedChatRoutes } from "./routes/unified
 import userSkillsRoutes from "./routes/user-skills";
 import experimentResultsRoutes from "./routes/experiment-results";
 import rCodeRoutes from "./routes/r-code";
+import pythonPluginRoutes from "./routes/python-plugin";
+import officePluginRoutes from "./routes/office-plugin";
 import dataAnalysisRoutes from "./routes/data-analysis";
 import { createDraftAssetsRouter, loadDraftFigureAssetsForUser } from "./routes/draft-assets";
 import ocrRoutes from "./routes/ocr";
@@ -108,6 +135,8 @@ import {
 import academicResearchRoutes from "./routes/academic-research";
 import projectMemoryRoutes from "./routes/project-memory";
 import { createResearchSessionRouter } from "./routes/research-session";
+import createSubmissionPrepRouter from "./routes/submission-prep";
+import { getAuthorizedLocalPreviewRoots } from "./services/local-preview-roots";
 import {
   createBibliometricsRouter,
   importBibliometricPlainTextForUser,
@@ -151,6 +180,8 @@ import {
 } from "../utils/retrieval-engine-manager";
 import {
   researchSessionManager,
+  type ResearchReviewerReport,
+  type ResearchSession,
   type ResearchSourceReference,
 } from "../research/research-session-manager";
 import {
@@ -173,7 +204,7 @@ import {
 // 导入认证守卫（用户认证与订阅验证）
 import { createAuthGuard, authGuardMiddleware } from "./auth-guard";
 // Bug 修复：导入 authGuard 单例初始化函数
-import { initAuthGuardSingleton } from "./auth-guard-singleton";
+import { initAuthGuardSingleton, resolveUserId } from "./auth-guard-singleton";
 
 // 使用统一的路径管理模块获取数据目录
 const dataDir = getDataDir();
@@ -2375,13 +2406,14 @@ async function callMetaAnalysisCodexAssistant(input: MetaAnalysisAssistantInput,
 }
 
 function spawnCodexCliProcessForPdfWiki(executable: string, args: string[]): ReturnType<typeof spawn> {
+  const env = buildToolRuntimeEnv(process.env);
   const isWindowsPowerShellScript = process.platform === 'win32' && /\.ps1$/i.test(executable);
   if (isWindowsPowerShellScript) {
     return spawn('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', executable, ...args], {
       cwd: process.cwd(),
       shell: false,
       windowsHide: true,
-      env: process.env,
+      env,
     });
   }
 
@@ -2391,7 +2423,7 @@ function spawnCodexCliProcessForPdfWiki(executable: string, args: string[]): Ret
       cwd: process.cwd(),
       shell: false,
       windowsHide: true,
-      env: process.env,
+      env,
     });
   }
 
@@ -2399,7 +2431,7 @@ function spawnCodexCliProcessForPdfWiki(executable: string, args: string[]): Ret
     cwd: process.cwd(),
     shell: false,
     windowsHide: true,
-    env: process.env,
+    env,
   });
 }
 
@@ -3093,6 +3125,7 @@ function stripLatexFormatting(latexContent: string): string {
 interface LitPaper {
   citationId?: number;
   title: string;
+  authors?: Array<{ name: string }> | string[];
   author: string;
   journal: string;
   year: string;
@@ -3108,15 +3141,20 @@ interface LitPaper {
  * 兼容 author(string) / authors(array) / keywords(string|array) / year(undefined)
  */
 function normalizePaper(raw: Record<string, unknown>): LitPaper {
-  // 归一化 author：优先 string.author > array.authors 拼接 > 'Unknown'
-  let author = '';
-  if (typeof raw['author'] === 'string' && (raw['author'] as string).trim()) {
-    author = (raw['author'] as string).trim();
-  } else if (Array.isArray(raw['authors'])) {
-    author = (raw['authors'] as Array<unknown>)
+  const authors = Array.isArray(raw['authors'])
+    ? (raw['authors'] as Array<unknown>)
       .map((a: unknown) => typeof a === 'string' ? a : ((a as Record<string, unknown>)['name'] as string || ''))
+      .map((s: string) => s.trim())
       .filter((s: string) => s)
-      .join(', ');
+      .map((name: string) => ({ name }))
+    : [];
+
+  // 归一化 author：优先结构化 authors；没有时再用 string.author
+  let author = '';
+  if (authors.length > 0) {
+    author = authors.map(a => a.name).join(', ');
+  } else if (typeof raw['author'] === 'string' && (raw['author'] as string).trim()) {
+    author = (raw['author'] as string).trim();
   }
   if (!author) author = 'Unknown';
 
@@ -3136,6 +3174,7 @@ function normalizePaper(raw: Record<string, unknown>): LitPaper {
   return {
     citationId: typeof raw['citationId'] === 'number' ? raw['citationId'] : undefined,
     title: typeof raw['title'] === 'string' ? (raw['title'] as string).trim() : '',
+    authors: authors.length > 0 ? authors : undefined,
     author,
     journal: typeof raw['journal'] === 'string' ? (raw['journal'] as string).trim() : '',
     year,
@@ -3457,6 +3496,7 @@ function parseLiteratureToStructured(content: string): LitPaper[] {
       if (title && !title.startsWith('FN ') && !title.startsWith('VR ') && !title.startsWith('ER')) {
         papers.push({
           title,
+          authors: authors.map(name => ({ name })),
           author: authors.join(', '),
           journal,
           year,
@@ -4681,10 +4721,10 @@ ${taskHint}
 
 ## 回答要求
 1. 回答必须有文献依据
-2. **文内引用**：必须使用 "(作者，年份)" 格式引用文献，如 "(Wang et al., 2023)"
-3. **文末尾注**：文末必须列出所有参考文献的完整尾注信息，包含：作者、年份、标题、期刊、卷号、页码、DOI，格式如下：
-   - "[序号] 作者全名. (年份). 论文标题. 期刊名, 卷号(期号), 页码. DOI: xxx"
-   - 示例："[1] Smith, J. et al. (2023). Intervention effects on target outcomes in applied research. Journal of Applied Research, 12(3), 101-115. DOI: 10.0000/example.2023.001"
+2. **文内引用**：必须使用圆括号作者-年份格式，如 "(Zhang et al., 2026)"；必须写第一作者完整姓氏，禁止方括号以及 M、EW、JQ 等首字母作者
+3. **文末参考文献**：每条直接从完整作者信息开始，再列出年份、标题、期刊、卷期页码和 DOI；不得在条目前重复添加正文使用的圆括号作者-年份标签：
+   - "全部作者. (年份). 论文标题. 期刊名, 卷号(期号), 页码. DOI: xxx"
+   - 示例："Smith, J., Lee, A., Wang, H. (2023). Intervention effects on target outcomes in applied research. Journal of Applied Research, 12(3), 101-115. DOI: 10.0000/example.2023.001"
 4. 如果用户提供了文献，必须引用；不要编造引用
 5. 使用专业的学术表达
 6. 结构清晰，逻辑严密
@@ -4701,8 +4741,8 @@ content: |
 section: [章节名]
 references: |
 [参考文献完整列表]
-- [序号] 作者全名. (年份). 论文标题. 期刊名, 卷号(期号), 页码. DOI: xxx
-- 示例：[1] Smith, J. et al. (2023). Intervention effects on target outcomes in applied research. Journal of Applied Research, 12(3), 101-115. DOI: 10.0000/example.2023.001
+- 全部作者. (年份). 论文标题. 期刊名, 卷号(期号), 页码. DOI: xxx
+- 示例：Smith, J., Lee, A., Wang, H. (2023). Intervention effects on target outcomes in applied research. Journal of Applied Research, 12(3), 101-115. DOI: 10.0000/example.2023.001
 \`\`\`
 
 **重要**：references 字段必须列出本章节引用的所有文献完整信息，包括作者、年份、标题、期刊、卷号、页码、DOI。
@@ -4748,32 +4788,48 @@ references: |
       }
     );
     
-    const draftMatch = aiResponse.match(/```[\s\S]*?🔧 调用工具：save_draft[\s\S]*?```/);
-    if (draftMatch) {
-      const draftBlock = draftMatch[0];
-      const contentMatch = draftBlock.match(/content:\s*\|\s*([\s\S]*?)(?=\n\s*(?:section|references):)/);
-      const sectionMatch = draftBlock.match(/section:\s*(\w+)/);
-      
-      if (contentMatch && sectionMatch) {
-        let draftContent = contentMatch[1].trim();
-        const section = sectionMatch[1];
+    const draftSaveParseResult = parseDraftSaveBlocks(aiResponse);
+    for (const draftBlock of draftSaveParseResult.blocks) {
+        let draftContent = draftBlock.content;
+        const section = draftBlock.section;
+        const dynamicTarget = createDynamicDraftChapter(section);
+        const canonicalSection = dynamicTarget?.key || '';
         
-        draftContent = draftContent.replace(/^```/, '').replace(/```$/,'').trim();
+        draftContent = normalizeAuthorYearCitationText(
+          draftContent.replace(/^```/, '').replace(/```$/,'').trim()
+        );
+
+        if (!dynamicTarget) {
+          logger.warn(`[ChatProcessor] AI requested an invalid top-level draft chapter: ${section}`);
+          aiResponse = aiResponse.replace(
+            draftBlock.raw,
+            `\n⚠️ 未保存草稿：${section} 不是有效的顶级章节名称。\n`
+          );
+          continue;
+        }
         
         try {
           const { bibliography, stats } = generateBibliography(draftContent, literaturePapers);
           const finalContent = bibliography 
             ? `${draftContent}\n\n${bibliography}` 
             : draftContent;
-          await sessionStore.saveDraft(userId, section, finalContent);
+          const saveInfo = await saveDraftToCanonicalChapter(
+            userId,
+            canonicalSection,
+            finalContent,
+            'local-chat-save-draft',
+            `local-chat-${canonicalSection}`
+          );
           const bibInfo = stats.matched > 0 ? `（含参考文献: ${stats.matched}篇匹配/${stats.totalCitations}篇引用）` : '';
-          logger.info(`[ChatProcessor] Draft saved: ${section} for ${unifiedUserId}${bibInfo}`);
-          aiResponse = aiResponse.replace(draftMatch[0], `\n✅ 已保存到 ${section} 草稿${bibInfo}\n`);
+          logger.info(`[ChatProcessor] Draft saved: ${saveInfo.chapter} for ${unifiedUserId}${bibInfo}`);
+          aiResponse = aiResponse.replace(draftBlock.raw, `\n✅ 已保存到 ${saveInfo.chapter} 草稿 ${saveInfo.chapter}.txt${bibInfo}\n`);
         } catch (e) {
           logger.error("[ChatProcessor] Failed to save draft:", e);
-          aiResponse = aiResponse.replace(draftMatch[0], `\n⚠️ 草稿保存失败：${(e as Error).message}\n`);
+          aiResponse = aiResponse.replace(draftBlock.raw, `\n⚠️ 草稿保存失败：${(e as Error).message}\n`);
         }
-      }
+    }
+    if (draftSaveParseResult.markerCount > 0 && draftSaveParseResult.blocks.length === 0) {
+      aiResponse += '\n\n⚠️ 未保存草稿：检测到 save_draft 标记，但 content 或 section 字段缺失。';
     }
     
     // 捕获AI的句子检索工具调用
@@ -5612,8 +5668,21 @@ app.post('/api/cloud-prompts/prefetch', async (req: Request, res: Response) => {
 // 使用模块导出的单例 chatBridge，避免重复实例化导致多个 openclaw 进程
 chatBridge.loadConfig().then(() => {
   initializeChatBridgeRoutes(chatBridge, {
-    saveDraft: async (userId, section, content) => {
-      await sessionStore.saveDraft(userId, section, content);
+    saveDraft: async (userId, section, content, options) => {
+      if (!String(section || '').trim()) {
+        throw new Error('AI 未提供可映射的目标章节，已停止保存');
+      }
+      const rawDraftSection = sanitizeDraftChapterName(section);
+      await saveDraftToCanonicalChapter(
+        userId,
+        rawDraftSection,
+        content,
+        'ai-save-draft',
+        `ai-${getCanonicalOrdinaryDraftChapterName(rawDraftSection)}`,
+        options?.mode || 'merge',
+        options?.requireEnglishOnly === true,
+        options?.subsection
+      );
     },
     getDraftContext: getOrdinaryDraftContextForChat,
   });
@@ -5633,8 +5702,17 @@ app.use("/api/user-skills", chatUpload.none(), userSkillsRoutes);
 app.use("/api/unified", unifiedChatRoutes);
 app.use("/api/experiment-results", experimentResultsRoutes);
 app.use("/api/r-code", rCodeRoutes);
+app.use("/api/python-plugin", pythonPluginRoutes);
+app.use("/api/office-plugin", officePluginRoutes);
 app.use("/api/data-analysis", dataAnalysisRoutes);
-app.use("/api/draft-assets", createDraftAssetsRouter({ sessionStore }));
+app.use("/api/draft-assets", createDraftAssetsRouter({
+  sessionStore,
+  resolveUserId: async requestedUserId => resolveUserId(requestedUserId),
+  onDraftUpdated: async (userId, chapterKey) => {
+    await updateDraftProgressMemory(userId, chapterKey, 0, 'draft-figure');
+    await syncWholeDraftExportFile(userId, `figure-${sanitizeDraftChapterName(chapterKey)}`);
+  },
+}));
 app.use("/api/ocr", ocrRoutes);
 app.use("/api/ppt-master", pptMasterRoutes);
 app.use("/api/pdf-wiki/marker", pdfMarkerRoutes);
@@ -5645,11 +5723,147 @@ app.use("/api/meta-analysis", createMetaAnalysisRouter({
 }));
 app.use("/api/academic-research", academicResearchRoutes);
 app.use("/api/project-memory", projectMemoryRoutes);
+async function runResearchEnhancementAiReviewer(input: {
+  userId: string;
+  projectId: string;
+  session: ResearchSession;
+  report: ResearchReviewerReport;
+  artifactId?: string;
+}): Promise<{ markdown: string; provider: string; model: string }> {
+  const runtime = getDeepAnalysisSecondaryRuntimeConfig();
+  if (!runtime.configured || !runtime.apiUrl || !runtime.apiKey || !runtime.model) {
+    throw new Error("请先在配置里填写小牛马 API 地址、Key 和模型名");
+  }
+  const prompt = [
+    "你是 Scholar Harness 的 AI 审稿人 Agent。你需要在本地规则审稿结果基础上，给出更像真实审稿人的修改意见。",
+    "只根据提供的 session 摘要、本地规则发现、provenance/artifact 索引判断；不要编造不存在的文献、数据、图表或 DOI。",
+    "请用中文输出 Markdown。",
+    "必须包含：总体判断、Major concerns、Minor concerns、建议补充的分析/图表、引用与证据风险、投稿前优先级清单。",
+    "如果本地规则报告显示 provenance 或 artifact 很少，要明确指出当前审稿只是结构性审查，不代表内容质量已经通过。",
+    "",
+    "## 当前科研 session 摘要",
+    JSON.stringify(buildResearchEnhancementAiReviewContext(input.session, input.artifactId), null, 2),
+    "",
+    "## 本地规则审稿报告",
+    JSON.stringify({
+      id: input.report.id,
+      status: input.report.status,
+      score: input.report.score,
+      summary: input.report.summary,
+      checkedRecordCount: input.report.checkedRecordCount,
+      checkedArtifactCount: input.report.checkedArtifactCount,
+      findings: input.report.findings,
+    }, null, 2),
+  ].join("\n");
+
+  const markdown = await callChatCompletion(
+    {
+      apiUrl: runtime.apiUrl,
+      apiKey: runtime.apiKey,
+      defaultModel: runtime.model,
+      defaultTemperature: 0.25,
+      label: runtime.label || "小牛马",
+    },
+    {
+      model: runtime.model,
+      messages: [
+        { role: "system", content: "你是严谨、挑剔但务实的学术审稿人 Agent，只输出 Markdown 审稿意见。" },
+        { role: "user", content: prompt },
+      ],
+      temperature: 0.25,
+      maxTokens: 4500,
+    }
+  );
+
+  return {
+    markdown: normalizeResearchEnhancementMarkdown(markdown, `# AI 审稿人 Agent 报告\n\n本地规则报告：${input.report.id}`),
+    provider: runtime.label || "小牛马",
+    model: runtime.model,
+  };
+}
+
+function buildResearchEnhancementAiReviewContext(session: ResearchSession, artifactId?: string): Record<string, unknown> {
+  const targetArtifacts = artifactId
+    ? session.artifacts.filter(item => item.id === artifactId)
+    : session.artifacts;
+  const targetRecordIds = new Set(targetArtifacts.flatMap(item => item.provenanceRecordIds));
+  const targetProvenance = artifactId
+    ? session.provenance.filter(item => targetRecordIds.has(item.id))
+    : session.provenance;
+  return {
+    session: {
+      id: session.id,
+      title: session.title,
+      topic: session.topic,
+      goal: session.goal,
+      projectId: session.projectId,
+      createdAt: session.createdAt,
+      updatedAt: session.updatedAt,
+      sourceSnapshot: session.sources,
+    },
+    counts: {
+      provenance: targetProvenance.length,
+      artifacts: targetArtifacts.length,
+      reviewerReports: session.reviewerReports.length,
+    },
+    provenance: targetProvenance.slice(0, 80).map(record => ({
+      id: record.id,
+      targetType: record.targetType,
+      targetId: record.targetId,
+      operation: record.operation,
+      sourceModule: record.sourceModule,
+      query: record.query,
+      model: record.model,
+      sourceCount: record.sources.length,
+      citationCount: record.citations.length,
+      dataRefCount: record.dataRefs.length,
+      codeRefCount: record.codeRefs.length,
+      artifactIds: record.artifactIds,
+      evidencePreview: [
+        ...record.sources.map(source => source.evidenceSnippet || source.title || source.doi || "").filter(Boolean),
+        ...record.citations.map(citation => citation.evidenceSnippet || citation.citationText || citation.doi || "").filter(Boolean),
+      ].slice(0, 5),
+      outputPreview: previewResearchEnhancementUnknown(record.output, 800),
+      createdAt: record.createdAt,
+    })),
+    artifacts: targetArtifacts.slice(0, 80).map(artifact => ({
+      id: artifact.id,
+      kind: artifact.kind,
+      name: artifact.name,
+      version: artifact.version,
+      filePath: artifact.filePath,
+      contentType: artifact.contentType,
+      contentHash: artifact.contentHash,
+      provenanceRecordIds: artifact.provenanceRecordIds,
+      reviewerReportIds: artifact.reviewerReportIds,
+      createdAt: artifact.createdAt,
+      updatedAt: artifact.updatedAt,
+    })),
+  };
+}
+
+function previewResearchEnhancementUnknown(value: unknown, maxLength: number): string {
+  if (value === undefined || value === null) return "";
+  const text = typeof value === "string" ? value : JSON.stringify(value);
+  return text.length > maxLength ? `${text.slice(0, maxLength)}...` : text;
+}
+
+function normalizeResearchEnhancementMarkdown(value: string, fallbackTitle: string): string {
+  const trimmed = String(value || "").trim();
+  if (!trimmed) return fallbackTitle;
+  if (/^#\s+/m.test(trimmed)) return trimmed;
+  return `${fallbackTitle}\n\n${trimmed}`;
+}
+
 app.use("/api/research-session", createResearchSessionRouter({
   loadUserMemory,
   getPdfWikiStatus: (userId: string) => pdfWikiManager.getStatus(userId) as unknown as Promise<Record<string, unknown>>,
   readUserLiteratureRecords,
   getCurrentProject: () => projectManager.getCurrentProject() as unknown as Record<string, unknown>,
+  runAiReviewer: runResearchEnhancementAiReviewer,
+}));
+app.use("/api/submission-prep", createSubmissionPrepRouter({
+  getSecondaryRuntime: getDeepAnalysisSecondaryRuntimeConfig,
 }));
 app.use("/api/bibliometrics", createBibliometricsRouter({
   readUserLiteratureRecords,
@@ -5943,14 +6157,11 @@ function getOverviewDataAnalysisStatus(userId: string): OverviewStatusPayload["d
 }
 
 async function getOverviewDraftStatus(userId: string): Promise<OverviewStatusPayload["drafts"]> {
-  const drafts = await sessionStore.listDrafts(userId);
-  const chapters = await Promise.all(drafts.map(async draft => {
-    const data = await sessionStore.loadDraft(userId, draft.chapterName);
-    return {
-      chapterName: draft.chapterName,
-      savedAt: draft.savedAt,
-      length: data?.content?.length || 0,
-    };
+  const drafts = await loadMergedOrdinaryDraftChapters(userId);
+  const chapters = drafts.map(draft => ({
+    chapterName: draft.chapterName,
+    savedAt: draft.savedAt,
+    length: draft.content.length,
   }));
   const legacyDraftPath = path.join(getUserUploadDir(userId), "paper-draft.tex");
   let legacyLength = 0;
@@ -5962,7 +6173,7 @@ async function getOverviewDraftStatus(userId: string): Promise<OverviewStatusPay
     }
   }
   return {
-    count: chapters.length + (legacyLength > 0 ? 1 : 0),
+    count: chapters.length,
     chapters,
     legacyExists: legacyLength > 0,
     legacyLength,
@@ -5971,15 +6182,178 @@ async function getOverviewDraftStatus(userId: string): Promise<OverviewStatusPay
 
 const ORDINARY_DRAFT_CHAPTER_ORDER = ['title', 'abstract', 'introduction', 'methods', 'results', 'discussion', 'conclusion'];
 
+function getCanonicalOrdinaryDraftChapterName(chapterName: string): string {
+  const sanitized = sanitizeDraftChapterName(chapterName || 'section');
+  const normalized = sanitized.toLowerCase().replace(/[.\s]+/g, '_').replace(/_+/g, '_');
+  const compact = normalized.replace(/[-_]+/g, '_');
+  const aliasPatterns: Array<[RegExp, string]> = [
+    [/^(title|题目|标题)(?:[_-].*)?$/, 'title'],
+    [/^(abstract|摘要)(?:[_-].*)?$/, 'abstract'],
+    [/^(intro|introduction|绪论|引言)(?:[_-].*)?$/, 'introduction'],
+    [/^(method|methods|materials_methods|materials_and_methods|材料|方法|材料与方法)(?:[_-].*)?$/, 'methods'],
+    [/^(result|results|结果)(?:[_-].*)?$/, 'results'],
+    [/^(discussion|讨论)(?:[_-].*)?$/, 'discussion'],
+    [/^(conclusion|conclusions|结论|展望)(?:[_-].*)?$/, 'conclusion'],
+  ];
+  for (const [pattern, canonical] of aliasPatterns) {
+    if (pattern.test(compact)) return canonical;
+  }
+  return sanitized;
+}
+
 function sortOrdinaryDrafts<T extends { chapterName: string; savedAt: string }>(drafts: T[]): T[] {
   return [...drafts].sort((a, b) => {
-    const indexA = ORDINARY_DRAFT_CHAPTER_ORDER.indexOf(a.chapterName.toLowerCase());
-    const indexB = ORDINARY_DRAFT_CHAPTER_ORDER.indexOf(b.chapterName.toLowerCase());
+    const canonicalA = getCanonicalOrdinaryDraftChapterName(a.chapterName);
+    const canonicalB = getCanonicalOrdinaryDraftChapterName(b.chapterName);
+    const indexA = ORDINARY_DRAFT_CHAPTER_ORDER.indexOf(canonicalA.toLowerCase());
+    const indexB = ORDINARY_DRAFT_CHAPTER_ORDER.indexOf(canonicalB.toLowerCase());
     if (indexA !== -1 && indexB !== -1) return indexA - indexB;
     if (indexA !== -1) return -1;
     if (indexB !== -1) return 1;
-    return new Date(b.savedAt).getTime() - new Date(a.savedAt).getTime();
+    return a.chapterName.localeCompare(b.chapterName, 'zh-CN', { numeric: true })
+      || new Date(b.savedAt).getTime() - new Date(a.savedAt).getTime();
   });
+}
+
+function compactDraftContentForCompare(content: string): string {
+  return String(content || '')
+    .replace(/\s+/g, '')
+    .replace(/[，。,.；;：:、"'“”‘’`*_#>-]/g, '')
+    .slice(0, 20000);
+}
+
+function mergeDraftContentUnique(existing: string, incoming: string): string {
+  const current = String(existing || '').trim();
+  const next = String(incoming || '').trim();
+  if (!current) return next;
+  if (!next) return current;
+  const currentCompact = compactDraftContentForCompare(current);
+  const nextCompact = compactDraftContentForCompare(next);
+  if (nextCompact && currentCompact.includes(nextCompact)) return current;
+  if (currentCompact && nextCompact.includes(currentCompact)) return next;
+  return `${current}\n\n${next}`;
+}
+
+async function loadMergedOrdinaryDraftChapters(userId: string): Promise<Array<{ chapterName: string; savedAt: string; content: string; sourceChapterNames: string[] }>> {
+  const drafts = sortOrdinaryDrafts(await sessionStore.listDrafts(userId));
+  const groups = new Map<string, { chapterName: string; savedAt: string; content: string; sourceChapterNames: string[] }>();
+
+  for (const draft of drafts) {
+    const draftData = await sessionStore.loadDraft(userId, draft.chapterName);
+    const content = normalizeDraftChapterContent(draftData?.content || '');
+    if (!content) continue;
+
+    const canonicalChapterName = getCanonicalOrdinaryDraftChapterName(draft.chapterName);
+    const savedAt = draftData?.savedAt || draft.savedAt;
+    const existing = groups.get(canonicalChapterName);
+    if (!existing) {
+      groups.set(canonicalChapterName, {
+        chapterName: canonicalChapterName,
+        savedAt,
+        content,
+        sourceChapterNames: [draft.chapterName],
+      });
+      continue;
+    }
+
+    // listDrafts returns newest first. Put the older source before the current
+    // aggregate so repeated subsection headings keep the newest revision.
+    existing.content = normalizeDraftChapterContent(mergeDraftContentUnique(content, existing.content));
+    existing.sourceChapterNames.push(draft.chapterName);
+    if (new Date(savedAt).getTime() > new Date(existing.savedAt).getTime()) {
+      existing.savedAt = savedAt;
+    }
+  }
+
+  return sortOrdinaryDrafts(Array.from(groups.values()).map(group => ({
+    ...group,
+    content: normalizeDraftChapterContent(group.content),
+  })));
+}
+
+async function backupDraftStoreBeforeHierarchyMigration(
+  userId: string,
+  drafts: Array<{ chapterName: string; savedAt: string }>
+): Promise<string> {
+  const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const backupDir = path.join(getUserUploadDir(userId), 'drafts', `store-hierarchy-backup-${timestamp}`);
+  fs.mkdirSync(backupDir, { recursive: true });
+  for (const draft of drafts) {
+    const data = await sessionStore.loadDraft(userId, draft.chapterName);
+    fs.writeFileSync(
+      path.join(backupDir, `${sanitizeDraftChapterName(draft.chapterName)}.json`),
+      JSON.stringify({
+        chapterName: draft.chapterName,
+        content: data?.content || '',
+        savedAt: data?.savedAt || draft.savedAt,
+      }, null, 2),
+      'utf-8'
+    );
+  }
+  return backupDir;
+}
+
+async function migrateEmbeddedTitleFromAbstractDraft(
+  userId: string,
+  drafts: Array<{ chapterName: string; savedAt: string }>
+): Promise<boolean> {
+  const hasTitle = drafts.some(draft => getCanonicalOrdinaryDraftChapterName(draft.chapterName) === 'title');
+  const abstractDraft = drafts.find(draft => getCanonicalOrdinaryDraftChapterName(draft.chapterName) === 'abstract');
+  if (!abstractDraft) return false;
+  const stored = await sessionStore.loadDraft(userId, abstractDraft.chapterName);
+  const parts = extractEmbeddedTitleFromAbstractDraft(stored?.content || '');
+  if (!parts) return false;
+
+  const backupDir = await backupDraftStoreBeforeHierarchyMigration(userId, drafts);
+  if (!hasTitle) {
+    await sessionStore.saveDraft(userId, 'title', parts.title);
+  }
+  await sessionStore.saveDraft(userId, 'abstract', parts.abstract);
+  logger.info(`[Draft] Extracted embedded Title from Abstract for ${userId}; backup=${backupDir}`);
+  return true;
+}
+
+async function normalizeExistingDraftStoreHierarchy(
+  userId: string,
+  drafts: Array<{
+    chapterName: string;
+    savedAt: string;
+    storageFormat?: 'txt' | 'json';
+    hasLegacyJson?: boolean;
+  }>
+): Promise<{ migrated: boolean; chapters: string[] }> {
+  const groups = await loadMergedOrdinaryDraftChapters(userId);
+  const canonicalNames = new Set(groups.map(group => group.chapterName));
+  let needsMigration = drafts.length !== groups.length
+    || drafts.some(draft => draft.storageFormat !== 'txt' || draft.hasLegacyJson === true);
+
+  for (const draft of drafts) {
+    const canonicalName = getCanonicalOrdinaryDraftChapterName(draft.chapterName);
+    const current = await sessionStore.loadDraft(userId, draft.chapterName);
+    const normalizedContent = normalizeDraftChapterContent(current?.content || '');
+    if (canonicalName !== draft.chapterName || normalizedContent !== String(current?.content || '').trim()) {
+      needsMigration = true;
+      break;
+    }
+  }
+
+  if (!needsMigration) {
+    return { migrated: false, chapters: groups.map(group => group.chapterName) };
+  }
+
+  const backupDir = await backupDraftStoreBeforeHierarchyMigration(userId, drafts);
+  for (const group of groups) {
+    await sessionStore.saveDraft(userId, group.chapterName, group.content);
+  }
+  for (const draft of drafts) {
+    const canonicalName = getCanonicalOrdinaryDraftChapterName(draft.chapterName);
+    if (canonicalName === draft.chapterName) continue;
+    if (process.platform === 'win32' && canonicalName.toLowerCase() === draft.chapterName.toLowerCase()) continue;
+    await sessionStore.deleteDraft(userId, draft.chapterName);
+  }
+
+  logger.info(`[Draft] Normalized draft hierarchy for user ${userId}; chapters=${Array.from(canonicalNames).join(', ')}, backup=${backupDir}`);
+  return { migrated: true, chapters: groups.map(group => group.chapterName) };
 }
 
 function estimateDraftWordCount(content: string): number {
@@ -5987,9 +6361,14 @@ function estimateDraftWordCount(content: string): number {
   return compact.length;
 }
 
-function trimDraftContextForChat(content: string, maxChars: number): string {
-  if (content.length <= maxChars) return content;
-  return `${content.slice(0, maxChars)}\n\n[普通草稿内容已按上下文长度截断：已提供前 ${maxChars} 字符，完整草稿仍保存在本地。]`;
+function requiresEnglishOnlyDraft(sourceQuery: string): boolean {
+  return /全(?:部)?英文|纯英文|零中文|无中文|不要中文|删除(?:所有)?中文|移除(?:所有)?中文|英文版|english[ -]?only|remove\s+(?:all\s+)?chinese/i.test(
+    String(sourceQuery || '')
+  );
+}
+
+function countDraftCjkCharacters(content: string): number {
+  return (String(content || '').match(/[\u3400-\u4dbf\u4e00-\u9fff]/g) || []).length;
 }
 
 function formatDraftFigureAssetsForContext(figures: Awaited<ReturnType<typeof loadDraftFigureAssetsForUser>>): string {
@@ -6003,50 +6382,42 @@ function formatDraftFigureAssetsForContext(figures: Awaited<ReturnType<typeof lo
     )
     .map(figure => {
       const subsection = [figure.subsectionId, figure.subsectionTitle].filter(Boolean).join(' ');
-      return `- ${figure.figureLabel}: ${figure.caption || '无图注'}；章节=${figure.chapterKey}${subsection ? `；小节=${subsection}` : ''}；文件=${figure.relativePath}`;
+      return `- ${figure.figureLabel}: ${figure.title || figure.caption || '无标题'}${figure.caption && figure.caption !== figure.title ? `；图注=${figure.caption}` : ''}；归档=${figure.draftLinked === false ? '论文图片库' : figure.chapterKey}${subsection ? `；小节=${subsection}` : ''}；文件=${figure.relativePath}`;
     });
   return ['## 已归档章节图件', ...lines].join('\n');
 }
 
-function isDraftProgressRequest(request: string): boolean {
-  const text = String(request || '').toLowerCase();
-  return [
-    /写作进度/,
-    /写到哪[了里]?/,
-    /写到什么程度/,
-    /完成到哪/,
-    /完成了哪些/,
-    /还差哪些/,
-    /还有哪些没写/,
-    /草稿进度/,
-    /论文进度/,
-    /writing progress/,
-  ].some(pattern => pattern.test(text));
-}
-
-async function loadOrdinaryDraftContextForSingleUser(safeUserId: string, maxContentChars: number, sourceScope: string) {
+async function loadOrdinaryDraftContextForSingleUser(safeUserId: string, sourceScope: string) {
   try {
-    const drafts = sortOrdinaryDrafts(await sessionStore.listDrafts(safeUserId));
+    await ensureCanonicalDraftStore(safeUserId);
+    const drafts = await loadMergedOrdinaryDraftChapters(safeUserId);
     const chapterBlocks: string[] = [];
     const chapterSummaries: string[] = [];
     const chapterNames: string[] = [];
+    const exportParts: string[] = [];
     let latestSavedAt = '';
     let totalContent = '';
 
     for (const draft of drafts) {
-      const draftData = await sessionStore.loadDraft(safeUserId, draft.chapterName);
-      const content = draftData?.content || '';
+      const content = draft.content || '';
       if (!content.trim()) continue;
 
-      const savedAt = draftData?.savedAt || draft.savedAt;
+      const savedAt = draft.savedAt;
       if (!latestSavedAt || new Date(savedAt).getTime() > new Date(latestSavedAt).getTime()) {
         latestSavedAt = savedAt;
       }
 
       const chapterTitle = draft.chapterName.charAt(0).toUpperCase() + draft.chapterName.slice(1);
       chapterNames.push(draft.chapterName);
-      chapterSummaries.push(`- ${draft.chapterName}: ${estimateDraftWordCount(content)} 字符，保存于 ${savedAt}`);
+      chapterSummaries.push(`- ${draft.chapterName}.txt: ${estimateDraftWordCount(content)} 字符，保存于 ${savedAt}`);
       chapterBlocks.push(`\\section{${chapterTitle}}\n${content}`);
+      if (draft.chapterName.toLowerCase() === 'title') {
+        exportParts.push(`\\title{${content}}\n`);
+      } else if (draft.chapterName.toLowerCase() === 'abstract') {
+        exportParts.push(`\\begin{abstract}\n${content}\n\\end{abstract}\n`);
+      } else {
+        exportParts.push(`\\section{${formatDraftChapterTitle(draft.chapterName)}}\n${content}\n`);
+      }
       totalContent += `\n${content}`;
     }
 
@@ -6056,7 +6427,7 @@ async function loadOrdinaryDraftContextForSingleUser(safeUserId: string, maxCont
       const figureContext = formatDraftFigureAssetsForContext(await loadDraftFigureAssetsForUser(safeUserId));
       const statusBlock = [
         '# 普通论文草稿状态',
-        `- 来源：分章节草稿 sessionStore（${sourceScope}）`,
+        `- 来源：规范章节 TXT（${sourceScope}）`,
         '- 优先级：这是当前普通草稿的真实状态，必须优先于长期记忆中的旧写作进度。',
         `- 已保存章节数：${chapterNames.length}`,
         `- 已保存章节：${chapterNames.join(', ')}`,
@@ -6069,65 +6440,35 @@ async function loadOrdinaryDraftContextForSingleUser(safeUserId: string, maxCont
         figureContext,
         '',
         '## 草稿内容',
-        trimDraftContextForChat(combinedContent, maxContentChars),
+        combinedContent,
       ].filter(Boolean).join('\n');
 
       return {
         available: true,
-        source: `sessionStore:${sourceScope}`,
+        source: `chapter-txt:${sourceScope}`,
         chapters: chapterNames,
         updatedAt: latestSavedAt,
         wordCount: estimateDraftWordCount(totalContent),
         content: statusBlock,
+        exportContent: exportParts.join('\n').trim(),
       };
     }
   } catch (error) {
     logger.warn(`[Draft] Failed to build ordinary draft context from sessionStore for ${safeUserId}:`, error);
   }
 
-  const legacyDraftPath = path.join(getUserUploadDir(safeUserId), "paper-draft.tex");
-  if (fs.existsSync(legacyDraftPath)) {
-    try {
-      const content = fs.readFileSync(legacyDraftPath, 'utf-8');
-      if (content.trim()) {
-        const stat = fs.statSync(legacyDraftPath);
-        return {
-          available: true,
-          source: `paper-draft.tex:${sourceScope}`,
-          chapters: [],
-          updatedAt: stat.mtime.toISOString(),
-          wordCount: estimateDraftWordCount(content),
-          content: [
-            '# 普通论文草稿状态',
-            `- 来源：旧版整篇草稿 paper-draft.tex（${sourceScope}）`,
-            '- 优先级：这是当前普通草稿的真实状态，必须优先于长期记忆中的旧写作进度。',
-            `- 最近修改时间：${stat.mtime.toISOString()}`,
-            `- 总字符估算：${estimateDraftWordCount(content)}`,
-            '',
-            '## 草稿内容',
-            trimDraftContextForChat(content, maxContentChars),
-          ].join('\n'),
-        };
-      }
-    } catch (error) {
-      logger.warn(`[Draft] Failed to read legacy paper draft for ${safeUserId}:`, error);
-    }
-  }
-
   return null;
 }
 
-async function getOrdinaryDraftContextForChat(userId: string, request: string) {
+async function getOrdinaryDraftContextForChat(userId: string, _request: string) {
   const safeUserId = sanitizeUserId(userId || "web-user");
-  const progressRequest = isDraftProgressRequest(request);
-  const maxContentChars = progressRequest ? 18000 : 24000;
-  const candidateUserIds = safeUserId === "web-user" ? ["web-user"] : [safeUserId, "web-user"];
+  const candidateUserIds = [safeUserId];
 
   for (const candidateUserId of candidateUserIds) {
     const sourceScope = candidateUserId === safeUserId
       ? `current-user:${candidateUserId}`
       : `fallback:${candidateUserId}`;
-    const draftContext = await loadOrdinaryDraftContextForSingleUser(candidateUserId, maxContentChars, sourceScope);
+    const draftContext = await loadOrdinaryDraftContextForSingleUser(candidateUserId, sourceScope);
     if (draftContext?.available) {
       if (candidateUserId !== safeUserId) {
         logger.info(`[Draft] Ordinary draft context fell back from ${safeUserId} to ${candidateUserId}`);
@@ -8091,6 +8432,38 @@ const LOCAL_PREVIEW_IMAGE_EXTENSIONS = new Set([
   ".tiff",
   ".svg",
 ]);
+const LOCAL_OUTPUT_FILE_EXTENSIONS = new Set([
+  ...Array.from(LOCAL_PREVIEW_IMAGE_EXTENSIONS),
+  ".pdf",
+  ".doc",
+  ".docx",
+  ".xlsx",
+  ".xls",
+  ".csv",
+  ".tsv",
+  ".txt",
+  ".md",
+  ".markdown",
+  ".r",
+  ".rmd",
+  ".json",
+  ".tex",
+  ".html",
+  ".htm",
+  ".ppt",
+  ".pptx",
+  ".zip",
+]);
+const LOCAL_FILE_RESOLVE_SKIP_DIRS = new Set([
+  ".git",
+  "node_modules",
+  ".next",
+  "dist",
+  "dist-electron",
+  "venv",
+  ".venv",
+  "__pycache__",
+]);
 
 function isPathInside(parentDir: string, childPath: string): boolean {
   const relative = path.relative(path.resolve(parentDir), path.resolve(childPath));
@@ -8103,29 +8476,222 @@ function getLocalPreviewAllowedRoots(): string[] {
     process.cwd(),
     path.join(os.homedir(), "Documents", "Codex"),
     path.join(os.homedir(), "Desktop"),
+    ...getAuthorizedLocalPreviewRoots(),
   ];
   return Array.from(new Set(roots.map(root => path.resolve(root))));
 }
 
-function resolveLocalPreviewImagePath(rawPath: unknown): string | null {
+function resolveLocalPreviewImagePath(rawPath: unknown, preferLatest = false): string | null {
   const value = String(rawPath || "").trim();
   if (!value || value.length > 2048 || /^https?:\/\//i.test(value)) return null;
   const resolved = path.resolve(value);
   const ext = path.extname(resolved).toLowerCase();
   if (!LOCAL_PREVIEW_IMAGE_EXTENSIONS.has(ext)) return null;
-  if (!getLocalPreviewAllowedRoots().some(root => isPathInside(root, resolved))) return null;
+  const allowedRoots = getLocalPreviewAllowedRoots();
+  if (!allowedRoots.some(root => isPathInside(root, resolved))) return null;
+
+  const candidates: Array<{ filePath: string; mtimeMs: number }> = [];
+  const addCandidate = (candidatePath: string): void => {
+    try {
+      const stat = fs.statSync(candidatePath);
+      if (!stat.isFile() || !LOCAL_PREVIEW_IMAGE_EXTENSIONS.has(path.extname(candidatePath).toLowerCase())) return;
+      if (!allowedRoots.some(root => isPathInside(root, candidatePath))) return;
+      candidates.push({ filePath: candidatePath, mtimeMs: stat.mtimeMs });
+    } catch {
+      // Missing candidates are expected when a historical safe-workspace path is stale.
+    }
+  };
+
+  addCandidate(resolved);
+  if (preferLatest || candidates.length === 0) {
+    const baseName = path.basename(resolved);
+    for (const root of allowedRoots) {
+      addCandidate(path.join(root, baseName));
+    }
+  }
+  if (candidates.length === 0) return null;
+  candidates.sort((a, b) => b.mtimeMs - a.mtimeMs);
+  return candidates[0].filePath;
+}
+
+function getLocalOutputFileName(rawPath: unknown, rawName?: unknown): string {
+  const explicitName = String(rawName || "").trim();
+  if (explicitName && LOCAL_OUTPUT_FILE_EXTENSIONS.has(path.extname(explicitName).toLowerCase())) {
+    return path.basename(explicitName);
+  }
+  const value = String(rawPath || "").trim();
+  if (!value) return "";
+  if (value.startsWith("/api/local-file/preview")) {
+    try {
+      const parsed = new URL(value, "http://localhost");
+      return path.basename(String(parsed.searchParams.get("path") || ""));
+    } catch {
+      return "";
+    }
+  }
+  if (/^https?:\/\//i.test(value) || value.startsWith("/api/")) return "";
+  return path.basename(value);
+}
+
+function resolveExistingAllowedLocalFile(rawPath: unknown, extraAllowedRoots: string[] = []): string | null {
+  const value = String(rawPath || "").trim();
+  if (!value || value.length > 2048 || /^https?:\/\//i.test(value) || value.startsWith("/api/")) return null;
+  const resolved = path.resolve(value);
+  const ext = path.extname(resolved).toLowerCase();
+  if (!LOCAL_OUTPUT_FILE_EXTENSIONS.has(ext)) return null;
+  const allowedRoots = Array.from(new Set([...getLocalPreviewAllowedRoots(), ...extraAllowedRoots].map(root => path.resolve(root))));
+  if (!allowedRoots.some(root => isPathInside(root, resolved))) return null;
   if (!fs.existsSync(resolved) || !fs.statSync(resolved).isFile()) return null;
   return resolved;
 }
 
+function parseLocalFileResolveExtraRoots(extraRoot?: unknown, extraRoots?: unknown): string[] {
+  const roots: string[] = [];
+  const add = (value: unknown): void => {
+    if (Array.isArray(value)) {
+      value.forEach(add);
+      return;
+    }
+    const text = String(value || "").trim();
+    if (!text) return;
+    if (text.startsWith("[")) {
+      try {
+        const parsed = JSON.parse(text);
+        if (Array.isArray(parsed)) {
+          parsed.forEach(add);
+          return;
+        }
+      } catch {
+        // Fall back to treating it as a plain path.
+      }
+    }
+    roots.push(text);
+  };
+  add(extraRoot);
+  add(extraRoots);
+  return roots;
+}
+
+function getLocalFileResolveSearchRoots(extraRoot?: unknown, extraRoots?: unknown): string[] {
+  const roots = [
+    ...parseLocalFileResolveExtraRoots(extraRoot, extraRoots),
+    ...getLocalPreviewAllowedRoots(),
+    path.join(getDataDir(), "r-plugin"),
+    path.join(getDataDir(), "uploads"),
+  ].filter(Boolean);
+  return Array.from(new Set(roots.map(root => path.resolve(root))))
+    .filter(root => fs.existsSync(root) && fs.statSync(root).isDirectory());
+}
+
+function resolveRelativeAllowedLocalFile(rawPath: unknown, roots: string[]): string | null {
+  const value = String(rawPath || "").trim();
+  if (!value || value.length > 2048 || /^https?:\/\//i.test(value) || value.startsWith("/api/")) return null;
+  if (path.isAbsolute(value) || /^[a-zA-Z]:[\\/]/.test(value) || /^\\\\[^\\]+\\[^\\]+/.test(value)) return null;
+  if (value.includes(":") || /[<>|]/.test(value)) return null;
+  const ext = path.extname(value).toLowerCase();
+  if (!LOCAL_OUTPUT_FILE_EXTENSIONS.has(ext)) return null;
+  for (const root of roots) {
+    const resolved = path.resolve(root, value);
+    if (!isPathInside(root, resolved)) continue;
+    try {
+      const stat = fs.statSync(resolved);
+      if (stat.isFile()) return resolved;
+    } catch {
+      // Try the next root.
+    }
+  }
+  return null;
+}
+
+function findLatestAllowedLocalFileByName(fileName: string, roots: string[]): string | null {
+  const baseName = path.basename(String(fileName || "").trim());
+  if (!baseName || !LOCAL_OUTPUT_FILE_EXTENSIONS.has(path.extname(baseName).toLowerCase())) return null;
+  let bestPath = "";
+  let bestMtimeMs = -1;
+  let scanned = 0;
+  const maxScanned = 50000;
+  const deadline = Date.now() + 2500;
+
+  const walk = (dir: string, depth: number): void => {
+    if (scanned >= maxScanned || Date.now() > deadline || depth > 8) return;
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (scanned >= maxScanned || Date.now() > deadline) return;
+      const fullPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        if (LOCAL_FILE_RESOLVE_SKIP_DIRS.has(entry.name.toLowerCase())) continue;
+        walk(fullPath, depth + 1);
+        continue;
+      }
+      if (!entry.isFile()) continue;
+      scanned += 1;
+      if (entry.name.toLowerCase() !== baseName.toLowerCase()) continue;
+      try {
+        const stat = fs.statSync(fullPath);
+        if (!stat.isFile()) continue;
+        if (stat.mtimeMs > bestMtimeMs) {
+          bestPath = fullPath;
+          bestMtimeMs = stat.mtimeMs;
+        }
+      } catch {
+        // Ignore files that disappear while scanning.
+      }
+    }
+  };
+
+  roots.forEach(root => walk(root, 0));
+  return bestPath || null;
+}
+
+app.get("/api/local-file/resolve", (req: Request, res: Response) => {
+  try {
+    const roots = getLocalFileResolveSearchRoots(req.query.workspaceRoot, req.query.workspaceRoots);
+    const direct = resolveExistingAllowedLocalFile(req.query.path, roots);
+    const relative = direct ? null : resolveRelativeAllowedLocalFile(req.query.path, roots);
+    const resolved = direct || relative || findLatestAllowedLocalFileByName(
+      getLocalOutputFileName(req.query.path, req.query.name),
+      roots
+    );
+    if (!resolved) {
+      res.status(404).json({ success: false, error: "文件不存在，且未找到同名最新文件" });
+      return;
+    }
+    const stat = fs.statSync(resolved);
+    res.json({
+      success: true,
+      path: resolved,
+      name: path.basename(resolved),
+      size: stat.size,
+      mtimeMs: stat.mtimeMs,
+      resolvedBy: direct ? "exact" : (relative ? "relative-root-match" : "latest-name-match"),
+    });
+  } catch (error) {
+    logger.warn("[LocalFile] Resolve failed", error);
+    res.status(500).json({ success: false, error: "本地文件路径解析失败" });
+  }
+});
+
 app.get("/api/local-file/preview", (req: Request, res: Response) => {
   try {
-    const filePath = resolveLocalPreviewImagePath(req.query.path);
+    const filePath = resolveLocalPreviewImagePath(req.query.path, req.query.latest === "1");
     if (!filePath) {
       res.status(404).json({ success: false, error: "文件不存在或不允许预览" });
       return;
     }
-    res.setHeader("Cache-Control", "private, max-age=60");
+    const stat = fs.statSync(filePath);
+    const etag = `"${stat.size}-${Math.round(stat.mtimeMs)}"`;
+    if (req.headers["if-none-match"] === etag) {
+      res.status(304).end();
+      return;
+    }
+    res.setHeader("Cache-Control", "private, max-age=86400");
+    res.setHeader("ETag", etag);
+    res.setHeader("Last-Modified", stat.mtime.toUTCString());
     res.sendFile(filePath);
   } catch (error) {
     logger.warn("[LocalFile] Preview failed", error);
@@ -10279,26 +10845,7 @@ function parsePdfReaderChatProviderMention(query: string, fallback: PdfReaderCha
   cleanedQuery: string;
   mention?: string;
 } {
-  const raw = String(query || "");
-  const match = raw.match(/@(小牛马|大牛马|codex(?:\s*cli)?|Codex(?:\s*CLI)?|CODEX(?:\s*CLI)?|chatbridge|ChatBridge|chat-bridge|api|API)\s*/i);
-  if (!match) {
-    return { provider: fallback, cleanedQuery: raw.trim() };
-  }
-  const mention = match[1];
-  const normalized = mention.toLowerCase().replace(/\s+/g, " ");
-  let provider: PdfReaderChatProvider = fallback;
-  if (normalized.startsWith("codex")) {
-    provider = "codex";
-  } else if (mention === "大牛马" || normalized === "chatbridge" || normalized === "chat-bridge") {
-    provider = "primary";
-  } else if (mention === "小牛马" || normalized === "api") {
-    provider = "secondary";
-  }
-  return {
-    provider,
-    cleanedQuery: raw.replace(match[0], "").trim(),
-    mention,
-  };
+  return { provider: fallback, cleanedQuery: String(query || "").trim() };
 }
 
 function getPdfReaderChatProviderLabel(provider: PdfReaderChatProvider, model = ""): string {
@@ -11716,6 +12263,32 @@ app.post("/api/projects/:projectId/open", async (req: Request, res: Response) =>
     });
   } catch (error) {
     logger.error("[Project] Failed to open project:", error);
+    res.status(500).json({ success: false, error: (error as Error).message });
+  }
+});
+
+app.post("/api/projects/:projectId/clone", (req: Request, res: Response) => {
+  try {
+    const userId = String(req.body.userId || "web-user");
+    const name = typeof req.body.name === "string" ? req.body.name : undefined;
+    const clientState = req.body.clientState;
+    const result = projectManager.cloneProject(req.params.projectId, {
+      userId,
+      name,
+      clientState,
+    });
+
+    res.json({
+      success: true,
+      sourceProjectId: result.sourceProjectId,
+      project: result.project,
+      copiedProjectDir: result.copiedProjectDir,
+      savedSourceProjectId: result.savedSourceProjectId,
+      savedSourceProjectName: result.savedSourceProjectName,
+      currentProject: projectManager.getCurrentProject(),
+    });
+  } catch (error) {
+    logger.error("[Project] Failed to clone project:", error);
     res.status(500).json({ success: false, error: (error as Error).message });
   }
 });
@@ -13917,7 +14490,29 @@ function normalizeEditedDraftChapterName(rawTitle: string, index: number): strin
   return EDITABLE_DRAFT_CHAPTER_ALIASES[slug] || slug || `section-${index + 1}`;
 }
 
+function coalesceDraftSectionsByCanonicalChapter(
+  sections: Array<{ chapterName: string; content: string }>
+): Array<{ chapterName: string; content: string }> {
+  const orderedChapters: string[] = [];
+  const contentByChapter = new Map<string, string>();
+  for (const section of sections) {
+    const chapterName = getCanonicalOrdinaryDraftChapterName(section.chapterName);
+    const content = normalizeDraftChapterContent(section.content);
+    if (!content) continue;
+    if (!contentByChapter.has(chapterName)) orderedChapters.push(chapterName);
+    contentByChapter.set(
+      chapterName,
+      normalizeDraftChapterContent(mergeDraftContentUnique(contentByChapter.get(chapterName) || '', content))
+    );
+  }
+  return orderedChapters.map(chapterName => ({
+    chapterName,
+    content: contentByChapter.get(chapterName) || '',
+  }));
+}
+
 function splitEditedDraftSections(content: string): Array<{ chapterName: string; content: string }> {
+  content = normalizeNestedDraftSectionMarkup(content);
   const sectionRegex = /\\section\{([^}]+)\}\s*/g;
   const matches = Array.from(content.matchAll(sectionRegex));
 
@@ -13928,7 +14523,6 @@ function splitEditedDraftSections(content: string): Array<{ chapterName: string;
     return [];
   }
 
-  const usedChapterNames = new Map<string, number>();
   const sections: Array<{ chapterName: string; content: string }> = [];
 
   for (let i = 0; i < matches.length; i++) {
@@ -13940,17 +14534,161 @@ function splitEditedDraftSections(content: string): Array<{ chapterName: string;
 
     if (!body) continue;
 
-    const baseChapterName = normalizeEditedDraftChapterName(match[1], i);
-    const usedCount = usedChapterNames.get(baseChapterName) || 0;
-    usedChapterNames.set(baseChapterName, usedCount + 1);
-
     sections.push({
-      chapterName: usedCount === 0 ? baseChapterName : `${baseChapterName}-${usedCount + 1}`,
+      chapterName: normalizeEditedDraftChapterName(match[1], i),
       content: body,
     });
   }
 
-  return sections;
+  return coalesceDraftSectionsByCanonicalChapter(sections);
+}
+
+function splitWholeDraftIntoCanonicalSections(content: string): Array<{ chapterName: string; content: string }> {
+  const text = normalizeNestedDraftSectionMarkup(content);
+  const sections: Array<{ chapterName: string; content: string }> = [];
+
+  const titleMatch = text.match(/\\title\{([\s\S]*?)\}/);
+  if (titleMatch?.[1]?.trim()) {
+    sections.push({ chapterName: 'title', content: titleMatch[1].trim() });
+  }
+
+  const abstractMatch = text.match(/\\begin\{abstract\}([\s\S]*?)\\end\{abstract\}/i);
+  if (abstractMatch?.[1]?.trim()) {
+    sections.push({ chapterName: 'abstract', content: abstractMatch[1].trim() });
+  }
+
+  const sectionRegex = /\\section\{([^}]+)\}\s*([\s\S]*?)(?=\\section\{|$)/g;
+  const matches = Array.from(text.matchAll(sectionRegex));
+  for (let i = 0; i < matches.length; i++) {
+    const title = String(matches[i][1] || '').trim();
+    const body = String(matches[i][2] || '').trim();
+    if (!body) continue;
+
+    sections.push({
+      chapterName: sanitizeDraftChapterName(normalizeEditedDraftChapterName(title, i)),
+      content: body,
+    });
+  }
+
+  return coalesceDraftSectionsByCanonicalChapter(sections);
+}
+
+async function migrateLegacyChapterDraftDirectory(userId: string): Promise<string[]> {
+  const safeUserId = sanitizeUserId(userId);
+  const legacyDir = path.join(dataDir, 'output', 'chapters', safeUserId);
+  if (!fs.existsSync(legacyDir)) return [];
+
+  const legacyFiles = fs.readdirSync(legacyDir)
+    .filter(file => /\.(?:md|txt)$/i.test(file));
+  if (legacyFiles.length === 0) return [];
+
+  const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const backupDir = path.join(getUserUploadDir(safeUserId), 'drafts', `legacy-chapter-files-${timestamp}`);
+  fs.mkdirSync(backupDir, { recursive: true });
+  const imported: string[] = [];
+
+  for (const fileName of legacyFiles) {
+    const sourcePath = path.join(legacyDir, fileName);
+    fs.copyFileSync(sourcePath, path.join(backupDir, fileName));
+    const chapter = getCanonicalOrdinaryDraftChapterName(path.basename(fileName, path.extname(fileName)));
+    const content = normalizeDraftChapterContent(fs.readFileSync(sourcePath, 'utf-8'));
+    if (!content) continue;
+    const existing = await sessionStore.loadDraft(safeUserId, chapter);
+    if (String(existing?.content || '').trim()) continue;
+    await sessionStore.saveDraft(safeUserId, chapter, content);
+    imported.push(chapter);
+  }
+
+  fs.rmSync(legacyDir, { recursive: true, force: true });
+  logger.info(
+    `[Draft] Retired legacy chapter directory for ${safeUserId}; `
+    + `imported=${imported.join(', ') || 'none'}, backup=${backupDir}`
+  );
+  return imported;
+}
+
+async function ensureCanonicalDraftStore(userId: string): Promise<{ migrated: boolean; chapters: string[] }> {
+  const safeUserId = sanitizeUserId(userId);
+  const importedLegacyChapters = await migrateLegacyChapterDraftDirectory(safeUserId);
+  let existingDrafts = await sessionStore.listDrafts(safeUserId);
+  if (existingDrafts.length > 0) {
+    const extractedEmbeddedTitle = await migrateEmbeddedTitleFromAbstractDraft(safeUserId, existingDrafts);
+    if (extractedEmbeddedTitle) {
+      existingDrafts = await sessionStore.listDrafts(safeUserId);
+    }
+    const normalized = await normalizeExistingDraftStoreHierarchy(safeUserId, existingDrafts);
+    if (normalized.migrated || importedLegacyChapters.length > 0 || extractedEmbeddedTitle) {
+      const merged = await loadMergedOrdinaryDraftChapters(safeUserId);
+      const totalLength = merged.reduce((sum, draft) => sum + draft.content.length, 0);
+      await updateDraftProgressMemory(
+        safeUserId,
+        normalized.chapters.join(', '),
+        totalLength,
+        importedLegacyChapters.length > 0
+          ? 'legacy-chapter-file-migration'
+          : (extractedEmbeddedTitle ? 'embedded-title-migration' : 'draft-hierarchy-migration')
+      );
+      await syncWholeDraftExportFile(
+        safeUserId,
+        importedLegacyChapters.length > 0
+          ? 'legacy-chapter-file-migration'
+          : (extractedEmbeddedTitle ? 'embedded-title-migration' : 'hierarchy-migration')
+      );
+    }
+    return {
+      migrated: normalized.migrated || importedLegacyChapters.length > 0 || extractedEmbeddedTitle,
+      chapters: normalized.chapters,
+    };
+  }
+
+  const legacyDraftPath = path.join(getUserUploadDir(safeUserId), "paper-draft.tex");
+  if (fs.existsSync(legacyDraftPath)) {
+    const legacyContent = fs.readFileSync(legacyDraftPath, "utf-8");
+    const sections = splitWholeDraftIntoCanonicalSections(legacyContent);
+    if (sections.length > 0) {
+      for (const section of sections) {
+        await sessionStore.saveDraft(safeUserId, section.chapterName, normalizeDraftChapterContent(section.content));
+      }
+      await updateDraftProgressMemory(
+        safeUserId,
+        sections.map(section => section.chapterName).join(", "),
+        legacyContent.length,
+        "legacy-draft-migration"
+      );
+      logger.info(`[Draft] Migrated legacy paper-draft.tex into canonical sessionStore for user ${safeUserId}, chapters=${sections.length}`);
+      return {
+        migrated: true,
+        chapters: sections.map(section => section.chapterName),
+      };
+    }
+  }
+
+  const memory = await loadUserMemory(safeUserId);
+  const draftProgressEntry = memory.entries.find(entry => entry.key === "draft_progress");
+  const memoryDraftContent = String(draftProgressEntry?.value || "").trim();
+  const memoryLooksLikeDraft = /\\section\{|\\title\{|\\begin\{abstract\}/i.test(memoryDraftContent)
+    || memoryDraftContent.length > 1000;
+  if (memoryDraftContent && memoryLooksLikeDraft && !/^最后更新[:：]/.test(memoryDraftContent)) {
+    const sections = splitWholeDraftIntoCanonicalSections(memoryDraftContent);
+    if (sections.length > 0) {
+      for (const section of sections) {
+        await sessionStore.saveDraft(safeUserId, section.chapterName, normalizeDraftChapterContent(section.content));
+      }
+      await updateDraftProgressMemory(
+        safeUserId,
+        sections.map(section => section.chapterName).join(", "),
+        memoryDraftContent.length,
+        "memory-draft-migration"
+      );
+      logger.info(`[Draft] Migrated legacy draft_progress memory into canonical sessionStore for user ${safeUserId}, chapters=${sections.length}`);
+      return {
+        migrated: true,
+        chapters: sections.map(section => section.chapterName),
+      };
+    }
+  }
+
+  return { migrated: false, chapters: [] };
 }
 
 function writeDraftSnapshot(userId: string, content: string, reason: string): void {
@@ -13967,45 +14705,254 @@ function writeDraftSnapshot(userId: string, content: string, reason: string): vo
 
   fs.writeFileSync(draftFile, content, "utf-8");
 
-  const timestamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, -5);
-  const backupFile = path.join(draftDir, `draft-${reason}-${timestamp}.tex`);
+  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const backupFile = path.join(draftDir, `draft-${reason}-${timestamp}-${crypto.randomUUID().slice(0, 8)}.tex`);
   fs.writeFileSync(backupFile, content, "utf-8");
+
+  const snapshots = fs.readdirSync(draftDir)
+    .filter(fileName => /^draft-.*\.tex$/i.test(fileName))
+    .map(fileName => {
+      const filePath = path.join(draftDir, fileName);
+      return { filePath, mtimeMs: fs.statSync(filePath).mtimeMs };
+    })
+    .sort((left, right) => right.mtimeMs - left.mtimeMs);
+  for (const expired of snapshots.slice(120)) {
+    fs.unlinkSync(expired.filePath);
+  }
+}
+
+const draftExportLocks = new Map<string, Promise<void>>();
+
+async function withDraftExportLock<T>(userId: string, task: () => Promise<T>): Promise<T> {
+  const lockKey = sanitizeUserId(userId);
+  const previous = (draftExportLocks.get(lockKey) || Promise.resolve()).catch(() => undefined);
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => {
+    release = resolve;
+  });
+  const tail = previous.then(() => gate);
+  draftExportLocks.set(lockKey, tail);
+  await previous;
+  try {
+    return await task();
+  } finally {
+    release();
+    if (draftExportLocks.get(lockKey) === tail) draftExportLocks.delete(lockKey);
+  }
+}
+
+function formatDraftChapterTitle(chapterName: string): string {
+  const normalized = sanitizeDraftChapterName(chapterName);
+  const knownTitle: Record<string, string> = {
+    title: 'Title',
+    abstract: 'Abstract',
+    introduction: 'Introduction',
+    methods: 'Materials and Methods',
+    results: 'Results',
+    discussion: 'Discussion',
+    conclusion: 'Conclusion',
+  };
+  return knownTitle[normalized.toLowerCase()] || normalized.replace(/[_-]+/g, ' ');
+}
+
+async function buildWholeDraftExportContent(userId: string): Promise<{ content: string; chapters: string[] }> {
+  const drafts = await loadMergedOrdinaryDraftChapters(userId);
+  const parts: string[] = [];
+  const chapters: string[] = [];
+
+  for (const draft of drafts) {
+    const content = String(draft.content || '').trim();
+    if (!content) continue;
+    chapters.push(draft.chapterName);
+    const title = formatDraftChapterTitle(draft.chapterName);
+    if (draft.chapterName.toLowerCase() === 'title') {
+      parts.push(`\\title{${content}}\n`);
+    } else if (draft.chapterName.toLowerCase() === 'abstract') {
+      parts.push(`\\begin{abstract}\n${content}\n\\end{abstract}\n`);
+    } else {
+      parts.push(`\\section{${title}}\n${content}\n`);
+    }
+  }
+
+  return {
+    content: parts.join('\n').trim(),
+    chapters,
+  };
+}
+
+async function syncWholeDraftExportFile(userId: string, reason: string): Promise<{ synced: boolean; filename: string; chapters: string[]; contentLength: number }> {
+  return withDraftExportLock(userId, async () => {
+    const { content, chapters } = await buildWholeDraftExportContent(userId);
+    const filename = `paper-draft-${sanitizeUserId(userId)}.tex`;
+    if (!content.trim()) {
+      const draftFile = path.join(getUserUploadDir(userId), "paper-draft.tex");
+      if (fs.existsSync(draftFile)) {
+        fs.unlinkSync(draftFile);
+      }
+      return { synced: false, filename, chapters, contentLength: 0 };
+    }
+    writeDraftSnapshot(userId, content, reason);
+    logger.info(`[Draft] Synced whole draft export for user ${userId}, chapters=${chapters.length}, chars=${content.length}, reason=${reason}`);
+    return {
+      synced: true,
+      filename,
+      chapters,
+      contentLength: content.length,
+    };
+  });
+}
+
+async function updateDraftProgressMemory(userId: string, chapter: string, contentLength: number, source: string): Promise<void> {
+  const memory = await loadUserMemory(userId);
+  let draftProgressEntry = memory.entries.find(e => e.key === "draft_progress");
+  const value = `最后更新：${new Date().toLocaleString("zh-CN")} - 章节 ${chapter}，长度 ${contentLength} 字符，来源 ${source}`;
+  if (draftProgressEntry) {
+    draftProgressEntry.value = value;
+    draftProgressEntry.timestamp = new Date().toISOString();
+    draftProgressEntry.source = source;
+  } else {
+    memory.entries.push({
+      key: "draft_progress",
+      value,
+      source,
+      timestamp: new Date().toISOString(),
+    });
+  }
+  await saveUserMemory(memory);
+}
+
+async function saveDraftToCanonicalChapter(
+  userId: string,
+  section: string,
+  content: string,
+  source: string,
+  reason: string,
+  mode: DraftSaveMode = 'merge',
+  requireEnglishOnly = false,
+  subsection?: DraftSubsectionTarget
+): Promise<{ chapter: string; rawChapter: string; contentLength: number; exportInfo: Awaited<ReturnType<typeof syncWholeDraftExportFile>> }> {
+  if (!String(section || '').trim()) {
+    throw new Error('缺少目标章节，已停止保存以避免创建 section.txt');
+  }
+  const rawChapter = sanitizeDraftChapterName(section);
+  const chapter = getCanonicalOrdinaryDraftChapterName(rawChapter);
+  const incomingContent = normalizeDraftChapterContent(content);
+  const savedDraft = await sessionStore.updateDraft(userId, chapter, current => {
+    const nextContent = subsection
+      ? upsertDraftSubsectionContent(current?.content || '', incomingContent, subsection, mode)
+      : mergeDraftChapterContent(current?.content || '', incomingContent, mode);
+    const cjkCount = countDraftCjkCharacters(nextContent);
+    if (requireEnglishOnly && cjkCount > 0) {
+      throw new Error(`用户要求全英文，但合并后的章节仍包含 ${cjkCount} 个中文字符`);
+    }
+    return nextContent;
+  });
+  const finalContent = savedDraft.content;
+  if (rawChapter !== chapter) {
+    logger.info(`[Draft] Canonicalized draft section ${rawChapter} -> ${chapter} for user ${userId}`);
+  }
+
+  const progressTarget = subsection?.title ? `${chapter} / ${subsection.title}` : chapter;
+  await updateDraftProgressMemory(userId, progressTarget, finalContent.length, source);
+  const exportInfo = await syncWholeDraftExportFile(userId, reason);
+  return {
+    chapter,
+    rawChapter,
+    contentLength: finalContent.length,
+    exportInfo,
+  };
+}
+
+async function mergeLegacyDraftStoreForResolvedUser(requestedUserId: string, resolvedUserId: string): Promise<void> {
+  if (requestedUserId === resolvedUserId || requestedUserId !== 'web-user') return;
+
+  const markerPath = path.join(
+    getSessionDir(),
+    sanitizeUserId(resolvedUserId),
+    '.legacy-web-user-import-v2.json'
+  );
+  if (fs.existsSync(markerPath)) return;
+
+  await ensureCanonicalDraftStore(resolvedUserId);
+  await ensureCanonicalDraftStore(requestedUserId);
+
+  const legacyDrafts = await loadMergedOrdinaryDraftChapters(requestedUserId);
+  const importedChapters: string[] = [];
+  const skippedChapters: string[] = [];
+  let importedContentLength = 0;
+
+  for (const legacyDraft of legacyDrafts) {
+    const incomingContent = normalizeDraftChapterContent(legacyDraft.content || '');
+    if (!incomingContent) continue;
+
+    const chapter = getCanonicalOrdinaryDraftChapterName(legacyDraft.chapterName);
+    const currentData = await sessionStore.loadDraft(resolvedUserId, chapter);
+    if (String(currentData?.content || '').trim()) {
+      skippedChapters.push(chapter);
+      continue;
+    }
+
+    await sessionStore.saveDraft(resolvedUserId, chapter, incomingContent);
+    importedContentLength += incomingContent.length;
+    importedChapters.push(chapter);
+  }
+
+  if (importedChapters.length > 0) {
+    await updateDraftProgressMemory(
+      resolvedUserId,
+      importedChapters.join(', '),
+      importedContentLength,
+      'legacy-web-user-draft-import'
+    );
+    await syncWholeDraftExportFile(resolvedUserId, 'legacy-web-user-import');
+  }
+
+  fs.mkdirSync(path.dirname(markerPath), { recursive: true });
+  fs.writeFileSync(markerPath, JSON.stringify({
+    version: 2,
+    importedAt: new Date().toISOString(),
+    sourceUserId: requestedUserId,
+    importedChapters,
+    skippedExistingChapters: Array.from(new Set(skippedChapters)),
+  }, null, 2), 'utf-8');
+  logger.info(
+    `[Draft] Completed one-time legacy web-user import for ${resolvedUserId}; `
+    + `imported=${importedChapters.join(', ') || 'none'}, skipped=${Array.from(new Set(skippedChapters)).join(', ') || 'none'}`
+  );
+}
+
+async function resolveDraftRequestUserId(req: Request, mergeLegacy = true): Promise<string> {
+  const requestedUserId = sanitizeUserId(req.params.userId || req.body?.userId || 'web-user');
+  const resolvedUserId = sanitizeUserId(await resolveUserId(requestedUserId));
+  if (mergeLegacy) {
+    await mergeLegacyDraftStoreForResolvedUser(requestedUserId, resolvedUserId);
+  }
+  return resolvedUserId;
 }
 
 app.get("/api/draft/:userId", async (req: Request, res: Response) => {
-  const userId = sanitizeUserId(req.params.userId);
+  const userId = await resolveDraftRequestUserId(req);
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+  res.setHeader('Pragma', 'no-cache');
   const userDir = getUserUploadDir(userId);
-  const draftFile = path.join(userDir, "paper-draft.tex");
   const journalStyleDir = path.join(userDir, "journal-styles");
-  
+
   let journalName = "";
   if (fs.existsSync(journalStyleDir)) {
     const styleFolders = fs.readdirSync(journalStyleDir);
     if (styleFolders.length > 0) journalName = styleFolders[0].replace(/_/g, ' ');
   }
-  
+
   try {
-    const drafts = await sessionStore.listDrafts(userId);
+    await ensureCanonicalDraftStore(userId);
+    const drafts = await loadMergedOrdinaryDraftChapters(userId);
     if (drafts.length > 0) {
-      const chapterOrder = ['title', 'abstract', 'introduction', 'methods', 'results', 'discussion', 'conclusion'];
-      const sortedDrafts = drafts.sort((a, b) => {
-        const indexA = chapterOrder.indexOf(a.chapterName.toLowerCase());
-        const indexB = chapterOrder.indexOf(b.chapterName.toLowerCase());
-        if (indexA !== -1 && indexB !== -1) return indexA - indexB;
-        if (indexA !== -1) return -1;
-        if (indexB !== -1) return 1;
-        return new Date(b.savedAt).getTime() - new Date(a.savedAt).getTime();
-      });
-      
       let combinedContent = '';
-      for (const draft of sortedDrafts) {
-        const draftData = await sessionStore.loadDraft(userId, draft.chapterName);
-        if (draftData) {
-          combinedContent += `\\section{${draft.chapterName.charAt(0).toUpperCase() + draft.chapterName.slice(1)}}\n`;
-          combinedContent += draftData.content + '\n\n';
-        }
+      for (const draft of drafts) {
+        combinedContent += `\\section{${formatDraftChapterTitle(draft.chapterName)}}\n`;
+        combinedContent += draft.content + '\n\n';
       }
-      
+
       if (combinedContent.length > 0) {
         logger.info(`[Draft] Loaded ${drafts.length} chapters from sessionStore for user ${userId}`);
         res.json({
@@ -14014,7 +14961,17 @@ app.get("/api/draft/:userId", async (req: Request, res: Response) => {
           journal_style: journalName || '目标期刊',
           filename: `paper-draft-${userId}`,
           chapters: drafts.map(d => d.chapterName),
-          source: 'sessionStore'
+          chapterFiles: Object.fromEntries(drafts.map(d => [d.chapterName, `${d.chapterName}.txt`])),
+          chapterRecords: drafts.map(d => ({
+            chapterName: formatDraftChapterTitle(d.chapterName),
+            key: d.chapterName,
+            fileName: `${d.chapterName}.txt`,
+            storagePath: `drafts/${d.chapterName}.txt`,
+            savedAt: d.savedAt,
+            content: d.content,
+          })),
+          sourceChapters: Object.fromEntries(drafts.map(d => [d.chapterName, d.sourceChapterNames])),
+          source: 'chapter-txt'
         });
         return;
       }
@@ -14023,64 +14980,32 @@ app.get("/api/draft/:userId", async (req: Request, res: Response) => {
     logger.warn(`[Draft] Failed to load from sessionStore: ${error}`);
   }
   
-  if (fs.existsSync(draftFile)) {
-    const content = fs.readFileSync(draftFile, 'utf-8');
-    res.json({
-      exists: true,
-      content,
-      journal_style: journalName || '目标期刊',
-      filename: `paper-draft-${userId}`,
-      source: 'legacy'
-    });
-  } else {
-    res.json({
-      exists: false,
-      journal_style: journalName || '目标期刊'
-    });
-  }
+  res.json({
+    exists: false,
+    journal_style: journalName || '目标期刊'
+  });
 });
 
 // 下载草稿（支持多格式）
 app.get("/api/draft/:userId/download", async (req: Request, res: Response) => {
-  const userId = sanitizeUserId(req.params.userId);
+  const userId = await resolveDraftRequestUserId(req);
   const format = req.query.format as string || 'tex';
   
   try {
-    // 获取草稿内容
-    const userDir = getUserUploadDir(userId);
-    const draftFile = path.join(userDir, "paper-draft.tex");
-    
     let content = "";
     
     // 优先从 sessionStore 读取
     try {
-      const drafts = await sessionStore.listDrafts(userId);
+      await ensureCanonicalDraftStore(userId);
+      const drafts = await loadMergedOrdinaryDraftChapters(userId);
       if (drafts.length > 0) {
-        const chapterOrder = ['title', 'abstract', 'introduction', 'methods', 'results', 'discussion', 'conclusion'];
-        const sortedDrafts = drafts.sort((a, b) => {
-          const indexA = chapterOrder.indexOf(a.chapterName.toLowerCase());
-          const indexB = chapterOrder.indexOf(b.chapterName.toLowerCase());
-          if (indexA !== -1 && indexB !== -1) return indexA - indexB;
-          if (indexA !== -1) return -1;
-          if (indexB !== -1) return 1;
-          return new Date(b.savedAt).getTime() - new Date(a.savedAt).getTime();
-        });
-        
-        for (const draft of sortedDrafts) {
-          const draftData = await sessionStore.loadDraft(userId, draft.chapterName);
-          if (draftData) {
-            content += `\\section{${draft.chapterName.charAt(0).toUpperCase() + draft.chapterName.slice(1)}}\n`;
-            content += draftData.content + '\n\n';
-          }
+        for (const draft of drafts) {
+          content += `\\section{${formatDraftChapterTitle(draft.chapterName)}}\n`;
+          content += draft.content + '\n\n';
         }
       }
     } catch (error) {
       logger.warn(`[Draft Download] Failed to load from sessionStore: ${error}`);
-    }
-    
-    // 回退到文件
-    if (!content && fs.existsSync(draftFile)) {
-      content = fs.readFileSync(draftFile, 'utf-8');
     }
     
     if (!content) {
@@ -14151,121 +15076,48 @@ app.get("/api/draft/:userId/download", async (req: Request, res: Response) => {
   }
 });
 
-// 保存/更新论文草稿
+// 兼容保存入口：统一写入分章节草稿，并自动同步整篇导出文件。
+// 新流程应优先走 /smart-save；本接口不再直接追加写旧版 paper-draft.tex。
 app.post("/api/draft/:userId", async (req: Request, res: Response) => {
-  const userId = sanitizeUserId(req.params.userId);
+  const userId = await resolveDraftRequestUserId(req);
   const { content, section, append = true } = req.body;
-  const draftSection = sanitizeDraftChapterName(section || 'section');
+  if (!String(section || '').trim()) {
+    res.status(400).json({
+      success: false,
+      error: "缺少目标章节。请使用智能保存或从右侧文章写作进度选择现有章节。",
+    });
+    return;
+  }
+  const rawDraftSection = sanitizeDraftChapterName(section);
+  const draftSection = getCanonicalOrdinaryDraftChapterName(rawDraftSection);
   
   if (!content) {
     res.json({ success: false, error: "内容为空" });
     return;
   }
-  
-  const userDir = getUserUploadDir(userId);
-  const draftDir = path.join(userDir, "drafts");
-  const draftFile = path.join(userDir, "paper-draft.tex");
-  
-  // 确保目录存在
-  if (!fs.existsSync(userDir)) {
-    fs.mkdirSync(userDir, { recursive: true });
-  }
-  if (!fs.existsSync(draftDir)) {
-    fs.mkdirSync(draftDir, { recursive: true });
-  }
-  
+
   try {
-    // 获取期刊风格信息（用于 LaTeX 格式）
-    const journalStyleDir = path.join(userDir, "journal-styles");
-    let latexStyle = "article";
-    let citationStyle = "apalike";
-    
-    if (fs.existsSync(journalStyleDir)) {
-      const styleFolders = fs.readdirSync(journalStyleDir);
-      if (styleFolders.length > 0) {
-        const styleFile = path.join(journalStyleDir, styleFolders[0], "style.json");
-        if (fs.existsSync(styleFile)) {
-          const styleData = JSON.parse(fs.readFileSync(styleFile, 'utf-8'));
-          const citationFormat = styleData[0]?.citation_format;
-          
-          if (citationFormat) {
-            if (citationFormat.reference_style === 'APA' || citationFormat.in_text_style === '作者年份制') {
-              citationStyle = "apalike";
-            } else if (citationFormat.reference_style === 'IEEE') {
-              citationStyle = "ieeetr";
-            } else if (citationFormat.reference_style === 'Nature') {
-              citationStyle = "nature";
-            } else if (citationFormat.reference_style === 'Chicago') {
-              citationStyle = "chicago";
-            }
-          }
-        }
-      }
-    }
-    
-    let existingContent = "";
-    if (fs.existsSync(draftFile)) {
-      existingContent = fs.readFileSync(draftFile, 'utf-8');
-    }
-    
-    // 如果是第一个章节，需要添加 LaTeX 导言区
-    if (!existingContent.includes("\\section{")) {
-      const preamble = `\\documentclass[${latexStyle === 'nature' ? 'nature' : '12pt'}]{${latexStyle}}
-\\usepackage{ctex}
-\\usepackage{amsmath}
-\\usepackage{amssymb}
-\\usepackage{graphicx}
-\\usepackage{natbib}
-\\usepackage{hyperref}
-\\usepackage{setspace}
-\\doublespacing
+    const incomingContent = normalizeDraftChapterContent(content);
+    const mode: DraftSaveMode = append || rawDraftSection !== draftSection ? 'merge' : 'replace';
+    const savedDraft = await sessionStore.updateDraft(userId, draftSection, current => (
+      mergeDraftChapterContent(current?.content || '', incomingContent, mode)
+    ));
+    const finalContent = savedDraft.content;
+    await updateDraftProgressMemory(userId, draftSection, finalContent.length, 'section-draft-save');
+    const exportInfo = await syncWholeDraftExportFile(userId, `section-${draftSection}`);
 
-\\title{学术论文草稿}
-\\author{作者}
-\\date{\\today}
+    logger.info(`[Draft] Section draft saved for user ${userId}, section: ${draftSection}, exportSynced=${exportInfo.synced}`);
 
-\\begin{document}
-
-\\maketitle
-
-\\begin{abstract}
-摘要内容待填写...
-\\end{abstract}
-
-`;
-      
-      existingContent = preamble;
-    }
-    
-    let newContent = "";
-    if (append && existingContent) {
-      // 追加模式：在 \\end{document} 之前插入
-      if (existingContent.includes("\\end{document}")) {
-        const parts = existingContent.split("\\end{document}");
-        newContent = parts[0] + content + "\n\n\\end{document}";
-      } else {
-        newContent = existingContent + "\n\n" + content;
-      }
-    } else {
-      // 覆盖模式
-      newContent = content;
-    }
-    
-    fs.writeFileSync(draftFile, newContent, 'utf-8');
-    
-    // 同时保存一个备份（带时间戳）
-    const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, -5);
-    const backupFile = path.join(draftDir, `draft-${draftSection}-${timestamp}.tex`);
-    fs.writeFileSync(backupFile, newContent, 'utf-8');
-    
-    logger.info(`[Draft] Saved draft for user ${userId}, section: ${draftSection}`);
-    
     res.json({
       success: true,
-      message: "草稿已保存",
-      filename: `paper-draft-${userId}.tex`
+      message: "草稿已保存到分章节草稿，并已同步整篇导出文件",
+      section: draftSection,
+      chapterFile: `${draftSection}.txt`,
+      filename: exportInfo.filename,
+      source: 'chapter-txt',
+      exportSynced: exportInfo.synced,
+      chapters: exportInfo.chapters,
     });
-    
   } catch (e) {
     logger.error("[Draft] Error:", e);
     res.json({ success: false, error: "保存失败：" + (e as Error).message });
@@ -14274,7 +15126,7 @@ app.post("/api/draft/:userId", async (req: Request, res: Response) => {
 
 // 覆盖保存编辑后的论文草稿
 app.put("/api/draft/:userId", async (req: Request, res: Response) => {
-  const userId = sanitizeUserId(req.params.userId);
+  const userId = await resolveDraftRequestUserId(req);
   const content = req.body?.content;
 
   if (typeof content !== "string") {
@@ -14288,28 +15140,55 @@ app.put("/api/draft/:userId", async (req: Request, res: Response) => {
   }
 
   try {
-    writeDraftSnapshot(userId, content, "edited");
-
-    const existingDrafts = await sessionStore.listDrafts(userId);
-    for (const draft of existingDrafts) {
-      await sessionStore.deleteDraft(userId, draft.chapterName);
-    }
-
     const editedSections = splitEditedDraftSections(content);
-    for (const section of editedSections) {
-      await sessionStore.saveDraft(userId, section.chapterName, section.content);
+    if (editedSections.length === 0) {
+      res.status(400).json({
+        success: false,
+        error: "没有识别到可保存的顶级章节。请保留章节标题，或在右侧单独编辑对应章节。",
+      });
+      return;
     }
+    const existingDrafts = await sessionStore.listDrafts(userId);
+    const allowedChapterNames = new Set([
+      ...ORDINARY_DRAFT_CHAPTER_ORDER,
+      ...existingDrafts.map(draft => getCanonicalOrdinaryDraftChapterName(draft.chapterName)),
+    ]);
+    const unknownChapters = editedSections
+      .map(section => section.chapterName)
+      .filter(chapter => !allowedChapterNames.has(chapter));
+    if (unknownChapters.length > 0) {
+      res.status(400).json({
+        success: false,
+        error: `检测到未登记的顶级章节：${Array.from(new Set(unknownChapters)).join(', ')}。请在右侧文章结构中先创建章节。`,
+      });
+      return;
+    }
+
+    const sectionsToSave = editedSections;
+    if (existingDrafts.length > 0) {
+      await backupDraftStoreBeforeHierarchyMigration(userId, existingDrafts);
+    }
+    for (const section of sectionsToSave) {
+      const normalized = normalizeDraftChapterContent(section.content);
+      await sessionStore.updateDraft(userId, section.chapterName, () => normalized);
+    }
+    await updateDraftProgressMemory(userId, sectionsToSave.map(section => section.chapterName).join(", "), content.length, "draft-editor");
+    const exportInfo = await syncWholeDraftExportFile(userId, "edited");
 
     logger.info(
-      `[Draft] Edited draft saved for user ${userId}, sections: ${editedSections.length}, source: ${editedSections.length > 0 ? "sessionStore" : "legacy"}`
+      `[Draft] Edited draft saved for user ${userId}, sections: ${sectionsToSave.length}, exportSynced=${exportInfo.synced}`
     );
 
     res.json({
       success: true,
       message: "草稿已更新",
-      filename: `paper-draft-${userId}.tex`,
-      source: editedSections.length > 0 ? "sessionStore" : "legacy",
-      chapters: editedSections.map(section => section.chapterName),
+      filename: exportInfo.filename,
+      source: "sessionStore",
+      exportSynced: exportInfo.synced,
+      chapters: sectionsToSave.map(section => section.chapterName),
+      preservedChapters: existingDrafts
+        .map(draft => getCanonicalOrdinaryDraftChapterName(draft.chapterName))
+        .filter(chapter => !sectionsToSave.some(section => section.chapterName === chapter)),
     });
   } catch (e) {
     logger.error("[Draft] Edit save error:", e);
@@ -14319,44 +15198,116 @@ app.put("/api/draft/:userId", async (req: Request, res: Response) => {
 
 // 保存单个章节草稿到主草稿存储，供右侧文章结构面板实时编辑使用
 app.post("/api/draft/:userId/chapter", async (req: Request, res: Response) => {
-  const userId = sanitizeUserId(req.params.userId);
-  const chapter = sanitizeDraftChapterName(req.body?.chapter || "section");
+  const userId = await resolveDraftRequestUserId(req);
+  const allowedChapters = normalizeAllowedDraftChapters(req.body?.availableChapters);
+  const requestedChapter = String(req.body?.chapter || '').trim();
+  const allowedTarget = findAllowedDraftChapter(allowedChapters, requestedChapter);
   const content = req.body?.content;
+  const expectedSavedAt = String(req.body?.expectedSavedAt || '').trim();
 
   if (typeof content !== "string") {
     res.status(400).json({ success: false, error: "章节内容格式无效" });
     return;
   }
+  if (!content.trim()) {
+    res.status(400).json({
+      success: false,
+      error: "章节内容为空。若要删除章节，请使用章节右侧的删除功能。",
+    });
+    return;
+  }
+  if (allowedChapters.length === 0 || !allowedTarget) {
+    res.status(400).json({
+      success: false,
+      error: "该章节不在右侧文章写作进度中，已停止保存。请刷新章节列表后重试。",
+    });
+    return;
+  }
+
+  const chapter = getCanonicalOrdinaryDraftChapterName(sanitizeDraftChapterName(allowedTarget.key));
 
   try {
-    await sessionStore.saveDraft(userId, chapter, content);
-
-    const memory = await loadUserMemory(userId);
-    let draftProgressEntry = memory.entries.find(e => e.key === "draft_progress");
-    const value = `最后更新：${new Date().toLocaleString("zh-CN")} - 章节 ${chapter}，长度 ${content.length} 字符`;
-    if (draftProgressEntry) {
-      draftProgressEntry.value = value;
-      draftProgressEntry.timestamp = new Date().toISOString();
-      draftProgressEntry.source = "user-updated";
-    } else {
-      memory.entries.push({
-        key: "draft_progress",
-        value,
-        source: "user-updated",
-        timestamp: new Date().toISOString(),
-      });
-    }
-    await saveUserMemory(memory);
+    const normalizedContent = normalizeDraftChapterContent(content);
+    const savedDraft = await sessionStore.updateDraft(
+      userId,
+      chapter,
+      () => normalizedContent,
+      { expectedSavedAt: expectedSavedAt || undefined }
+    );
+    await updateDraftProgressMemory(userId, chapter, normalizedContent.length, "user-updated");
+    const exportInfo = await syncWholeDraftExportFile(userId, `chapter-${chapter}`);
 
     res.json({
       success: true,
       chapter,
-      length: content.length,
-      savedAt: new Date().toISOString(),
+      length: normalizedContent.length,
+      chapterFile: `${chapter}.txt`,
+      filename: exportInfo.filename,
+      exportSynced: exportInfo.synced,
+      savedAt: savedDraft.savedAt,
     });
   } catch (e) {
+    if (e instanceof DraftConflictError) {
+      res.status(409).json({
+        success: false,
+        conflict: true,
+        currentSavedAt: e.currentSavedAt,
+        error: e.message,
+      });
+      return;
+    }
     logger.error("[Draft] Chapter save error:", e);
     res.status(500).json({ success: false, error: "保存章节失败：" + (e as Error).message });
+  }
+});
+
+app.delete("/api/draft/:userId/chapter/:chapter", async (req: Request, res: Response) => {
+  const userId = await resolveDraftRequestUserId(req);
+  const allowedChapters = normalizeAllowedDraftChapters(req.body?.availableChapters);
+  const requestedChapter = String(req.params.chapter || '').trim();
+  const allowedTarget = findAllowedDraftChapter(allowedChapters, requestedChapter);
+
+  if (!allowedTarget) {
+    res.status(400).json({
+      success: false,
+      error: "该章节不在右侧文章写作进度中，已停止删除。请刷新章节列表后重试。",
+    });
+    return;
+  }
+
+  try {
+    const canonicalTargets = new Set<string>([
+      getCanonicalOrdinaryDraftChapterName(allowedTarget.key),
+    ]);
+    if (/title[\s/|+-]*abstract|abstract[\s/|+-]*title|标题.*摘要|摘要.*标题/i.test(allowedTarget.title)) {
+      canonicalTargets.add('title');
+      canonicalTargets.add('abstract');
+    }
+
+    const drafts = await sessionStore.listDrafts(userId);
+    const deletedChapters: string[] = [];
+    for (const draft of drafts) {
+      const canonicalChapter = getCanonicalOrdinaryDraftChapterName(draft.chapterName);
+      if (!canonicalTargets.has(canonicalChapter)) continue;
+      await sessionStore.deleteDraft(userId, draft.chapterName);
+      deletedChapters.push(draft.chapterName);
+    }
+
+    await updateDraftProgressMemory(userId, allowedTarget.key, 0, "user-deleted-chapter");
+    const exportInfo = await syncWholeDraftExportFile(userId, `delete-${sanitizeDraftChapterName(allowedTarget.key)}`);
+    logger.info(`[Draft] Deleted sidebar chapter ${allowedTarget.key} for user ${userId}; stored aliases=${deletedChapters.join(', ') || 'none'}`);
+
+    res.json({
+      success: true,
+      chapter: allowedTarget.key,
+      chapterTitle: allowedTarget.title,
+      deletedChapters,
+      exportSynced: exportInfo.synced,
+      chapters: exportInfo.chapters,
+    });
+  } catch (error) {
+    logger.error(`[Draft] Failed to delete sidebar chapter ${allowedTarget.key}:`, error);
+    res.status(500).json({ success: false, error: "删除章节失败：" + (error as Error).message });
   }
 });
 
@@ -14364,14 +15315,30 @@ app.post("/api/draft/:userId/chapter", async (req: Request, res: Response) => {
 
 // AI 智能处理草稿保存
 app.post("/api/draft/:userId/smart-save", async (req: Request, res: Response) => {
-  const userId = sanitizeUserId(req.params.userId);
-  const { content, context } = req.body;
+  const userId = await resolveDraftRequestUserId(req);
+  const { content, context = {} } = req.body;
+  const availableChapters = includeCreatableCanonicalDraftChapters(context?.availableChapters);
+  const rawWritingTarget = context?.writingTarget && typeof context.writingTarget === 'object'
+    ? context.writingTarget
+    : null;
+  const writingTargetKey = String(rawWritingTarget?.chapterKey || '').trim();
+  const writingTargetChapter = findAllowedDraftChapter(availableChapters, writingTargetKey);
+  const preferredChapterHint = String(context?.preferredChapterKey || context?.preferredSection || '').trim();
+  const preferredChapter = writingTargetChapter
+    || findAllowedDraftChapter(availableChapters, preferredChapterHint);
+  const writingTargetSubsection: DraftSubsectionTarget | undefined = String(rawWritingTarget?.subsectionTitle || '').trim()
+    ? {
+        id: String(rawWritingTarget?.subsectionId || '').trim(),
+        title: String(rawWritingTarget?.subsectionTitle || '').trim(),
+        index: Math.max(0, Math.floor(Number(rawWritingTarget?.subsectionIndex || 0))),
+      }
+    : undefined;
+  const sourceUserQuery = String(context?.sourceUserQuery || '').trim().slice(0, 4000);
   
   if (!content || !content.trim()) {
     res.json({ success: false, error: "内容为空" });
     return;
   }
-  
   logger.info(`[SmartDraft] Processing draft for user ${userId}, content length: ${content.length}`);
   
   // ====== 关键修改：优先使用请求中传递的API配置，确保使用用户页面配置的API ======
@@ -14408,16 +15375,24 @@ app.post("/api/draft/:userId/smart-save", async (req: Request, res: Response) =>
     const systemPrompt = `你是一个学术论文写作助手。你的任务是分析对话内容，提取论文草稿并保存到正确的章节。
 
 ## 你需要做的事情：
-1. **识别章节**：判断内容属于哪个章节（摘要、引言、材料和方法、结果、讨论、结论）
+1. **确定保存章节**：${preferredChapter
+  ? `用户已经明确指定章节 key "${preferredChapter.key}"（${preferredChapter.title}）${writingTargetSubsection ? `，小节“${writingTargetSubsection.title}”` : ''}，不得改章`
+  : '根据用户 query、论文结构、正文标题和正文功能选择现有章节，或创建新的顶级章节'}
+   - 可沿用可用章节列表中的 key，也可创建 literature_review、implications、data_availability 等有意义的新 key
+   - 禁止输出 results_33、results_34、3.3 等小节 key，也不要使用 section、chapter 等空泛 key
+   - 3.1、3.2、3.3 等带点编号是一级章节内部的小节，只能保留在 Results 等父章节正文中，绝不能作为平行的 chapterKey
+   - 优先级：用户明确指定 > 正文标题 > 内容功能；Results 写观测与统计，Discussion 写解释、机制、文献比较、意义和局限
 2. **整理内容**：
    - 删除无关的对话内容（如"好的"、"我明白了"等）
    - 删除重复内容
    - 保留所有学术论文内容
-   - 正文中的引用必须统一为作者-年份格式，例如 (Zhang et al., 2026)
+   - 正文中的引用必须统一为圆括号作者-年份格式，例如 (Zhang et al., 2026)
+   - 必须写第一作者完整姓氏，禁止 [Zhang et al., 2026]、[1] 以及 (M et al., 2010)、(EW et al., 2021) 等首字母作者
    - 如果原文是 [1]、[2-5] 等编号引用，请根据参考文献信息转换为作者-年份格式
 3. **提取并格式化参考文献**：
    - 从对话内容中识别所有被引用的参考文献
-   - 按照 GB/T 7714-2015 格式规范排列
+   - 每条直接从完整作者信息开始，再列出年份和来源信息
+   - 不得在文末条目前重复添加 (第一作者姓氏 et al., 年份) 等正文引用标签
    - 与正文引用标注一一对应
 
 ## 章节判断规则：
@@ -14428,7 +15403,7 @@ app.post("/api/draft/:userId/smart-save", async (req: Request, res: Response) =>
 - 讨论/Discussion：结果解释、与已有研究对比、研究意义、局限性
 - 结论/Conclusion：主要发现总结、未来研究方向
 
-## 参考文献格式规范（GB/T 7714-2015）：
+## 参考文献完整信息规范：
 ### 期刊论文 [J]：
 作者. 题名[J]. 刊名, 年, 卷(期): 起止页码. DOI(如有).
 示例：张三, 李四, 王五. 氮氧化物排放研究[J]. 环境科学, 2020, 41(3): 456-462. DOI: 10.xxxx/xxx.
@@ -14448,34 +15423,45 @@ app.post("/api/draft/:userId/smart-save", async (req: Request, res: Response) =>
 - 3位及以下作者全部列出
 - 4位及以上作者列出前3位后加"等"或"et al."
 - 中文作者姓前名后，外文作者姓前名缩写
-- 参考文献按正文引用顺序编号排列
+- 默认不添加 [1]、[2] 等数字编号；目标期刊明确要求编号时除外
+- 文末条目直接从作者开始，不添加 (Smith et al., 2020) 等正文引用前缀
 
 ## 输出格式（JSON）：
 \`\`\`json
 {
-  "section": "章节英文名（abstract/introduction/methods/results/discussion/conclusion）",
-  "sectionName": "章节中文名",
+  "chapterKey": "${preferredChapter?.key || '现有章节 key 或新建的有意义顶级章节 key'}",
+  "section": "${preferredChapter?.canonicalSection || '章节功能分类；自定义章节可与 chapterKey 相同'}",
+  "sectionName": "章节显示名称",
+  "confidence": 0.85,
+  "sectionEvidence": "说明用户 query、正文标题或正文功能中支持该判断的证据",
   "content": "整理后的内容（正文引用统一使用作者-年份格式，如 (Zhang et al., 2026)）",
-  "references": "格式化后的参考文献列表（按GB/T 7714格式，每条一行，含编号）"
+  "references": "参考文献列表；每条直接从全部作者开始，随后列出年份和完整来源信息，不添加正文引用前缀"
 }
 \`\`\`
 
 ## 参考文献输出示例：
-[1] Smith J, Jones M. Nitrogen cycling in soils[J]. Nature, 2020, 580(7803): 234-240.
-[2] 张三, 李四. 农田温室气体排放研究[J]. 农业环境科学学报, 2019, 38(2): 300-310.
+Smith, J., Jones, M. (2020). Nitrogen cycling in soils. Nature, 580(7803), 234-240.
+Zhang, S., Li, S. (2019). Agricultural greenhouse-gas emissions. Journal of Agro-Environment Science, 38(2), 300-310.
 
-重要：只输出JSON，不要有其他内容。参考文献必须和正文引用一一对应。`;
+重要：只输出JSON，不要有其他内容。${preferredChapter ? `chapterKey 必须原样返回 "${preferredChapter.key}"。` : '必须自主选择或创建一个有意义的顶级章节；不要返回 section、chapter、results_33 或 3.3 等空泛/小节 key。'}参考文献必须和正文引用一一对应。`;
 
     const userPrompt = `请分析以下对话内容，提取论文草稿：
+
+产生该回复的用户 query：
+${sourceUserQuery || '（未提供，请主要根据正文标题和内容功能判断）'}
+
+${preferredChapter
+  ? `用户指定的保存目标：${preferredChapter.title}（key: ${preferredChapter.key}）${writingTargetSubsection ? ` / 小节：${writingTargetSubsection.title}` : ''}`
+  : `当前未手动锁定章节。可从以下已有/常用章节中选择，也可按当前论文结构创建新的顶级章节：\n${JSON.stringify(availableChapters.map(chapter => ({ key: chapter.key, title: chapter.title })))}`}
 
 ---
 ${content}
 ---
 
 请：
-1. 识别章节
+1. ${preferredChapter ? '整理正文，但不得更改上方用户指定目标' : '结合用户 query、正文标题和内容功能自主判断章节'}
 2. 整理内容（正文引用统一改为作者-年份格式，如 (Zhang et al., 2026)）
-3. 提取参考文献并按 GB/T 7714 格式排列
+3. 提取参考文献；每条直接从完整作者信息开始，不添加正文引用前缀
 4. 以JSON格式输出（参考文献和内容必须一起输出）`;
 
     let aiResponse: string = '';
@@ -14519,8 +15505,11 @@ ${content}
     
     // 解析 AI 响应
     let parsedResult: {
+      chapterKey?: string;
       section: string;
       sectionName: string;
+      confidence?: number;
+      sectionEvidence?: string;
       content: string;
       references?: string;
     };
@@ -14544,59 +15533,103 @@ ${content}
       });
       return;
     }
-    
-    // 验证章节
-    const validSections = ['abstract', 'introduction', 'methods', 'results', 'discussion', 'conclusion'];
-    if (!validSections.includes(parsedResult.section)) {
-      parsedResult.section = 'introduction'; // 默认章节
+
+    if (typeof parsedResult.content !== 'string' || !parsedResult.content.trim()) {
+      res.json({ success: false, error: "AI 没有返回可保存的草稿正文" });
+      return;
+    }
+
+    parsedResult.content = normalizeAuthorYearCitationText(parsedResult.content);
+    if (typeof parsedResult.references === 'string') {
+      parsedResult.references = normalizeAuthorYearCitationText(parsedResult.references);
     }
     
+    const declaredChapter = String(parsedResult.chapterKey || parsedResult.section || '').trim();
+    const targetResolution = resolveDraftSaveTarget({
+      chapters: availableChapters,
+      content: parsedResult.content || content,
+      sourceQuery: sourceUserQuery,
+      preferredChapter: preferredChapter?.key,
+      declaredChapter,
+      declaredTitle: parsedResult.sectionName,
+      declaredConfidence: parsedResult.confidence,
+    });
+    if (!targetResolution) {
+      const declaredTarget = findAllowedDraftChapter(availableChapters, declaredChapter);
+      res.status(422).json({
+        success: false,
+        needsSectionSelection: true,
+        error: 'AI 和规则未能可靠确定唯一章节，已停止保存以避免写错。',
+        suggestedSection: declaredTarget?.key || null,
+        suggestedSections: declaredTarget ? [declaredTarget.key] : [],
+        options: availableChapters.map(chapter => ({
+          section: chapter.key,
+          key: chapter.key,
+          label: chapter.title,
+        })),
+        classification: {
+          confidence: Number.isFinite(Number(parsedResult.confidence)) ? Number(parsedResult.confidence) : 0,
+          reason: String(parsedResult.sectionEvidence || '章节证据不足'),
+        },
+      });
+      return;
+    }
+    if (preferredChapter && declaredChapter && declaredChapter !== preferredChapter.key) {
+      logger.warn('[SmartDraft] Ignored AI-declared chapter because the user selected a preferred target.', {
+        userId,
+        declaredChapter,
+        writingTarget: preferredChapter.key,
+        subsection: writingTargetSubsection?.title || null,
+      });
+    }
+    parsedResult.section = targetResolution.target.key;
+    parsedResult.sectionName = targetResolution.target.title;
+    
     // 保存草稿 - 使用 SessionStore 确保与论文草稿按钮读取路径一致
-    // SessionStore 保存路径: {dataDir}/{userId}/drafts/{section}.json
+    // SessionStore 唯一保存路径: {dataDir}/{userId}/drafts/{section}.txt
     // 这样左上角"📝 论文草稿"按钮能正确读取
     const userDir = getUserUploadDir(userId);
     
     // 追加模式：先读取已有内容
     let existingDraft = await sessionStore.loadDraft(userId, parsedResult.section);
+    const chapterExistedBeforeSave = Boolean(existingDraft);
+    if (existingDraft) {
+      existingDraft = {
+        ...existingDraft,
+        content: normalizeDraftChapterContent(existingDraft.content),
+      };
+    }
     
     // 构建最终内容：章节内容 + 参考文献（一起保存到草稿）
-    let chapterContent = parsedResult.content;
+    let chapterContent = normalizeDraftChapterContent(parsedResult.content);
     
     // 如果有参考文献，附加到章节内容后面
     if (parsedResult.references && parsedResult.references.trim()) {
       // 添加参考文献标题和列表
-      chapterContent = chapterContent + '\n\n## 参考文献\n\n' + parsedResult.references;
+      const referencesHeading = requiresEnglishOnlyDraft(sourceUserQuery) ? '## References' : '## 参考文献';
+      chapterContent = chapterContent + `\n\n${referencesHeading}\n\n` + parsedResult.references;
       logger.info(`[SmartDraft] References attached to content - length: ${parsedResult.references.length}`);
     }
     
-    let finalContent = chapterContent;
-    
     // 检查是否有强制操作模式（用户已确认后的第二次请求）
     const forceAction = req.body.forceAction as 'overwrite' | 'append' | undefined;
-    
-    if (existingDraft && existingDraft.content) {
+    const existingTargetContent = existingDraft?.content
+      ? (writingTargetSubsection
+          ? extractDraftSubsectionContent(existingDraft.content, writingTargetSubsection)
+          : existingDraft.content)
+      : '';
+
+    if (existingTargetContent) {
       // ====== 智能重复检测 ======
       // 如果用户已经确认了操作，直接执行
       if (forceAction === 'overwrite') {
-        logger.info(`[SmartDraft] User confirmed: OVERWRITE mode for ${parsedResult.section}`);
-        finalContent = chapterContent;
+        logger.info(`[SmartDraft] User confirmed: OVERWRITE mode for ${parsedResult.section}/${writingTargetSubsection?.title || '-'}`);
       } else if (forceAction === 'append') {
-        logger.info(`[SmartDraft] User confirmed: APPEND mode for ${parsedResult.section}`);
-        // 检查是否已有参考文献部分，避免重复
-        const existingHasRefs = existingDraft.content.includes('## 参考文献');
-        const newHasRefs = parsedResult.references && parsedResult.references.trim();
-        
-        if (existingHasRefs && newHasRefs) {
-          const newContentWithoutRefs = parsedResult.content;
-          const newRefsOnly = parsedResult.references;
-          finalContent = existingDraft.content + '\n\n' + newContentWithoutRefs + '\n\n' + newRefsOnly;
-        } else {
-          finalContent = existingDraft.content + '\n\n' + chapterContent;
-        }
+        logger.info(`[SmartDraft] User confirmed: APPEND mode for ${parsedResult.section}/${writingTargetSubsection?.title || '-'}`);
       } else {
         // 用户未确认，进行智能检测
-        const duplicateDetection = detectDraftDuplicate(existingDraft.content, chapterContent);
-        logger.info(`[SmartDraft] Duplicate detection for ${parsedResult.section}: similarity=${Math.round(duplicateDetection.similarity * 100)}%, needsConfirmation=${duplicateDetection.needsConfirmation}`);
+        const duplicateDetection = detectDraftDuplicate(existingTargetContent, chapterContent);
+        logger.info(`[SmartDraft] Duplicate detection for ${parsedResult.section}/${writingTargetSubsection?.title || '-'}: similarity=${Math.round(duplicateDetection.similarity * 100)}%, needsConfirmation=${duplicateDetection.needsConfirmation}`);
         
         if (duplicateDetection.needsConfirmation) {
           // 需要用户确认，返回特殊响应
@@ -14605,14 +15638,19 @@ ${content}
             needsConfirmation: true,
             section: parsedResult.section,
             sectionName: parsedResult.sectionName,
-            existingContentPreview: existingDraft.content.substring(0, 300) + (existingDraft.content.length > 300 ? '...' : ''),
-            existingContentLength: existingDraft.content.length,
-            existingSavedAt: existingDraft.savedAt,
+            subsectionId: writingTargetSubsection?.id || '',
+            subsectionTitle: writingTargetSubsection?.title || '',
+            subsectionIndex: writingTargetSubsection?.index || 0,
+            existingContentPreview: existingTargetContent.substring(0, 300) + (existingTargetContent.length > 300 ? '...' : ''),
+            existingContentLength: existingTargetContent.length,
+            existingSavedAt: existingDraft?.savedAt || '',
             newContentPreview: chapterContent.substring(0, 300) + (chapterContent.length > 300 ? '...' : ''),
             newContentLength: chapterContent.length,
+            pendingContent: parsedResult.content,
+            pendingReferences: parsedResult.references || '',
             similarity: duplicateDetection.similarity,
             reason: duplicateDetection.reason,
-            message: `⚠️ 检测到「${parsedResult.sectionName}」章节已有内容。请选择处理方式：`,
+            message: `⚠️ 检测到「${parsedResult.sectionName}${writingTargetSubsection ? ` / ${writingTargetSubsection.title}` : ''}」已有内容。请选择处理方式：`,
             options: [
               { action: 'overwrite', label: '覆盖原有内容', description: '删除旧版本，保存新版本' },
               { action: 'append', label: '增量追加', description: '保留旧内容，追加新内容' }
@@ -14621,24 +15659,36 @@ ${content}
           return;
         }
         
-        // 不需要确认，自动选择追加模式（内容差异较大）
-        const existingHasRefs = existingDraft.content.includes('## 参考文献');
-        const newHasRefs = parsedResult.references && parsedResult.references.trim();
-        
-        if (existingHasRefs && newHasRefs) {
-          const newContentWithoutRefs = parsedResult.content;
-          const newRefsOnly = parsedResult.references;
-          finalContent = existingDraft.content + '\n\n' + newContentWithoutRefs + '\n\n' + newRefsOnly;
-          logger.info(`[SmartDraft] Auto-append (low similarity) - refs merged`);
-        } else {
-          finalContent = existingDraft.content + '\n\n' + chapterContent;
-          logger.info(`[SmartDraft] Auto-append (low similarity) - existing length: ${existingDraft.content.length}, new length: ${chapterContent.length}`);
-        }
+        logger.info(`[SmartDraft] Auto-merge (low similarity) - existing target length: ${existingTargetContent.length}, new length: ${chapterContent.length}`);
       }
     }
-    
-    // 使用 SessionStore 保存（内容已包含参考文献）
-    await sessionStore.saveDraft(userId, parsedResult.section, finalContent);
+
+    const cjkCount = countDraftCjkCharacters(chapterContent);
+    if (requiresEnglishOnlyDraft(sourceUserQuery) && cjkCount > 0) {
+      logger.warn(`[SmartDraft] English-only save blocked for ${parsedResult.section}; CJK chars=${cjkCount}`);
+      res.status(422).json({
+        success: false,
+        validationError: true,
+        section: parsedResult.section,
+        chapterFile: `${parsedResult.section}.txt`,
+        error: `用户要求全英文，但待保存内容仍包含 ${cjkCount} 个中文字符，已停止写入。`,
+      });
+      return;
+    }
+
+    // 在章节锁内重新读取并合并，避免 AI 队列、侧栏编辑或图件插入互相覆盖。
+    const saveMode: DraftSaveMode = forceAction === 'overwrite' ? 'replace' : 'merge';
+    const savedDraft = await sessionStore.updateDraft(
+      userId,
+      parsedResult.section,
+      current => writingTargetSubsection
+        ? upsertDraftSubsectionContent(current?.content || '', chapterContent, writingTargetSubsection, saveMode)
+        : mergeDraftChapterContent(current?.content || '', chapterContent, saveMode),
+      { expectedSavedAt: String(req.body.expectedSavedAt || '').trim() || undefined }
+    );
+    const finalContent = savedDraft.content;
+    await updateDraftProgressMemory(userId, parsedResult.section, finalContent.length, 'smart-save');
+    const exportInfo = await syncWholeDraftExportFile(userId, `smart-${parsedResult.section}`);
     
     // 同时保存参考文献到独立的 references.bib 文件（作为备份，供 LaTeX 编译使用）
     if (parsedResult.references && parsedResult.references.trim()) {
@@ -14670,12 +15720,25 @@ ${content}
       success: true,
       section: parsedResult.section,
       sectionName: parsedResult.sectionName,
+      subsectionId: writingTargetSubsection?.id || '',
+      subsectionTitle: writingTargetSubsection?.title || '',
       content: parsedResult.content,
       references: parsedResult.references || '',
       hasReferences: !!parsedResult.references && parsedResult.references.trim().length > 0,
+      createdChapter: !chapterExistedBeforeSave,
       message: parsedResult.references && parsedResult.references.trim()
-        ? `已智能保存到「${parsedResult.sectionName}」章节（含参考文献，按 GB/T 7714 格式）`
-        : `已智能保存到「${parsedResult.sectionName}」章节`,
+        ? `${chapterExistedBeforeSave ? '已智能保存到' : '已创建并保存'}「${parsedResult.sectionName}${writingTargetSubsection ? ` / ${writingTargetSubsection.title}` : ''}」（含作者-年份对应的完整参考文献）`
+        : `${chapterExistedBeforeSave ? '已智能保存到' : '已创建并保存'}「${parsedResult.sectionName}${writingTargetSubsection ? ` / ${writingTargetSubsection.title}` : ''}」`,
+      chapterFile: `${parsedResult.section}.txt`,
+      filename: exportInfo.filename,
+      exportSynced: exportInfo.synced,
+      chapters: exportInfo.chapters,
+      classification: {
+        section: parsedResult.section,
+        confidence: targetResolution.confidence,
+        source: targetResolution.source,
+        reason: targetResolution.reason,
+      },
       apiUsed: {
         url: smartSaveApiUrl.replace(/\/\/([^@]+)@/, '//***@'), // 隐藏密钥
         model: smartSaveModel
@@ -14683,14 +15746,24 @@ ${content}
     });
     
   } catch (e) {
+    if (e instanceof DraftConflictError) {
+      res.status(409).json({
+        success: false,
+        conflict: true,
+        currentSavedAt: e.currentSavedAt,
+        error: e.message,
+      });
+      return;
+    }
     logger.error("[SmartDraft] Error:", e);
-    res.json({ success: false, error: "处理失败：" + (e as Error).message });
+    res.status(500).json({ success: false, error: "处理失败：" + (e as Error).message });
   }
 });
 
 // 清空草稿
 app.delete("/api/draft/:userId", async (req: Request, res: Response) => {
-  const userId = sanitizeUserId(req.params.userId);
+  const requestedUserId = sanitizeUserId(req.params.userId || 'web-user');
+  const userId = await resolveDraftRequestUserId(req, false);
   const userDir = getUserUploadDir(userId);
   const draftFile = path.join(userDir, "paper-draft.tex");
   
@@ -14702,6 +15775,13 @@ app.delete("/api/draft/:userId", async (req: Request, res: Response) => {
     const drafts = await sessionStore.listDrafts(userId);
     for (const draft of drafts) {
       await sessionStore.deleteDraft(userId, draft.chapterName);
+    }
+
+    if (requestedUserId === 'web-user' && requestedUserId !== userId) {
+      const legacyDrafts = await sessionStore.listDrafts(requestedUserId);
+      for (const draft of legacyDrafts) {
+        await sessionStore.deleteDraft(requestedUserId, draft.chapterName);
+      }
     }
 
     logger.info(`[Draft] Deleted draft for user ${userId}, chapters: ${drafts.length}`);
@@ -14725,9 +15805,16 @@ app.delete("/api/draft/:userId", async (req: Request, res: Response) => {
  * @param references - 参考文献（可选）
  */
 app.post("/api/draft/:userId/confirm-action", async (req: Request, res: Response) => {
-  const userId = sanitizeUserId(req.params.userId);
-  const { section, action, content, references } = req.body;
-  const draftSection = sanitizeDraftChapterName(section);
+  const userId = await resolveDraftRequestUserId(req);
+  const { section, action, content, references, expectedSavedAt, subsectionId, subsectionTitle, subsectionIndex } = req.body;
+  const draftSection = createDynamicDraftChapter(section)?.key || '';
+  const subsectionTarget: DraftSubsectionTarget | undefined = String(subsectionTitle || '').trim()
+    ? {
+        id: String(subsectionId || '').trim(),
+        title: String(subsectionTitle || '').trim(),
+        index: Math.max(0, Math.floor(Number(subsectionIndex || 0))),
+      }
+    : undefined;
   
   logger.info(`[DraftConfirm] User ${userId} confirmed action: ${action} for section: ${draftSection}`);
   
@@ -14740,41 +15827,30 @@ app.post("/api/draft/:userId/confirm-action", async (req: Request, res: Response
     res.json({ success: false, error: "无效操作类型：必须为 'overwrite' 或 'append'" });
     return;
   }
+  if (!draftSection) {
+    res.status(400).json({ success: false, error: "目标不是有效的顶级章节名称" });
+    return;
+  }
   
   try {
     // 构建章节内容（包含参考文献）
-    let chapterContent = content;
+    let chapterContent = normalizeDraftChapterContent(content);
     if (references && references.trim()) {
-      chapterContent = content + '\n\n## 参考文献\n\n' + references;
+      chapterContent = normalizeDraftChapterContent(content) + '\n\n## 参考文献\n\n' + references;
     }
     
-    let finalContent = chapterContent;
-    
-    // 读取已有草稿
-    const existingDraft = await sessionStore.loadDraft(userId, draftSection);
-    
-    if (action === 'overwrite') {
-      // 覆盖模式：直接替换
-      finalContent = chapterContent;
-      logger.info(`[DraftConfirm] OVERWRITE: replacing ${draftSection} with new content (${chapterContent.length} chars)`);
-    } else if (action === 'append' && existingDraft && existingDraft.content) {
-      // 追加模式：合并内容
-      const existingHasRefs = existingDraft.content.includes('## 参考文献');
-      const newHasRefs = references && references.trim();
-      
-      if (existingHasRefs && newHasRefs) {
-        // 已有参考文献，只追加新内容（不含参考文献标题）
-        finalContent = existingDraft.content + '\n\n' + content + '\n\n' + references;
-        logger.info(`[DraftConfirm] APPEND with refs merge`);
-      } else {
-        // 直接追加完整内容
-        finalContent = existingDraft.content + '\n\n' + chapterContent;
-        logger.info(`[DraftConfirm] APPEND: ${existingDraft.content.length} + ${chapterContent.length} chars`);
-      }
-    }
-    
-    // 保存草稿
-    await sessionStore.saveDraft(userId, draftSection, finalContent);
+    const mode: DraftSaveMode = action === 'overwrite' ? 'replace' : 'merge';
+    const savedDraft = await sessionStore.updateDraft(
+      userId,
+      draftSection,
+      current => subsectionTarget
+        ? upsertDraftSubsectionContent(current?.content || '', chapterContent, subsectionTarget, mode)
+        : mergeDraftChapterContent(current?.content || '', chapterContent, mode),
+      { expectedSavedAt: String(expectedSavedAt || '').trim() || undefined }
+    );
+    const finalContent = savedDraft.content;
+    await updateDraftProgressMemory(userId, draftSection, finalContent.length, `confirm-${action}`);
+    const exportInfo = await syncWholeDraftExportFile(userId, `${action}-${draftSection}`);
     
     // 同时更新 references.bib（如果有新的参考文献）
     if (references && references.trim()) {
@@ -14804,15 +15880,29 @@ app.post("/api/draft/:userId/confirm-action", async (req: Request, res: Response
       success: true,
       action: action,
       section: draftSection,
+      subsectionId: subsectionTarget?.id || '',
+      subsectionTitle: subsectionTarget?.title || '',
       contentLength: finalContent.length,
+      filename: exportInfo.filename,
+      exportSynced: exportInfo.synced,
+      chapters: exportInfo.chapters,
       message: action === 'overwrite' 
         ? `✅ 已覆盖「${draftSection}」章节内容` 
         : `✅ 已追加到「${draftSection}」章节（内容长度：${finalContent.length}字）`
     });
     
   } catch (e) {
+    if (e instanceof DraftConflictError) {
+      res.status(409).json({
+        success: false,
+        conflict: true,
+        currentSavedAt: e.currentSavedAt,
+        error: e.message,
+      });
+      return;
+    }
     logger.error("[DraftConfirm] Error:", e);
-    res.json({ success: false, error: "操作失败：" + (e as Error).message });
+    res.status(500).json({ success: false, error: "操作失败：" + (e as Error).message });
   }
 });
 
@@ -14822,51 +15912,35 @@ app.post("/api/draft/:userId/confirm-action", async (req: Request, res: Response
 app.post("/api/chapter-draft/:userId", async (req: Request, res: Response) => {
   try {
     const { chapter, content, append = false } = req.body;
-    const userId = sanitizeUserId(req.params.userId);
-    const draftChapter = sanitizeDraftChapterName(chapter);
+    const userId = await resolveDraftRequestUserId(req);
+    const draftChapter = getCanonicalOrdinaryDraftChapterName(sanitizeDraftChapterName(chapter));
 
     if (!String(chapter || '').trim() || typeof content !== 'string') {
       res.status(400).json({ success: false, error: "缺少必要参数：chapter 或 content" });
       return;
     }
-    
-    const draftDir = path.join(dataDir, 'output', 'chapters', userId);
-    if (!fs.existsSync(draftDir)) {
-      fs.mkdirSync(draftDir, { recursive: true });
+    if (!content.trim()) {
+      res.status(400).json({ success: false, error: "章节内容为空" });
+      return;
     }
-    
-    const filePath = path.join(draftDir, `${draftChapter}.md`);
-    
-    // 如果是追加模式，读取现有内容并追加
-    let finalContent = content;
-    if (append && fs.existsSync(filePath)) {
-      const existingContent = fs.readFileSync(filePath, 'utf-8');
-      finalContent = existingContent + '\n\n' + content;
-      logger.info(`[ChapterDraft] Appended for user ${userId}, chapter ${draftChapter}`);
-    } else {
-      logger.info(`[ChapterDraft] Created/Overwritten for user ${userId}, chapter ${draftChapter}`);
-    }
-    
-    fs.writeFileSync(filePath, finalContent, 'utf-8');
-    
-    // 同时保存到 memory.json 中的 draft_progress
-    // 记录最新更新时间
-    const memory = await await loadUserMemory(userId);
-    const draftProgressEntry = memory.entries.find(e => e.key === 'draft_progress');
-    if (draftProgressEntry) {
-      draftProgressEntry.value = `最后更新：${new Date().toLocaleString('zh-CN')} - 章节 ${draftChapter}`;
-      draftProgressEntry.timestamp = new Date().toISOString();
-    } else {
-      memory.entries.push({
-        key: 'draft_progress',
-        value: `最后更新：${new Date().toLocaleString('zh-CN')} - 章节 ${draftChapter}`,
-        source: 'ai-extracted',
-        timestamp: new Date().toISOString()
-      });
-    }
-    await saveUserMemory(memory);
-    
-    res.json({ success: true, filePath, mode: append ? 'append' : 'overwrite' });
+
+    const incomingContent = normalizeDraftChapterContent(content);
+    const savedDraft = await sessionStore.updateDraft(userId, draftChapter, current => (
+      mergeDraftChapterContent(current?.content || '', incomingContent, append ? 'merge' : 'replace')
+    ));
+    const finalContent = savedDraft.content;
+    await updateDraftProgressMemory(userId, draftChapter, finalContent.length, 'chapter-draft-compat');
+    const exportInfo = await syncWholeDraftExportFile(userId, `chapter-${draftChapter}`);
+    logger.info(`[ChapterDraft] Saved canonical TXT for user ${userId}, chapter ${draftChapter}, append=${append}`);
+
+    res.json({
+      success: true,
+      chapter: draftChapter,
+      chapterFile: `${draftChapter}.txt`,
+      storagePath: `drafts/${draftChapter}.txt`,
+      mode: append ? 'append' : 'overwrite',
+      exportSynced: exportInfo.synced,
+    });
   } catch (e) {
     logger.error("[ChapterDraft] Save failed:", e);
     res.json({ success: false, error: "保存失败：" + (e as Error).message });
@@ -14875,17 +15949,14 @@ app.post("/api/chapter-draft/:userId", async (req: Request, res: Response) => {
 
 app.delete("/api/chapter-draft/:userId/:chapter", async (req: Request, res: Response) => {
   try {
-    const userId = sanitizeUserId(req.params.userId);
-    const chapter = sanitizeDraftChapterName(req.params.chapter);
-    
-    const filePath = path.join(dataDir, 'output', 'chapters', userId, `${chapter}.md`);
-    
-    if (fs.existsSync(filePath)) {
-      fs.unlinkSync(filePath);
-    }
+    const userId = await resolveDraftRequestUserId(req);
+    const chapter = getCanonicalOrdinaryDraftChapterName(sanitizeDraftChapterName(req.params.chapter));
+
+    await sessionStore.deleteDraft(userId, chapter);
+    const exportInfo = await syncWholeDraftExportFile(userId, `delete-${chapter}`);
     
     logger.info(`[ChapterDraft] Deleted for user ${userId}, chapter ${chapter}`);
-    res.json({ success: true });
+    res.json({ success: true, chapter, exportSynced: exportInfo.synced });
   } catch (e) {
     logger.error("[ChapterDraft] Delete failed:", e);
     res.json({ success: false, error: "删除失败：" + (e as Error).message });
@@ -15084,98 +16155,46 @@ app.post("/api/data-summary/save", async (req: Request, res: Response) => {
 
 // 3. 保存论文草稿（专用接口）
 app.post("/api/paper-draft/save", async (req: Request, res: Response) => {
-  const { content, append = true, apiKey, apiUrl, model, section = "main" } = req.body;
-  const userId = "web-user";
-  
-  const useApiKey = apiKey || process.env.API_KEY || "";
-  const useApiUrl = apiUrl || process.env.API_URL || "";
-  const useModel = model || currentModel || "qwen3.5-plus";
-  
-  logger.info(`[PaperDraft] API called - userId: ${userId}, section: ${section}, content length: ${content?.length || 0}, append: ${append}`);
-  logger.info(`[PaperDraft] Using API URL: ${useApiUrl}, API Key provided: ${useApiKey ? 'YES' : 'NO (using env)'}`);
-  
-  if (!content) {
-    logger.warn(`[PaperDraft] Rejected - empty content`);
-    res.json({ success: false, error: "内容为空" });
-    return;
-  }
-  
-  const memory = await loadUserMemory(userId);
-  let existingEntry = memory.entries.find(e => e.key === 'draft_progress');
-  
-  if (!existingEntry) {
-    logger.info(`[PaperDraft] Creating new entry for draft_progress`);
-    existingEntry = {
-      key: 'draft_progress',
-      value: '',
-      source: 'ai-extracted',
-      timestamp: new Date().toISOString()
-    };
-    memory.entries.push(existingEntry);
-  } else {
-    logger.info(`[PaperDraft] Found existing entry - current length: ${existingEntry.value?.length || 0}`);
-  }
-  
-  let finalContent = content;
-  if (append && existingEntry.value) {
-    logger.info(`[PaperDraft] Append mode - merging with existing content`);
-    try {
-      const mergeStartTime = Date.now();
-      const mergedResponse = await fetch(useApiUrl + "/chat/completions", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: "Bearer " + useApiKey,
-        },
-        body: JSON.stringify({
-          model: useModel,
-          messages: [
-            { role: "system", content: "You are an academic writing expert. Merge new draft content with existing draft. Maintain coherence, consistent style and terminology. Insert new content at appropriate positions, not just at the end. Output the complete merged academic paper without explanations." },
-            { role: "user", content: `Existing draft:\n${existingEntry.value.substring(0, 28000)}\n\nNew content:\n${content.substring(0, 8000)}\n\nPlease merge these into a coherent academic paper draft.` }
-          ],
-          temperature: 0.2,
-          max_tokens: MAX_LLM_OUTPUT_TOKENS,
-        }),
-      });
-      
-      const mergeDuration = Date.now() - mergeStartTime;
-      logger.info(`[PaperDraft] AI merge request completed in ${mergeDuration}ms - status: ${mergedResponse.status}`);
-      
-      if (mergedResponse.ok) {
-        const data = await mergedResponse.json() as { choices?: Array<{ message?: { content?: string } }> };
-        const merged = data.choices?.[0]?.message?.content;
-        if (merged && merged.length > 10) {
-          finalContent = merged.trim();
-          logger.info(`[PaperDraft] AI merge successful - merged content length: ${finalContent.length}`);
-        } else {
-          logger.warn(`[PaperDraft] AI merge returned empty or invalid content, using simple append`);
-          finalContent = existingEntry.value + "\n\n---\n\n" + content;
-        }
-      } else {
-        const errorText = await mergedResponse.text();
-        logger.error(`[PaperDraft] AI merge failed - status: ${mergedResponse.status}, error: ${errorText}`);
-        finalContent = existingEntry.value + "\n\n---\n\n" + content;
-      }
-    } catch (e) {
-      logger.error(`[PaperDraft] AI merge exception: ${(e as Error).message}, using simple append`);
-      finalContent = existingEntry.value + "\n\n---\n\n" + content;
+  try {
+    const userId = await resolveDraftRequestUserId(req);
+    const content = String(req.body?.content || '').trim();
+    const append = req.body?.append !== false;
+    const requestedSection = String(req.body?.section || '').trim();
+    if (!content) {
+      res.status(400).json({ success: false, error: "内容为空" });
+      return;
     }
-  } else {
-    logger.info(`[PaperDraft] Overwrite mode or no existing content - saving new content directly`);
+
+    const chapter = requestedSection && requestedSection !== 'main'
+      ? normalizeDraftSection(requestedSection)
+      : null;
+    if (!chapter) {
+      res.status(422).json({
+        success: false,
+        needsSectionSelection: true,
+        error: "缺少明确的规范章节 section，系统不会根据正文猜测保存目标。",
+      });
+      return;
+    }
+
+    const incoming = normalizeDraftChapterContent(content);
+    const saved = await sessionStore.updateDraft(userId, chapter, current => (
+      mergeDraftChapterContent(current?.content || '', incoming, append ? 'merge' : 'replace')
+    ));
+    await updateDraftProgressMemory(userId, chapter, saved.content.length, 'paper-draft-compat');
+    const exportInfo = await syncWholeDraftExportFile(userId, `paper-draft-${chapter}`);
+    res.json({
+      success: true,
+      section: chapter,
+      length: saved.content.length,
+      characters: saved.content.length,
+      chapterFile: `${chapter}.txt`,
+      exportSynced: exportInfo.synced,
+    });
+  } catch (error) {
+    logger.error('[PaperDraft] Save failed:', error);
+    res.status(500).json({ success: false, error: `保存失败：${(error as Error).message}` });
   }
-  
-  existingEntry.value = finalContent;
-  existingEntry.timestamp = new Date().toISOString();
-  saveUserMemory(memory);
-  
-  logger.info(`[PaperDraft] Save completed - final length: ${finalContent.length}, saved to memory.json`);
-  
-  res.json({ 
-    success: true, 
-    length: finalContent.length,
-    characters: finalContent.length,
-    section: section
-  });
 });
 
 // ============ 全局共享组件（飞书和 Web UI 共用） ============
@@ -15304,7 +16323,12 @@ initializeUnifiedChatProcessor({
   retrievalEngine: globalRetrievalEngine,
   cowAgent: globalCowAgent,
   collaborationWorkflow: globalCollaborationWorkflow,
-  soulContent
+  soulContent,
+  onDraftSaved: async (userId, section, content) => {
+    const draftSection = sanitizeDraftChapterName(section || 'section');
+    await updateDraftProgressMemory(userId, draftSection, String(content || '').length, 'unified-chat-save-draft');
+    await syncWholeDraftExportFile(userId, `unified-${draftSection}`);
+  },
 });
 logger.info('[Startup] Unified chat processor initialized');
 
@@ -15846,6 +16870,158 @@ function normalizeClaimEvidenceScore(value: unknown): number {
   return 1;
 }
 
+function splitAbstractSentencesForClaimMatch(value: unknown): string[] {
+  const text = cleanClaimEvidenceText(value, 5000);
+  if (!text) return [];
+  const matches = text.match(/[^.!?。！？]+[.!?。！？]+|[^.!?。！？]+$/g) || [text];
+  return matches
+    .map(sentence => cleanClaimEvidenceText(sentence, 700))
+    .filter(sentence => sentence.length >= 24);
+}
+
+function extractStructuredAbstractSection(abstract: string, headingPattern: RegExp): string[] {
+  const output: string[] = [];
+  const heading = '(importance|background|objective|objectives|aim|aims|purpose|methods?|materials and methods|design|design setting and participants|main outcomes and measures|results?|findings?|discussion|conclusions?|conclusions and relevance|interpretation|summary)';
+  const regex = new RegExp(`${heading}\\s*[:：]\\s*([\\s\\S]*?)(?=${heading}\\s*[:：]|$)`, 'gi');
+  let match: RegExpExecArray | null;
+  while ((match = regex.exec(abstract)) !== null) {
+    const label = String(match[1] || '');
+    const sectionText = String(match[2] || '');
+    if (headingPattern.test(label)) {
+      output.push(...splitAbstractSentencesForClaimMatch(sectionText));
+    }
+  }
+  return output;
+}
+
+function isBackgroundOrMethodAbstractSentence(sentence: string): boolean {
+  return /^(importance|background|objective|objectives|aim|aims|purpose|methods?|materials and methods|design|design setting and participants|main outcomes and measures)\s*[:：]/i.test(sentence)
+    || /\b(this study aimed|we aimed|we investigated|we conducted|we examined|we evaluated|we measured|data were collected|methods?:|background:|objective:)\b/i.test(sentence);
+}
+
+function scoreAbstractConclusionSentence(sentence: string, index: number, total: number): number {
+  const lower = sentence.toLowerCase();
+  let score = 0;
+  if (/(conclusion|conclusions|conclusions and relevance|interpretation|summary)\s*[:：]/i.test(sentence)) score += 8;
+  if (/\b(conclud|therefore|in summary|overall|collectively|these results|our findings)\b/i.test(lower)) score += 6;
+  if (/\b(result|results|finding|findings|showed|shown|found|revealed|demonstrated|indicated|suggested|observed)\b/i.test(lower)) score += 4;
+  if (/\b(reduced|decreased|declined|lowered|increased|enhanced|improved|promoted|inhibited|suppressed|associated|correlated|significant|effect|impact|response)\b/i.test(lower)) score += 3;
+  if (/降低|下降|减少|增加|提高|促进|抑制|显著|相关|结果|发现|表明|说明|结论|总体|因此/.test(sentence)) score += 3;
+  if (index >= Math.max(0, total - 2)) score += 3;
+  if (index === total - 1) score += 2;
+  if (isBackgroundOrMethodAbstractSentence(sentence)) score -= 7;
+  if (index <= 1 && /\b(background|objective|aim|purpose|knowledge gap|little is known)\b/i.test(lower)) score -= 5;
+  return score;
+}
+
+function extractAbstractConclusionMatchText(item: any): { text: string; source: string } {
+  const abstract = cleanClaimEvidenceText(item?.abstract, 5000);
+  if (!abstract) return { text: '', source: 'missing-abstract' };
+
+  const conclusionSections = extractStructuredAbstractSection(abstract, /^(conclusions?|conclusions and relevance|interpretation|summary)$/i);
+  if (conclusionSections.length > 0) {
+    return {
+      text: conclusionSections.slice(0, 3).join(' '),
+      source: 'structured-conclusion',
+    };
+  }
+
+  const resultSections = extractStructuredAbstractSection(abstract, /^(results?|findings?|discussion)$/i);
+  if (resultSections.length > 0) {
+    return {
+      text: resultSections.slice(-3).join(' '),
+      source: 'structured-results',
+    };
+  }
+
+  const sentences = splitAbstractSentencesForClaimMatch(abstract);
+  if (sentences.length === 0) return { text: abstract.slice(0, 900), source: 'abstract-fallback' };
+
+  const scored = sentences
+    .map((sentence, index) => ({
+      sentence,
+      index,
+      score: scoreAbstractConclusionSentence(sentence, index, sentences.length),
+    }))
+    .filter(item => item.score > -2)
+    .sort((a, b) => b.score - a.score || b.index - a.index);
+
+  const selected = scored.length > 0
+    ? scored.slice(0, 3).sort((a, b) => a.index - b.index).map(item => item.sentence)
+    : sentences.slice(-2);
+
+  return {
+    text: selected.join(' '),
+    source: scored.length > 0 ? 'inferred-conclusion-sentences' : 'last-sentences-fallback',
+  };
+}
+
+async function scoreTextsAgainstQueryForClaimMatch(query: string, texts: string[]): Promise<number[]> {
+  const safeTexts = texts.map(text => cleanClaimEvidenceText(text, 3000));
+  if (safeTexts.length === 0) return [];
+
+  if (currentEmbeddingConfig.enabled && currentEmbeddingConfig.url && currentEmbeddingConfig.key) {
+    try {
+      const embeddings = await callEmbeddingApi(
+        currentEmbeddingConfig.url,
+        currentEmbeddingConfig.key,
+        currentEmbeddingConfig.model,
+        [query, ...safeTexts],
+        currentEmbeddingConfig.dimensions,
+        15_000
+      );
+      const queryEmbedding = embeddings?.[0]?.embedding;
+      if (queryEmbedding && embeddings && embeddings.length >= safeTexts.length + 1) {
+        return safeTexts.map((_, index) => {
+          const candidateEmbedding = embeddings[index + 1]?.embedding;
+          return candidateEmbedding ? Math.max(0, cosineSimilarity(queryEmbedding, candidateEmbedding)) : 0;
+        });
+      }
+    } catch (error) {
+      logger.warn('[SentenceClaimMatch] Abstract-conclusion embedding rerank failed, using local fallback:', error);
+    }
+  }
+
+  const dimensions = currentEmbeddingConfig.dimensions || DEFAULT_EMBEDDING_DIMENSIONS;
+  const queryEmbedding = simpleEmbedding(query, dimensions);
+  return safeTexts.map(text => text ? Math.max(0, cosineSimilarity(queryEmbedding, simpleEmbedding(text, dimensions))) : 0);
+}
+
+async function rerankClaimCandidatesByAbstractConclusions(query: string, items: any[]): Promise<any[]> {
+  if (items.length === 0) return items;
+  const prepared = items.map(item => {
+    const matchText = extractAbstractConclusionMatchText(item);
+    return {
+      item,
+      matchText,
+    };
+  });
+  const scores = await scoreTextsAgainstQueryForClaimMatch(query, prepared.map(item => item.matchText.text));
+  return prepared.map((preparedItem, index) => {
+    const conclusionSemanticScore = normalizeClaimEvidenceScore(scores[index] || 0);
+    const bm25Score = normalizeClaimEvidenceScore(preparedItem.item?.bm25Score);
+    const originalVectorScore = normalizeClaimEvidenceScore(preparedItem.item?.vectorScore);
+    const originalCombinedScore = Number(preparedItem.item?.combinedScore || preparedItem.item?.score || 0);
+    const combinedScore = bm25Score * 0.22 + conclusionSemanticScore * 0.78;
+    return {
+      ...preparedItem.item,
+      originalVectorScore,
+      originalCombinedScore: Number.isFinite(originalCombinedScore) ? originalCombinedScore : 0,
+      vectorScore: conclusionSemanticScore,
+      semanticScore: conclusionSemanticScore,
+      rerankScore: conclusionSemanticScore,
+      combinedScore,
+      score: combinedScore,
+      abstractClaimMatch: {
+        score: conclusionSemanticScore,
+        source: preparedItem.matchText.source,
+        text: preparedItem.matchText.text,
+        originalVectorScore,
+      },
+    };
+  }).sort((a, b) => Number(b.combinedScore || 0) - Number(a.combinedScore || 0));
+}
+
 function getClaimEvidenceSemanticScore(item: any): number {
   const semanticCandidates = [
     item?.vectorScore,
@@ -15957,6 +17133,261 @@ function selectVisibleClaimEvidenceResults<T extends Record<string, any>>(items:
   return items
     .filter(item => isClaimEvidenceVisibleByQualityGate(item))
     .slice(0, Math.max(1, Math.floor(limit || 1)));
+}
+
+function cleanSentenceClaimReferenceFormat(value: unknown): string {
+  return String(value || '')
+    .replace(/\r\n/g, '\n')
+    .replace(/[ \t]+\n/g, '\n')
+    .trim()
+    .slice(0, 4000);
+}
+
+function buildSentenceClaimReferenceFallback(item: any, index: number, numeric = false): string {
+  const author = getRetrievedReferenceAuthor(item) || 'Unknown';
+  const year = cleanClaimEvidenceText(item?.year, 30) || 'n.d.';
+  const title = cleanClaimEvidenceText(item?.title, 500) || 'Untitled';
+  const journal = getRetrievedReferenceJournal(item);
+  const volume = cleanClaimEvidenceText(item?.volume, 80);
+  const issue = cleanClaimEvidenceText(item?.issue, 80);
+  const pages = cleanClaimEvidenceText(item?.pages || item?.page, 120);
+  const doi = cleanClaimEvidenceText(item?.doi, 240);
+  const journalPart = [journal, volume ? `${volume}${issue ? `(${issue})` : ''}` : '', pages].filter(Boolean).join(', ');
+  const body = [
+    `${author}.`,
+    `${year}.`,
+    `${title}.`,
+    journalPart ? `${journalPart}.` : '',
+    doi ? `https://doi.org/${doi.replace(/^https?:\/\/doi\.org\//i, '')}` : '',
+  ].filter(Boolean).join(' ').replace(/\s+/g, ' ').trim();
+  return numeric ? `[${index + 1}] ${body}` : body;
+}
+
+function stripSentenceClaimReferenceTerminalDot(value: string): string {
+  return String(value || '').trim().replace(/[.。]+$/g, '').trim();
+}
+
+function hasMostlyUppercaseLetters(value: string): boolean {
+  const letters = String(value || '').replace(/[^A-Za-z]/g, '');
+  if (letters.length < 4) return false;
+  const upper = letters.replace(/[^A-Z]/g, '').length;
+  const lower = letters.replace(/[^a-z]/g, '').length;
+  return upper > 0 && lower === 0;
+}
+
+function getLastReferenceExampleSegment(format: string): string {
+  const clean = cleanSentenceClaimReferenceFormat(format)
+    .replace(/^(\[\d+\]|\d+[.、])\s*/, '')
+    .replace(/https?:\/\/doi\.org\/\S+|doi:\s*\S+/ig, '')
+    .trim();
+  const segments = clean
+    .split(/\.\s+/)
+    .map(segment => stripSentenceClaimReferenceTerminalDot(segment))
+    .filter(Boolean);
+  return segments[segments.length - 1] || '';
+}
+
+function normalizeSentenceClaimReferenceAuthors(item: any, useEtAl: boolean): string {
+  const authors = getRetrievedReferenceAuthor(item) || 'Unknown';
+  if (!useEtAl) return authors;
+  const first = Array.isArray(item?.authors) && item.authors.length > 0
+    ? (typeof item.authors[0] === 'string' ? item.authors[0] : String(item.authors[0]?.name || ''))
+    : authors.split(/\s*(?:;|，|、|\band\b|\s+&\s+)\s*/i)[0] || authors;
+  const cleanFirst = cleanClaimEvidenceText(first, 160) || 'Unknown';
+  return /\bet\s+al\.?$/i.test(cleanFirst) ? cleanFirst : `${cleanFirst.replace(/[,.，。]+$/g, '')} et al.`;
+}
+
+function formatSentenceClaimReferenceFromExample(item: any, format: string, index: number): string | null {
+  const cleanFormat = cleanSentenceClaimReferenceFormat(format);
+  if (!cleanFormat || /\{(?:authors?|year|title|journal|volume|issue|pages?|doi|number|n|citation)\}/i.test(cleanFormat)) return null;
+
+  const hasYearToken = /\b(?:18|19|20)\d{2}[a-z]?\b/i.test(cleanFormat);
+  const usesCommaYear = /,\s*(?:18|19|20)\d{2}[a-z]?\s*\./i.test(cleanFormat);
+  const usesParenYear = /\(\s*(?:18|19|20)\d{2}[a-z]?\s*\)/i.test(cleanFormat);
+  if (!hasYearToken && !cleanFormat.includes('年份') && !/year/i.test(cleanFormat)) return null;
+
+  const numeric = /^\s*(\[\d+\]|\d+[.、])/.test(cleanFormat);
+  const useEtAl = /\bet\s+al\.?/i.test(cleanFormat);
+  const includeVolumePages = /\b\d+\s*(?:\([^)]+\))?\s*[,;:]\s*[A-Za-z]?\d+\s*[-–]\s*[A-Za-z]?\d+/i.test(cleanFormat)
+    || /\bvolume\b|\bissue\b|\bpages?\b|卷|期|页/i.test(cleanFormat);
+  const useColonBeforePages = /\b\d+\s*(?:\([^)]+\))?\s*:\s*[A-Za-z]?\d+/i.test(cleanFormat);
+  const includeDoi = /\bdoi\b|doi\.org/i.test(cleanFormat);
+  const lastSegment = getLastReferenceExampleSegment(cleanFormat);
+  const uppercaseJournal = hasMostlyUppercaseLetters(lastSegment);
+
+  const authors = normalizeSentenceClaimReferenceAuthors(item, useEtAl);
+  const year = cleanClaimEvidenceText(item?.year, 30) || 'n.d.';
+  const title = stripSentenceClaimReferenceTerminalDot(cleanClaimEvidenceText(item?.title, 500) || 'Untitled');
+  const rawJournal = stripSentenceClaimReferenceTerminalDot(getRetrievedReferenceJournal(item));
+  const journal = uppercaseJournal ? rawJournal.toUpperCase() : rawJournal;
+  const volume = cleanClaimEvidenceText(item?.volume, 80);
+  const issue = cleanClaimEvidenceText(item?.issue, 80);
+  const pages = cleanClaimEvidenceText(item?.pages || item?.page, 120);
+  const doi = cleanClaimEvidenceText(item?.doi, 240);
+  const referenceParts: string[] = [];
+
+  let authorYearPart = authors;
+  if (usesParenYear) {
+    authorYearPart = `${authors} (${year}).`;
+  } else if (usesCommaYear || /,\s*年份\s*\./.test(cleanFormat) || /,\s*year\s*\./i.test(cleanFormat)) {
+    authorYearPart = `${authors}, ${year}.`;
+  } else {
+    authorYearPart = `${authors}. ${year}.`;
+  }
+  referenceParts.push(authorYearPart);
+  referenceParts.push(`${title}.`);
+
+  if (journal) {
+    let journalPart = journal;
+    if (includeVolumePages && volume) {
+      journalPart += ` ${volume}${issue ? `(${issue})` : ''}`;
+      if (pages) journalPart += `${useColonBeforePages ? ':' : ','} ${pages}`;
+    }
+    referenceParts.push(`${journalPart}.`);
+  }
+  if (includeDoi && doi) {
+    referenceParts.push(`https://doi.org/${doi.replace(/^https?:\/\/doi\.org\//i, '')}`);
+  }
+
+  const body = referenceParts
+    .join(' ')
+    .replace(/\s+/g, ' ')
+    .replace(/\s+([,.;:])/g, '$1')
+    .trim();
+  return numeric ? `[${index + 1}] ${body}` : body;
+}
+
+function formatSentenceClaimReferenceFromTemplate(item: any, template: string, index: number): string | null {
+  if (!/\{(?:authors?|year|title|journal|volume|issue|pages?|doi|number|n|citation)\}/i.test(template)) return null;
+  const author = getRetrievedReferenceAuthor(item) || 'Unknown';
+  const value = template
+    .replace(/\{authors?\}/gi, author)
+    .replace(/\{year\}/gi, cleanClaimEvidenceText(item?.year, 30) || 'n.d.')
+    .replace(/\{title\}/gi, cleanClaimEvidenceText(item?.title, 500) || 'Untitled')
+    .replace(/\{journal\}/gi, cleanClaimEvidenceText(item?.journal, 240))
+    .replace(/\{volume\}/gi, cleanClaimEvidenceText(item?.volume, 80))
+    .replace(/\{issue\}/gi, cleanClaimEvidenceText(item?.issue, 80))
+    .replace(/\{pages?\}/gi, cleanClaimEvidenceText(item?.pages || item?.page, 120))
+    .replace(/\{doi\}/gi, cleanClaimEvidenceText(item?.doi, 240))
+    .replace(/\{(?:number|n)\}/gi, String(index + 1))
+    .replace(/\{citation\}/gi, formatCitation({ ...item, author: getRetrievedReferenceAuthor(item) } as LitPaper));
+  return cleanClaimEvidenceText(value, 1200) || null;
+}
+
+function buildSentenceClaimReferenceSource(item: any, index: number): Record<string, unknown> {
+  return {
+    number: index + 1,
+    inTextCitation: formatCitation({ ...item, author: getRetrievedReferenceAuthor(item) } as LitPaper),
+    authors: getRetrievedReferenceAuthor(item),
+    year: cleanClaimEvidenceText(item?.year, 30),
+    title: cleanClaimEvidenceText(item?.title, 500),
+    journal: getRetrievedReferenceJournal(item),
+    volume: cleanClaimEvidenceText(item?.volume, 80),
+    issue: cleanClaimEvidenceText(item?.issue, 80),
+    pages: cleanClaimEvidenceText(item?.pages || item?.page, 120),
+    doi: cleanClaimEvidenceText(item?.doi, 240),
+    originalReference: buildSentenceClaimReferenceFallback(item, index),
+  };
+}
+
+function parseSentenceClaimReferenceFormatResponse(content: string): string[] {
+  const jsonMatch = String(content || '').match(/\{[\s\S]*\}/);
+  if (jsonMatch) {
+    try {
+      const parsed = JSON.parse(jsonMatch[0]) as { references?: unknown };
+      if (Array.isArray(parsed.references)) {
+        return parsed.references
+          .map(item => cleanSentenceClaimReferenceFormat(item).replace(/\n+/g, ' '))
+          .map(item => normalizeAuthorYearCitationText(item))
+          .filter(Boolean);
+      }
+    } catch {}
+  }
+  return String(content || '')
+    .split(/\n+/)
+    .map(line => line.replace(/^[-*\d.\[\]\s]+/, '').trim())
+    .map(line => normalizeAuthorYearCitationText(line))
+    .filter(Boolean);
+}
+
+async function applySentenceClaimTargetReferenceFormat<T extends Record<string, any>>(
+  items: T[],
+  targetReferenceFormat: string
+): Promise<T[]> {
+  const format = cleanSentenceClaimReferenceFormat(targetReferenceFormat);
+  if (!format || items.length === 0) return items;
+
+  const templateFormatted = items.map((item, index) => formatSentenceClaimReferenceFromTemplate(item, format, index));
+  if (templateFormatted.every(Boolean)) {
+    return items.map((item, index) => ({ ...item, targetReference: templateFormatted[index] || '' }));
+  }
+
+  const exampleFormatted = items.map((item, index) => formatSentenceClaimReferenceFromExample(item, format, index));
+  if (exampleFormatted.every(Boolean)) {
+    return items.map((item, index) => ({ ...item, targetReference: exampleFormatted[index] || '' }));
+  }
+
+  const numeric = /^\s*(\[\d+\]|\d+[.、])/.test(format) || /\{(?:number|n)\}/i.test(format);
+  const fallback = items.map((item, index) => buildSentenceClaimReferenceFallback(item, index, numeric));
+  const useApiUrl = currentApiUrl || process.env.API_URL;
+  const useApiKey = currentApiKey || process.env.API_KEY;
+  const model = currentSecondaryModel || currentModel || process.env.MODEL || "gpt-4o";
+  if (!useApiUrl || !useApiKey) {
+    return items.map((item, index) => ({ ...item, targetReference: fallback[index] }));
+  }
+
+  try {
+    const sources = items.map(buildSentenceClaimReferenceSource);
+    const response = await callChatCompletion(
+      {
+        apiUrl: useApiUrl,
+        apiKey: useApiKey,
+        label: "SentenceClaimReferenceFormatter",
+        defaultModel: model,
+      },
+      {
+        model,
+        temperature: 0.05,
+        maxTokens: 4000,
+        messages: [
+          {
+            role: "system",
+            content: "You format bibliography/endnote entries for matched academic references. Return valid JSON only.",
+          },
+          {
+            role: "user",
+            content: `Format these matched references according to the user's target journal reference/endnote format.
+
+Target reference format or example:
+${format}
+
+Rules:
+- Use all supplied authors unless the target example explicitly uses "et al.".
+- Preserve supplied year, title, journal, volume, issue, pages, and DOI.
+- Do not invent missing fields.
+- Do not add volume, issue, pages, or DOI unless the target format/example includes those fields.
+- Preserve the target example's field order, punctuation, and journal-name casing as closely as possible.
+- If the target format includes numbering, use the supplied number.
+- If the target format does not include numbering, do not add numbering.
+- Keep in-text citations separate from bibliography entries. Do not prepend "(Surname et al., year)" unless that prefix is explicitly present in the user's target bibliography example.
+- Return exactly JSON: {"references":["formatted reference 1","formatted reference 2"]}
+
+Sources:
+${JSON.stringify(sources, null, 2)}`,
+          },
+        ],
+      }
+    );
+    const formatted = parseSentenceClaimReferenceFormatResponse(response);
+    if (formatted.length === items.length) {
+      return items.map((item, index) => ({ ...item, targetReference: formatted[index] }));
+    }
+    logger.warn(`[SentenceClaimReferenceFormatter] Returned ${formatted.length}/${items.length} references; using fallback`);
+  } catch (error) {
+    logger.warn("[SentenceClaimReferenceFormatter] Failed; using fallback:", error);
+  }
+
+  return items.map((item, index) => ({ ...item, targetReference: fallback[index] }));
 }
 
 function buildRetrievalPointQueryVariants(point: RetrievalPoint): RetrievalQueryVariant[] {
@@ -16119,6 +17550,7 @@ interface RetrievalExecutionResult {
 app.post("/api/retrieval/detect", async (req: Request, res: Response) => {
   try {
     const { message, context, userId } = req.body;
+    const forceGenerate = req.body.forceGenerate === true;
     
     if (!message) {
       res.json({ success: false, error: "消息不能为空" });
@@ -16139,26 +17571,41 @@ app.post("/api/retrieval/detect", async (req: Request, res: Response) => {
       return;
     }
     
-    const detectionPrompt = `你是一个文献检索助手。分析以下对话内容，判断是否需要文献检索支撑。
+    const contextText = typeof context === 'string'
+      ? context
+      : JSON.stringify(context || {}, null, 2);
+    const requestModeInstruction = forceGenerate
+      ? `用户已经主动点击“生成检索词”，这是明确的检索意图。只要内容中存在检索式、研究主题、科学术语、事实陈述、数据解释、论文内容、文件名体现的研究对象，或其他可用于检索的实质信息，就必须返回 need_retrieval=true 并生成检索词。不要因为内容同时含有 Codex/工具执行日志、软件操作说明或已经有部分文献而拒绝；忽略这些日志，提取其中的实质内容。仅当内容完全为空或只有“你好/谢谢/收到”等纯寒暄时才允许返回 false。`
+      : `这是自动检测模式。只要内容中存在可由文献检索补充的研究主题、科学术语、事实陈述、数据解释或论文内容，就返回 need_retrieval=true；只有纯寒暄、完全不含主题的界面状态或纯操作指令才返回 false。`;
+
+    const detectionPrompt = `你是一个文献检索词生成助手。分析以下对话内容并提取可用于文献检索的实质内容。
+
+## 当前模式
+${requestModeInstruction}
 
 ## 对话内容
 ${message}
 
 ## 上下文
-${context || '无额外上下文'}
+${contextText || '无额外上下文'}
 
 ## 判断标准
 需要检索的情况：
-1. 包含需要文献支撑的科学论点或观点
-2. 提到需要引用、参考文献、文献支撑
-3. 在讨论具体的学术论文写作内容（引言/讨论/方法等）
-4. 包含具体的科学事实陈述，可以被引用
+1. 已经包含英文或中文检索词、Boolean 检索式、关键词列表
+2. 包含需要文献支撑的科学论点、观点、研究问题或机制解释
+3. 提到需要引用、参考文献、文献支撑
+4. 在讨论具体的学术论文写作内容（引言、结果、讨论、方法等）
+5. 包含具体科学术语、变量关系、数据解释、研究对象或可检索的文件主题
 
 不需要检索的情况：
-1. 简单的问候或闲聊
-2. 纯粹的格式修改或语言润色
-3. 询问操作方法或软件使用
-4. 已经有足够文献支撑的内容
+1. 完全没有主题信息的简单问候或闲聊
+2. 完全没有科学、学术或研究内容的纯界面状态
+
+不要仅因为以下情况返回 false：
+- 内容前半部分是 Codex CLI 或工具调用日志，但后面存在最终回答或学术内容
+- 内容是格式修改、语言润色或软件操作说明，但其中出现了明确的研究主题或检索词
+- 内容已经有部分文献支撑；用户仍可能需要扩展检索
+- 内容没有完整论点，但有可检索的科学概念或关键词
 
 ## 输出格式
 返回 JSON：
@@ -16185,7 +17632,9 @@ ${context || '无额外上下文'}
 - 检索词要具体，能准确定位相关文献
 - 动词和方向词必须保留并翻译到另一种语言，例如：下降/降低/reduce/decrease、增加/increase、促进/promote、抑制/inhibit、显著/significant、正相关/positive association、负相关/negative association
 - 不要只提取名词；如果论点说“降低/促进/抑制/增加”，检索词必须体现这个方向关系
-- points 最多提取5个论点
+- 如果原文已经列出检索词，优先保留其核心概念并规范化，不要拒绝生成
+- 如果只有主题或术语而没有完整句子，将该主题整理为可检索的 sentence
+- points 最多提取8个论点
 - 只返回JSON，不要其他文字`;
 
     const response = await fetch(useApiUrl + "/chat/completions", {
@@ -16225,6 +17674,40 @@ ${context || '无额外上下文'}
     }
     
     const result: RetrievalDetectionResult = JSON.parse(jsonMatch[0]);
+    result.points = Array.isArray(result.points) ? result.points : [];
+
+    if (forceGenerate && result.points.length > 0) {
+      result.need_retrieval = true;
+      result.reason = result.reason || '用户已主动请求生成检索词。';
+    }
+
+    const normalizedMessage = String(message || '').replace(/\s+/g, ' ').trim();
+    const isPureGreeting = /^(?:你好|您好|哈[哈]+|谢谢|多谢|收到|好的|好|再见|hello|hi|thanks|thank you|ok|okay)[!！。.，,\s]*$/i.test(normalizedMessage);
+    if (forceGenerate && !isPureGreeting && normalizedMessage.length >= 4 && result.points.length === 0) {
+      const rawMessage = String(message || '');
+      const explicitEnglish = rawMessage.match(/(?:英文(?:组合)?检索词|英文)[：:]\s*([^\r\n]+)/i)?.[1]?.trim();
+      const explicitChinese = rawMessage.match(/(?:中文(?:组合)?检索词|中文)[：:]\s*([^\r\n]+)/i)?.[1]?.trim();
+      const meaningfulLines = rawMessage
+        .split(/\r?\n/)
+        .map((line: string) => line.replace(/^\s*(?:[-*•]|\d+[.)、])\s*/, '').replace(/[*`#]/g, '').trim())
+        .filter((line: string) => line.length >= 4)
+        .filter((line: string) => !/^(?:Codex CLI|Workspace|工作目录|权限|安全工作副本|已索引文件|调用工具|本轮|exec_shell|read_file|file_search|tool)/i.test(line));
+      const fallbackSentence = meaningfulLines[0] || normalizedMessage.slice(0, 240);
+      const latinTerms = Array.from(new Set((rawMessage.match(/[A-Za-z][A-Za-z0-9_+./-]*/g) || [])
+        .filter((term: string) => !/^(?:and|or|the|a|an|to|of|in|on|for|with|from|is|are|was|were|codex|cli|workspace)$/i.test(term))))
+        .slice(0, 10);
+      const chineseTerms = Array.from(new Set(rawMessage.match(/[\u3400-\u9fff]{2,}/g) || []))
+        .filter((term: string) => !/^(?:用户|内容|消息|回答|检索词|英文|中文|生成|需要|可以|进行|当前)$/i.test(term))
+        .slice(0, 8);
+
+      result.need_retrieval = true;
+      result.reason = '用户已主动请求生成检索词，已根据消息中的实质内容生成可编辑候选。';
+      result.points = [{
+        sentence: fallbackSentence.slice(0, 500),
+        keywords_en: [explicitEnglish || (latinTerms.length > 0 ? latinTerms.join(' AND ') : fallbackSentence.slice(0, 240))],
+        keywords_cn: [explicitChinese || (chineseTerms.length > 0 ? chineseTerms.join(' AND ') : fallbackSentence.slice(0, 240))],
+      }];
+    }
     
     // 获取文献数量 - 使用实际的 userId
     let literatureCount = 0;
@@ -19227,6 +20710,7 @@ function parseReviewReferenceListResponse(content: string): string[] {
   return rawItems
     .map((item: unknown) => cleanReviewMultilineText(item, "", 1200))
     .map((item: string) => item.replace(/^[-*]\s*/, "").trim())
+    .map((item: string) => normalizeAuthorYearCitationText(item))
     .filter(Boolean);
 }
 
@@ -19283,6 +20767,7 @@ Rules:
 - Use normal text and normal digits only; do not use superscript or subscript formatting.
 - If the target reference format explicitly includes reference numbers, use the supplied "number" for each source.
 - If the target reference format does not include reference numbers, do not add numbering.
+- Keep in-text citations separate from bibliography entries. Do not prepend "(Surname et al., year)" unless that prefix is explicitly present in the user's target bibliography example.
 - Return exactly this JSON shape and nothing else: {"references":["formatted reference 1","formatted reference 2"]}
 
 Sources:
@@ -21444,6 +22929,7 @@ app.post("/api/sentence/claim-match", async (req: Request, res: Response) => {
     const rawQuery = String(req.body.query || req.body.sentence || '').trim();
     const safeUserId = sanitizeUserId(req.body.userId || "web-user");
     const topK = Math.min(20, Math.max(1, Math.floor(Number(req.body.topK || 6))));
+    const targetReferenceFormat = cleanSentenceClaimReferenceFormat(req.body.targetReferenceFormat || req.body.referenceFormat);
 
     if (!rawQuery) {
       res.status(400).json({ success: false, error: "请输入需要匹配参考文献的句子或论点" });
@@ -21500,14 +22986,18 @@ app.post("/api/sentence/claim-match", async (req: Request, res: Response) => {
       }
 
       const selectedRaw = interleaveRetrievedResultGroups(groups, Math.min(30, Math.max(topK * 2, topK)));
-      const selected = selectedRaw.filter(item => !isLikelyPlaceholderReferenceRecord(item));
+      const selected = await rerankClaimCandidatesByAbstractConclusions(
+        sentence,
+        selectedRaw.filter(item => !isLikelyPlaceholderReferenceRecord(item))
+      );
       const hiddenInvalidMetadataCount = selectedRaw.length - selected.length;
       const judged = await judgeClaimEvidenceForRetrievedReferences(sentence, selected);
       const ranked = applyClaimEvidenceQualityGate(rankClaimEvidenceJudgedResults(judged, Math.max(topK, judged.length)));
       const supportCounts = summarizeClaimEvidenceJudgments(ranked);
       const hiddenLowQualityCount = countClaimEvidenceHiddenByQualityGate(ranked);
       const visibleRanked = selectVisibleClaimEvidenceResults(ranked, topK);
-      results[sentence] = visibleRanked.map(mapRetrievedReferenceForClient);
+      const formattedVisibleRanked = await applySentenceClaimTargetReferenceFormat(visibleRanked, targetReferenceFormat);
+      results[sentence] = formattedVisibleRanked.map(mapRetrievedReferenceForClient);
       sentenceDetails.push({
         sentence,
         parser: parsed.parser,
@@ -21522,8 +23012,9 @@ app.post("/api/sentence/claim-match", async (req: Request, res: Response) => {
         hiddenIrrelevantCount: supportCounts.irrelevant,
         hiddenLowQualityCount,
         hiddenInvalidMetadataCount,
-        resultCount: visibleRanked.length,
+        resultCount: formattedVisibleRanked.length,
         requestedCount: topK,
+        targetReferenceFormatApplied: Boolean(targetReferenceFormat),
       });
 
       logger.info(`[SentenceClaimMatch] "${sentence.substring(0, 40)}..." parser=${parsed.parser}, refs=${visibleRanked.length}, hiddenIrrelevant=${supportCounts.irrelevant}, hiddenLowQuality=${hiddenLowQualityCount}, hiddenInvalidMetadata=${hiddenInvalidMetadataCount}, supports=${supportCounts.supports}, related=${supportCounts.related}, queries=${formatRetrievalQueryVariants(variants)}`);
@@ -21540,6 +23031,7 @@ app.post("/api/sentence/claim-match", async (req: Request, res: Response) => {
         pipeline: "claim-match",
         literatureCount,
         topK,
+        targetReferenceFormatApplied: Boolean(targetReferenceFormat),
       },
     }).catch((error) => {
       logger.warn("[ResearchSession] Failed to record claim-match provenance:", error);
@@ -21553,7 +23045,7 @@ app.post("/api/sentence/claim-match", async (req: Request, res: Response) => {
         "用户句子解析为中英文组合检索式",
         "英文检索和中文检索分路评分排序",
         "BM25 关键词粗筛候选文献池",
-        "在 BM25 候选池内生成用户 query embedding 并计算语义相似度",
+        "在 BM25 候选池内抽取摘要结论/结果句，并用用户 query 重新计算语义相似度",
         "LLM/NLI 风格证据支持判断：支持、反向、仅相关、无关",
         "按证据支持度、语义分数和关键词分综合排序返回",
       ],
@@ -21689,6 +23181,7 @@ app.post("/api/sentence/claim-match/stream", async (req: Request, res: Response)
     const rawQuery = String(req.body.query || req.body.sentence || '').trim();
     const safeUserId = sanitizeUserId(req.body.userId || "web-user");
     const topK = Math.min(20, Math.max(1, Math.floor(Number(req.body.topK || 6))));
+    const targetReferenceFormat = cleanSentenceClaimReferenceFormat(req.body.targetReferenceFormat || req.body.referenceFormat);
 
     if (!rawQuery) {
       send({ type: "error", error: "请输入需要匹配参考文献的句子或论点" });
@@ -21723,7 +23216,7 @@ app.post("/api/sentence/claim-match/stream", async (req: Request, res: Response)
       send({ type: "log", message: `Query 解析完成：${parsed.parser === "ai" ? "AI解析" : "规则解析"}；生成 ${variants.length} 条中英文检索路径。`, timestamp: new Date().toISOString() });
 
       for (const variant of variants) {
-        send({ type: "log", message: `正在执行${variant.label}：BM25 粗筛 + embedding 语义重排。`, timestamp: new Date().toISOString() });
+        send({ type: "log", message: `正在执行${variant.label}：BM25 粗筛候选；随后只针对摘要结论/结果句做语义重排。`, timestamp: new Date().toISOString() });
         const queryResults = await userEngine.retrieve({
           query: variant.query,
           topK: Math.min(80, Math.max(topK * 4, 20)),
@@ -21752,7 +23245,11 @@ app.post("/api/sentence/claim-match/stream", async (req: Request, res: Response)
       }
 
       const selectedRaw = interleaveRetrievedResultGroups(groups, Math.min(30, Math.max(topK * 2, topK)));
-      const selected = selectedRaw.filter(item => !isLikelyPlaceholderReferenceRecord(item));
+      send({ type: "log", message: "正在基于摘要结论/结果句重新计算语义排序，避免背景句主导匹配。", timestamp: new Date().toISOString() });
+      const selected = await rerankClaimCandidatesByAbstractConclusions(
+        sentence,
+        selectedRaw.filter(item => !isLikelyPlaceholderReferenceRecord(item))
+      );
       const hiddenInvalidMetadataCount = selectedRaw.length - selected.length;
       send({ type: "log", message: `中英文候选整合完成：${selectedRaw.length} 条；隐藏疑似示例/占位元数据 ${hiddenInvalidMetadataCount} 条。`, timestamp: new Date().toISOString() });
       send({ type: "log", message: "正在执行证据支持判断：支持、反向、仅相关、无关。", timestamp: new Date().toISOString() });
@@ -21762,7 +23259,11 @@ app.post("/api/sentence/claim-match/stream", async (req: Request, res: Response)
       const supportCounts = summarizeClaimEvidenceJudgments(ranked);
       const hiddenLowQualityCount = countClaimEvidenceHiddenByQualityGate(ranked);
       const visibleRanked = selectVisibleClaimEvidenceResults(ranked, topK);
-      results[sentence] = visibleRanked.map(mapRetrievedReferenceForClient);
+      if (targetReferenceFormat) {
+        send({ type: "log", message: "正在按目标期刊参考文献尾注格式整理匹配文献。", timestamp: new Date().toISOString() });
+      }
+      const formattedVisibleRanked = await applySentenceClaimTargetReferenceFormat(visibleRanked, targetReferenceFormat);
+      results[sentence] = formattedVisibleRanked.map(mapRetrievedReferenceForClient);
       sentenceDetails.push({
         sentence,
         parser: parsed.parser,
@@ -21777,13 +23278,14 @@ app.post("/api/sentence/claim-match/stream", async (req: Request, res: Response)
         hiddenIrrelevantCount: supportCounts.irrelevant,
         hiddenLowQualityCount,
         hiddenInvalidMetadataCount,
-        resultCount: visibleRanked.length,
+        resultCount: formattedVisibleRanked.length,
         requestedCount: topK,
+        targetReferenceFormatApplied: Boolean(targetReferenceFormat),
       });
 
       send({
         type: "log",
-        message: `证据判断完成：支持 ${supportCounts.supports}、反向 ${supportCounts.contradicts}、仅相关 ${supportCounts.related}、无关 ${supportCounts.irrelevant}；动态质量门控隐藏 ${hiddenLowQualityCount} 条；最终展示 ${visibleRanked.length} 条。`,
+        message: `证据判断完成：支持 ${supportCounts.supports}、反向 ${supportCounts.contradicts}、仅相关 ${supportCounts.related}、无关 ${supportCounts.irrelevant}；动态质量门控隐藏 ${hiddenLowQualityCount} 条；最终展示 ${formattedVisibleRanked.length} 条。`,
         timestamp: new Date().toISOString(),
       });
       logger.info(`[SentenceClaimMatchStream] "${sentence.substring(0, 40)}..." parser=${parsed.parser}, refs=${visibleRanked.length}, hiddenIrrelevant=${supportCounts.irrelevant}, hiddenLowQuality=${hiddenLowQualityCount}, hiddenInvalidMetadata=${hiddenInvalidMetadataCount}, supports=${supportCounts.supports}, related=${supportCounts.related}, queries=${formatRetrievalQueryVariants(variants)}`);
@@ -21799,7 +23301,7 @@ app.post("/api/sentence/claim-match/stream", async (req: Request, res: Response)
           "用户句子解析为中英文组合检索式",
           "英文检索和中文检索分路评分排序",
           "BM25 关键词粗筛候选文献池",
-          "在 BM25 候选池内生成用户 query embedding 并计算语义相似度",
+          "在 BM25 候选池内抽取摘要结论/结果句，并用用户 query 重新计算语义相似度",
           "LLM/NLI 风格证据支持判断：支持、反向、仅相关、无关",
           "按证据支持度、语义分数和关键词分综合排序返回",
         ],
@@ -21883,15 +23385,63 @@ function formatCitation(paper: LitPaper): string {
 }
 
 function getRetrievedReferenceAuthor(item: any): string {
-  if (typeof item?.author === 'string' && item.author.trim()) return item.author.trim();
   if (Array.isArray(item?.authors)) {
-    return item.authors
+    const authors = item.authors
       .map((author: unknown) => typeof author === 'string' ? author : String((author as Record<string, unknown>)?.name || ''))
       .map((author: string) => author.trim())
       .filter(Boolean)
       .join(', ');
+    if (authors) return authors;
   }
+  const rawAuthors = extractRetrievedReferenceAuthorsFromRaw(item);
+  if (rawAuthors.length > 0) return rawAuthors.join(', ');
+  if (typeof item?.author === 'string' && item.author.trim()) return item.author.trim();
   return 'Unknown';
+}
+
+function extractRetrievedReferenceAuthorsFromRaw(item: any): string[] {
+  const raw = String(item?.rawData || item?.raw || '').replace(/\r\n/g, '\n');
+  if (!raw.trim()) return [];
+
+  const shortAuthors: string[] = [];
+  const fullAuthors: string[] = [];
+  const addAuthors = (target: string[], value: string) => {
+    value
+      .split(/\s*;\s*/)
+      .map(part => part.trim())
+      .filter(Boolean)
+      .forEach(author => {
+        if (!target.some(existing => existing.toLowerCase() === author.toLowerCase())) {
+          target.push(author);
+        }
+      });
+  };
+
+  for (const line of raw.split('\n')) {
+    const trimmed = line.trim();
+    const match = trimmed.match(/^(AU|A1|A3|AF)\s*-?\s*(.+)$/i);
+    if (!match) continue;
+    const tag = match[1].toUpperCase();
+    const value = match[2].trim();
+    if (!value) continue;
+    if (tag === 'AF') addAuthors(fullAuthors, value);
+    else addAuthors(shortAuthors, value);
+  }
+
+  return shortAuthors.length > 0 ? shortAuthors : fullAuthors;
+}
+
+function getRetrievedReferenceJournal(item: any): string {
+  return cleanClaimEvidenceText(
+    item?.journalFull
+      || item?.fullJournal
+      || item?.journalName
+      || item?.sourceTitle
+      || item?.containerTitle
+      || item?.publicationTitle
+      || item?.journal,
+    240
+  );
 }
 
 function splitReferenceAuthorNames(value: unknown): string[] {
@@ -21940,7 +23490,7 @@ function buildRetrievedReferenceSourceItem(item: any): RetrievedReferenceSourceI
     : "";
   const excerpt = firstReadableSentence(supportSnippet || item?.abstract || item?.title, 650);
   const pathParts = [
-    item?.journal,
+    getRetrievedReferenceJournal(item),
     item?.year,
     item?.doi ? `DOI: ${item.doi}` : "",
     item?.retrievalPath,
@@ -21955,16 +23505,18 @@ function buildRetrievedReferenceSourceItem(item: any): RetrievedReferenceSourceI
 
 function mapRetrievedReferenceForClient(item: any): Record<string, unknown> {
   const author = getRetrievedReferenceAuthor(item);
+  const journal = getRetrievedReferenceJournal(item);
   const normalized = {
     ...item,
     author,
+    journal,
   } as LitPaper & Record<string, unknown>;
   return {
     id: item.id || "",
     title: item.title || "Untitled",
     author,
     year: item.year || "",
-    journal: item.journal || "",
+    journal,
     doi: item.doi || "",
     abstract: item.abstract || "",
     keywords: item.keywords || [],
@@ -21975,6 +23527,8 @@ function mapRetrievedReferenceForClient(item: any): Record<string, unknown> {
     vectorScore: Number(item.vectorScore || 0),
     claimSupport: item.claimSupport || null,
     qualityGate: item.qualityGate || null,
+    abstractClaimMatch: item.abstractClaimMatch || null,
+    targetReference: item.targetReference || "",
     sourceItem: buildRetrievedReferenceSourceItem(item),
     retrievalPath: item.retrievalPath || "",
     retrievalLanguage: item.retrievalLanguage || "",

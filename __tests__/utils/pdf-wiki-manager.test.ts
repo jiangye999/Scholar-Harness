@@ -780,7 +780,7 @@ describe('PdfWikiManager', () => {
     ].join('\n\n'));
 
     expect(diagram.engine).toBe('code');
-    expect(diagram.layoutVersion).toBe(5);
+    expect(diagram.layoutVersion).toBe(7);
     expect(diagram.svg).toContain('<svg');
     expect(diagram.svg).toContain('Nitrogen Cycling Study');
     expect(diagram.svg).toContain('准稳态');

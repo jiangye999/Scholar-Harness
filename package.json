@@ -1,6 +1,6 @@
 {
   "name": "scholar-harness",
-  "version": "1.0.4",
+  "version": "1.0.6",
   "description": "Scholar Harness - 对话式学术论文写作助手",
   "author": "sjs@cau.edu.cn",
   "main": "dist/electron/main.js",
@@ -24,6 +24,9 @@
   "build": {
     "appId": "com.scholar-harness.app",
     "productName": "Scholar Harness",
+    "toolsets": {
+      "winCodeSign": "1.1.0"
+    },
     "asar": true,
     "asarUnpack": [
       "dist/**/*.js",
@@ -71,6 +74,10 @@
       {
         "from": "sci_writing_skills",
         "to": "sci_writing_skills"
+      },
+      {
+        "from": "skill-packs",
+        "to": "skill-packs"
       },
       {
         "from": "tools/ppt-master",

@@ -4,16 +4,304 @@ import * as path from 'path';
 import { join } from 'path';
 import * as os from 'os';
 import http from 'http';
-import { existsSync, writeFileSync, readFileSync, unlinkSync, readdirSync } from 'fs';
-import { randomUUID } from 'crypto';
+import { existsSync, writeFileSync, readFileSync, unlinkSync, readdirSync, statSync } from 'fs';
+import { createHash, randomUUID } from 'crypto';
 import { logger } from '../../utils/logger';
 import { maskEmail, maskSecret } from '../../utils/sanitize';
 import { decrypt, isEncrypted } from '../../utils/encryption';
-import { callChatCompletion } from '../../utils/llm-client';
+import {
+  callChatCompletion,
+  callChatCompletionWithTools,
+  type LLMToolChatResult,
+  type LLMToolDefinition,
+  type LLMToolMessage,
+} from '../../utils/llm-client';
 import type { ChatOptions, Message } from '../../types';
+import {
+  codexAppServerManager,
+  type CodexAppServerTurnResult,
+  type CodexToolGatewayConnection,
+} from './codex-app-server';
+import { buildToolRuntimeEnv } from '../../utils/tool-runtime-env';
+import { isDraftSaveRequest } from '../../utils/draft-save-block';
+import { extractExplicitWorkspaceFileWriteIntent } from '../../utils/workspace-file-intent';
+import { writeWordDraftDocx } from '../../utils/word-draft-docx';
+import { getDataDir, sanitizeUserId as sanitizePathUserId } from '../../utils/paths';
 
 // PID 文件路径（用于防止 openclaw serve 多开）
 const OPENCLAW_PID_FILE = 'openclaw-serve.pid';
+const codexSessionByConversation = new Map<string, string>();
+const codexSafeWorkspaceByConversation = new Map<string, string>();
+const codexLastUsageByConversation = new Map<string, CodexUsageSnapshot>();
+const codexLastAnswerByConversation = new Map<string, string>();
+const CODEX_SAFE_WORKSPACE_DIR_NAME = 'ScholarHarness_AI_Workspaces';
+const CODEX_SAFE_WORKSPACE_README = 'README_ScholarHarness_AI_Workspace.md';
+const CODEX_AUTO_COMPACT_INPUT_TOKEN_THRESHOLD = 2_000_000;
+const CODEX_ARTIFACT_SKIP_DIRS = new Set(['.git', 'node_modules', '.next', 'dist', 'coverage', '__pycache__']);
+export const CODEX_VERIFIED_ARTIFACTS_BEGIN = '[[SH_VERIFIED_ARTIFACTS_BEGIN]]';
+export const CODEX_VERIFIED_ARTIFACTS_END = '[[SH_VERIFIED_ARTIFACTS_END]]';
+
+interface CodexArtifactSnapshotItem {
+  size: number;
+  mtimeMs: number;
+}
+
+function snapshotCodexArtifactFiles(root: string, maxFiles = 10_000): Map<string, CodexArtifactSnapshotItem> {
+  const snapshot = new Map<string, CodexArtifactSnapshotItem>();
+  if (!root || !existsSync(root)) return snapshot;
+  const visit = (dir: string): void => {
+    if (snapshot.size >= maxFiles) return;
+    let entries: import('fs').Dirent[] = [];
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (snapshot.size >= maxFiles) return;
+      if (entry.isDirectory() && CODEX_ARTIFACT_SKIP_DIRS.has(entry.name.toLowerCase())) continue;
+      const absolutePath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        visit(absolutePath);
+        continue;
+      }
+      if (!entry.isFile()) continue;
+      try {
+        const stat = statSync(absolutePath);
+        snapshot.set(absolutePath, { size: stat.size, mtimeMs: stat.mtimeMs });
+      } catch {
+        // Files may disappear while the snapshot is being collected.
+      }
+    }
+  };
+  visit(root);
+  return snapshot;
+}
+
+function collectChangedCodexArtifacts(
+  root: string,
+  before: Map<string, CodexArtifactSnapshotItem>,
+  maxFiles = 12
+): string[] {
+  if (!root || !existsSync(root)) return [];
+  const after = snapshotCodexArtifactFiles(root);
+  return Array.from(after.entries())
+    .filter(([filePath, current]) => {
+      if (path.basename(filePath) === CODEX_SAFE_WORKSPACE_README) return false;
+      const previous = before.get(filePath);
+      return !previous || previous.size !== current.size || previous.mtimeMs !== current.mtimeMs;
+    })
+    .sort((left, right) => right[1].mtimeMs - left[1].mtimeMs)
+    .slice(0, maxFiles)
+    .map(([filePath]) => filePath);
+}
+
+export function isCodexDraftWordExportRequest(value: string): boolean {
+  const text = String(value || '').trim();
+  if (!text || !/(?:\bword\b|\.docx\b|word\s*文档)/i.test(text)) return false;
+  if (!/(?:草稿|章节|论文|全文|manuscript|draft|chapter)/i.test(text)) return false;
+  return /(?:整合|合并|汇总|导出|生成|写入|保存|制作|combine|merge|export|generate|write)/i.test(text);
+}
+
+export function isCodexFileMutationRequest(value: string): boolean {
+  const text = String(value || '').trim();
+  if (!text) return false;
+  const hasMutation = /(?:修改|改写|更新|写入|生成|新建|创建|导出|保存|整合|合并|重算|重绘|edit|update|write|create|generate|export|save|merge)/i.test(text);
+  const hasFileTarget = /(?:文件|文档|图片|图像|图表|代码|脚本|草稿|word|docx|excel|xlsx|pptx|pdf|\.\w{1,8}\b)/i.test(text);
+  return hasMutation && hasFileTarget;
+}
+
+export function buildCodexVerifiedArtifactBlock(filePaths: string[]): string {
+  const verifiedPaths = Array.from(new Set(
+    (filePaths || []).map(filePath => String(filePath || '').trim()).filter(Boolean)
+  ));
+  if (verifiedPaths.length === 0) return '';
+  return [
+    CODEX_VERIFIED_ARTIFACTS_BEGIN,
+    '生成/更新文件（已验证）：',
+    ...verifiedPaths.map(filePath => `- ${filePath}`),
+    CODEX_VERIFIED_ARTIFACTS_END,
+  ].join('\n');
+}
+
+function getCodexDraftWordExportContent(options: ChatOptions): string {
+  const ordinaryDraft = (options.draftContext as Record<string, unknown> | undefined)?.ordinaryDraft as Record<string, unknown> | undefined;
+  const exportContent = String(ordinaryDraft?.exportContent || '').trim();
+  if (exportContent) return exportContent;
+
+  const contextContent = String(ordinaryDraft?.content || '');
+  const contentMarker = '## 草稿内容';
+  const markerIndex = contextContent.indexOf(contentMarker);
+  return markerIndex >= 0
+    ? contextContent.slice(markerIndex + contentMarker.length).trim()
+    : '';
+}
+
+export function sanitizeCodexFinalAnswer(value: string): string {
+  let text = String(value || '').trim();
+  text = text.replace(/\[([^\]]+)\]\(<\/mnt\/data\?>\)/gi, '$1');
+  const leakagePattern = /\s+(?:hmm need proper Windows absolute\?|Need provide \[|Need include exact path\.|Final answer desired oververbosity|Let's final\.|Wait our final text|Oops I think I wrote|As ChatGPT I need)/i;
+  const leakage = leakagePattern.exec(text);
+  if (leakage && leakage.index >= 20) {
+    text = text.slice(0, leakage.index).trim();
+  }
+  return text;
+}
+
+function clearCodexThreadState(conversationKey: string): void {
+  codexSessionByConversation.delete(conversationKey);
+  codexLastUsageByConversation.delete(conversationKey);
+  codexLastAnswerByConversation.delete(conversationKey);
+}
+
+interface CodexUsageSnapshot {
+  inputTokens: number;
+  outputTokens: number;
+  reasoningTokens: number;
+  observedAt: string;
+}
+
+function sanitizeCodexSessionKeyPart(value: unknown): string {
+  return String(value || '').trim().replace(/[^\w.@:-]+/g, '_').slice(0, 180) || 'default';
+}
+
+function buildCodexConversationKey(options: ChatOptions, workspaceRoot: string): string {
+  const userId = sanitizeCodexSessionKeyPart(options.userId || 'web-user');
+  const conversationId = sanitizeCodexSessionKeyPart(options.conversationId || 'default-conversation');
+  const workspaceKey = workspaceRoot
+    ? createHash('sha256').update(path.resolve(workspaceRoot).toLowerCase()).digest('hex').slice(0, 16)
+    : 'no-workspace';
+  return `${userId}:${conversationId}:${workspaceKey}`;
+}
+
+function createCodexSafeWorkspaceName(): string {
+  const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+  return `Codex-${timestamp}-${randomUUID().slice(0, 8)}`;
+}
+
+function isSubPath(parent: string, child: string): boolean {
+  const relative = path.relative(parent, child);
+  return relative === '' || (!!relative && !relative.startsWith('..') && !path.isAbsolute(relative));
+}
+
+async function prepareCodexSafeWorkspace(workspaceRoot: string, conversationKey: string, preferredSafeRoot?: string): Promise<string | null> {
+  if (!workspaceRoot || !existsSync(workspaceRoot)) return null;
+  const existing = codexSafeWorkspaceByConversation.get(conversationKey);
+  if (existing && existsSync(existing)) return existing;
+
+  const requestedSafeRoot = String(preferredSafeRoot || '').trim();
+  const resolvedRequestedSafeRoot = requestedSafeRoot ? path.resolve(requestedSafeRoot) : '';
+  const safeRoot = resolvedRequestedSafeRoot
+    && isSubPath(path.resolve(workspaceRoot), resolvedRequestedSafeRoot)
+    && path.relative(path.resolve(workspaceRoot), resolvedRequestedSafeRoot).toLowerCase().split(/[\\/]+/).includes(CODEX_SAFE_WORKSPACE_DIR_NAME.toLowerCase())
+    ? resolvedRequestedSafeRoot
+    : join(workspaceRoot, CODEX_SAFE_WORKSPACE_DIR_NAME, createCodexSafeWorkspaceName());
+  await mkdir(safeRoot, { recursive: true });
+  const readmePath = join(safeRoot, CODEX_SAFE_WORKSPACE_README);
+  const readme = [
+    '# Scholar Harness Codex Workspace',
+    '',
+    'This folder is a copy-on-write workspace for Codex tasks.',
+    `Original workspace: ${workspaceRoot}`,
+    '',
+    'Codex should copy any source files it needs into this folder before editing or running code.',
+    'The original workspace should be treated as read/source material unless the user explicitly asks to overwrite it.',
+    '',
+  ].join('\n');
+  try {
+    await writeFile(readmePath, readme, { encoding: 'utf-8', flag: 'wx' });
+  } catch {
+    // Existing README is fine.
+  }
+  await new Promise<void>((resolve) => {
+    const child = spawn('git', ['init'], {
+      cwd: safeRoot,
+      windowsHide: true,
+      stdio: ['ignore', 'ignore', 'ignore'],
+    });
+    child.on('error', () => resolve());
+    child.on('close', () => resolve());
+  });
+  codexSafeWorkspaceByConversation.set(conversationKey, safeRoot);
+  return safeRoot;
+}
+
+function getImageMimeType(filePath: string): string {
+  const ext = path.extname(filePath).toLowerCase();
+  if (ext === '.jpg' || ext === '.jpeg') return 'image/jpeg';
+  if (ext === '.gif') return 'image/gif';
+  if (ext === '.webp') return 'image/webp';
+  if (ext === '.bmp') return 'image/bmp';
+  if (ext === '.svg') return 'image/svg+xml';
+  if (ext === '.tif' || ext === '.tiff') return 'image/tiff';
+  return 'image/png';
+}
+
+function buildLocalImageDataUrl(filePath: string): string | null {
+  const resolved = path.resolve(String(filePath || '').trim());
+  if (!resolved || !existsSync(resolved)) return null;
+  const buffer = readFileSync(resolved);
+  return `data:${getImageMimeType(resolved)};base64,${buffer.toString('base64')}`;
+}
+
+export function attachVisionImagesToMessages(
+  inputMessages: Array<Message | LLMToolMessage>,
+  inputImagePaths: string[],
+  requiresVision: boolean,
+): Array<Message | LLMToolMessage> {
+  const imagePaths = inputImagePaths
+    .map(imagePath => String(imagePath || '').trim())
+    .filter(imagePath => imagePath && existsSync(imagePath));
+  if (!requiresVision || imagePaths.length === 0 || inputMessages.length === 0) {
+    return inputMessages;
+  }
+  const imageParts = imagePaths
+    .map(imagePath => buildLocalImageDataUrl(imagePath))
+    .filter((url): url is string => !!url)
+    .map(url => ({
+      type: 'image_url' as const,
+      image_url: {
+        url,
+        detail: 'high' as const,
+      },
+    }));
+  if (imageParts.length === 0) return inputMessages;
+
+  const messages = inputMessages.slice();
+  let lastUserIndex = -1;
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    if (messages[index]?.role === 'user') {
+      lastUserIndex = index;
+      break;
+    }
+  }
+  if (lastUserIndex < 0) return messages;
+  const lastUserMessage = messages[lastUserIndex];
+  messages[lastUserIndex] = {
+    ...lastUserMessage,
+    content: [
+      { type: 'text', text: stringifyMessageContent(lastUserMessage.content) },
+      ...imageParts,
+    ],
+  } as unknown as LLMToolMessage;
+  return messages;
+}
+
+function stringifyMessageContent(content: unknown): string {
+  if (typeof content === 'string') return content;
+  if (Array.isArray(content)) {
+    return content
+      .map(part => {
+        if (part && typeof part === 'object' && 'text' in part) {
+          return String((part as { text?: unknown }).text || '');
+        }
+        return '';
+      })
+      .filter(Boolean)
+      .join('\n');
+  }
+  return String(content || '');
+}
 
 /**
  * 安全创建临时目录
@@ -30,6 +318,539 @@ async function createSecureTempDir(): Promise<string> {
  */
 async function writeSecureTempFile(filePath: string, content: string): Promise<void> {
   await writeFile(filePath, content, { mode: 0o600 });
+}
+
+function stringifyCodexEventValue(value: unknown): string {
+  if (value === null || value === undefined) return '';
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' || typeof value === 'boolean' || typeof value === 'bigint') return String(value);
+  if (Array.isArray(value)) {
+    if (value.every(item => typeof item === 'string' || typeof item === 'number' || typeof item === 'boolean')) {
+      return value.map(item => String(item)).join(' ');
+    }
+  }
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
+}
+
+function truncateCodexEventText(value: unknown, maxChars = 12000): string {
+  const text = stringifyCodexEventValue(value).trim();
+  if (text.length <= maxChars) return text;
+  return `${text.slice(0, maxChars)}\n...[truncated ${text.length - maxChars} chars]`;
+}
+
+function stringifyCodexCommand(value: unknown): string {
+  if (Array.isArray(value)) return value.map(item => String(item)).join(' ');
+  if (typeof value === 'string') return value;
+  if (value && typeof value === 'object') {
+    const raw = value as Record<string, unknown>;
+    const nested = raw.command || raw.cmd || raw.args || raw.argv || raw.input;
+    if (nested && nested !== value) return stringifyCodexCommand(nested);
+    try {
+      return JSON.stringify(value);
+    } catch {
+      return String(value);
+    }
+  }
+  return String(value ?? '').trim();
+}
+
+function pickCodexTextEvent(event: Record<string, unknown>, keys: string[]): string {
+  for (const key of keys) {
+    const value = event[key];
+    if (typeof value === 'string' && value.trim()) return value;
+    if (Array.isArray(value)) {
+      const joined = value.map(item => typeof item === 'string' ? item : '').filter(Boolean).join('');
+      if (joined.trim()) return joined;
+    }
+  }
+  const item = event.item;
+  if (item && typeof item === 'object') {
+    const rawItem = item as Record<string, unknown>;
+    for (const key of keys) {
+      const value = rawItem[key];
+      if (typeof value === 'string' && value.trim()) return value;
+    }
+  }
+  return '';
+}
+
+function getCodexItem(event: Record<string, unknown>): Record<string, unknown> | null {
+  const item = event.item;
+  return item && typeof item === 'object' ? item as Record<string, unknown> : null;
+}
+
+function formatCodexUsage(value: unknown): string {
+  const usage = parseCodexUsage(value);
+  if (!usage) return '';
+  const parts: string[] = [];
+  if (usage.inputTokens > 0) parts.push(`输入 ${usage.inputTokens}`);
+  if (usage.outputTokens > 0) parts.push(`输出 ${usage.outputTokens}`);
+  if (usage.reasoningTokens > 0) parts.push(`推理 ${usage.reasoningTokens}`);
+  return parts.length ? `（tokens：${parts.join(' / ')}）` : '';
+}
+
+function parseCodexUsage(value: unknown): CodexUsageSnapshot | null {
+  if (!value || typeof value !== 'object') return null;
+  const usage = value as Record<string, unknown>;
+  const inputTokens = Number(usage.input_tokens ?? usage.inputTokens ?? 0);
+  const outputTokens = Number(usage.output_tokens ?? usage.outputTokens ?? 0);
+  const reasoningTokens = Number(usage.reasoning_output_tokens ?? usage.reasoningOutputTokens ?? 0);
+  if (!Number.isFinite(inputTokens) || inputTokens <= 0) return null;
+  return {
+    inputTokens,
+    outputTokens: Number.isFinite(outputTokens) && outputTokens > 0 ? outputTokens : 0,
+    reasoningTokens: Number.isFinite(reasoningTokens) && reasoningTokens > 0 ? reasoningTokens : 0,
+    observedAt: new Date().toISOString(),
+  };
+}
+
+function parseCodexUsageFromJsonLine(line: string): CodexUsageSnapshot | null {
+  const trimmed = String(line || '').trim();
+  if (!trimmed) return null;
+  try {
+    const event = JSON.parse(trimmed) as Record<string, unknown>;
+    const type = String(event.type || event.event || event.kind || '').toLowerCase();
+    const isTurnCompleted = type === 'turn.completed'
+      || type === 'turn_completed'
+      || (type.includes('turn') && (type.includes('completed') || type.includes('complete')));
+    return isTurnCompleted ? parseCodexUsage(event.usage) : null;
+  } catch {
+    return null;
+  }
+}
+
+function shouldAutoCompactCodexSession(usage?: CodexUsageSnapshot | null): boolean {
+  return !!usage && usage.inputTokens > CODEX_AUTO_COMPACT_INPUT_TOKEN_THRESHOLD;
+}
+
+function formatCodexUsageSnapshot(usage: CodexUsageSnapshot): string {
+  const parts = [`输入 ${usage.inputTokens}`];
+  if (usage.outputTokens > 0) parts.push(`输出 ${usage.outputTokens}`);
+  if (usage.reasoningTokens > 0) parts.push(`推理 ${usage.reasoningTokens}`);
+  return parts.join(' / ');
+}
+
+function extractCurrentUserRequestFromPrompt(prompt: string): string {
+  const text = String(prompt || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n').trim();
+  const anchorMatch = text.match(/<CURRENT_USER_REQUEST\b[^>]*>\n?([\s\S]*?)\n?<\/CURRENT_USER_REQUEST>/i);
+  if (anchorMatch?.[1]?.trim()) {
+    return anchorMatch[1].trim();
+  }
+  const markdownMarkers = [
+    '## 💬 用户请求-参考文献列表\n',
+    '## 💬 用户请求\n',
+  ];
+  for (const marker of markdownMarkers) {
+    const index = text.lastIndexOf(marker);
+    if (index >= 0) {
+      return text.slice(index + marker.length).trim();
+    }
+  }
+  const bracketMarkers = [
+    '【用户请求-参考文献列表】\n',
+    '【用户请求】\n',
+  ];
+  for (const marker of bracketMarkers) {
+    const index = text.lastIndexOf(marker);
+    if (index >= 0) {
+      return text.slice(index + marker.length).trim();
+    }
+  }
+  return text;
+}
+
+function extractCodexCurrentRequest(options: ChatOptions): string {
+  const envelopeText = String(options.queryEnvelope?.text || '').trim();
+  if (envelopeText) return envelopeText;
+  const lastUserMessage = [...options.messages].reverse().find(message => message.role === 'user');
+  return extractCurrentUserRequestFromPrompt(stringifyMessageContent(lastUserMessage?.content || ''));
+}
+
+function buildCodexQueryEnvelopeSummary(options: ChatOptions): string {
+  const envelope = options.queryEnvelope;
+  if (!envelope) return '';
+  const parts = Array.isArray(envelope.parts) ? envelope.parts : [];
+  const partLines = parts
+    .map((rawPart) => {
+      const part = rawPart && typeof rawPart === 'object' ? rawPart as Record<string, unknown> : {};
+      const type = String(part.type || '').trim();
+      if (!type) return '';
+      if (type === 'workspace') {
+        return `- workspace: ${part.root || part.path || envelope.workspace?.root || ''} (${part.permission || envelope.workspace?.permission || 'read-only'})`;
+      }
+      if (type === 'workspace_file') {
+        return `- workspace_file: ${part.path || part.name || part.label || ''}（用户通过 @ 明确选择，优先读取）`;
+      }
+      if (type === 'file' || type === 'image') {
+        return `- ${type}: ${part.path || part.name || part.label || ''}`;
+      }
+      if (type === 'slash') {
+        return `- slash: ${part.command || part.name || part.label || ''}`;
+      }
+      if (type === 'context') {
+        return `- context: ${part.key || part.label || ''}`;
+      }
+      if (type === 'reference_format') {
+        return `- reference_format: ${part.content || part.label || ''}`;
+      }
+      return `- ${type}: ${part.content || part.name || part.label || ''}`;
+    })
+    .filter(Boolean)
+    .slice(0, 40);
+  return [
+    '## 当前用户 Query Envelope（轻量）',
+    `- queryId: ${envelope.id || ''}`,
+    `- provider: ${envelope.provider || 'codex'}`,
+    `- delivery: ${envelope.delivery || 'steer'}`,
+    partLines.length ? `- 显式结构化输入：\n${partLines.join('\n')}` : '',
+  ].filter(Boolean).join('\n');
+}
+
+function truncateCodexHandoffContent(value: string, maxChars = 20_000): string {
+  const text = String(value || '').trim();
+  if (text.length <= maxChars) return text;
+  const headLength = Math.floor(maxChars * 0.7);
+  const tailLength = maxChars - headLength;
+  return `${text.slice(0, headLength)}\n...[中间内容已压缩]...\n${text.slice(-tailLength)}`;
+}
+
+export function buildCodexConversationHandoff(options: Pick<ChatOptions, 'conversationHandoff'>): string {
+  const messages = Array.isArray(options.conversationHandoff)
+    ? options.conversationHandoff.slice(-20)
+    : [];
+  if (messages.length === 0) return '';
+
+  const selected: Array<{ role: string; content: string }> = [];
+  let remainingChars = 100_000;
+  for (let index = messages.length - 1; index >= 0 && remainingChars > 0; index--) {
+    const message = messages[index];
+    const content = truncateCodexHandoffContent(String(message?.content || ''), Math.min(20_000, remainingChars));
+    if (!content) continue;
+    selected.unshift({ role: String(message?.role || 'user'), content });
+    remainingChars -= content.length;
+  }
+  if (selected.length === 0) return '';
+
+  return [
+    '## Scholar Harness 最近可见对话（跨 Provider 交接）',
+    '以下消息来自当前软件界面，可能包含 Codex 失败后由小牛马/大牛马生成、因而不在 Codex thread 内的回答。',
+    '解析“方案 A / 第二个方案 / 继续 / 按刚才的”等指代时，必须优先查这里最近的助手回答；不要要求用户重复粘贴已经出现的定义。',
+    ...selected.map((message, index) => [
+      `### 可见消息 ${index + 1}（${message.role === 'assistant' ? 'assistant' : (message.role === 'system' ? 'system' : 'user')}）`,
+      message.content,
+    ].join('\n')),
+  ].join('\n\n');
+}
+
+function buildCodexDraftSaveReminder(options: ChatOptions, currentRequest: string): string {
+  if (extractExplicitWorkspaceFileWriteIntent(currentRequest) || !isDraftSaveRequest(currentRequest)) return '';
+  const rawWritingTarget = options.draftContext?.articleWritingProgress?.activeTarget;
+  const writingTargetChapter = String(rawWritingTarget?.chapterKey || '').trim();
+  const hasNativeDraftTool = !!options.codexToolSet?.definitions.some(tool => tool.function.name === 'save_draft');
+  if (hasNativeDraftTool) {
+    return [
+      '## Scholar Harness 草稿写入协议（本轮请求涉及章节 TXT）',
+      '读取来源文件和保存应用章节是两个动作：可以先读取工作目录文件，但最终章节内容必须调用 scholar_harness MCP 的 save_draft 工具写入右侧文章写作进度。',
+      '禁止只在回答文本中声称已经保存，也不要在安全工作副本里新建同名 TXT 来代替应用草稿。',
+      writingTargetChapter
+        ? `页面已锁定顶级章节 ${writingTargetChapter}；save_draft 的 section 必须服从该目标。`
+        : '页面未锁定章节；请根据最新用户请求、正文标题和内容功能选择现有顶级章节，必要时由 save_draft 创建新的顶级章节 TXT。',
+      '只有 save_draft 返回 ok=true 后，最终回答才能告诉用户保存成功，并应保留工具返回的具体章节和 .txt 文件名。',
+    ].join('\n');
+  }
+  return [
+    '## Scholar Harness 草稿写入协议（本轮请求涉及章节 TXT）',
+    '读取来源文件和保存应用章节是两个动作：可以先读取工作目录文件，但最终章节内容必须通过 save_draft 写入右侧文章写作进度。',
+    '不要只在安全工作副本里新建同名 TXT，也不要只口头声称“已保存”。必须在回答末尾输出以下可执行块：',
+    '```text',
+    '🔧 调用工具：save_draft',
+    'content: |',
+    '[最终要保存的章节正文]',
+    writingTargetChapter
+      ? `section: ${writingTargetChapter}`
+      : 'section: [根据用户要求选择或创建有意义的顶级章节 key，例如 title、literature_review、implications]',
+    'references: |',
+    '[本章节实际引用的完整参考文献；没有则留空]',
+    '```',
+  ].join('\n');
+}
+
+function buildCodexDraftWordExportReminder(options: ChatOptions, currentRequest: string): string {
+  if (!isCodexDraftWordExportRequest(currentRequest)) return '';
+  const hasCanonicalDraft = !!getCodexDraftWordExportContent(options);
+  return [
+    '## Scholar Harness Word 草稿导出协议',
+    hasCanonicalDraft
+      ? '- 已附带右侧“文章写作进度”的规范章节 TXT；Scholar Harness 会在本轮结束前用内置 DOCX 生成器真实重建 paper-draft.docx。'
+      : '- 当前没有可用的规范章节 TXT；不得声称 Word 已写入或已更新。',
+    '- 生成或更新论文草稿 DOCX 时，正文、标题、表格、图注和参考文献统一使用 Times New Roman；除非用户明确指定其他字体。',
+    '- 你可以检查章节顺序和指出内容问题，但不要把“准备写入”或仅提及文件名表述成已经完成。',
+    '- 只有 Scholar Harness 返回“生成/更新文件（已验证）”回执后，文件写入才算成功。',
+  ].join('\n');
+}
+
+export function buildCodexResumePrompt(options: ChatOptions, workspaceRoot: string, codexSafeWorkspace: string | null, workspaceSandbox: string): string {
+  const currentRequest = extractCodexCurrentRequest(options);
+  const queryEnvelopeSummary = buildCodexQueryEnvelopeSummary(options);
+  const conversationHandoff = buildCodexConversationHandoff(options);
+  const explicitFileWriteIntent = extractExplicitWorkspaceFileWriteIntent(currentRequest);
+  const writingProgress = options.draftContext?.articleWritingProgress;
+  const rawWritingTarget = writingProgress?.activeTarget;
+  const writingTargetChapter = String(rawWritingTarget?.chapterKey || '').trim();
+  const writingTargetTitle = String(rawWritingTarget?.chapterTitle || writingTargetChapter).trim();
+  const writingTargetSubsection = String(rawWritingTarget?.subsectionTitle || '').trim();
+  const writingProgressSummary = writingProgress?.available
+    ? [
+        '## 文章写作进度（本轮页面实时状态）',
+        `- 已完成章节：${Number(writingProgress.completedChapterCount || 0)}/${Number(writingProgress.totalChapterCount || 0)}`,
+        `- 小节总数：${Number(writingProgress.totalSubsectionCount || 0)}`,
+        writingTargetChapter
+          ? (explicitFileWriteIntent
+              ? `- 页面当前“正在写”：${writingTargetTitle}${writingTargetSubsection ? ` / ${writingTargetSubsection}` : ''}（${writingTargetChapter}.txt）；本轮用户显式指定工作目录文件“${explicitFileWriteIntent.target}”，该状态仅作内容参考，不能改变写入目标。`
+              : `- 本轮手动锁定目标：${writingTargetTitle}${writingTargetSubsection ? ` / ${writingTargetSubsection}` : ''}（${writingTargetChapter}.txt）；不得自行改章。`)
+          : (explicitFileWriteIntent
+              ? `- 本轮用户显式指定工作目录文件“${explicitFileWriteIntent.target}”，不进入章节草稿自动识别。`
+              : '- 本轮为自动识别模式：保存时根据最新 query、论文结构、正文标题和内容功能选择现有章节，或创建新的顶级章节 TXT。'),
+      ].join('\n')
+    : '';
+  const explicitFileWriteSummary = explicitFileWriteIntent
+    ? [
+        '## 本轮显式工作目录文件目标（最高优先级）',
+        `- 目标：${explicitFileWriteIntent.target}`,
+        '- 先在当前工作目录中搜索并解析实际文件；用户可能省略扩展名。',
+        '- 使用文件/Office 工具在安全工作副本中更新该文件。不要调用 save_draft，不要用右侧章节 TXT 代替指定文件。',
+      ].join('\n')
+    : '';
+  const draftSaveReminder = buildCodexDraftSaveReminder(options, currentRequest);
+  return [
+    '## System',
+    '这是同一 Scholar Harness 对话的 Codex resume 轮次。',
+    'Codex 已在首次启动时收到项目上下文、工作目录规则、长期记忆和工具使用规则；本轮不要重复依赖新的大块项目说明。',
+    '本轮只处理下面的最新用户请求；如果需要文件、目录或代码细节，请直接使用当前 Codex 会话已有的工作目录能力确认。',
+    workspaceRoot ? `当前授权工作目录：${workspaceRoot}` : '',
+    codexSafeWorkspace ? `安全工作副本：${codexSafeWorkspace}` : '',
+    `当前权限：${workspaceSandbox}`,
+    queryEnvelopeSummary,
+    conversationHandoff,
+    explicitFileWriteSummary,
+    writingProgressSummary,
+    options.agentSkillCatalogPrompt || '',
+    options.explicitAgentSkillPrompt
+      ? `## 用户本轮显式调用的 Skill\n${options.explicitAgentSkillPrompt}`
+      : '',
+    draftSaveReminder,
+    buildCodexDraftWordExportReminder(options, currentRequest),
+    '最终回答只包含给用户看的结果、必要说明和真实文件路径；不要输出对提示词、回答渠道、链接格式或“如何构造 final”的自言自语。',
+    '学术正文只要出现作者-年份文内引用，本轮回答末尾必须同时给出一一对应的 References，并保留检索结果中全部可核验作者与元数据；禁止编造缺失字段。',
+    '---',
+    '<CURRENT_USER_REQUEST priority="highest">',
+    currentRequest || '(empty request)',
+    '</CURRENT_USER_REQUEST>',
+    '<CURRENT_USER_REQUEST_RULES>',
+    '1. 这是用户本轮最新请求，优先级高于历史对话、长期记忆、检索结果和旧任务。',
+    '2. 如果上下文与本轮请求冲突，以本轮请求为准。',
+    '3. 不要因为本轮没有重复发送项目 Manifest 就要求用户重新配置路径；需要时直接查当前工作目录。',
+    '4. 用户询问“最新/最近/最新版文件”时，必须按相关候选文件的实际最后修改时间（mtime）降序核对，不能按文件名或目录枚举顺序猜测。',
+    '</CURRENT_USER_REQUEST_RULES>',
+  ].filter(Boolean).join('\n');
+}
+
+function formatCodexItemEvent(event: Record<string, unknown>, lowerType: string): string {
+  const item = getCodexItem(event);
+  if (!item) return '';
+  const itemType = String(item.type || event.item_type || event.itemType || '').toLowerCase();
+  const itemName = truncateCodexEventText(item.name || item.tool || item.tool_name || item.server || itemType || 'item');
+  const text = truncateCodexEventText(pickCodexTextEvent(item, ['text', 'message', 'summary', 'delta', 'content']), 12000);
+  const command = truncateCodexEventText(stringifyCodexCommand(item.command || item.cmd || item.args || item.argv || item.input), 3000);
+  const args = truncateCodexEventText(item.arguments || item.args || item.input || '', 3000);
+  const stdout = truncateCodexEventText(item.stdout || item.output || item.result || '', 6000);
+  const stderr = truncateCodexEventText(item.stderr || item.error || '', 3000);
+  const isStarted = lowerType.includes('started') || lowerType.includes('start');
+  const isCompleted = lowerType.includes('completed') || lowerType.includes('complete');
+
+  if (itemType === 'agent_message' || itemType === 'assistant_message' || itemType === 'message') {
+    if (isStarted && !text) return `\n→ Codex 正在生成回答\n`;
+    return text ? `${text}` : '';
+  }
+
+  if (itemType.includes('reasoning') || itemType.includes('thought')) {
+    if (isStarted && !text) return `\n思考：Codex 正在推理\n`;
+    return text ? `\n思考：${text}\n` : '';
+  }
+
+  if (itemType.includes('exec') || itemType.includes('command') || itemType.includes('shell')) {
+    if (isStarted) return command ? `\n→ exec_shell: ${command}\n` : `\n→ exec_shell\n`;
+    if (isCompleted) {
+      const chunks = [`\n✓ exec_shell 完成${command ? `: ${command}` : ''}`];
+      if (stdout) chunks.push(`stdout:\n${stdout}`);
+      if (stderr) chunks.push(`stderr:\n${stderr}`);
+      return `${chunks.join('\n')}\n`;
+    }
+    return command ? `\nexec_shell: ${command}\n` : '';
+  }
+
+  if (itemType.includes('tool') || itemType.includes('mcp') || itemType.includes('function')) {
+    if (isStarted) {
+      return `\n→ tool: ${itemName || 'unknown'}${args ? `\n${args}` : ''}\n`;
+    }
+    if (isCompleted) {
+      return `\n✓ tool 完成: ${itemName || 'unknown'}${stdout ? `\n${stdout}` : ''}${stderr ? `\n${stderr}` : ''}\n`;
+    }
+    return `\ntool: ${itemName || 'unknown'}${args ? `\n${args}` : ''}\n`;
+  }
+
+  if (text) return `\n${text}\n`;
+  if (isStarted) return `\n→ ${itemName || 'Codex item'} 开始\n`;
+  if (isCompleted) return `\n✓ ${itemName || 'Codex item'} 完成\n`;
+  return '';
+}
+
+function formatCodexJsonEvent(line: string, onThreadId?: (threadId: string) => void): string {
+  const trimmed = line.trim();
+  if (!trimmed) return '';
+  try {
+    const event = JSON.parse(trimmed) as Record<string, unknown>;
+    const type = String(event.type || event.event || event.kind || '').trim();
+    const lowerType = type.toLowerCase();
+
+    if (lowerType === 'thread.started' || lowerType === 'thread_started') {
+      const threadId = truncateCodexEventText(event.thread_id || event.threadId || '');
+      if (threadId) onThreadId?.(threadId);
+      return `\nCodex 会话已启动${threadId ? `，thread：${threadId}` : ''}\n`;
+    }
+
+    if (lowerType === 'turn.started' || lowerType === 'turn_started') {
+      return `\n→ Codex 开始一轮推理\n`;
+    }
+
+    if (lowerType === 'turn.completed' || lowerType === 'turn_completed') {
+      return `\n✓ Codex 本轮推理完成${formatCodexUsage(event.usage)}\n`;
+    }
+
+    if (lowerType.startsWith('item.') || lowerType.startsWith('item_')) {
+      const itemEvent = formatCodexItemEvent(event, lowerType);
+      if (itemEvent) return itemEvent;
+    }
+
+    if (lowerType === 'session_configured' || lowerType === 'session_started') {
+      const model = truncateCodexEventText(event.model || event.model_slug || '');
+      const sessionId = truncateCodexEventText(event.session_id || event.sessionId || '');
+      return `\nCodex 会话已启动${model ? `，模型：${model}` : ''}${sessionId ? `，session：${sessionId}` : ''}\n`;
+    }
+
+    if (lowerType.includes('reasoning') || lowerType.includes('thought')) {
+      const text = truncateCodexEventText(pickCodexTextEvent(event, ['text', 'message', 'summary', 'delta', 'content']));
+      return text ? `\n思考：${text}\n` : '';
+    }
+
+    if (lowerType.includes('agent_message') || lowerType.includes('assistant_message') || lowerType === 'message') {
+      const text = truncateCodexEventText(pickCodexTextEvent(event, ['message', 'text', 'delta', 'content']));
+      return text ? `${text}` : '';
+    }
+
+    if (lowerType.includes('exec') || lowerType.includes('command') || lowerType.includes('shell')) {
+      const command = truncateCodexEventText(stringifyCodexCommand(event.command || event.cmd || event.args || event.argv || event.input));
+      const exitCode = event.exit_code ?? event.exitCode ?? event.code;
+      const stdout = truncateCodexEventText(event.stdout, 6000);
+      const stderr = truncateCodexEventText(event.stderr, 3000);
+      if (lowerType.includes('begin') || lowerType.includes('start') || lowerType.includes('call')) {
+        return command ? `\n→ exec_shell: ${command}\n` : `\n→ exec_shell\n`;
+      }
+      if (lowerType.includes('end') || lowerType.includes('finish') || lowerType.includes('complete') || exitCode !== undefined) {
+        const chunks = [`\n✓ exec_shell 完成${exitCode !== undefined ? `，退出码 ${exitCode}` : ''}`];
+        if (stdout) chunks.push(`stdout:\n${stdout}`);
+        if (stderr) chunks.push(`stderr:\n${stderr}`);
+        return `${chunks.join('\n')}\n`;
+      }
+      return command ? `\nexec_shell: ${command}\n` : '';
+    }
+
+    if (lowerType.includes('tool') || lowerType.includes('mcp')) {
+      const name = truncateCodexEventText(event.name || event.tool || event.tool_name || event.server || '');
+      const args = truncateCodexEventText(event.arguments || event.args || event.input || '', 3000);
+      const output = truncateCodexEventText(event.output || event.result || event.content || '', 5000);
+      if (lowerType.includes('begin') || lowerType.includes('start') || lowerType.includes('call')) {
+        return `\n→ tool: ${name || 'unknown'}${args ? `\n${args}` : ''}\n`;
+      }
+      if (lowerType.includes('end') || lowerType.includes('finish') || lowerType.includes('complete')) {
+        return `\n✓ tool 完成: ${name || 'unknown'}${output ? `\n${output}` : ''}\n`;
+      }
+      return `\ntool: ${name || 'unknown'}${output ? `\n${output}` : ''}\n`;
+    }
+
+    if (lowerType.includes('error')) {
+      const text = truncateCodexEventText(event.message || event.error || event.detail || trimmed, 5000);
+      return `\n! Codex error: ${text}\n`;
+    }
+
+    return '';
+  } catch {
+    return `${line}\n`;
+  }
+}
+
+function consumeCodexJsonEventState(
+  line: string,
+  handlers: {
+    onThreadId?: (threadId: string) => void;
+    onAgentText?: (text: string) => void;
+  }
+): void {
+  const trimmed = line.trim();
+  if (!trimmed) return;
+  try {
+    const event = JSON.parse(trimmed) as Record<string, unknown>;
+    const type = String(event.type || event.event || event.kind || '').trim();
+    const lowerType = type.toLowerCase();
+
+    if (lowerType === 'thread.started' || lowerType === 'thread_started') {
+      const threadId = truncateCodexEventText(event.thread_id || event.threadId || '');
+      if (threadId) handlers.onThreadId?.(threadId);
+      return;
+    }
+
+    const item = getCodexItem(event);
+    if (item) {
+      const itemType = String(item.type || event.item_type || event.itemType || '').toLowerCase();
+      if (itemType === 'agent_message' || itemType === 'assistant_message' || itemType === 'message') {
+        const text = truncateCodexEventText(pickCodexTextEvent(item, ['text', 'message', 'summary', 'delta', 'content']), 12000);
+        if (text) handlers.onAgentText?.(text);
+      }
+      return;
+    }
+
+    if (lowerType.includes('agent_message') || lowerType.includes('assistant_message') || lowerType === 'message') {
+      const text = truncateCodexEventText(pickCodexTextEvent(event, ['message', 'text', 'delta', 'content']), 12000);
+      if (text) handlers.onAgentText?.(text);
+    }
+  } catch {
+    // Codex can print non-JSON lines in edge cases. They are ignored in compact mode.
+  }
+}
+
+function isCodexAssistantMessageEventLine(line: string): boolean {
+  const trimmed = line.trim();
+  if (!trimmed) return false;
+  try {
+    const event = JSON.parse(trimmed) as Record<string, unknown>;
+    const type = String(event.type || event.event || event.kind || '').toLowerCase();
+    const item = getCodexItem(event);
+    const itemType = item
+      ? String(item.type || event.item_type || event.itemType || '').toLowerCase()
+      : '';
+    return itemType === 'agent_message'
+      || itemType === 'assistant_message'
+      || itemType === 'message'
+      || type.includes('agent_message')
+      || type.includes('assistant_message')
+      || type === 'message';
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -205,11 +1026,14 @@ export interface ChatBridgeConfig {
     prefer?: boolean;
     command?: string;
     model?: string;
-    reasoning_effort?: 'low' | 'medium' | 'high' | 'xhigh';
+    reasoning_effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultra';
     sandbox?: 'read-only' | 'workspace-write' | 'danger-full-access';
     timeout_ms?: number;
     pdf_wiki_concurrency?: number;
     concurrency?: number;
+    app_server_enabled?: boolean;
+    app_server_fallback_exec?: boolean;
+    app_server_turn_timeout_ms?: number;
   };
 }
 
@@ -310,6 +1134,9 @@ export class ChatBridgeAdapter {
           sandbox: 'workspace-write',
           timeout_ms: 300000,
           pdf_wiki_concurrency: 1,
+          app_server_enabled: true,
+          app_server_fallback_exec: true,
+          app_server_turn_timeout_ms: 1800000,
         },
       };
       
@@ -423,6 +1250,76 @@ export class ChatBridgeAdapter {
     return 'codex';
   }
 
+  private resolveCodexNativeExecutable(): string {
+    const configured = this.findCodexCliExecutable();
+    if (configured && /\.exe$/i.test(configured)) return configured;
+    if (process.platform === 'win32') {
+      const appData = process.env.APPDATA || join(os.homedir(), 'AppData', 'Roaming');
+      const npmRoot = configured && /\.(?:cmd|bat|ps1)$/i.test(configured)
+        ? path.dirname(configured)
+        : join(appData, 'npm');
+      const nativeCandidates = [
+        join(npmRoot, 'node_modules', '@openai', 'codex', 'node_modules', '@openai', 'codex-win32-x64', 'vendor', 'x86_64-pc-windows-msvc', 'bin', 'codex.exe'),
+        join(npmRoot, 'node_modules', '@openai', 'codex', 'node_modules', '@openai', 'codex-win32-arm64', 'vendor', 'aarch64-pc-windows-msvc', 'bin', 'codex.exe'),
+      ];
+      const native = nativeCandidates.find(candidate => existsSync(candidate));
+      if (native) return native;
+    }
+    return configured || 'codex';
+  }
+
+  private resolveCodexMcpServerScript(): string {
+    const candidates = [
+      join(__dirname, 'codex-mcp-stdio.js'),
+      path.resolve(process.cwd(), 'dist', 'src', 'bridge', 'chat-bridge', 'codex-mcp-stdio.js'),
+    ];
+    const script = candidates.find(candidate => existsSync(candidate));
+    if (!script) {
+      throw new Error('Codex MCP bridge has not been built; run npm run build first');
+    }
+    return script;
+  }
+
+  private spawnCodexAppServer(
+    executable: string,
+    mcpScript: string,
+    connection: CodexToolGatewayConnection,
+  ): ReturnType<typeof spawn> {
+    const tomlString = (value: string): string => JSON.stringify(value.replace(/\\/g, '/'));
+    const args = [
+      '-c', 'mcp_servers.notion.enabled=false',
+      '-c', 'mcp_servers.node_repl.enabled=false',
+      '-c', `mcp_servers.scholar_harness.command=${tomlString(process.execPath)}`,
+      '-c', `mcp_servers.scholar_harness.args=[${tomlString(mcpScript)}]`,
+      '-c', 'mcp_servers.scholar_harness.env_vars=["ELECTRON_RUN_AS_NODE","SCHOLAR_HARNESS_CODEX_GATEWAY_URL","SCHOLAR_HARNESS_CODEX_GATEWAY_TOKEN","SCHOLAR_HARNESS_CODEX_SESSION_KEY"]',
+      '-c', 'mcp_servers.scholar_harness.startup_timeout_sec=20',
+      '-c', 'mcp_servers.scholar_harness.tool_timeout_sec=1800',
+      'app-server',
+    ];
+    const env = {
+      ...buildToolRuntimeEnv(process.env),
+      ELECTRON_RUN_AS_NODE: '1',
+      SCHOLAR_HARNESS_CODEX_GATEWAY_URL: connection.url,
+      SCHOLAR_HARNESS_CODEX_GATEWAY_TOKEN: connection.token,
+      SCHOLAR_HARNESS_CODEX_SESSION_KEY: connection.sessionKey,
+    };
+    const isWindowsScript = process.platform === 'win32' && /\.(?:cmd|bat)$/i.test(executable);
+    if (isWindowsScript) {
+      return spawn(process.env.ComSpec || 'cmd.exe', ['/d', '/c', 'call', executable, ...args], {
+        cwd: process.cwd(),
+        shell: false,
+        windowsHide: true,
+        env,
+      });
+    }
+    return spawn(executable, args, {
+      cwd: process.cwd(),
+      shell: false,
+      windowsHide: true,
+      env,
+    });
+  }
+
   private normalizeCodexCliCommand(value?: string): string {
     return String(value || '').trim().replace(/^["']|["']$/g, '');
   }
@@ -467,13 +1364,14 @@ export class ChatBridgeAdapter {
   }
 
   private spawnCodexProcess(executable: string, args: string[]): ReturnType<typeof spawn> {
+    const env = buildToolRuntimeEnv(process.env);
     const isWindowsPowerShellScript = process.platform === 'win32' && /\.ps1$/i.test(executable);
     if (isWindowsPowerShellScript) {
       return spawn('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', executable, ...args], {
         cwd: process.cwd(),
         shell: false,
         windowsHide: true,
-        env: process.env,
+        env,
       });
     }
 
@@ -483,7 +1381,7 @@ export class ChatBridgeAdapter {
         cwd: process.cwd(),
         shell: false,
         windowsHide: true,
-        env: process.env,
+        env,
       });
     }
 
@@ -491,7 +1389,7 @@ export class ChatBridgeAdapter {
       cwd: process.cwd(),
       shell: false,
       windowsHide: true,
-      env: process.env,
+      env,
     });
   }
 
@@ -545,15 +1443,218 @@ export class ChatBridgeAdapter {
     }
   }
 
+  private buildApiMessages(options: ChatOptions): Message[] {
+    const messages = attachVisionImagesToMessages(
+      options.messages,
+      options.visionImages || [],
+      !!options.requiresVision,
+    ) as Message[];
+    if (messages !== options.messages) {
+      logger.info(`[ChatBridge] Attached vision image(s) to the last user API message`);
+    }
+    return messages;
+  }
+
   private buildCodexPrompt(options: ChatOptions): string {
     return options.messages
       .map((message) => {
         const role = message.role === 'system'
           ? 'System'
           : (message.role === 'assistant' ? 'Assistant' : 'User');
-        return `## ${role}\n${message.content}`;
+        return `## ${role}\n${stringifyMessageContent(message.content)}`;
       })
       .join('\n\n');
+  }
+
+  private async runCodexAppServer(options: ChatOptions): Promise<string> {
+    const codexConfig = this.config?.codex || {};
+    const executable = this.resolveCodexNativeExecutable();
+    const mcpScript = this.resolveCodexMcpServerScript();
+    const workspaceRoot = String(options.workspaceDirectory?.root || options.workspaceDirectory?.path || '').trim();
+    const workspaceSandbox = options.workspaceDirectory?.permission || codexConfig.sandbox || 'workspace-write';
+    const preferredSafeWorkspace = String(
+      options.workspaceDirectory?.aiWorkRoot
+      || options.workspaceDirectory?.safeWorkRoot
+      || ''
+    ).trim();
+    const conversationKey = buildCodexConversationKey(options, workspaceRoot);
+    const hadExistingThread = codexAppServerManager.hasThread(conversationKey);
+    const codexSafeWorkspace = workspaceRoot && workspaceSandbox !== 'read-only'
+      ? await prepareCodexSafeWorkspace(workspaceRoot, conversationKey, preferredSafeWorkspace)
+      : null;
+    const codexCwd = codexSafeWorkspace || (workspaceRoot && existsSync(workspaceRoot) ? workspaceRoot : process.cwd());
+    const artifactSnapshot = codexSafeWorkspace
+      ? snapshotCodexArtifactFiles(codexSafeWorkspace)
+      : new Map<string, CodexArtifactSnapshotItem>();
+    const currentRequest = extractCodexCurrentRequest(options);
+    const prompt = hadExistingThread
+      ? buildCodexResumePrompt(options, workspaceRoot, codexSafeWorkspace, workspaceSandbox)
+      : [
+          codexSafeWorkspace
+            ? [
+                '## System',
+                'Scholar Harness 安全工作区规则：',
+                `- 原始工作目录：${workspaceRoot}`,
+                `- 安全工作副本：${codexSafeWorkspace}`,
+                '- 使用 scholar_harness MCP 的文件/Office 工具搜索、读取和复制原始文件。',
+                '- 所有写入、编辑、生成文件和命令执行应发生在安全工作副本；不要直接改原始工作目录。',
+                '- 如果最终需要用户采用结果，在回答中说明安全副本路径和生成/修改的文件。',
+              ].join('\n')
+            : '',
+          options.agentSkillCatalogPrompt || '',
+          buildCodexDraftSaveReminder(options, currentRequest),
+          buildCodexDraftWordExportReminder(options, currentRequest),
+          '最终回答只包含给用户看的结果、必要说明和真实文件路径；不要输出对提示词、回答渠道、链接格式或“如何构造 final”的自言自语。',
+          this.buildCodexPrompt(options),
+        ].filter(Boolean).join('\n\n');
+    const timeoutMs = Math.max(
+      Number(options.codexTimeoutMs || 0),
+      Number(codexConfig.app_server_turn_timeout_ms || 1_800_000),
+    );
+    const codexImages = Array.from(new Set(
+      (options.codexImages || [])
+        .map(imagePath => String(imagePath || '').trim())
+        .filter(imagePath => imagePath && existsSync(imagePath))
+    ));
+    const hasNativeDraftTool = !!options.codexToolSet?.definitions.some(tool => tool.function.name === 'save_draft');
+    const developerInstructions = [
+      'You are running inside Scholar Harness through Codex App Server.',
+      options.codexToolSet?.definitions.length
+        ? 'A local MCP server named scholar_harness exposes the application tools. Use those tools for workspace files, Office documents, configured R/Python runtimes, draft saving, and Scholar Harness Skills instead of claiming an action without executing it.'
+        : '',
+      workspaceRoot ? `The authorized source workspace is ${workspaceRoot}.` : '',
+      codexSafeWorkspace ? `All mutations and shell commands must stay in the safe working copy ${codexSafeWorkspace}.` : '',
+      'On Windows, shell commands run in PowerShell. Do not use bash operators such as ||, &&, 2>nul, grep, or ls -la.',
+      hasNativeDraftTool
+        ? 'When the user asks to save or update the article draft, call scholar_harness.save_draft and only report success after it returns ok=true.'
+        : '',
+      isCodexDraftWordExportRequest(currentRequest)
+        ? 'For manuscript DOCX output, set all body text, headings, tables, captions, and references to Times New Roman unless the user explicitly requests another font.'
+        : '',
+      'Use real tool results and verified paths. Never fabricate file writes, draft saves, command output, references, or artifact links.',
+    ].filter(Boolean).join('\n');
+
+    let visibleTranscript = '';
+    const emitProgress = (message: string): void => {
+      if (!message) return;
+      visibleTranscript += message;
+      try {
+        options.onProgress?.(message);
+      } catch {
+        // UI progress callbacks must not break the Codex turn.
+      }
+    };
+    const startedAt = Date.now();
+    emitProgress([
+      'Codex Agent 已启动，正在处理当前问题。',
+      hadExistingThread ? `复用 Codex App Server thread：${codexAppServerManager.getThreadId(conversationKey)}` : '新建持久 Codex App Server 会话。',
+      workspaceRoot ? `工作目录：${workspaceRoot}` : '',
+      codexSafeWorkspace ? `安全工作副本：${codexSafeWorkspace}` : '',
+      `权限：${workspaceSandbox}`,
+      options.codexToolSet?.definitions.length ? `Scholar Harness 原生工具：${options.codexToolSet.definitions.length} 个` : '',
+      '',
+    ].filter(Boolean).join('\n'));
+    const heartbeatTimer = setInterval(() => {
+      const elapsedSeconds = Math.max(1, Math.floor((Date.now() - startedAt) / 1000));
+      try {
+        options.onProgress?.(`[[SH_STATUS:codex-running:${elapsedSeconds}]]`);
+      } catch {
+        // Status updates are best effort.
+      }
+    }, 5_000);
+
+    try {
+      const result: CodexAppServerTurnResult = await codexAppServerManager.runTurn({
+        conversationKey,
+        cwd: codexCwd,
+        prompt,
+        model: codexConfig.model?.trim() || undefined,
+        reasoningEffort: codexConfig.reasoning_effort,
+        sandbox: workspaceSandbox,
+        timeoutMs,
+        compactInputTokenThreshold: CODEX_AUTO_COMPACT_INPUT_TOKEN_THRESHOLD,
+        developerInstructions,
+        imagePaths: codexImages,
+        skillRoots: options.agentSkillRoots || [],
+        toolSet: options.codexToolSet,
+        spawnAppServer: connection => this.spawnCodexAppServer(executable, mcpScript, connection),
+        onProgress: emitProgress,
+      });
+      codexSessionByConversation.set(conversationKey, result.threadId);
+      if (result.usage) {
+        codexLastUsageByConversation.set(conversationKey, {
+          inputTokens: result.usage.inputTokens,
+          outputTokens: result.usage.outputTokens,
+          reasoningTokens: result.usage.reasoningTokens,
+          observedAt: new Date().toISOString(),
+        });
+      }
+
+      let answer = sanitizeCodexFinalAnswer(result.answer);
+      const draftReceipts = result.receipts.filter(receipt => receipt.name === 'save_draft' && receipt.ok);
+      for (const receipt of draftReceipts) {
+        const toolResult = receipt.result && typeof receipt.result === 'object'
+          ? receipt.result as { ok?: boolean; summary?: string }
+          : {};
+        if (toolResult.ok === false) continue;
+        const summary = String(toolResult.summary || '').trim();
+        if (summary) {
+          const authoritativeReceipt = `✅ ${summary}，并同步整篇导出文件。`;
+          if (!answer.includes(authoritativeReceipt)) answer += `\n\n${authoritativeReceipt}`;
+        }
+      }
+
+      let deterministicDraftWordPath = '';
+      let deterministicDraftWordError = '';
+      if (isCodexDraftWordExportRequest(currentRequest)) {
+        const draftContent = getCodexDraftWordExportContent(options);
+        if (!draftContent) {
+          deterministicDraftWordError = '未读取到右侧文章写作进度中的规范章节 TXT';
+        } else {
+          const draftOutputRoot = codexSafeWorkspace || join(
+            getDataDir(),
+            'exports',
+            sanitizePathUserId(options.userId || 'web-user')
+          );
+          deterministicDraftWordPath = join(draftOutputRoot, 'paper-draft.docx');
+          emitProgress('\n→ Scholar Harness 正在用规范章节 TXT 重建 Word 草稿\n');
+          try {
+            await writeWordDraftDocx(deterministicDraftWordPath, draftContent);
+            emitProgress(`✓ Word 草稿已真实写入并校验路径：${deterministicDraftWordPath}\n`);
+          } catch (error) {
+            deterministicDraftWordError = (error as Error).message || 'Word 文件写入失败';
+            deterministicDraftWordPath = '';
+          }
+        }
+      }
+
+      const changedArtifacts = codexSafeWorkspace
+        ? collectChangedCodexArtifacts(codexSafeWorkspace, artifactSnapshot)
+        : [];
+      if (deterministicDraftWordPath && !changedArtifacts.includes(deterministicDraftWordPath)) {
+        changedArtifacts.unshift(deterministicDraftWordPath);
+      }
+      const artifactBlock = buildCodexVerifiedArtifactBlock(changedArtifacts);
+      const verificationWarning = changedArtifacts.length === 0 && isCodexFileMutationRequest(currentRequest)
+        && draftReceipts.length === 0
+        ? '⚠️ Scholar Harness 未检测到本轮真实文件变更，因此没有把 Codex 的“已写入/已生成”表述认定为完成。'
+        : '';
+      const draftWordWarning = deterministicDraftWordError
+        ? `⚠️ Word 草稿未导出：${deterministicDraftWordError}。`
+        : '';
+      const answerWithArtifacts = [answer, artifactBlock, draftWordWarning, verificationWarning]
+        .filter(Boolean)
+        .join('\n\n')
+        .trim();
+      codexLastAnswerByConversation.set(conversationKey, truncateCodexEventText(answerWithArtifacts, 4000));
+      logger.info(`[ChatBridge] Codex App Server turn completed | thread=${result.threadId} | turn=${result.turnId} | resumed=${result.resumed} | compacted=${result.compacted} | tools=${result.receipts.length}`);
+      const transcript = visibleTranscript.trim();
+      return options.onProgress && transcript
+        ? `${transcript}\n\n## Codex 最终回答\n\n${answerWithArtifacts}`
+        : answerWithArtifacts;
+    } finally {
+      clearInterval(heartbeatTimer);
+    }
   }
 
   private async runCodexCli(options: ChatOptions): Promise<string> {
@@ -562,16 +1663,68 @@ export class ChatBridgeAdapter {
     const outputDir = await createSecureTempDir();
     const outputFile = join(outputDir, 'codex-last-message.txt');
     const timeoutMs = Number(options.codexTimeoutMs || codexConfig.timeout_ms || 300000);
-    const args = [
-      'exec',
-      '--skip-git-repo-check',
-      '--cd',
-      process.cwd(),
-      '--sandbox',
-      codexConfig.sandbox || 'workspace-write',
-      '--output-last-message',
-      outputFile,
-    ];
+    const workspaceRoot = String(options.workspaceDirectory?.root || options.workspaceDirectory?.path || '').trim();
+    const workspaceSandbox = options.workspaceDirectory?.permission || codexConfig.sandbox || 'workspace-write';
+    const preferredSafeWorkspace = String(
+      (options.workspaceDirectory as any)?.aiWorkRoot
+      || (options.workspaceDirectory as any)?.safeWorkRoot
+      || ''
+    ).trim();
+    const conversationKey = buildCodexConversationKey(options, workspaceRoot);
+    let resumeThreadId = codexSessionByConversation.get(conversationKey) || '';
+    const previousUsage = codexLastUsageByConversation.get(conversationKey);
+    const shouldAutoCompact = !!resumeThreadId && shouldAutoCompactCodexSession(previousUsage);
+    const compactedThreadId = shouldAutoCompact ? resumeThreadId : '';
+    const compactHandoff = shouldAutoCompact ? (codexLastAnswerByConversation.get(conversationKey) || '') : '';
+    if (shouldAutoCompact) {
+      codexSessionByConversation.delete(conversationKey);
+      resumeThreadId = '';
+      if (previousUsage) {
+        logger.warn(`[ChatBridge] Codex auto compact triggered | conversation=${conversationKey} | oldThread=${compactedThreadId} | usage=${formatCodexUsageSnapshot(previousUsage)}`);
+      }
+    }
+    const codexSafeWorkspace = workspaceRoot && workspaceSandbox !== 'read-only'
+      ? await prepareCodexSafeWorkspace(workspaceRoot, conversationKey, preferredSafeWorkspace)
+      : null;
+    const codexCwd = codexSafeWorkspace || (workspaceRoot && existsSync(workspaceRoot) ? workspaceRoot : process.cwd());
+    const artifactSnapshot = codexSafeWorkspace
+      ? snapshotCodexArtifactFiles(codexSafeWorkspace)
+      : new Map<string, CodexArtifactSnapshotItem>();
+    const args = resumeThreadId
+      ? [
+          'exec',
+          'resume',
+          '--skip-git-repo-check',
+          '--json',
+          '--output-last-message',
+          outputFile,
+        ]
+      : [
+          'exec',
+          '--skip-git-repo-check',
+          '--json',
+          '--color',
+          'never',
+          '--cd',
+          codexCwd,
+          '--sandbox',
+          workspaceSandbox,
+          '--output-last-message',
+          outputFile,
+        ];
+    if (!resumeThreadId && workspaceRoot && existsSync(workspaceRoot)) {
+      args.push('--add-dir', workspaceRoot);
+    }
+    if (!resumeThreadId) {
+      const seenSkillRoots = new Set<string>();
+      for (const rawRoot of options.agentSkillRoots || []) {
+        const skillRoot = path.resolve(String(rawRoot || '').trim());
+        const key = process.platform === 'win32' ? skillRoot.toLowerCase() : skillRoot;
+        if (!skillRoot || !existsSync(skillRoot) || seenSkillRoots.has(key)) continue;
+        seenSkillRoots.add(key);
+        args.push('--add-dir', skillRoot);
+      }
+    }
     if (codexConfig.model?.trim()) {
       args.push('-m', codexConfig.model.trim());
     }
@@ -587,18 +1740,116 @@ export class ChatBridgeAdapter {
     codexImages.forEach(imagePath => {
       args.push('-i', imagePath);
     });
+    if (resumeThreadId) {
+      args.push(resumeThreadId);
+    }
     args.push('-');
 
-    const prompt = this.buildCodexPrompt(options);
-    logger.info(`[ChatBridge] Codex CLI 调用 | command=${executable} | model=${codexConfig.model || 'default'} | effort=${codexConfig.reasoning_effort || 'default'} | prompt=${prompt.length} chars | images=${codexImages.length}`);
+    const currentRequest = extractCodexCurrentRequest(options);
+    const prompt = resumeThreadId
+      ? buildCodexResumePrompt(options, workspaceRoot, codexSafeWorkspace, workspaceSandbox)
+      : [
+      shouldAutoCompact && previousUsage
+        ? [
+            '## System',
+            'Codex 自动 compact：',
+            `- 上一轮 Codex tokens ${formatCodexUsageSnapshot(previousUsage)}，input tokens 超过阈值 ${CODEX_AUTO_COMPACT_INPUT_TOKEN_THRESHOLD}。`,
+            compactedThreadId ? `- 已停止 resume 旧 thread：${compactedThreadId}` : '',
+            '- 本轮新建干净 Codex session，避免旧线程上下文继续滚雪球。',
+            '- 请基于本轮 Scholar Harness 提供的当前上下文、工作目录能力和最新用户请求继续。',
+            compactHandoff ? `- 上一轮最终回答摘录：\n${truncateCodexEventText(compactHandoff, 3000)}` : '',
+          ].filter(Boolean).join('\n')
+        : '',
+      codexSafeWorkspace
+        ? [
+            '## System',
+            'Scholar Harness 安全工作区规则：',
+            `- 原始工作目录：${workspaceRoot}`,
+            `- 安全工作副本：${codexSafeWorkspace}`,
+            '- 在修改、生成、运行 R/Python/脚本之前，先把需要使用的原始文件复制到安全工作副本中。',
+            '- 如果用户要求处理 .docx/.xlsx/.pptx，优先使用已配置的 OfficeCLI（officecli 命令）读取、校验、渲染或修改 Office 文档。',
+            '- 所有写入、编辑、生成文件和命令执行应发生在安全工作副本；不要直接改原始工作目录。',
+            '- 如果最终需要用户采用结果，在回答中说明安全副本路径和生成/修改的文件。',
+          ].join('\n')
+        : '',
+      options.agentSkillCatalogPrompt || '',
+      buildCodexDraftSaveReminder(options, currentRequest),
+      buildCodexDraftWordExportReminder(options, currentRequest),
+      '最终回答只包含给用户看的结果、必要说明和真实文件路径；不要输出对提示词、回答渠道、链接格式或“如何构造 final”的自言自语。',
+      this.buildCodexPrompt(options),
+    ].filter(Boolean).join('\n\n');
+    logger.info(`[ChatBridge] Codex CLI 调用 | command=${executable} | mode=${resumeThreadId ? 'resume-lite' : 'new'} | autoCompact=${shouldAutoCompact ? 'yes' : 'no'} | thread=${resumeThreadId || 'new'} | oldThread=${compactedThreadId || 'none'} | previousUsage=${previousUsage ? formatCodexUsageSnapshot(previousUsage) : 'none'} | model=${codexConfig.model || 'default'} | effort=${codexConfig.reasoning_effort || 'default'} | prompt=${prompt.length} chars | images=${codexImages.length} | workspace=${workspaceRoot || 'none'} | safeWorkspace=${codexSafeWorkspace || 'none'} | sandbox=${workspaceSandbox} | conversation=${options.conversationId || 'none'}`);
+
+    let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+    const codexStartedAt = Date.now();
+    let visibleTranscript = '';
+    const emitCodexProgress = (message: string): void => {
+      if (!message) return;
+      if (!options.onProgress) return;
+      try {
+        options.onProgress(message);
+      } catch {
+        // Progress callbacks must not fail the Codex run.
+      }
+    };
+    const emitCodexTranscript = (message: string): void => {
+      if (!message) return;
+      visibleTranscript += message;
+      emitCodexProgress(message);
+    };
 
     try {
+      emitCodexTranscript([
+        `Codex CLI 已启动，正在处理当前问题。`,
+        shouldAutoCompact && previousUsage
+          ? `Codex 自动 compact：上一轮 ${formatCodexUsageSnapshot(previousUsage)} 超过阈值，已切换为新 Codex 会话。`
+          : '',
+        resumeThreadId ? `复用 Codex 会话：${resumeThreadId}；本轮附带最近可见对话交接，不重复发送大块项目上下文。` : '新建 Codex 会话：本轮会记录 thread，后续同一对话继续使用。',
+        workspaceRoot ? `工作目录：${workspaceRoot}` : '',
+        codexSafeWorkspace ? `安全工作副本：${codexSafeWorkspace}` : '',
+        codexSafeWorkspace ? 'Codex 将在安全副本中工作，原始目录仅作为读取来源。' : '',
+        `权限：${workspaceSandbox}`,
+        'Codex CLI 会实时显示公开工具事件；无新事件时仅刷新顶部运行时间。',
+        '',
+      ].filter(Boolean).join('\n'));
+
+      heartbeatTimer = setInterval(() => {
+        const elapsedSeconds = Math.max(1, Math.floor((Date.now() - codexStartedAt) / 1000));
+        emitCodexProgress(`[[SH_STATUS:codex-running:${elapsedSeconds}]]`);
+      }, 5_000);
+
       const content = await new Promise<string>((resolve, reject) => {
         const child = this.spawnCodexProcess(executable, args);
 
         let stdout = '';
         let stderr = '';
+        let stdoutLineBuffer = '';
         let settled = false;
+        let notionMcpWarningEmitted = false;
+        let windowsSandboxWarningEmitted = false;
+        let observedThreadId = resumeThreadId || '';
+        let fallbackAgentText = '';
+        let latestTurnUsage: CodexUsageSnapshot | null = null;
+        const consumeCodexJsonLine = (line: string): void => {
+          const usage = parseCodexUsageFromJsonLine(line);
+          if (usage) {
+            latestTurnUsage = usage;
+          }
+          consumeCodexJsonEventState(line, {
+            onThreadId: (threadId) => {
+              observedThreadId = threadId;
+            },
+            onAgentText: (text) => {
+              fallbackAgentText = fallbackAgentText ? `${fallbackAgentText}\n${text}` : text;
+            },
+          });
+          if (!isCodexAssistantMessageEventLine(line)) {
+            const formattedEvent = formatCodexJsonEvent(line);
+            if (formattedEvent) {
+              emitCodexTranscript(formattedEvent);
+            }
+          }
+        };
         const timeout = setTimeout(() => {
           if (settled) return;
           settled = true;
@@ -607,10 +1858,36 @@ export class ChatBridgeAdapter {
         }, timeoutMs);
 
         child.stdout?.on('data', (chunk) => {
-          stdout += chunk.toString();
+          const text = chunk.toString();
+          stdout += text;
+          stdoutLineBuffer += text;
+          const lines = stdoutLineBuffer.split(/\r?\n/);
+          stdoutLineBuffer = lines.pop() || '';
+          for (const line of lines) {
+            consumeCodexJsonLine(line);
+          }
         });
         child.stderr?.on('data', (chunk) => {
-          stderr += chunk.toString();
+          const text = chunk.toString();
+          stderr += text;
+          const trimmed = text.trim();
+          if (trimmed) {
+            if (/mcp\.notion\.com|Transport channel closed/i.test(trimmed)) {
+              if (!notionMcpWarningEmitted) {
+                notionMcpWarningEmitted = true;
+                logger.warn('[ChatBridge] Codex MCP Notion connection failed; hidden from user-visible transcript.');
+              }
+              return;
+            }
+            if (/windows sandbox:\s*spawn setup refresh/i.test(trimmed)) {
+              if (!windowsSandboxWarningEmitted) {
+                windowsSandboxWarningEmitted = true;
+                logger.warn('[ChatBridge] Codex Windows shell sandbox initialization failed; hidden from user-visible transcript.');
+              }
+              return;
+            }
+            logger.warn(`[ChatBridge] Codex stderr: ${truncateCodexEventText(trimmed, 5000)}`);
+          }
         });
         child.on('error', (error) => {
           if (settled) return;
@@ -622,7 +1899,12 @@ export class ChatBridgeAdapter {
           if (settled) return;
           settled = true;
           clearTimeout(timeout);
+          if (stdoutLineBuffer.trim()) {
+            consumeCodexJsonLine(stdoutLineBuffer);
+            stdoutLineBuffer = '';
+          }
           if (code !== 0) {
+            clearCodexThreadState(conversationKey);
             reject(new Error(`Codex CLI exited with code ${code}: ${stderr || stdout || 'no output'}`));
             return;
           }
@@ -631,13 +1913,62 @@ export class ChatBridgeAdapter {
             const finalMessage = existsSync(outputFile)
               ? (await readFile(outputFile, 'utf-8')).trim()
               : '';
-            const fallbackOutput = stdout.trim();
-            const answer = finalMessage || fallbackOutput;
+            const rawStdout = stdout.trim();
+            const fallbackOutput = fallbackAgentText.trim() || (rawStdout.startsWith('{') ? '' : rawStdout);
+            const answer = sanitizeCodexFinalAnswer(finalMessage || fallbackOutput);
             if (!answer) {
               reject(new Error('Codex CLI returned empty response'));
               return;
             }
-            resolve(answer);
+            if (observedThreadId) {
+              codexSessionByConversation.set(conversationKey, observedThreadId);
+            }
+            if (latestTurnUsage) {
+              codexLastUsageByConversation.set(conversationKey, latestTurnUsage);
+            }
+            let deterministicDraftWordPath = '';
+            let deterministicDraftWordError = '';
+            if (isCodexDraftWordExportRequest(currentRequest)) {
+              const draftContent = getCodexDraftWordExportContent(options);
+              if (!draftContent) {
+                deterministicDraftWordError = '未读取到右侧文章写作进度中的规范章节 TXT';
+              } else {
+                const draftOutputRoot = codexSafeWorkspace || join(
+                  getDataDir(),
+                  'exports',
+                  sanitizePathUserId(options.userId || 'web-user')
+                );
+                deterministicDraftWordPath = join(draftOutputRoot, 'paper-draft.docx');
+                emitCodexTranscript('\n→ Scholar Harness 正在用规范章节 TXT 重建 Word 草稿\n');
+                try {
+                  await writeWordDraftDocx(deterministicDraftWordPath, draftContent);
+                  emitCodexTranscript(`✓ Word 草稿已真实写入并校验路径：${deterministicDraftWordPath}\n`);
+                } catch (error) {
+                  deterministicDraftWordError = (error as Error).message || 'Word 文件写入失败';
+                  deterministicDraftWordPath = '';
+                }
+              }
+            }
+
+            const changedArtifacts = codexSafeWorkspace
+              ? collectChangedCodexArtifacts(codexSafeWorkspace, artifactSnapshot)
+              : [];
+            if (deterministicDraftWordPath && !changedArtifacts.includes(deterministicDraftWordPath)) {
+              changedArtifacts.unshift(deterministicDraftWordPath);
+            }
+            const artifactBlock = buildCodexVerifiedArtifactBlock(changedArtifacts);
+            const verificationWarning = changedArtifacts.length === 0 && isCodexFileMutationRequest(currentRequest)
+              ? '⚠️ Scholar Harness 未检测到本轮真实文件变更，因此没有把 Codex 的“已写入/已生成”表述认定为完成。'
+              : '';
+            const draftWordWarning = deterministicDraftWordError
+              ? `⚠️ Word 草稿未导出：${deterministicDraftWordError}。`
+              : '';
+            const answerWithArtifacts = [answer, artifactBlock, draftWordWarning, verificationWarning]
+              .filter(Boolean)
+              .join('\n\n')
+              .trim();
+            codexLastAnswerByConversation.set(conversationKey, truncateCodexEventText(answerWithArtifacts, 4000));
+            resolve(answerWithArtifacts);
           } catch (error) {
             reject(error);
           }
@@ -647,11 +1978,18 @@ export class ChatBridgeAdapter {
         child.stdin?.end();
       });
 
-      if (options.onProgress) {
-        options.onProgress(content);
-      }
-      return content;
+      const transcript = visibleTranscript.trim();
+      return options.onProgress && transcript
+        ? `${transcript}\n\n## Codex 最终回答\n\n${content}`
+        : content;
+    } catch (error) {
+      clearCodexThreadState(conversationKey);
+      logger.warn(`[ChatBridge] Cleared unusable Codex thread after failed run | conversation=${conversationKey}`);
+      throw error;
     } finally {
+      if (heartbeatTimer) {
+        clearInterval(heartbeatTimer);
+      }
       try {
         if (existsSync(outputFile)) await unlink(outputFile);
         await rmdir(outputDir);
@@ -663,6 +2001,14 @@ export class ChatBridgeAdapter {
 
   private async chatWithSecondaryFallback(options: ChatOptions, reason: string): Promise<string> {
     logger.warn(`[ChatBridge] ${reason}，降级使用小牛马`);
+    const fallbackNotice = '⚠️ Codex CLI 本轮执行失败，已自动切换到小牛马。本轮回答不会写入 Codex thread，后续 Codex 将通过最近可见对话继续。';
+    if (options.onProgress) {
+      try {
+        options.onProgress(`\n\n${fallbackNotice}\n\n`);
+      } catch {
+        // A UI progress callback must not block provider fallback.
+      }
+    }
     const useVisionSecondary = !!options.requiresVision && !!this.config?.secondary_vision?.api_url && !!this.config?.secondary_vision?.api_key;
     const secondaryConfig = useVisionSecondary ? this.config?.secondary_vision : this.config?.secondary;
     const secondaryApiUrl = (options.requiresVision ? options.visionApiUrl : '') || options.apiUrl || secondaryConfig?.api_url || '';
@@ -684,14 +2030,14 @@ export class ChatBridgeAdapter {
           },
           {
             model: secondaryModel,
-            messages: options.messages,
+            messages: this.buildApiMessages(options),
             temperature: options.temperature,
             maxTokens: options.maxTokens,
             stream: !!options.onProgress,
             onProgress: options.onProgress,
           }
         );
-        return content;
+        return options.onProgress ? content : `${fallbackNotice}\n\n${content}`;
       } catch (error) {
         attempts.push(`小牛马 API: ${(error as Error).message}`);
         logger.warn(`[ChatBridge] 小牛马降级失败，继续尝试大牛马: ${(error as Error).message}`);
@@ -710,18 +2056,104 @@ export class ChatBridgeAdapter {
         },
         {
           model: primaryModel,
-          messages: options.messages,
+          messages: this.buildApiMessages(options),
           temperature: options.temperature,
           maxTokens: options.maxTokens,
           stream: !!options.onProgress,
           onProgress: options.onProgress,
         }
       );
-      return content;
+      return options.onProgress ? content : `${fallbackNotice}\n\n${content}`;
     }
 
     attempts.push('大牛马 API: 未配置');
     throw new Error(attempts.join('；'));
+  }
+
+  async shouldUseCodex(options: Pick<ChatOptions, 'forceProvider'>): Promise<boolean> {
+    if (!this.config) {
+      await this.loadConfig();
+    }
+    const preferCodex = this.config?.codex?.enabled !== false && !!this.config?.codex?.prefer;
+    return options.forceProvider === 'codex'
+      || ((!options.forceProvider || options.forceProvider === 'primary') && preferCodex);
+  }
+
+  async chatWithTools(
+    options: Omit<ChatOptions, 'messages'> & { messages: Array<Message | LLMToolMessage> },
+    tools: LLMToolDefinition[]
+  ): Promise<LLMToolChatResult> {
+    if (!this.config) {
+      await this.loadConfig();
+    }
+
+    if (options.forceProvider === 'codex') {
+      throw new Error('Codex CLI 不走 OpenAI tool_calls；请直接使用 Codex CLI 工作目录能力。');
+    }
+
+    const requiresVision = !!options.requiresVision;
+    const secondaryVisionConfigured = !!this.config?.secondary_vision?.api_url && !!this.config?.secondary_vision?.api_key;
+    const savedSecondaryForRequest = requiresVision && secondaryVisionConfigured
+      ? this.config?.secondary_vision
+      : this.config?.secondary;
+    const savedSecondaryVisionModel = this.config?.secondary_vision?.model || this.config?.secondary?.vision_model || this.config?.secondary?.model || 'gpt-4o';
+    let selectedApiUrl = '';
+    let selectedApiKey = '';
+    let selectedModel = '';
+
+    if (options.forceProvider === 'primary') {
+      selectedApiUrl = this.config?.primary?.api_url || '';
+      selectedApiKey = this.config?.primary?.api_key || '';
+      selectedModel = options.model || this.config?.primary?.model || 'claude-sonnet-4-5';
+    } else if (options.forceProvider === 'secondary') {
+      selectedApiUrl = (requiresVision ? options.visionApiUrl : '') || options.apiUrl || savedSecondaryForRequest?.api_url || '';
+      selectedApiKey = (requiresVision ? options.visionApiKey : '') || options.apiKey || savedSecondaryForRequest?.api_key || '';
+      selectedModel = (requiresVision ? options.visionModel : '') || options.model || (requiresVision ? savedSecondaryVisionModel : savedSecondaryForRequest?.model) || 'gpt-4o';
+    } else if (options.forceProvider === 'api') {
+      selectedApiUrl = (requiresVision ? options.visionApiUrl : '') || options.apiUrl || savedSecondaryForRequest?.api_url || this.config?.chat?.api_url || '';
+      selectedApiKey = (requiresVision ? options.visionApiKey : '') || options.apiKey || savedSecondaryForRequest?.api_key || this.config?.chat?.api_key || '';
+      selectedModel = (requiresVision ? options.visionModel : '') || options.model || (requiresVision ? savedSecondaryVisionModel : savedSecondaryForRequest?.model) || 'gpt-4o';
+    } else if (options.forceProvider === 'browser') {
+      logger.warn('[ChatBridge] chatWithTools 收到 browser provider，回退到 primary API 配置');
+      selectedApiUrl = this.config?.primary?.api_url || '';
+      selectedApiKey = this.config?.primary?.api_key || '';
+      selectedModel = options.model || this.config?.primary?.model || 'claude-sonnet-4-5';
+    } else {
+      selectedApiUrl = (requiresVision ? options.visionApiUrl : '') || options.apiUrl || savedSecondaryForRequest?.api_url || '';
+      selectedApiKey = (requiresVision ? options.visionApiKey : '') || options.apiKey || savedSecondaryForRequest?.api_key || '';
+      selectedModel = (requiresVision ? options.visionModel : '') || options.model || (requiresVision ? savedSecondaryVisionModel : savedSecondaryForRequest?.model) || 'gpt-4o';
+      if (!selectedApiUrl || !selectedApiKey) {
+        selectedApiUrl = this.config?.primary?.api_url || '';
+        selectedApiKey = this.config?.primary?.api_key || '';
+        selectedModel = options.model || this.config?.primary?.model || 'claude-sonnet-4-5';
+      }
+    }
+
+    if (!selectedApiUrl || !selectedApiKey) {
+      throw new Error('未配置可用于工具调用的 API。请配置小牛马/大牛马的 OpenAI-compatible API URL 和 Key。');
+    }
+
+    logger.info(`[ChatBridge] 使用 API tool_calls 模式 | url: ${selectedApiUrl} | model: ${selectedModel} | tools: ${tools.length}`);
+    return callChatCompletionWithTools(
+      {
+        apiUrl: selectedApiUrl,
+        apiKey: selectedApiKey,
+        label: 'ChatBridge Tools',
+        defaultModel: selectedModel,
+      },
+      {
+        model: selectedModel,
+        messages: this.buildApiMessages({
+          ...options,
+          messages: options.messages as Message[],
+        }),
+        temperature: options.temperature,
+        maxTokens: options.maxTokens,
+        tools,
+        toolChoice: 'auto',
+        parallelToolCalls: false,
+      }
+    );
   }
 
   async chat(options: ChatOptions): Promise<string> {
@@ -733,7 +2165,7 @@ export class ChatBridgeAdapter {
     // await this.syncCredentialsToOpenClaw();
 
     const lastMessage = options.messages[options.messages.length - 1];
-    const message = lastMessage.content;
+    const message = stringifyMessageContent(lastMessage.content);
 
     logger.info(`[ChatBridge] 发送消息 | 长度：${message.length} 字符`);
     logger.info(`[ChatBridge] 消息预览（前200字符）："${message.substring(0, 200)}..."`);
@@ -769,8 +2201,29 @@ export class ChatBridgeAdapter {
 
       if (shouldTryCodex) {
         try {
-          const content = await this.runCodexCli(options);
-          logger.info(`[ChatBridge] Codex CLI 模式成功 | 响应长度: ${content.length}`);
+          let content: string;
+          if (this.config?.codex?.app_server_enabled !== false) {
+            try {
+              content = await this.runCodexAppServer(options);
+              logger.info(`[ChatBridge] Codex App Server 模式成功 | 响应长度: ${content.length}`);
+            } catch (appServerError) {
+              const appServerMessage = (appServerError as Error).message || String(appServerError);
+              logger.warn(`[ChatBridge] Codex App Server 执行失败: ${appServerMessage}`);
+              if (this.config?.codex?.app_server_fallback_exec === false) {
+                throw appServerError;
+              }
+              try {
+                options.onProgress?.(`\n! Codex App Server 暂时不可用，切换到兼容的 Codex exec 模式：${appServerMessage}\n`);
+              } catch {
+                // Progress warnings are best effort.
+              }
+              content = await this.runCodexCli({ ...options, codexToolSet: undefined });
+              logger.info(`[ChatBridge] Codex exec 兼容模式成功 | 响应长度: ${content.length}`);
+            }
+          } else {
+            content = await this.runCodexCli({ ...options, codexToolSet: undefined });
+            logger.info(`[ChatBridge] Codex exec 模式成功 | 响应长度: ${content.length}`);
+          }
           return content;
         } catch (codexError) {
           const message = (codexError as Error).message || String(codexError);
@@ -781,7 +2234,7 @@ export class ChatBridgeAdapter {
           if (options.forceProvider === 'codex' || (!options.forceProvider && preferCodex)) {
             return this.chatWithSecondaryFallback(options, `Codex CLI 不可用或执行失败：${message}`);
           }
-          logger.warn('[ChatBridge] @大牛马 Codex CLI 失败，继续尝试大牛马 API 配置');
+          logger.warn('[ChatBridge] Codex CLI failed; continuing with the configured primary API');
         }
       }
       
@@ -864,7 +2317,7 @@ export class ChatBridgeAdapter {
           },
           {
             model: selectedModel,
-            messages: options.messages,
+            messages: this.buildApiMessages(options),
             temperature: options.temperature,
             maxTokens: options.maxTokens,
             stream: !!options.onProgress,

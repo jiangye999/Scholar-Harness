@@ -1,0 +1,102 @@
+{
+  "schemaVersion": 1,
+  "id": "open-science-academic",
+  "name": "OpenScience Academic Skills",
+  "version": "ef3d6e7",
+  "sourceRepository": "https://github.com/synthetic-sciences/openscience",
+  "sourceCommit": "ef3d6e74538feec022c0db429a87df5001ec8fb5",
+  "license": "Apache-2.0",
+  "noticeFile": "NOTICE",
+  "skills": [
+    {
+      "id": "scientific-writing",
+      "name": "Scientific Writing",
+      "category": "writing",
+      "description": "按 IMRAD、报告规范和两阶段提纲到成文流程撰写科学论文。",
+      "entry": "skills/writing/scientific-writing/SKILL.md",
+      "aliases": ["科学写作", "论文写作", "IMRAD", "manuscript"],
+      "policyOverlay": "图形摘要和额外 AI 图片不是强制项。是否生成图形摘要、示意图或附加图片，必须服从用户要求、目标期刊规范和现有图表计划。Scholar Harness 的引用证据与草稿保存规则优先。"
+    },
+    {
+      "id": "literature-review",
+      "name": "Literature Review",
+      "category": "writing",
+      "description": "规划、检索、筛选、质量评价、综合和核验系统性文献综述。",
+      "entry": "skills/writing/literature-review/SKILL.md",
+      "aliases": ["文献综述", "系统综述", "research synthesis", "PRISMA"],
+      "policyOverlay": "优先复用 Scholar Harness 的 PDF Wiki、混合检索和 Auto Research 结果。引用次数和期刊层级只能作为辅助信号，不能替代相关性、方法质量和证据核验。"
+    },
+    {
+      "id": "citation-management",
+      "name": "Citation Management",
+      "category": "writing",
+      "description": "检索和核验 DOI、作者、题名、期刊、年份及 BibTeX 等引用元数据。",
+      "entry": "skills/writing/citation-management/SKILL.md",
+      "aliases": ["引用管理", "参考文献", "DOI", "BibTeX", "citation"],
+      "policyOverlay": "不得根据语义猜作者、DOI 或参考文献编号。PDF Wiki 的 sentenceId、evidenceSentenceIds 和可信文献元数据优先；未核验字段必须明确标记缺失。"
+    },
+    {
+      "id": "venue-templates",
+      "name": "Venue Templates",
+      "category": "writing",
+      "description": "提供目标期刊、会议和基金申请的结构、风格、模板与格式检查方法。",
+      "entry": "skills/writing/venue-templates/SKILL.md",
+      "aliases": ["目标期刊", "期刊模板", "投稿格式", "journal style", "venue"],
+      "policyOverlay": "包内期刊要求属于参考资料。页数、字数、引文和图像要求可能变化，提交前必须以目标期刊当前官方指南或用户上传样例为准。"
+    },
+    {
+      "id": "peer-review",
+      "name": "Peer Review",
+      "category": "research",
+      "description": "从方法、统计、复现性、伦理、图表和写作质量进行系统同行评审。",
+      "entry": "skills/research/peer-review/SKILL.md",
+      "aliases": ["同行评审", "审稿", "论文质检", "review manuscript"],
+      "policyOverlay": "审稿结论必须区分已确认问题、可能风险和需要补充的信息；不要把检查清单当作事实判断。"
+    },
+    {
+      "id": "scientific-critical-thinking",
+      "name": "Scientific Critical Thinking",
+      "category": "research",
+      "description": "评价研究设计、偏倚、混杂、统计有效性、证据等级和科学论证。",
+      "entry": "skills/research/scientific-critical-thinking/SKILL.md",
+      "aliases": ["批判性思维", "证据质量", "偏倚", "方法学评价", "critical thinking"],
+      "policyOverlay": "评价必须以用户材料和可核验数据为依据；缺少方法、样本或统计细节时先指出不确定性。"
+    },
+    {
+      "id": "hypothesis-generation",
+      "name": "Hypothesis Generation",
+      "category": "research",
+      "description": "从观察和文献生成竞争性、可证伪假设、预测与实验验证方案。",
+      "entry": "skills/research/hypothesis-generation/SKILL.md",
+      "aliases": ["假设生成", "科学假设", "实验设计", "hypothesis"],
+      "policyOverlay": "必须把已有证据、推断和新假设分开表述；优先给出可区分竞争性解释的检验。"
+    },
+    {
+      "id": "scientific-brainstorming",
+      "name": "Scientific Brainstorming",
+      "category": "research",
+      "description": "围绕研究主题发散思考、跨学科连接、识别空白并形成可执行方向。",
+      "entry": "skills/research/scientific-brainstorming/SKILL.md",
+      "aliases": ["科研头脑风暴", "研究思路", "选题", "brainstorming"],
+      "policyOverlay": "发散阶段可以提出新方向，但不得把未经验证的想法写成已知事实；收敛时明确证据需求和下一步。"
+    },
+    {
+      "id": "scientific-visualization",
+      "name": "Scientific Visualization",
+      "category": "visualization",
+      "description": "生成和复核顶刊风格、多面板、色盲友好且统计表达严谨的科研图表。",
+      "entry": "skills/visualization/scientific-visualization/SKILL.md",
+      "aliases": ["科研作图", "顶刊配色", "多面板", "R作图", "scientific figure"],
+      "policyOverlay": "用户确认的处理组颜色映射必须跨图、panel、color 和 fill 保持一致。该 Skill 的 Python 示例是方法参考，R 工作流应转换为等价的命名颜色向量和导出规范。"
+    },
+    {
+      "id": "scholar-evaluation",
+      "name": "Scholar Evaluation",
+      "category": "research",
+      "description": "按多维评价框架量化论文、综述、研究方案和投稿就绪度。",
+      "entry": "skills/scholar-evaluation/SKILL.md",
+      "aliases": ["学术评价", "论文评分", "投稿就绪度", "scholar evaluation"],
+      "policyOverlay": "评分只是结构化辅助判断，必须同时给出证据、扣分原因、置信程度和可执行修改建议。"
+    }
+  ]
+}

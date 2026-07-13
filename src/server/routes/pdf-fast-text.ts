@@ -10,6 +10,7 @@ import {
   getPdfFastTextVenvDir,
 } from '../../utils/pdf-fast-text';
 import { logger } from '../../utils/logger';
+import { buildToolRuntimeEnv } from '../../utils/tool-runtime-env';
 
 const router = Router();
 
@@ -246,11 +247,11 @@ async function runProcess(
     const child = spawn(executable, args, {
       cwd,
       windowsHide: true,
-      env: {
+      env: buildToolRuntimeEnv({
         ...process.env,
         PYTHONIOENCODING: 'utf-8',
         PYTHONUTF8: '1',
-      },
+      }),
     });
 
     let stdout = '';

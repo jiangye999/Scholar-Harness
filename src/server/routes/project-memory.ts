@@ -11,6 +11,7 @@ import { PDFParse } from 'pdf-parse';
 import { chatBridge } from '../../bridge/chat-bridge/chat-bridge';
 import { logger } from '../../utils/logger';
 import { getDataDir, getMemoryDir, sanitizeUserId } from '../../utils/paths';
+import { buildToolRuntimeEnv } from '../../utils/tool-runtime-env';
 import type { ChatOptions } from '../../types';
 import { resolveUserId } from '../auth-guard-singleton';
 import {
@@ -220,7 +221,7 @@ function runProcess(command: string, args: string[], cwd: string, timeoutMs: num
       cwd,
       shell: false,
       windowsHide: true,
-      env: process.env,
+      env: buildToolRuntimeEnv(process.env),
     });
     let stdout = '';
     let stderr = '';
