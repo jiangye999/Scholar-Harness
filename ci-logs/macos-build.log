@@ -1,0 +1,490 @@
+
+> scholar-harness@1.0.6 electron:build:mac
+> npm run electron:prepare && npm run build && tsc -p electron/tsconfig.json && node scripts/build-copy.js && npm run build:bytecode && node scripts/prepare-mac-icon.js && node scripts/write-mac-electron-builder-config.js && electron-builder --config dist/electron-builder-mac.json --mac --x64 --arm64 --publish never
+
+
+> scholar-harness@1.0.6 electron:prepare
+> node scripts/prepare-playwright.js
+
+
+========================================
+  Playwright Browser Preparation
+  (Pre-installed for Packaging)
+========================================
+
+[INFO] Installing playwright dependencies...
+
+added 4 packages, and audited 5 packages in 2s
+
+found 0 vulnerabilities
+[SUCCESS] Dependencies installed
+[INFO] Created browsers directory: /Users/runner/work/Scholar-Harness/Scholar-Harness/openclaw/browsers
+[INFO] Target browsers directory: /Users/runner/work/Scholar-Harness/Scholar-Harness/openclaw/browsers
+[INFO] Checking installed browsers...
+
+[INFO] Chromium browser not found. Installing to target directory...
+[INFO] This may take a few minutes...
+
+Downloading Chrome for Testing 145.0.7632.6 (playwright chromium v1208) from https://cdn.playwright.dev/builds/cft/145.0.7632.6/mac-arm64/chrome-mac-arm64.zip
+|                                                                                |   0% of 162.3 MiB
+|■■■■■■■■                                                                        |  10% of 162.3 MiB
+|■■■■■■■■■■■■■■■■                                                                |  20% of 162.3 MiB
+|■■■■■■■■■■■■■■■■■■■■■■■■                                                        |  30% of 162.3 MiB
+|■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■                                                |  40% of 162.3 MiB
+|■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■                                        |  50% of 162.3 MiB
+|■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■                                |  60% of 162.3 MiB
+|■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■                        |  70% of 162.3 MiB
+|■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■                |  80% of 162.3 MiB
+|■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■        |  90% of 162.3 MiB
+|■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■| 100% of 162.3 MiB
+Chrome for Testing 145.0.7632.6 (playwright chromium v1208) downloaded to /Users/runner/work/Scholar-Harness/Scholar-Harness/openclaw/browsers/chromium-1208
+Downloading FFmpeg (playwright ffmpeg v1011) from https://cdn.playwright.dev/dbazure/download/playwright/builds/ffmpeg/1011/ffmpeg-mac-arm64.zip
+|                                                                                |   1% of 1 MiB
+|■■■■■■■■                                                                        |  10% of 1 MiB
+|■■■■■■■■■■■■■■■■                                                                |  20% of 1 MiB
+|■■■■■■■■■■■■■■■■■■■■■■■■                                                        |  31% of 1 MiB
+|■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■                                                |  40% of 1 MiB
+|■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■                                        |  50% of 1 MiB
+|■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■                                |  61% of 1 MiB
+|■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■                        |  70% of 1 MiB
+|■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■                |  81% of 1 MiB
+|■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■        |  90% of 1 MiB
+|■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■| 100% of 1 MiB
+FFmpeg (playwright ffmpeg v1011) downloaded to /Users/runner/work/Scholar-Harness/Scholar-Harness/openclaw/browsers/ffmpeg-1011
+Downloading Chrome Headless Shell 145.0.7632.6 (playwright chromium-headless-shell v1208) from https://cdn.playwright.dev/builds/cft/145.0.7632.6/mac-arm64/chrome-headless-shell-mac-arm64.zip
+|                                                                                |   0% of 91.1 MiB
+|■■■■■■■■                                                                        |  10% of 91.1 MiB
+|■■■■■■■■■■■■■■■■                                                                |  20% of 91.1 MiB
+|■■■■■■■■■■■■■■■■■■■■■■■■                                                        |  30% of 91.1 MiB
+|■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■                                                |  40% of 91.1 MiB
+|■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■                                        |  50% of 91.1 MiB
+|■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■                                |  60% of 91.1 MiB
+|■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■                        |  70% of 91.1 MiB
+|■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■                |  80% of 91.1 MiB
+|■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■        |  90% of 91.1 MiB
+|■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■| 100% of 91.1 MiB
+Chrome Headless Shell 145.0.7632.6 (playwright chromium-headless-shell v1208) downloaded to /Users/runner/work/Scholar-Harness/Scholar-Harness/openclaw/browsers/chromium_headless_shell-1208
+
+[SUCCESS] Chromium browser installed to: /Users/runner/work/Scholar-Harness/Scholar-Harness/openclaw/browsers
+
+[INFO] Verifying installation...
+[INFO] Installed browsers in target: .links, chromium-1208, chromium_headless_shell-1208, ffmpeg-1011
+[INFO] Chromium size: 541.56 MB
+[INFO] Browser info saved to: /Users/runner/work/Scholar-Harness/Scholar-Harness/openclaw/browser-info.json
+
+========================================
+  Preparation Complete
+========================================
+
+[NEXT] Run: npm run electron:build
+[INFO] Browsers will be packaged with the exe
+
+
+
+> scholar-harness@1.0.6 build
+> node scripts/check-public-js.js && tsc && node scripts/build-copy.js
+
+[Public JS] Checked 5 script file/block(s)
+[Build Copy] Starting post-build file copy...
+[Copy] Processing: Public static files
+[Copy] Directory: src/public -> dist/src/public
+[Copy] Processing: ChatBridge config
+[Copy] src/bridge/chat-bridge/config.json -> dist/src/bridge/chat-bridge/config.json
+[Copy] Processing: Soul prompt files
+[Copy] Directory: configs/souls -> dist/configs/souls
+[Copy] Processing: Electron window icon
+[Copy] electron/icon.ico -> dist/electron/icon.ico
+[Copy] Processing: Electron login views
+[Copy] Directory: electron/views -> dist/electron/views
+[Build Copy] Cleaning source map files...
+[Build Copy] Completed.
+[Build Copy] Starting post-build file copy...
+[Copy] Processing: Public static files
+[Copy] Directory: src/public -> dist/src/public
+[Copy] Processing: ChatBridge config
+[Copy] src/bridge/chat-bridge/config.json -> dist/src/bridge/chat-bridge/config.json
+[Copy] Processing: Soul prompt files
+[Copy] Directory: configs/souls -> dist/configs/souls
+[Copy] Processing: Electron window icon
+[Copy] electron/icon.ico -> dist/electron/icon.ico
+[Copy] Processing: Electron login views
+[Copy] Directory: electron/views -> dist/electron/views
+[Build Copy] Cleaning source map files...
+[Build Copy] Completed.
+
+> scholar-harness@1.0.6 build:bytecode
+> node scripts/run-bytecode-with-electron.js
+
+[Bytecode] Starting compilation...
+[Bytecode] Node version: v20.18.3
+[Bytecode] Working directory: /Users/runner/work/Scholar-Harness/Scholar-Harness
+
+[Bytecode] Phase 1: Compiling directory files...
+[Bytecode] Found 8 files in dist/agents (P0)
+[Bytecode] [P0] Compiling: dist/agents/agent-collaboration-workflow.js
+[Bytecode] [P0] ✓ Compiled with loader: /Users/runner/work/Scholar-Harness/Scholar-Harness/dist/agents/agent-collaboration-workflow.jsc
+[Bytecode] [P0] Compiling: dist/agents/cow-agent.js
+[Bytecode] [P0] ✓ Compiled with loader: /Users/runner/work/Scholar-Harness/Scholar-Harness/dist/agents/cow-agent.jsc
+[Bytecode] [P0] Compiling: dist/agents/literature-search-agent.js
+[Bytecode] [P0] ✓ Compiled with loader: /Users/runner/work/Scholar-Harness/Scholar-Harness/dist/agents/literature-search-agent.jsc
+[Bytecode] [P0] Compiling: dist/agents/paragraph-agent.js
+[Bytecode] [P0] ✓ Compiled with loader: /Users/runner/work/Scholar-Harness/Scholar-Harness/dist/agents/paragraph-agent.jsc
+[Bytecode] [P0] Compiling: dist/agents/parallel-search-orchestrator.js
+[Bytecode] [P0] ✓ Compiled with loader: /Users/runner/work/Scholar-Harness/Scholar-Harness/dist/agents/parallel-search-orchestrator.jsc
+[Bytecode] [P0] Compiling: dist/agents/primary-agent.js
+[Bytecode] [P0] ✓ Compiled with loader: /Users/runner/work/Scholar-Harness/Scholar-Harness/dist/agents/primary-agent.jsc
+[Bytecode] [P0] Compiling: dist/agents/secondary-agent-v2.js
+[Bytecode] [P0] ✓ Compiled with loader: /Users/runner/work/Scholar-Harness/Scholar-Harness/dist/agents/secondary-agent-v2.jsc
+[Bytecode] [P0] Compiling: dist/agents/sentence-chunker.js
+[Bytecode] [P0] ✓ Compiled with loader: /Users/runner/work/Scholar-Harness/Scholar-Harness/dist/agents/sentence-chunker.jsc
+[Bytecode] Found 1 files in dist/workflows (P0)
+[Bytecode] [P0] Compiling: dist/workflows/conversation-flow.js
+[Bytecode] [P0] ✓ Compiled with loader: /Users/runner/work/Scholar-Harness/Scholar-Harness/dist/workflows/conversation-flow.jsc
+[Bytecode] Found 6 files in dist/src/bridge (P1)
+[Bytecode] [P1] Compiling: dist/src/bridge/ai-provider-factory.js
+[Bytecode] [P1] ✓ Compiled with loader: /Users/runner/work/Scholar-Harness/Scholar-Harness/dist/src/bridge/ai-provider-factory.jsc
+[Bytecode] [P1] Compiling: dist/src/bridge/chat-bridge/chat-bridge.js
+[Bytecode] [P1] ✓ Compiled with loader: /Users/runner/work/Scholar-Harness/Scholar-Harness/dist/src/bridge/chat-bridge/chat-bridge.jsc
+[Bytecode] [P1] Compiling: dist/src/bridge/chat-bridge/codex-app-server.js
+[Bytecode] [P1] ✓ Compiled with loader: /Users/runner/work/Scholar-Harness/Scholar-Harness/dist/src/bridge/chat-bridge/codex-app-server.jsc
+[Bytecode] [P1] Compiling: dist/src/bridge/chat-bridge/codex-mcp-stdio.js
+[Bytecode] [P1] ✓ Compiled with loader: /Users/runner/work/Scholar-Harness/Scholar-Harness/dist/src/bridge/chat-bridge/codex-mcp-stdio.jsc
+[Bytecode] [P1] Compiling: dist/src/bridge/chat-bridge/timeouts.js
+[Bytecode] [P1] ✓ Compiled with loader: /Users/runner/work/Scholar-Harness/Scholar-Harness/dist/src/bridge/chat-bridge/timeouts.jsc
+[Bytecode] [P1] Compiling: dist/src/bridge/chat-bridge/validation.js
+[Bytecode] [P1] ✓ Compiled with loader: /Users/runner/work/Scholar-Harness/Scholar-Harness/dist/src/bridge/chat-bridge/validation.jsc
+[Bytecode] Found 7 files in dist/src/literature/retrieval (P2)
+[Bytecode] [P2] Compiling: dist/src/literature/retrieval/bm25-retriever.js
+[Bytecode] [P2] ✓ Compiled with loader: /Users/runner/work/Scholar-Harness/Scholar-Harness/dist/src/literature/retrieval/bm25-retriever.jsc
+[Bytecode] [P2] Compiling: dist/src/literature/retrieval/hybrid-engine.js
+[Bytecode] [P2] ✓ Compiled with loader: /Users/runner/work/Scholar-Harness/Scholar-Harness/dist/src/literature/retrieval/hybrid-engine.jsc
+[Bytecode] [P2] Compiling: dist/src/literature/retrieval/index.js
+[Bytecode] [P2] ✓ Compiled with loader: /Users/runner/work/Scholar-Harness/Scholar-Harness/dist/src/literature/retrieval/index.jsc
+[Bytecode] [P2] Compiling: dist/src/literature/retrieval/metadata-filter.js
+[Bytecode] [P2] ✓ Compiled with loader: /Users/runner/work/Scholar-Harness/Scholar-Harness/dist/src/literature/retrieval/metadata-filter.jsc
+[Bytecode] [P2] Compiling: dist/src/literature/retrieval/semantic-query.js
+[Bytecode] [P2] ✓ Compiled with loader: /Users/runner/work/Scholar-Harness/Scholar-Harness/dist/src/literature/retrieval/semantic-query.jsc
+[Bytecode] [P2] Compiling: dist/src/literature/retrieval/sentence-retriever.js
+[Bytecode] [P2] ✓ Compiled with loader: /Users/runner/work/Scholar-Harness/Scholar-Harness/dist/src/literature/retrieval/sentence-retriever.jsc
+[Bytecode] [P2] Compiling: dist/src/literature/retrieval/vector-retriever.js
+[Bytecode] [P2] ✓ Compiled with loader: /Users/runner/work/Scholar-Harness/Scholar-Harness/dist/src/literature/retrieval/vector-retriever.jsc
+[Bytecode] Found 3 files in dist/src/literature/citation (P2)
+[Bytecode] [P2] Compiling: dist/src/literature/citation/citation-manager.js
+[Bytecode] [P2] ✓ Compiled with loader: /Users/runner/work/Scholar-Harness/Scholar-Harness/dist/src/literature/citation/citation-manager.jsc
+[Bytecode] [P2] Compiling: dist/src/literature/citation/formats/apa.js
+[Bytecode] [P2] ✓ Compiled with loader: /Users/runner/work/Scholar-Harness/Scholar-Harness/dist/src/literature/citation/formats/apa.jsc
+[Bytecode] [P2] Compiling: dist/src/literature/citation/formats/gbt7714.js
+[Bytecode] [P2] ✓ Compiled with loader: /Users/runner/work/Scholar-Harness/Scholar-Harness/dist/src/literature/citation/formats/gbt7714.jsc
+[Bytecode] Found 6 files in dist/src/literature/parsers (P2)
+[Bytecode] [P2] Compiling: dist/src/literature/parsers/base-parser.js
+[Bytecode] [P2] ✓ Compiled with loader: /Users/runner/work/Scholar-Harness/Scholar-Harness/dist/src/literature/parsers/base-parser.jsc
+[Bytecode] [P2] Compiling: dist/src/literature/parsers/bib-parser.js
+[Bytecode] [P2] ✓ Compiled with loader: /Users/runner/work/Scholar-Harness/Scholar-Harness/dist/src/literature/parsers/bib-parser.jsc
+[Bytecode] [P2] Compiling: dist/src/literature/parsers/cnki-parser.js
+[Bytecode] [P2] ✓ Compiled with loader: /Users/runner/work/Scholar-Harness/Scholar-Harness/dist/src/literature/parsers/cnki-parser.jsc
+[Bytecode] [P2] Compiling: dist/src/literature/parsers/index.js
+[Bytecode] [P2] ✓ Compiled with loader: /Users/runner/work/Scholar-Harness/Scholar-Harness/dist/src/literature/parsers/index.jsc
+[Bytecode] [P2] Compiling: dist/src/literature/parsers/ris-parser.js
+[Bytecode] [P2] ✓ Compiled with loader: /Users/runner/work/Scholar-Harness/Scholar-Harness/dist/src/literature/parsers/ris-parser.jsc
+[Bytecode] [P2] Compiling: dist/src/literature/parsers/wos-parser.js
+[Bytecode] [P2] ✓ Compiled with loader: /Users/runner/work/Scholar-Harness/Scholar-Harness/dist/src/literature/parsers/wos-parser.jsc
+[Bytecode] Found 1 files in dist/src/literature/generation (P2)
+[Bytecode] [P2] Compiling: dist/src/literature/generation/paragraph-generator.js
+[Bytecode] [P2] ✓ Compiled with loader: /Users/runner/work/Scholar-Harness/Scholar-Harness/dist/src/literature/generation/paragraph-generator.jsc
+[Bytecode] Found 1 files in dist/src/literature/planning (P2)
+[Bytecode] [P2] Compiling: dist/src/literature/planning/sentence-planner.js
+[Bytecode] [P2] ✓ Compiled with loader: /Users/runner/work/Scholar-Harness/Scholar-Harness/dist/src/literature/planning/sentence-planner.jsc
+[Bytecode] Found 35 files in dist/src/utils (P3)
+[Bytecode] [P3] Compiling: dist/src/utils/autoresearch-manager.js
+[Bytecode] [P3] ✓ Compiled with loader: /Users/runner/work/Scholar-Harness/Scholar-Harness/dist/src/utils/autoresearch-manager.jsc
+[Bytecode] [P3] Compiling: dist/src/utils/backup-manager.js
+[Bytecode] [P3] ✓ Compiled with loader: /Users/runner/work/Scholar-Harness/Scholar-Harness/dist/src/utils/backup-manager.jsc
+[Bytecode] [P3] Compiling: dist/src/utils/bibliometrics-artifacts.js
+[Bytecode] [P3] ✓ Compiled with loader: /Users/runner/work/Scholar-Harness/Scholar-Harness/dist/src/utils/bibliometrics-artifacts.jsc
+[Bytecode] [P3] Compiling: dist/src/utils/bibliometrics.js
+[Bytecode] [P3] ✓ Compiled with loader: /Users/runner/work/Scholar-Harness/Scholar-Harness/dist/src/utils/bibliometrics.jsc
+[Bytecode] [P3] Compiling: dist/src/utils/citation-format.js
+[Bytecode] [P3] ✓ Compiled with loader: /Users/runner/work/Scholar-Harness/Scholar-Harness/dist/src/utils/citation-format.jsc
+[Bytecode] [P3] Compiling: dist/src/utils/cloud-prompt-client.js
+[Bytecode] [P3] ✓ Compiled with loader: /Users/runner/work/Scholar-Harness/Scholar-Harness/dist/src/utils/cloud-prompt-client.jsc
+[Bytecode] [P3] Compiling: dist/src/utils/codex-model-discovery.js
+[Bytecode] [P3] ✓ Compiled with loader: /Users/runner/work/Scholar-Harness/Scholar-Harness/dist/src/utils/codex-model-discovery.jsc
+[Bytecode] [P3] Compiling: dist/src/utils/draft-chapter-normalizer.js
+[Bytecode] [P3] ✓ Compiled with loader: /Users/runner/work/Scholar-Harness/Scholar-Harness/dist/src/utils/draft-chapter-normalizer.jsc
+[Bytecode] [P3] Compiling: dist/src/utils/draft-content-merger.js
+[Bytecode] [P3] ✓ Compiled with loader: /Users/runner/work/Scholar-Harness/Scholar-Harness/dist/src/utils/draft-content-merger.jsc
+[Bytecode] [P3] Compiling: dist/src/utils/draft-save-block.js
+[Bytecode] [P3] ✓ Compiled with loader: /Users/runner/work/Scholar-Harness/Scholar-Harness/dist/src/utils/draft-save-block.jsc
+[Bytecode] [P3] Compiling: dist/src/utils/draft-section-classifier.js
+[Bytecode] [P3] ✓ Compiled with loader: /Users/runner/work/Scholar-Harness/Scholar-Harness/dist/src/utils/draft-section-classifier.jsc
+[Bytecode] [P3] Compiling: dist/src/utils/draft-subsection-target.js
+[Bytecode] [P3] ✓ Compiled with loader: /Users/runner/work/Scholar-Harness/Scholar-Harness/dist/src/utils/draft-subsection-target.jsc
+[Bytecode] [P3] Compiling: dist/src/utils/encryption.js
+[Bytecode] [P3] ✓ Compiled with loader: /Users/runner/work/Scholar-Harness/Scholar-Harness/dist/src/utils/encryption.jsc
+[Bytecode] [P3] Compiling: dist/src/utils/library-favorites.js
+[Bytecode] [P3] ✓ Compiled with loader: /Users/runner/work/Scholar-Harness/Scholar-Harness/dist/src/utils/library-favorites.jsc
+[Bytecode] [P3] Compiling: dist/src/utils/literature-helpers.js
+[Bytecode] [P3] ✓ Compiled with loader: /Users/runner/work/Scholar-Harness/Scholar-Harness/dist/src/utils/literature-helpers.jsc
+[Bytecode] [P3] Compiling: dist/src/utils/llm-client.js
+[Bytecode] [P3] ✓ Compiled with loader: /Users/runner/work/Scholar-Harness/Scholar-Harness/dist/src/utils/llm-client.jsc
+[Bytecode] [P3] Compiling: dist/src/utils/logger.js
+[Bytecode] [P3] ✓ Compiled with loader: /Users/runner/work/Scholar-Harness/Scholar-Harness/dist/src/utils/logger.jsc
+[Bytecode] [P3] Compiling: dist/src/utils/office-runtime-env.js
+[Bytecode] [P3] ✓ Compiled with loader: /Users/runner/work/Scholar-Harness/Scholar-Harness/dist/src/utils/office-runtime-env.jsc
+[Bytecode] [P3] Compiling: dist/src/utils/paths.js
+[Bytecode] [P3] ✓ Compiled with loader: /Users/runner/work/Scholar-Harness/Scholar-Harness/dist/src/utils/paths.jsc
+[Bytecode] [P3] Compiling: dist/src/utils/pdf-fast-text.js
+[Bytecode] [P3] ✓ Compiled with loader: /Users/runner/work/Scholar-Harness/Scholar-Harness/dist/src/utils/pdf-fast-text.jsc
+[Bytecode] [P3] Compiling: dist/src/utils/pdf-liteparse.js
+[Bytecode] [P3] ✓ Compiled with loader: /Users/runner/work/Scholar-Harness/Scholar-Harness/dist/src/utils/pdf-liteparse.jsc
+[Bytecode] [P3] Compiling: dist/src/utils/pdf-marker.js
+[Bytecode] [P3] ✓ Compiled with loader: /Users/runner/work/Scholar-Harness/Scholar-Harness/dist/src/utils/pdf-marker.jsc
+[Bytecode] [P3] Compiling: dist/src/utils/pdf-wiki-manager.js
+[Bytecode] [P3] ✓ Compiled with loader: /Users/runner/work/Scholar-Harness/Scholar-Harness/dist/src/utils/pdf-wiki-manager.jsc
+[Bytecode] [P3] Compiling: dist/src/utils/pdf-wiki-pdf-management.js
+[Bytecode] [P3] ✓ Compiled with loader: /Users/runner/work/Scholar-Harness/Scholar-Harness/dist/src/utils/pdf-wiki-pdf-management.jsc
+[Bytecode] [P3] Compiling: dist/src/utils/project-manager.js
+[Bytecode] [P3] ✓ Compiled with loader: /Users/runner/work/Scholar-Harness/Scholar-Harness/dist/src/utils/project-manager.jsc
+[Bytecode] [P3] Compiling: dist/src/utils/prompt-request-anchor.js
+[Bytecode] [P3] ✓ Compiled with loader: /Users/runner/work/Scholar-Harness/Scholar-Harness/dist/src/utils/prompt-request-anchor.jsc
+[Bytecode] [P3] Compiling: dist/src/utils/python-runtime-env.js
+[Bytecode] [P3] ✓ Compiled with loader: /Users/runner/work/Scholar-Harness/Scholar-Harness/dist/src/utils/python-runtime-env.jsc
+[Bytecode] [P3] Compiling: dist/src/utils/r-runtime-env.js
+[Bytecode] [P3] ✓ Compiled with loader: /Users/runner/work/Scholar-Harness/Scholar-Harness/dist/src/utils/r-runtime-env.jsc
+[Bytecode] [P3] Compiling: dist/src/utils/reference-tailnotes.js
+[Bytecode] [P3] ✓ Compiled with loader: /Users/runner/work/Scholar-Harness/Scholar-Harness/dist/src/utils/reference-tailnotes.jsc
+[Bytecode] [P3] Compiling: dist/src/utils/retrieval-engine-manager.js
+[Bytecode] [P3] ✓ Compiled with loader: /Users/runner/work/Scholar-Harness/Scholar-Harness/dist/src/utils/retrieval-engine-manager.jsc
+[Bytecode] [P3] Compiling: dist/src/utils/sanitize.js
+[Bytecode] [P3] ✓ Compiled with loader: /Users/runner/work/Scholar-Harness/Scholar-Harness/dist/src/utils/sanitize.jsc
+[Bytecode] [P3] Compiling: dist/src/utils/tool-runtime-env.js
+[Bytecode] [P3] ✓ Compiled with loader: /Users/runner/work/Scholar-Harness/Scholar-Harness/dist/src/utils/tool-runtime-env.jsc
+[Bytecode] [P3] Compiling: dist/src/utils/word-draft-docx.js
+[Bytecode] [P3] ✓ Compiled with loader: /Users/runner/work/Scholar-Harness/Scholar-Harness/dist/src/utils/word-draft-docx.jsc
+[Bytecode] [P3] Compiling: dist/src/utils/workspace-file-intent.js
+[Bytecode] [P3] ✓ Compiled with loader: /Users/runner/work/Scholar-Harness/Scholar-Harness/dist/src/utils/workspace-file-intent.jsc
+[Bytecode] [P3] Compiling: dist/src/utils/wos-plain-text.js
+[Bytecode] [P3] ✓ Compiled with loader: /Users/runner/work/Scholar-Harness/Scholar-Harness/dist/src/utils/wos-plain-text.jsc
+[Bytecode] Found 1 files in dist/src/storage (P3)
+[Bytecode] [P3] Compiling: dist/src/storage/session-store.js
+[Bytecode] [P3] ✓ Compiled with loader: /Users/runner/work/Scholar-Harness/Scholar-Harness/dist/src/storage/session-store.jsc
+
+[Bytecode] Phase 2: Compiling single files...
+[Bytecode] [P1] Compiling: dist/src/activation/client.js
+[Bytecode] [P1] ✓ Compiled with loader: /Users/runner/work/Scholar-Harness/Scholar-Harness/dist/src/activation/client.jsc
+
+[Bytecode] Phase 3: Copying activation module...
+[Bytecode] Copied client.jsc to activation dir
+
+[Bytecode] ========================================
+[Bytecode] Compilation Summary
+[Bytecode] ========================================
+[Bytecode] Total files processed: 70
+[Bytecode] Successfully compiled: 70
+[Bytecode] Failed: 0
+[Bytecode] Skipped: 0
+[Bytecode] Duration: 0.15s
+[Bytecode] ========================================
+
+[Bytecode] Verification:
+  ✓ dist/agents/primary-agent.jsc
+  ✓ dist/agents/secondary-agent-v2.jsc
+  ✓ dist/workflows/conversation-flow.jsc
+  ✓ dist/src/server/local-server.js (server entry (not compiled - V8 compat))
+  ✓ dist/src/server/auth-guard.js (auth guard (not compiled - V8 compat))
+  ✓ dist/src/server/unified-chat-processor.js (chat processor (not compiled - V8 compat))
+  ✓ dist/electron/main.js (electron main (not compiled - V8 compat))
+[Mac Icon] Extracted 256x256 PNG from electron/icon.ico
+/Users/runner/work/Scholar-Harness/Scholar-Harness/build/icon-source.png
+  /Users/runner/work/Scholar-Harness/Scholar-Harness/build/icon.iconset/icon_16x16.png
+/Users/runner/work/Scholar-Harness/Scholar-Harness/build/icon-source.png
+  /Users/runner/work/Scholar-Harness/Scholar-Harness/build/icon.iconset/icon_16x16@2x.png
+/Users/runner/work/Scholar-Harness/Scholar-Harness/build/icon-source.png
+  /Users/runner/work/Scholar-Harness/Scholar-Harness/build/icon.iconset/icon_32x32.png
+/Users/runner/work/Scholar-Harness/Scholar-Harness/build/icon-source.png
+  /Users/runner/work/Scholar-Harness/Scholar-Harness/build/icon.iconset/icon_32x32@2x.png
+/Users/runner/work/Scholar-Harness/Scholar-Harness/build/icon-source.png
+  /Users/runner/work/Scholar-Harness/Scholar-Harness/build/icon.iconset/icon_128x128.png
+/Users/runner/work/Scholar-Harness/Scholar-Harness/build/icon-source.png
+  /Users/runner/work/Scholar-Harness/Scholar-Harness/build/icon.iconset/icon_128x128@2x.png
+/Users/runner/work/Scholar-Harness/Scholar-Harness/build/icon-source.png
+  /Users/runner/work/Scholar-Harness/Scholar-Harness/build/icon.iconset/icon_256x256.png
+/Users/runner/work/Scholar-Harness/Scholar-Harness/build/icon-source.png
+  /Users/runner/work/Scholar-Harness/Scholar-Harness/build/icon.iconset/icon_256x256@2x.png
+/Users/runner/work/Scholar-Harness/Scholar-Harness/build/icon-source.png
+  /Users/runner/work/Scholar-Harness/Scholar-Harness/build/icon.iconset/icon_512x512.png
+/Users/runner/work/Scholar-Harness/Scholar-Harness/build/icon-source.png
+  /Users/runner/work/Scholar-Harness/Scholar-Harness/build/icon.iconset/icon_512x512@2x.png
+[Mac Icon] Wrote build/icon.icns
+[Mac Build] Wrote dist/electron-builder-mac.json
+[Mac Build] Skipped extraResources: tools/ppt-master
+  • electron-builder  version=26.8.1 os=23.6.0
+  • loaded configuration  file=/Users/runner/work/Scholar-Harness/Scholar-Harness/dist/electron-builder-mac.json
+  • executing @electron/rebuild  electronVersion=33.4.11 arch=x64 buildFromSource=false workspaceRoot=/Users/runner/work/Scholar-Harness/Scholar-Harness projectDir=./ appDir=./
+  • installing native dependencies  arch=x64
+  • completed installing native dependencies
+  • packaging       platform=darwin arch=x64 electron=33.4.11 appOutDir=dist-electron/mac
+  • downloading     url=https://github.com/electron/electron/releases/download/v33.4.11/electron-v33.4.11-darwin-x64.zip size=104 MB parts=6
+  • downloaded      url=https://github.com/electron/electron/releases/download/v33.4.11/electron-v33.4.11-darwin-x64.zip duration=1.155s
+  • searching for node modules  pm=npm searchDir=/Users/runner/work/Scholar-Harness/Scholar-Harness
+  • duplicate dependency references  dependencies=["strip-ansi@7.2.0","strip-ansi@7.2.0","strip-ansi@7.2.0","readable-stream@4.7.0","streamx@2.25.0","streamx@2.25.0","bare-path@3.0.0","archiver-utils@5.0.2","readable-stream@4.7.0","readable-stream@4.7.0","readable-stream@4.7.0","call-bind-apply-helpers@1.0.2","es-object-atoms@1.1.1","hasown@2.0.2","hasown@2.0.2","mime-types@2.1.35","http-errors@2.0.1","on-finished@2.4.1","qs@6.14.2","http-errors@2.0.1","type-is@1.6.18","on-finished@2.4.1","call-bind-apply-helpers@1.0.2","get-intrinsic@1.3.0","get-intrinsic@1.3.0","call-bound@1.0.4","get-intrinsic@1.3.0","side-channel-map@1.0.1","http-errors@2.0.1","on-finished@2.4.1","send@0.19.2","mime-types@2.1.35","type-is@1.6.18","@napi-rs/canvas@0.1.80"]
+  • skipped macOS application code signing  reason=, see https://electron.build/code-signing CSC_IDENTITY_AUTO_DISCOVERY=false
+  • building        target=macOS zip arch=x64 file=dist-electron/Scholar Harness Setup 1.0.6-x64.zip
+  • building        target=DMG arch=x64 file=dist-electron/Scholar Harness Setup 1.0.6-x64.dmg
+  • executing @electron/rebuild  electronVersion=33.4.11 arch=arm64 buildFromSource=false workspaceRoot=/Users/runner/work/Scholar-Harness/Scholar-Harness projectDir=./ appDir=./
+  • installing native dependencies  arch=arm64
+  • downloading     release=dmg-builder@1.2.0 file=dmgbuild-bundle-arm64-75c8a6c.tar.gz
+  • completed installing native dependencies
+  • packaging       platform=darwin arch=arm64 electron=33.4.11 appOutDir=dist-electron/mac-arm64
+  • downloading     url=https://github.com/electron/electron/releases/download/v33.4.11/electron-v33.4.11-darwin-arm64.zip size=100 MB parts=6
+  • downloaded      url=https://github.com/electron/electron/releases/download/v33.4.11/electron-v33.4.11-darwin-arm64.zip duration=1.54s
+  • searching for node modules  pm=npm searchDir=/Users/runner/work/Scholar-Harness/Scholar-Harness
+  • duplicate dependency references  dependencies=["strip-ansi@7.2.0","strip-ansi@7.2.0","strip-ansi@7.2.0","readable-stream@4.7.0","streamx@2.25.0","streamx@2.25.0","bare-path@3.0.0","archiver-utils@5.0.2","readable-stream@4.7.0","readable-stream@4.7.0","readable-stream@4.7.0","call-bind-apply-helpers@1.0.2","es-object-atoms@1.1.1","hasown@2.0.2","hasown@2.0.2","mime-types@2.1.35","http-errors@2.0.1","on-finished@2.4.1","qs@6.14.2","http-errors@2.0.1","type-is@1.6.18","on-finished@2.4.1","call-bind-apply-helpers@1.0.2","get-intrinsic@1.3.0","get-intrinsic@1.3.0","call-bound@1.0.4","get-intrinsic@1.3.0","side-channel-map@1.0.1","http-errors@2.0.1","on-finished@2.4.1","send@0.19.2","mime-types@2.1.35","type-is@1.6.18","@napi-rs/canvas@0.1.80"]
+  • falling back to ad-hoc signature for macOS application code signing
+  • signing         file=dist-electron/mac-arm64/Scholar Harness.app platform=darwin type=distribution identityName=- identityHash=none provisioningProfile=none
+  • building block map  blockMapFile=dist-electron/Scholar Harness Setup 1.0.6-x64.dmg.blockmap
+  • skipped macOS notarization  reason=`notarize` options were unable to be generated
+  • building        target=macOS zip arch=arm64 file=dist-electron/Scholar Harness Setup 1.0.6-arm64.zip
+  • building        target=DMG arch=arm64 file=dist-electron/Scholar Harness Setup 1.0.6-arm64.dmg
+  • building block map  blockMapFile=dist-electron/Scholar Harness Setup 1.0.6-x64.zip.blockmap
+  • building block map  blockMapFile=dist-electron/Scholar Harness Setup 1.0.6-arm64.zip.blockmap
+  ⨯ /Users/runner/work/Scholar-Harness/Scholar-Harness/.cache/electron-builder/dmg-builder@1.2.0/dmgbuild-bundle-arm64-75c8a6c-uwh7j/dmgbuild process failed 1
+Exit code:
+1
+Output:
+Exit code: 1. Command failed: /Users/runner/work/Scholar-Harness/Scholar-Harness/.cache/electron-builder/dmg-builder@1.2.0/dmgbuild-bundle-arm64-75c8a6c-uwh7j/dmgbuild -s /p e021f197df3ca4e60127ca7adfea3f351d0526b70ab78e6602dde43f376337aa (sha256 hash) Scholar Harness 1.0.6-arm64 /Users/runner/work/Scholar-Harness/Scholar-Harness/dist-electron/Scholar Harness Setup 1.0.6-arm64.dmg
+hdiutil: attach failed - Device not configured
+Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "/Users/runner/work/Scholar-Harness/Scholar-Harness/.cache/electron-builder/dmg-builder@1.2.0/dmgbuild-bundle-arm64-75c8a6c-uwh7j/p 3ab791c012fa3ee647e142d412ccc6d7f442f1c73383a198aab35e13511c2f08 (sha256 hash) line 70, in <module>
+    main()
+    ~~~~^^
+  File "/Users/runner/work/Scholar-Harness/Scholar-Harness/.cache/electron-builder/dmg-builder@1.2.0/dmgbuild-bundle-arm64-75c8a6c-uwh7j/p 3ab791c012fa3ee647e142d412ccc6d7f442f1c73383a198aab35e13511c2f08 (sha256 hash) line 59, in main
+    build_dmg(
+    ~~~~~~~~~^
+        args.filename,
+        ^^^^^^^^^^^^^^
+    ...<4 lines>...
+        detach_retries=args.detachRetries,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/Users/runner/work/Scholar-Harness/Scholar-Harness/.cache/electron-builder/dmg-builder@1.2.0/dmgbuild-bundle-arm64-75c8a6c-uwh7j/p 618e91d4b336f07556883e2751a6a105d4bfdad1a86998ebeb129644cc12b252 (sha256 hash) line 530, in build_dmg
+    ret, output = hdiutil(
+                  ~~~~~~~^
+        "attach", "-nobrowse", "-owners", "off", writableFile.name
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/Users/runner/work/Scholar-Harness/Scholar-Harness/.cache/electron-builder/dmg-builder@1.2.0/dmgbuild-bundle-arm64-75c8a6c-uwh7j/p 618e91d4b336f07556883e2751a6a105d4bfdad1a86998ebeb129644cc12b252 (sha256 hash) line 60, in hdiutil
+    results = plistlib.loads(output)
+  File "/Users/runner/work/Scholar-Harness/Scholar-Harness/.cache/electron-builder/dmg-builder@1.2.0/dmgbuild-bundle-arm64-75c8a6c-uwh7j/p 98d3fbd6bc7a474a1b22555c802edbc1499f054e861fd3b3a48115e3ecf418fc (sha256 hash) line 925, in loads
+    return load(fp, fmt=fmt, dict_type=dict_type, aware_datetime=aware_datetime)
+  File "/Users/runner/work/Scholar-Harness/Scholar-Harness/.cache/electron-builder/dmg-builder@1.2.0/dmgbuild-bundle-arm64-75c8a6c-uwh7j/p 98d3fbd6bc7a474a1b22555c802edbc1499f054e861fd3b3a48115e3ecf418fc (sha256 hash) line 906, in load
+    raise InvalidFileException()
+plistlib.InvalidFileException: Invalid file
+
+hdiutil: attach failed - Device not configured
+Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "/Users/runner/work/Scholar-Harness/Scholar-Harness/.cache/electron-builder/dmg-builder@1.2.0/dmgbuild-bundle-arm64-75c8a6c-uwh7j/python/lib/python3.14/site-packages/dmgbuild/__main__.py", line 70, in <module>
+    main()
+    ~~~~^^
+  File "/Users/runner/work/Scholar-Harness/Scholar-Harness/.cache/electron-builder/dmg-builder@1.2.0/dmgbuild-bundle-arm64-75c8a6c-uwh7j/python/lib/python3.14/site-packages/dmgbuild/__main__.py", line 59, in main
+    build_dmg(
+    ~~~~~~~~~^
+        args.filename,
+        ^^^^^^^^^^^^^^
+    ...<4 lines>...
+        detach_retries=args.detachRetries,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/Users/runner/work/Scholar-Harness/Scholar-Harness/.cache/electron-builder/dmg-builder@1.2.0/dmgbuild-bundle-arm64-75c8a6c-uwh7j/python/lib/python3.14/site-packages/dmgbuild/core.py", line 530, in build_dmg
+    ret, output = hdiutil(
+                  ~~~~~~~^
+        "attach", "-nobrowse", "-owners", "off", writableFile.name
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/Users/runner/work/Scholar-Harness/Scholar-Harness/.cache/electron-builder/dmg-builder@1.2.0/dmgbuild-bundle-arm64-75c8a6c-uwh7j/python/lib/python3.14/site-packages/dmgbuild/core.py", line 60, in hdiutil
+    results = plistlib.loads(output)
+  File "/Users/runner/work/Scholar-Harness/Scholar-Harness/.cache/electron-builder/dmg-builder@1.2.0/dmgbuild-bundle-arm64-75c8a6c-uwh7j/python/lib/python3.14/plistlib.py", line 925, in loads
+    return load(fp, fmt=fmt, dict_type=dict_type, aware_datetime=aware_datetime)
+  File "/Users/runner/work/Scholar-Harness/Scholar-Harness/.cache/electron-builder/dmg-builder@1.2.0/dmgbuild-bundle-arm64-75c8a6c-uwh7j/python/lib/python3.14/plistlib.py", line 906, in load
+    raise InvalidFileException()
+plistlib.InvalidFileException: Invalid file
+  failedTask=build stackTrace=Error: /Users/runner/work/Scholar-Harness/Scholar-Harness/.cache/electron-builder/dmg-builder@1.2.0/dmgbuild-bundle-arm64-75c8a6c-uwh7j/dmgbuild process failed 1
+Exit code:
+1
+Output:
+Exit code: 1. Command failed: /Users/runner/work/Scholar-Harness/Scholar-Harness/.cache/electron-builder/dmg-builder@1.2.0/dmgbuild-bundle-arm64-75c8a6c-uwh7j/dmgbuild -s /p e021f197df3ca4e60127ca7adfea3f351d0526b70ab78e6602dde43f376337aa (sha256 hash) Scholar Harness 1.0.6-arm64 /Users/runner/work/Scholar-Harness/Scholar-Harness/dist-electron/Scholar Harness Setup 1.0.6-arm64.dmg
+hdiutil: attach failed - Device not configured
+Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "/Users/runner/work/Scholar-Harness/Scholar-Harness/.cache/electron-builder/dmg-builder@1.2.0/dmgbuild-bundle-arm64-75c8a6c-uwh7j/p 3ab791c012fa3ee647e142d412ccc6d7f442f1c73383a198aab35e13511c2f08 (sha256 hash) line 70, in <module>
+    main()
+    ~~~~^^
+  File "/Users/runner/work/Scholar-Harness/Scholar-Harness/.cache/electron-builder/dmg-builder@1.2.0/dmgbuild-bundle-arm64-75c8a6c-uwh7j/p 3ab791c012fa3ee647e142d412ccc6d7f442f1c73383a198aab35e13511c2f08 (sha256 hash) line 59, in main
+    build_dmg(
+    ~~~~~~~~~^
+        args.filename,
+        ^^^^^^^^^^^^^^
+    ...<4 lines>...
+        detach_retries=args.detachRetries,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/Users/runner/work/Scholar-Harness/Scholar-Harness/.cache/electron-builder/dmg-builder@1.2.0/dmgbuild-bundle-arm64-75c8a6c-uwh7j/p 618e91d4b336f07556883e2751a6a105d4bfdad1a86998ebeb129644cc12b252 (sha256 hash) line 530, in build_dmg
+    ret, output = hdiutil(
+                  ~~~~~~~^
+        "attach", "-nobrowse", "-owners", "off", writableFile.name
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/Users/runner/work/Scholar-Harness/Scholar-Harness/.cache/electron-builder/dmg-builder@1.2.0/dmgbuild-bundle-arm64-75c8a6c-uwh7j/p 618e91d4b336f07556883e2751a6a105d4bfdad1a86998ebeb129644cc12b252 (sha256 hash) line 60, in hdiutil
+    results = plistlib.loads(output)
+  File "/Users/runner/work/Scholar-Harness/Scholar-Harness/.cache/electron-builder/dmg-builder@1.2.0/dmgbuild-bundle-arm64-75c8a6c-uwh7j/p 98d3fbd6bc7a474a1b22555c802edbc1499f054e861fd3b3a48115e3ecf418fc (sha256 hash) line 925, in loads
+    return load(fp, fmt=fmt, dict_type=dict_type, aware_datetime=aware_datetime)
+  File "/Users/runner/work/Scholar-Harness/Scholar-Harness/.cache/electron-builder/dmg-builder@1.2.0/dmgbuild-bundle-arm64-75c8a6c-uwh7j/p 98d3fbd6bc7a474a1b22555c802edbc1499f054e861fd3b3a48115e3ecf418fc (sha256 hash) line 906, in load
+    raise InvalidFileException()
+plistlib.InvalidFileException: Invalid file
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               hdiutil: attach failed - Device not configured
+Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "/Users/runner/work/Scholar-Harness/Scholar-Harness/.cache/electron-builder/dmg-builder@1.2.0/dmgbuild-bundle-arm64-75c8a6c-uwh7j/python/lib/python3.14/site-packages/dmgbuild/__main__.py", line 70, in <module>
+    main()
+    ~~~~^^
+  File "/Users/runner/work/Scholar-Harness/Scholar-Harness/.cache/electron-builder/dmg-builder@1.2.0/dmgbuild-bundle-arm64-75c8a6c-uwh7j/python/lib/python3.14/site-packages/dmgbuild/__main__.py", line 59, in main
+    build_dmg(
+    ~~~~~~~~~^
+        args.filename,
+        ^^^^^^^^^^^^^^
+    ...<4 lines>...
+        detach_retries=args.detachRetries,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/Users/runner/work/Scholar-Harness/Scholar-Harness/.cache/electron-builder/dmg-builder@1.2.0/dmgbuild-bundle-arm64-75c8a6c-uwh7j/python/lib/python3.14/site-packages/dmgbuild/core.py", line 530, in build_dmg
+    ret, output = hdiutil(
+                  ~~~~~~~^
+        "attach", "-nobrowse", "-owners", "off", writableFile.name
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/Users/runner/work/Scholar-Harness/Scholar-Harness/.cache/electron-builder/dmg-builder@1.2.0/dmgbuild-bundle-arm64-75c8a6c-uwh7j/python/lib/python3.14/site-packages/dmgbuild/core.py", line 60, in hdiutil
+    results = plistlib.loads(output)
+  File "/Users/runner/work/Scholar-Harness/Scholar-Harness/.cache/electron-builder/dmg-builder@1.2.0/dmgbuild-bundle-arm64-75c8a6c-uwh7j/python/lib/python3.14/plistlib.py", line 925, in loads
+    return load(fp, fmt=fmt, dict_type=dict_type, aware_datetime=aware_datetime)
+  File "/Users/runner/work/Scholar-Harness/Scholar-Harness/.cache/electron-builder/dmg-builder@1.2.0/dmgbuild-bundle-arm64-75c8a6c-uwh7j/python/lib/python3.14/plistlib.py", line 906, in load
+    raise InvalidFileException()
+plistlib.InvalidFileException: Invalid file
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   at /Users/runner/work/Scholar-Harness/Scholar-Harness/node_modules/builder-util/src/util.ts:155:18
+    at ChildProcess.exithandler (node:child_process:424:5)
+    at ChildProcess.emit (node:events:519:28)
+    at maybeClose (node:internal/child_process:1101:16)
+    at Process.ChildProcess._handle.onexit (node:internal/child_process:304:5)
