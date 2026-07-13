@@ -33,12 +33,35 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Build macOS installers
+      - name: Prepare macOS application
         run: |
           set -o pipefail
           ulimit -n 65536 || true
           ulimit -n
-          npm run electron:build:mac 2>&1 | tee macos-build.log
+          : > macos-build.log
+          npm run electron:prepare 2>&1 | tee -a macos-build.log
+          npm run build 2>&1 | tee -a macos-build.log
+          npx tsc -p electron/tsconfig.json 2>&1 | tee -a macos-build.log
+          node scripts/build-copy.js 2>&1 | tee -a macos-build.log
+          npm run build:bytecode 2>&1 | tee -a macos-build.log
+          node scripts/prepare-mac-icon.js 2>&1 | tee -a macos-build.log
+          node scripts/write-mac-electron-builder-config.js 2>&1 | tee -a macos-build.log
+
+      - name: Build macOS x64 installer
+        run: |
+          set -o pipefail
+          npx electron-builder --config dist/electron-builder-mac.json --mac dmg --x64 --publish never 2>&1 | tee -a macos-build.log
+
+      - name: Release macOS disk-image devices
+        if: success()
+        run: |
+          hdiutil info
+          sleep 10
+
+      - name: Build macOS arm64 installer
+        run: |
+          set -o pipefail
+          npx electron-builder --config dist/electron-builder-mac.json --mac dmg --arm64 --publish never 2>&1 | tee -a macos-build.log
 
       - name: Print build log tail
         if: failure()
