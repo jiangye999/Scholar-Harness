@@ -27,6 +27,7 @@
     "toolsets": {
       "winCodeSign": "1.1.0"
     },
+    "afterPack": "scripts/windows-after-pack.js",
     "asar": true,
     "asarUnpack": [
       "dist/**/*.js",
@@ -109,7 +110,7 @@
         }
       ],
       "icon": "electron/icon.ico",
-      "signAndEditExecutable": true,
+      "signAndEditExecutable": false,
       "verifyUpdateCodeSignature": true
     },
     "mac": {
