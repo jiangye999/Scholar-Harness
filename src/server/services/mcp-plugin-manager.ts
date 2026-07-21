@@ -133,7 +133,7 @@ async function searchNpmMcpPlugins(query: string): Promise<McpMarketplaceCandida
   const text = query ? `${query} mcp` : 'academic research literature citation paper mcp';
   const url = `https://registry.npmjs.org/-/v1/search?text=${encodeURIComponent(text)}&size=20`;
   const response = await fetch(url, {
-    headers: { accept: 'application/json', 'user-agent': 'Scholar-Harness/1.0.6' },
+    headers: { accept: 'application/json', 'user-agent': 'Scholar-Harness/1.0.7' },
     signal: AbortSignal.timeout(10_000),
   });
   if (!response.ok) throw new Error(`npm Registry 返回 HTTP ${response.status}`);
@@ -153,7 +153,7 @@ async function searchNpmMcpPlugins(query: string): Promise<McpMarketplaceCandida
       const metadataResponse = await fetch(
         `https://registry.npmjs.org/${encodeURIComponent(String(pkg.name))}/latest`,
         {
-          headers: { accept: 'application/json', 'user-agent': 'Scholar-Harness/1.0.6' },
+          headers: { accept: 'application/json', 'user-agent': 'Scholar-Harness/1.0.7' },
           signal: AbortSignal.timeout(8_000),
         },
       );
@@ -218,7 +218,7 @@ async function searchGithubMcpPlugins(query: string): Promise<McpMarketplaceCand
   const headers: Record<string, string> = {
     accept: 'application/vnd.github+json',
     'x-github-api-version': '2022-11-28',
-    'user-agent': 'Scholar-Harness/1.0.6',
+    'user-agent': 'Scholar-Harness/1.0.7',
   };
   const githubToken = String(process.env.GITHUB_TOKEN || process.env.GH_TOKEN || '').trim();
   if (githubToken) headers.authorization = `Bearer ${githubToken}`;
@@ -304,13 +304,13 @@ async function searchSmitheryMcpPlugins(query: string, config: McpMarketplaceCon
 async function searchGlamaMcpPlugins(query: string): Promise<McpMarketplaceCandidate[]> {
   const url = `https://glama.ai/api/mcp/v1/servers?query=${encodeURIComponent(query || 'academic research')}&first=20`;
   const response = await fetch(url, {
-    headers: { accept: 'application/json', 'user-agent': 'Scholar-Harness/1.0.6' },
+    headers: { accept: 'application/json', 'user-agent': 'Scholar-Harness/1.0.7' },
     signal: AbortSignal.timeout(10_000),
   });
   if (!response.ok) throw new Error(`Glama 返回 HTTP ${response.status}`);
   const payload = await response.json();
   const githubHeaders: Record<string, string> = {
-    'user-agent': 'Scholar-Harness/1.0.6',
+    'user-agent': 'Scholar-Harness/1.0.7',
     'x-github-api-version': '2022-11-28',
   };
   const githubToken = String(process.env.GITHUB_TOKEN || process.env.GH_TOKEN || '').trim();
@@ -378,7 +378,7 @@ async function searchPulseMcpPlugins(query: string, config: McpMarketplaceConfig
 async function searchMcpSoPlugins(query: string): Promise<McpMarketplaceCandidate[]> {
   const url = `https://mcp.so/servers?q=${encodeURIComponent(query || 'academic research')}`;
   const response = await fetch(url, {
-    headers: { accept: 'text/html', 'user-agent': 'Scholar-Harness/1.0.6' },
+    headers: { accept: 'text/html', 'user-agent': 'Scholar-Harness/1.0.7' },
     signal: AbortSignal.timeout(10_000),
   });
   if (!response.ok) throw new Error(`MCP.so 返回 HTTP ${response.status}`);
@@ -643,7 +643,7 @@ export class McpStdioSession {
     await this.request('initialize', {
       protocolVersion: '2024-11-05',
       capabilities: {},
-      clientInfo: { name: 'scholar-harness', version: '1.0.6' },
+      clientInfo: { name: 'scholar-harness', version: '1.0.7' },
     }, this.timeouts.initializeMs === undefined ? 20_000 : this.timeouts.initializeMs);
     this.notify('notifications/initialized', {});
   }
