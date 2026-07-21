@@ -134,6 +134,8 @@
       if (embeddingLibraryState.tagSearchTimer) {
         clearTimeout(embeddingLibraryState.tagSearchTimer);
       }
+      var downloadDialog = document.getElementById('embeddingDownloadDialog');
+      if (downloadDialog) downloadDialog.remove();
       var modal = document.getElementById('embeddingLibraryModal');
       if (modal) modal.remove();
     }
@@ -141,17 +143,17 @@
 
     window.showEmbeddingLibrary = async function() {
       var existing = document.getElementById('embeddingLibraryModal');
-      if (existing) existing.remove();
+      if (existing) closeEmbeddingLibrary();
+      if (typeof prepareStandaloneWorkspaceSurface === 'function') {
+        prepareStandaloneWorkspaceSurface('embeddingLibraryModal');
+      }
 
       var modal = document.createElement('div');
       modal.id = 'embeddingLibraryModal';
-      modal.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.62);display:flex;align-items:center;justify-content:center;z-index:10020;padding:20px;';
-      modal.classList.add('custom-fullscreen-overlay');
-      modal.onclick = function(event) {
-        if (event.target === modal) closeEmbeddingLibrary();
-      };
+      modal.className = 'app-secondary-overlay custom-fullscreen-overlay';
+      modal.style.cssText = 'position:fixed;top:var(--app-chrome-height);left:var(--left-sidebar-width);right:0;bottom:0;background:var(--bg-primary);display:flex;align-items:stretch;justify-content:stretch;z-index:20000;padding:0;';
       modal.innerHTML =
-        '<div id="embeddingLibraryPanel" class="custom-fullscreen-panel" style="width:min(1180px,96vw);height:min(900px,96vh);background:var(--modal-bg);border:1px solid var(--modal-border);border-radius:8px;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 18px 60px rgba(0,0,0,0.35);" onclick="event.stopPropagation()">' +
+        '<div id="embeddingLibraryPanel" class="custom-fullscreen-panel" style="width:100%;height:100%;background:var(--modal-bg);border:0;border-radius:0;display:flex;flex-direction:column;overflow:hidden;box-shadow:none;">' +
           '<div style="display:flex;align-items:center;justify-content:space-between;padding:14px 18px;border-bottom:1px solid var(--border-color);">' +
             '<div style="font-size:16px;font-weight:700;color:var(--text-primary);">' + escapeHtml(getEmbeddingProjectLabels().embeddingLibrary) + '</div>' +
             '<div style="display:flex;gap:8px;align-items:center;">' +
@@ -925,6 +927,7 @@
       }
       var dialog = document.createElement('div');
       dialog.id = 'embeddingDownloadDialog';
+      dialog.className = 'app-secondary-overlay app-tertiary-overlay';
       dialog.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.48);z-index:10060;display:flex;align-items:center;justify-content:center;padding:20px;';
       dialog.onclick = function(event) {
         if (event.target === dialog) closeEmbeddingDownloadDialog();

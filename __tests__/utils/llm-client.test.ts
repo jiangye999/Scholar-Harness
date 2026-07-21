@@ -1,3 +1,7 @@
+import { EventEmitter } from "events";
+import * as https from "https";
+import { PassThrough } from "stream";
+
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   buildChatCompletionRequestBody,
@@ -6,9 +10,59 @@ import {
   normalizeChatCompletionUrl,
 } from "../../src/utils/llm-client";
 
+vi.mock("https", () => ({
+  request: vi.fn(),
+}));
+
+interface CapturedHttpsRequest {
+  options: https.RequestOptions;
+  body: string;
+}
+
+const httpsRequestMock = vi.mocked(https.request);
+
+function mockHttpsJsonResponse(payload: unknown): CapturedHttpsRequest[] {
+  const captured: CapturedHttpsRequest[] = [];
+  httpsRequestMock.mockImplementation(((options: https.RequestOptions, callback: (response: PassThrough & {
+    statusCode?: number;
+    statusMessage?: string;
+  }) => void) => {
+    const request = new EventEmitter() as EventEmitter & {
+      setTimeout: ReturnType<typeof vi.fn>;
+      write: ReturnType<typeof vi.fn>;
+      end: ReturnType<typeof vi.fn>;
+      destroy: ReturnType<typeof vi.fn>;
+    };
+    const record: CapturedHttpsRequest = { options, body: "" };
+    captured.push(record);
+
+    request.setTimeout = vi.fn();
+    request.write = vi.fn((chunk: string | Buffer) => {
+      record.body += Buffer.isBuffer(chunk) ? chunk.toString("utf-8") : String(chunk);
+    });
+    request.end = vi.fn(() => {
+      queueMicrotask(() => {
+        const response = new PassThrough() as PassThrough & {
+          statusCode?: number;
+          statusMessage?: string;
+        };
+        response.statusCode = 200;
+        response.statusMessage = "OK";
+        callback(response);
+        response.end(JSON.stringify(payload));
+      });
+    });
+    request.destroy = vi.fn((error?: Error) => {
+      if (error) request.emit("error", error);
+    });
+    return request;
+  }) as typeof https.request);
+  return captured;
+}
+
 describe("llm-client", () => {
   afterEach(() => {
-    vi.unstubAllGlobals();
+    vi.clearAllMocks();
   });
 
   it("normalizes compatible chat completion endpoints", () => {
@@ -34,13 +88,9 @@ describe("llm-client", () => {
   });
 
   it("calls OpenAI-compatible chat APIs and returns content", async () => {
-    const fetchMock = vi.fn().mockResolvedValue({
-      ok: true,
-      json: async () => ({
-        choices: [{ message: { content: "response text" } }],
-      }),
+    const requests = mockHttpsJsonResponse({
+      choices: [{ message: { content: "response text" } }],
     });
-    vi.stubGlobal("fetch", fetchMock);
 
     const content = await callChatCompletion(
       { apiUrl: "https://api.example.com/v1", apiKey: "test-key", label: "Test" },
@@ -53,28 +103,24 @@ describe("llm-client", () => {
     );
 
     expect(content).toBe("response text");
-    expect(fetchMock).toHaveBeenCalledWith(
-      "https://api.example.com/v1/chat/completions",
-      expect.objectContaining({
-        method: "POST",
-        headers: expect.objectContaining({ Authorization: "Bearer test-key" }),
-      })
-    );
-    const requestInit = fetchMock.mock.calls[0][1] as RequestInit & { body: string };
-    expect(JSON.parse(requestInit.body)).toMatchObject({
+    expect(httpsRequestMock).toHaveBeenCalledTimes(1);
+    expect(requests[0].options).toMatchObject({
+      protocol: "https:",
+      hostname: "api.example.com",
+      method: "POST",
+      path: "/v1/chat/completions",
+      headers: expect.objectContaining({ Authorization: "Bearer test-key" }),
+    });
+    expect(JSON.parse(requests[0].body)).toMatchObject({
       model: "model-a",
       max_tokens: 512,
     });
   });
 
   it("lets APIClient calls override apiUrl per request", async () => {
-    const fetchMock = vi.fn().mockResolvedValue({
-      ok: true,
-      json: async () => ({
-        choices: [{ message: { content: "ok" } }],
-      }),
+    const requests = mockHttpsJsonResponse({
+      choices: [{ message: { content: "ok" } }],
     });
-    vi.stubGlobal("fetch", fetchMock);
 
     const client = createLLMApiClient({
       apiUrl: "https://default.example.com/v1",
@@ -87,6 +133,10 @@ describe("llm-client", () => {
       messages: [{ role: "user", content: "hello" }],
     });
 
-    expect(fetchMock.mock.calls[0][0]).toBe("https://override.example.com/v1/chat/completions");
+    expect(httpsRequestMock).toHaveBeenCalledTimes(1);
+    expect(requests[0].options).toMatchObject({
+      hostname: "override.example.com",
+      path: "/v1/chat/completions",
+    });
   });
 });

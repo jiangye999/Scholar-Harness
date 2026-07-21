@@ -4,6 +4,7 @@ import {
   buildFigureDraftBlock,
   insertFigureBlockIntoDraft,
   normalizeDraftAssetChapterKey,
+  removeFigureBlockFromDraft,
 } from '../../src/server/routes/draft-assets';
 
 describe('draft figure assets', () => {
@@ -56,5 +57,30 @@ describe('draft figure assets', () => {
 
     expect(next).toContain('\\subsection{3.4 Seasonal dynamics}');
     expect(next).toContain('% scholar-figure:fig_new123');
+  });
+
+  it('removes only the selected figure block from a chapter draft', () => {
+    const firstBlock = buildFigureDraftBlock({
+      id: 'fig_remove123',
+      figureLabel: 'Figure 5',
+      caption: 'Figure to remove.',
+      filePath: 'E:/project/fig_remove123.png',
+    });
+    const secondBlock = buildFigureDraftBlock({
+      id: 'fig_keep456',
+      figureLabel: 'Figure 6',
+      caption: 'Figure to keep.',
+      filePath: 'E:/project/fig_keep456.png',
+    });
+    const draft = ['Results text.', firstBlock, secondBlock, 'Closing text.'].join('\n\n');
+
+    const next = removeFigureBlockFromDraft(draft, 'fig_remove123');
+
+    expect(next).not.toContain('scholar-figure:fig_remove123');
+    expect(next).not.toContain('Figure to remove.');
+    expect(next).toContain('scholar-figure:fig_keep456');
+    expect(next).toContain('Figure to keep.');
+    expect(next).toContain('Results text.');
+    expect(next).toContain('Closing text.');
   });
 });

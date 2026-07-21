@@ -15,9 +15,9 @@ const navItems = [
   { label: "帮助中心", href: "/help" },
 ];
 
-const windowsDownloadHref = "/downloads/scholar-harness-setup-1.0.6.exe";
-const macArm64DownloadHref = "/downloads/scholar-harness-1.0.6-arm64.dmg";
-const macX64DownloadHref = "/downloads/scholar-harness-1.0.6-x64.dmg";
+const windowsDownloadHref = "/downloads/scholar-harness-setup-1.0.7.exe";
+const macArm64DownloadHref = "/downloads/scholar-harness-1.0.7-arm64.dmg";
+const macX64DownloadHref = "/downloads/scholar-harness-1.0.7-x64.dmg";
 const manualDownloadHref = "/downloads/scholarharness-user-manual.pdf";
 const apiBaseUrl = (process.env.NEXT_PUBLIC_API_BASE_URL || "/api/v1").replace(/\/$/, "");
 
@@ -226,6 +226,19 @@ export default function Home() {
     }).catch(() => {});
   };
 
+  const handleInstallerDownload = (assetKey: string) => {
+    trackDownload(assetKey);
+    trackDownload("manual");
+
+    const manualLink = document.createElement("a");
+    manualLink.href = manualDownloadHref;
+    manualLink.download = "Scholar-Harness-使用指导手册-1.0.7.pdf";
+    manualLink.style.display = "none";
+    document.body.appendChild(manualLink);
+    manualLink.click();
+    manualLink.remove();
+  };
+
   const { isLoggedIn, user } = authState;
   const primaryCtaHref = isLoggedIn ? "/dashboard" : "/register";
   const primaryCtaLabel = isLoggedIn ? "进入控制台" : "申请内测";
@@ -345,31 +358,34 @@ export default function Home() {
                 <a
                   href={windowsDownloadHref}
                   download
-                  onClick={() => trackDownload("windows")}
+                  onClick={() => handleInstallerDownload("windows")}
                   className="inline-flex min-h-[52px] items-center justify-center gap-2 rounded-lg border border-[#5ee0c4]/35 bg-[#0b100d]/90 px-5 py-3 text-sm font-semibold text-[#5ee0c4] transition hover:border-[#5ee0c4] hover:bg-[#111813]"
                 >
-                  下载 Windows
+                  Windows + 使用说明
                   <FeatureIcon name="windows" className="h-4 w-4" />
                 </a>
                 <a
                   href={macArm64DownloadHref}
                   download
-                  onClick={() => trackDownload("mac-arm64")}
+                  onClick={() => handleInstallerDownload("mac-arm64")}
                   className="inline-flex min-h-[52px] items-center justify-center gap-2 rounded-lg border border-[#5ee0c4]/35 bg-[#0b100d]/90 px-5 py-3 text-sm font-semibold text-[#5ee0c4] transition hover:border-[#5ee0c4] hover:bg-[#111813]"
                 >
-                  Mac M 系列
+                  Mac M 系列 + 使用说明
                   <FeatureIcon name="apple" className="h-4 w-4" />
                 </a>
                 <a
                   href={macX64DownloadHref}
                   download
-                  onClick={() => trackDownload("mac-x64")}
+                  onClick={() => handleInstallerDownload("mac-x64")}
                   className="inline-flex min-h-[52px] items-center justify-center gap-2 rounded-lg border border-[#5ee0c4]/35 bg-[#0b100d]/90 px-5 py-3 text-sm font-semibold text-[#5ee0c4] transition hover:border-[#5ee0c4] hover:bg-[#111813]"
                 >
-                  Mac Intel
+                  Mac Intel + 使用说明
                   <FeatureIcon name="apple" className="h-4 w-4" />
                 </a>
               </div>
+              <p className="mt-3 text-xs text-[#9faaa4]">
+                点击安装包会同时下载 PDF 使用说明；若浏览器拦截多个文件，可单独点击“使用说明”。
+              </p>
               <div className="mt-4 flex flex-wrap items-center gap-2 text-xs font-medium text-[#9faaa4]">
                 <span className="rounded-lg border border-white/10 bg-[#0b100d]/78 px-3 py-2 text-[#dbe4df]">
                   网页浏览量 {pageViewText || "统计中"} 次

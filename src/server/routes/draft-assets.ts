@@ -31,11 +31,12 @@ export interface DraftFigureAsset {
   relativePath: string;
   url: string;
   source: {
-    kind: 'r-code' | 'experiment-results' | 'chat-upload';
+    kind: 'r-code' | 'experiment-results' | 'chat-upload' | 'merged-library';
     jobId?: string;
     relativePath?: string;
     originalPath?: string;
     url?: string;
+    sourceAssetIds?: string[];
   };
   draftLinked: boolean;
   createdAt: string;
@@ -74,6 +75,24 @@ const updatePaperFigureSchema = z.object({
   figureLabel: z.string().max(120).optional(),
   title: z.string().max(500).optional(),
   caption: z.string().max(2000).optional(),
+});
+
+const paperFigureAssetIdsSchema = z.array(
+  z.string().regex(/^[a-zA-Z0-9_-]+$/).max(120)
+).min(1).max(100);
+
+const deletePaperFiguresSchema = z.object({
+  userId: z.string().optional(),
+  assetIds: paperFigureAssetIdsSchema,
+});
+
+const mergePaperFiguresSchema = z.object({
+  userId: z.string().optional(),
+  assetIds: paperFigureAssetIdsSchema.min(2).max(20),
+  figureLabel: z.string().max(120).optional().default('Figure'),
+  title: z.string().max(500).optional().default(''),
+  caption: z.string().max(2000).optional().default(''),
+  dataUrl: z.string().max(48 * 1024 * 1024),
 });
 
 export function normalizeDraftAssetChapterKey(value: unknown): string {
@@ -359,6 +378,20 @@ export function insertFigureBlockIntoDraft(
   return `${body ? `${body}\n\n` : ''}${insertion}${suffix ? `\n${suffix.trimStart()}` : ''}`;
 }
 
+export function removeFigureBlockFromDraft(draftContent: string, assetId: string): string {
+  const safeAssetId = String(assetId || '').replace(/[^a-zA-Z0-9_-]/g, '');
+  if (!safeAssetId) return String(draftContent || '');
+  const escapedId = safeAssetId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const figurePattern = new RegExp(
+    `\\n?%\\s*scholar-figure:${escapedId}\\s*\\n\\\\begin\\{figure\\}[\\s\\S]*?\\\\end\\{figure\\}\\s*\\n?`,
+    'g'
+  );
+  return String(draftContent || '')
+    .replace(figurePattern, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
 async function copyFigureToDraftAssets(input: {
   userId: string;
   sourcePath: string;
@@ -570,6 +603,129 @@ export function createDraftAssetsRouter(options: {
       logger.error('[DraftAssets] Update paper figure failed:', error);
       const status = error instanceof z.ZodError ? 400 : ((error as Error).message === '图件不存在' ? 404 : 500);
       res.status(status).json({ success: false, error: (error as Error).message || '更新论文图片失败' });
+    }
+  });
+
+  router.delete('/figures', async (req, res) => {
+    try {
+      const body = deletePaperFiguresSchema.parse(req.body || {});
+      const userId = await resolveDraftAssetUserId(body.userId);
+      const requestedIds = new Set(body.assetIds);
+      const removedAssets = await withDraftFigureManifestLock(userId, async () => {
+        const manifest = await loadDraftFigureManifest(userId);
+        const removed = manifest.figures.filter(asset => requestedIds.has(asset.id));
+        if (removed.length !== requestedIds.size) {
+          const foundIds = new Set(removed.map(asset => asset.id));
+          const missing = body.assetIds.filter(assetId => !foundIds.has(assetId));
+          throw new Error(`图件不存在：${missing.join(', ')}`);
+        }
+        manifest.figures = manifest.figures.filter(asset => !requestedIds.has(asset.id));
+        await saveDraftFigureManifest(userId, manifest);
+        return removed;
+      });
+
+      const assetRoot = path.resolve(getDraftAssetRoot(userId));
+      await Promise.all(removedAssets.map(async asset => {
+        try {
+          await fs.rm(resolveScopedFile(assetRoot, asset.relativePath), { force: true });
+        } catch (error) {
+          logger.warn(`[DraftAssets] Removed manifest entry but could not remove ${asset.relativePath}: ${(error as Error).message}`);
+        }
+      }));
+
+      const linkedByChapter = new Map<string, string[]>();
+      removedAssets.filter(asset => asset.draftLinked).forEach(asset => {
+        const ids = linkedByChapter.get(asset.chapterKey) || [];
+        ids.push(asset.id);
+        linkedByChapter.set(asset.chapterKey, ids);
+      });
+      for (const [chapterKey, assetIds] of linkedByChapter.entries()) {
+        let changed = false;
+        await options.sessionStore.updateDraft(userId, chapterKey, current => {
+          const previous = current?.content || '';
+          const next = assetIds.reduce(removeFigureBlockFromDraft, previous);
+          changed = next !== previous;
+          return next;
+        });
+        if (changed && options.onDraftUpdated) await options.onDraftUpdated(userId, chapterKey);
+      }
+
+      logger.info(`[DraftAssets] Deleted ${removedAssets.length} paper figure(s) for ${userId}`);
+      res.json({ success: true, deletedIds: removedAssets.map(asset => asset.id), deletedCount: removedAssets.length });
+    } catch (error) {
+      logger.error('[DraftAssets] Delete paper figures failed:', error);
+      const message = (error as Error).message || '删除论文图片失败';
+      const status = error instanceof z.ZodError ? 400 : (message.startsWith('图件不存在') ? 404 : 500);
+      res.status(status).json({ success: false, error: message });
+    }
+  });
+
+  router.post('/figures/merge', async (req, res) => {
+    try {
+      const body = mergePaperFiguresSchema.parse(req.body || {});
+      const userId = await resolveDraftAssetUserId(body.userId);
+      const manifest = await loadDraftFigureManifest(userId);
+      const assetById = new Map(manifest.figures.map(asset => [asset.id, asset]));
+      const sourceAssets = body.assetIds.map(assetId => assetById.get(assetId));
+      const missingIds = body.assetIds.filter((_, index) => !sourceAssets[index]);
+      if (missingIds.length) throw new Error(`图件不存在：${missingIds.join(', ')}`);
+
+      const match = body.dataUrl.match(/^data:image\/png;base64,([a-zA-Z0-9+/=\r\n]+)$/);
+      if (!match) throw new Error('合并图片数据必须是 PNG');
+      const imageBuffer = Buffer.from(match[1], 'base64');
+      const pngSignature = imageBuffer.subarray(0, 8).toString('hex');
+      if (!imageBuffer.length || pngSignature !== '89504e470d0a1a0a') throw new Error('合并后的 PNG 数据无效');
+      if (imageBuffer.length > 40 * 1024 * 1024) throw new Error('合并后的图片超过 40 MB，请降低原图尺寸后重试');
+
+      const assetRoot = getDraftAssetRoot(userId);
+      const targetDir = path.join(assetRoot, 'paper-figures', 'merged');
+      await fs.mkdir(targetDir, { recursive: true });
+      const id = `fig_${randomUUID().replace(/-/g, '').slice(0, 16)}`;
+      const figureLabel = normalizeDisplayText(body.figureLabel, 'Figure', 120);
+      const title = normalizeDisplayText(body.title, 'Merged figure', 500);
+      const caption = normalizeDisplayText(body.caption, title || figureLabel, 2000);
+      const stem = buildDraftFigureFileStem(figureLabel, title, '');
+      let fileName = `${stem}.png`;
+      let suffix = 2;
+      while (fsSync.existsSync(path.join(targetDir, fileName))) {
+        fileName = `${stem}-${suffix}.png`;
+        suffix += 1;
+      }
+      const filePath = path.join(targetDir, fileName);
+      await fs.writeFile(filePath, imageBuffer);
+      const asset: DraftFigureAsset = {
+        id,
+        userId,
+        chapterName: '论文图片',
+        chapterKey: 'paper-figures',
+        subsectionId: '',
+        subsectionTitle: '',
+        subsectionKey: 'merged',
+        figureLabel,
+        title,
+        caption,
+        originalFileName: fileName,
+        fileName,
+        filePath,
+        relativePath: toManifestRelativePath(assetRoot, filePath),
+        url: `/api/draft-assets/figure/${encodeURIComponent(userId)}/${encodeURIComponent(id)}`,
+        source: { kind: 'merged-library', sourceAssetIds: body.assetIds },
+        draftLinked: false,
+        createdAt: new Date().toISOString(),
+      };
+      await withDraftFigureManifestLock(userId, async () => {
+        const current = await loadDraftFigureManifest(userId);
+        current.figures.push(asset);
+        await saveDraftFigureManifest(userId, current);
+      });
+
+      logger.info(`[DraftAssets] Merged ${body.assetIds.length} paper figures into ${id} for ${userId}`);
+      res.json({ success: true, asset });
+    } catch (error) {
+      logger.error('[DraftAssets] Merge paper figures failed:', error);
+      const message = (error as Error).message || '合并论文图片失败';
+      const status = error instanceof z.ZodError ? 400 : (message.startsWith('图件不存在') ? 404 : 500);
+      res.status(status).json({ success: false, error: message });
     }
   });
 

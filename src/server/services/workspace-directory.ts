@@ -2,6 +2,10 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 
 import { createWorkspaceToolRuntime } from './workspace-tools';
+import {
+  assertPathAuthorizedByWorkspaceRoot,
+  isPathWithinRoot,
+} from './workspace-path-authorization';
 
 export type WorkspaceDirectoryPermission = 'read-only' | 'workspace-write' | 'danger-full-access';
 
@@ -12,6 +16,7 @@ export interface WorkspaceDirectoryInput {
   source?: 'ui' | 'message';
   safeWorkRoot?: string;
   aiWorkRoot?: string;
+  conversationId?: string;
 }
 
 export interface WorkspaceDirectoryFileSummary {
@@ -116,34 +121,6 @@ interface WorkspaceDirectoryEntry {
   size?: number;
 }
 
-const SKIP_DIRS = new Set([
-  '.git',
-  '.hg',
-  '.svn',
-  'scholarharness_ai_workspaces',
-  '.scholar-harness-workspaces',
-  'node_modules',
-  'venv',
-  '.venv',
-  'env',
-  '.env',
-  'site-packages',
-  '__pypackages__',
-  'dist',
-  'dist-electron',
-  '.next',
-  '.turbo',
-  '.cache',
-  'coverage',
-  'logs',
-  'tmp',
-  'temp',
-  '__pycache__',
-  '.pytest_cache',
-  '.mypy_cache',
-  '.ruff_cache',
-]);
-
 const TEXT_EXTENSIONS = new Set([
   '.txt', '.md', '.markdown', '.json', '.jsonl', '.yaml', '.yml', '.toml', '.ini', '.env',
   '.js', '.jsx', '.ts', '.tsx', '.mjs', '.cjs', '.css', '.scss', '.html', '.xml', '.svg',
@@ -191,7 +168,9 @@ const PRIORITY_FILE_PATTERNS = [
 const MAX_WORKSPACE_FILES = 100000;
 const MAX_CONTEXT_FILES = 240;
 const MAX_MANIFEST_TOP_LEVEL_ENTRIES = 80;
+const MAX_WORKSPACE_STAT_CONCURRENCY = 64;
 const WORKSPACE_INDEX_TTL_MS = 5 * 60_000;
+const AI_WORKSPACE_DIRECTORY_NAME = 'ScholarHarness_AI_Workspaces';
 const MAX_CONTENT_MATCHES_PER_FILE = 5;
 const MAX_CONTENT_SEARCH_FILES = 3000;
 const FILE_NAME_EXTENSIONS = 'docx?|rtf|xlsx?|csv|tsv|txt|md|markdown|pdf|png|jpe?g|gif|bmp|webp|tiff?|svg|r|rmd|qmd|pptx?';
@@ -236,13 +215,16 @@ export function normalizeWorkspaceDirectoryInput(value: unknown): WorkspaceDirec
   const input = value as Record<string, unknown>;
   const root = String(input.path || input.root || input.directory || '').trim();
   if (!root) return null;
+  const permission = normalizePermission(input.permission);
+  const requestedAiWorkRoot = String(input.safeWorkRoot || input.aiWorkRoot || '').trim() || undefined;
   return {
     path: root,
-    permission: normalizePermission(input.permission),
+    permission,
     enabled: input.enabled !== false,
     source: input.source === 'message' ? 'message' : 'ui',
-    safeWorkRoot: String(input.safeWorkRoot || input.aiWorkRoot || '').trim() || undefined,
-    aiWorkRoot: String(input.aiWorkRoot || input.safeWorkRoot || '').trim() || undefined,
+    safeWorkRoot: permission === 'read-only' ? undefined : requestedAiWorkRoot,
+    aiWorkRoot: permission === 'read-only' ? undefined : requestedAiWorkRoot,
+    conversationId: String(input.conversationId || input.sessionId || '').trim() || undefined,
   };
 }
 
@@ -300,18 +282,49 @@ export function extractWorkspaceDirectoryInputFromText(
 }
 
 function isSubPath(parent: string, child: string): boolean {
-  const normalizedParent = path.resolve(parent);
-  const normalizedChild = path.resolve(child);
-  if (process.platform === 'win32') {
-    const lowerParent = normalizedParent.toLowerCase();
-    const lowerChild = normalizedChild.toLowerCase();
-    return lowerChild === lowerParent || lowerChild.startsWith(lowerParent.endsWith(path.sep) ? lowerParent : lowerParent + path.sep);
-  }
-  return normalizedChild === normalizedParent || normalizedChild.startsWith(normalizedParent.endsWith(path.sep) ? normalizedParent : normalizedParent + path.sep);
+  return isPathWithinRoot(parent, child);
 }
 
-function shouldSkipDirectoryName(name: string): boolean {
-  return SKIP_DIRS.has(String(name || '').toLowerCase());
+function sanitizeConversationWorkspaceId(value: unknown): string {
+  return String(value || '')
+    .trim()
+    .replace(/[^a-zA-Z0-9_-]/g, '-')
+    .slice(0, 120);
+}
+
+function resolveAiWorkspaceContainerRoot(root: string): string {
+  const resolvedRoot = path.resolve(root);
+  return path.basename(resolvedRoot).toLowerCase() === AI_WORKSPACE_DIRECTORY_NAME.toLowerCase()
+    ? resolvedRoot
+    : path.join(resolvedRoot, AI_WORKSPACE_DIRECTORY_NAME);
+}
+
+function resolveConversationAiWorkRoot(root: string, input: WorkspaceDirectoryInput): string {
+  if (normalizePermission(input.permission) === 'read-only') {
+    return '';
+  }
+  const requested = String(input.safeWorkRoot || input.aiWorkRoot || '').trim();
+  if (requested) {
+    const resolvedRequested = path.resolve(requested);
+    const relativeParts = path.relative(path.resolve(root), resolvedRequested)
+      .toLowerCase()
+      .split(/[\\/]+/)
+      .filter(Boolean);
+    if (
+      isSubPath(root, resolvedRequested)
+      && (
+        path.basename(path.resolve(root)).toLowerCase() === AI_WORKSPACE_DIRECTORY_NAME.toLowerCase()
+        || relativeParts.includes(AI_WORKSPACE_DIRECTORY_NAME.toLowerCase())
+      )
+    ) {
+      return resolvedRequested;
+    }
+  }
+
+  const conversationId = sanitizeConversationWorkspaceId(input.conversationId);
+  return conversationId
+    ? path.join(resolveAiWorkspaceContainerRoot(root), `Conversation-${conversationId}`)
+    : '';
 }
 
 export async function resolveWorkspaceDirectoryRoot(input: WorkspaceDirectoryInput): Promise<string> {
@@ -367,25 +380,32 @@ async function walkWorkspaceFiles(root: string, maxFiles = MAX_WORKSPACE_FILES):
   async function walk(dir: string): Promise<void> {
     if (files.length >= maxFiles) return;
     const entries = await fs.readdir(dir, { withFileTypes: true }).catch(() => []);
+    const fileEntries = entries
+      .filter(entry => entry.isFile())
+      .slice(0, Math.max(0, maxFiles - files.length));
+    for (let offset = 0; offset < fileEntries.length && files.length < maxFiles; offset += MAX_WORKSPACE_STAT_CONCURRENCY) {
+      const batch = fileEntries.slice(offset, offset + MAX_WORKSPACE_STAT_CONCURRENCY);
+      const records = await Promise.all(batch.map(async entry => {
+        const absolutePath = path.join(dir, entry.name);
+        const stat = await fs.stat(absolutePath).catch(() => null);
+        if (!stat?.isFile()) return null;
+        return {
+          absolutePath,
+          relativePath: path.relative(root, absolutePath).replace(/\\/g, '/'),
+          size: stat.size,
+          mtimeMs: stat.mtimeMs,
+          textLike: isTextLikeFile(absolutePath, stat.size),
+        } satisfies WorkspaceFileRecord;
+      }));
+      for (const record of records) {
+        if (record) files.push(record);
+        if (files.length >= maxFiles) break;
+      }
+    }
     for (const entry of entries) {
       if (files.length >= maxFiles) break;
-      if (entry.isDirectory() && shouldSkipDirectoryName(entry.name)) continue;
-      const absolutePath = path.join(dir, entry.name);
-      const relativePath = path.relative(root, absolutePath).replace(/\\/g, '/');
-      if (entry.isDirectory()) {
-        await walk(absolutePath);
-        continue;
-      }
-      if (!entry.isFile()) continue;
-      const stat = await fs.stat(absolutePath).catch(() => null);
-      if (!stat) continue;
-      files.push({
-        absolutePath,
-        relativePath,
-        size: stat.size,
-        mtimeMs: stat.mtimeMs,
-        textLike: isTextLikeFile(absolutePath, stat.size),
-      });
+      if (!entry.isDirectory() || entry.name.toLowerCase() === '.git') continue;
+      await walk(path.join(dir, entry.name));
     }
   }
   await walk(root);
@@ -403,6 +423,62 @@ async function getWorkspaceFiles(root: string, maxFiles = MAX_WORKSPACE_FILES, f
     expiresAt: Date.now() + WORKSPACE_INDEX_TTL_MS,
     files,
   });
+  return files;
+}
+
+async function getWorkspaceFilesAcrossRoots(
+  root: string,
+  additionalRoots: string[] = [],
+  maxFiles = MAX_WORKSPACE_FILES,
+  forceRefresh = false
+): Promise<WorkspaceFileRecord[]> {
+  const primaryRoot = path.resolve(root);
+  const aiWorkspaceContainerRoot = resolveAiWorkspaceContainerRoot(primaryRoot);
+  const roots = [
+    ...additionalRoots
+      .map(value => String(value || '').trim())
+      .filter(Boolean)
+      .map(value => path.resolve(value)),
+    aiWorkspaceContainerRoot,
+    primaryRoot,
+  ];
+  const seenRoots = new Set<string>();
+  const seenFiles = new Set<string>();
+  const files: WorkspaceFileRecord[] = [];
+
+  for (const candidateRoot of roots) {
+    const rootKey = process.platform === 'win32' ? candidateRoot.toLowerCase() : candidateRoot;
+    if (seenRoots.has(rootKey)) continue;
+    seenRoots.add(rootKey);
+    // AI work roots are conversation-scoped children of the authorized source
+    // workspace. Ignore stale or external paths rather than broadening access.
+    if (!isSubPath(primaryRoot, candidateRoot)) continue;
+    const stat = await fs.stat(candidateRoot).catch(() => null);
+    if (!stat?.isDirectory()) continue;
+    try {
+      assertPathAuthorizedByWorkspaceRoot(primaryRoot, candidateRoot);
+    } catch {
+      continue;
+    }
+    // Both the current conversation folder and the complete AI workspace
+    // container change during Agent work. Always read child roots from disk so
+    // the five-minute source-tree cache cannot hide a just-created output or a
+    // file stored in another conversation folder.
+    const refreshCandidate = forceRefresh || candidateRoot !== primaryRoot;
+    const discovered = await getWorkspaceFiles(candidateRoot, maxFiles, refreshCandidate);
+    for (const file of discovered) {
+      const fileKey = process.platform === 'win32'
+        ? file.absolutePath.toLowerCase()
+        : file.absolutePath;
+      if (seenFiles.has(fileKey)) continue;
+      seenFiles.add(fileKey);
+      files.push({
+        ...file,
+        relativePath: path.relative(primaryRoot, file.absolutePath).replace(/\\/g, '/'),
+      });
+      if (files.length >= maxFiles) return files;
+    }
+  }
   return files;
 }
 
@@ -459,8 +535,11 @@ async function readExcerpt(filePath: string, maxChars: number): Promise<string> 
 export async function buildWorkspaceDirectoryContext(input: WorkspaceDirectoryInput): Promise<WorkspaceDirectoryContext> {
   const root = await resolveWorkspaceDirectoryRoot(input);
   const permission = normalizePermission(input.permission);
-  const requestedSafeRoot = String(input.safeWorkRoot || input.aiWorkRoot || '').trim();
-  const discovered = await getWorkspaceFiles(root);
+  const requestedSafeRoot = resolveConversationAiWorkRoot(root, input);
+  const discovered = await getWorkspaceFilesAcrossRoots(
+    root,
+    requestedSafeRoot ? [requestedSafeRoot] : []
+  );
   const sorted = sortFilesForContext(discovered);
   const summaries: WorkspaceDirectoryFileSummary[] = sorted.slice(0, MAX_CONTEXT_FILES).map(file => ({
     path: file.relativePath,
@@ -477,14 +556,15 @@ export async function buildWorkspaceDirectoryContext(input: WorkspaceDirectoryIn
     requestedSafeRoot ? `AI工作文件夹：${requestedSafeRoot}` : '',
     `文件总数：${discovered.length}`,
     `文件类型统计：${fileTypeStats}`,
-    `说明：默认只注入轻量 Manifest，不把完整目录树或文件全文一次性塞进提示词；AI 必须通过后端原生工作目录工具按需 list/search/read 文件。${requestedSafeRoot ? '需要写入、生成或复制数据时必须放入 AI 工作文件夹。' : ''}`,
+    `授权范围：根目录本身及其全部层级的普通子目录、隐藏目录和文件；目录权限自动向下继承。为防止越权，不跟随指向根目录之外的符号链接或目录联接。`,
+    `说明：默认只注入轻量 Manifest，不把完整目录树或文件全文一次性塞进提示词；AI 必须通过后端原生工作目录工具按需递归 list/search/read 文件。${requestedSafeRoot ? '检索范围同时包含用户配置目录、整个 ScholarHarness_AI_Workspaces 容器及当前会话 AI 工作目录；当前会话优先，生成或更新的文件会同步保存在两处。' : ''}`,
     '',
     '### 顶层内容概览',
     tree || '（空目录）',
     '',
     '### 内容读取策略',
     '- 当前 Manifest 只说明目录概况，不代表全量文件证据。',
-    '- 判断文件是否存在、代码是否匹配、数据列是否存在时，必须调用 list_dir、file_search、grep_files、read_file 或 office_* 工具确认。',
+    '- 判断文件、目录、代码或数据列是否存在时，必须调用 list_dir、file_search、grep_files、read_file 或 office_* 工具确认；file_search/grep_files 默认递归覆盖全部后代目录。',
     '- 只有自动检索命中或用户明确要求查看目录/文件时，才把具体路径和片段加入回答依据。',
   ].filter(Boolean);
 
@@ -505,11 +585,11 @@ export async function buildWorkspaceDirectoryContext(input: WorkspaceDirectoryIn
 
 export async function buildWorkspacePreview(
   root: string,
-  options: { maxImages?: number; maxFiles?: number } = {}
+  options: { maxImages?: number; maxFiles?: number; additionalRoots?: string[] } = {}
 ): Promise<WorkspacePreview> {
   const maxImages = Math.max(1, Math.min(options.maxImages || 24, 80));
   const maxFiles = Math.max(1, Math.min(options.maxFiles || 60, 200));
-  const discovered = sortFilesForContext(await getWorkspaceFiles(root));
+  const discovered = sortFilesForContext(await getWorkspaceFilesAcrossRoots(root, options.additionalRoots || []));
   const images: WorkspacePreviewItem[] = [];
   const files: WorkspacePreviewItem[] = [];
   let imageCount = 0;
@@ -541,9 +621,7 @@ export function resolveWorkspaceFilePath(root: string, targetPath: string): { ab
   const absolutePath = path.isAbsolute(cleanTarget)
     ? path.resolve(cleanTarget)
     : path.resolve(root, cleanTarget);
-  if (!isSubPath(root, absolutePath)) {
-    throw new Error('拒绝访问工作目录之外的路径');
-  }
+  assertPathAuthorizedByWorkspaceRoot(root, absolutePath);
   return {
     absolutePath,
     relativePath: path.relative(root, absolutePath).replace(/\\/g, '/'),
@@ -553,22 +631,75 @@ export function resolveWorkspaceFilePath(root: string, targetPath: string): { ab
 export async function listWorkspaceFiles(
   root: string,
   dirPath = '',
-  maxResults = 500
-): Promise<{ root: string; dir: string; files: Array<{ path: string; size: number; kind: 'text' | 'binary' }>; truncated: boolean }> {
+  maxResults = 500,
+  additionalRoots: string[] = []
+): Promise<{
+  root: string;
+  dir: string;
+  recursive: true;
+  files: Array<{ path: string; size?: number; kind: 'directory' | 'text' | 'binary' }>;
+  truncated: boolean;
+}> {
   const resolvedDir = dirPath ? resolveWorkspaceFilePath(root, dirPath).absolutePath : root;
   const stat = await fs.stat(resolvedDir);
   if (!stat.isDirectory()) throw new Error('目标不是目录');
-  const discovered = sortFilesForContext(await getWorkspaceFiles(resolvedDir, Math.min(MAX_WORKSPACE_FILES, Math.max(maxResults * 4, 1000))));
-  const rows = discovered.slice(0, maxResults).map(file => ({
-    path: path.relative(root, file.absolutePath).replace(/\\/g, '/'),
-    size: file.size,
-    kind: file.textLike ? 'text' as const : 'binary' as const,
-  }));
+  const limit = Math.max(1, Math.min(Number(maxResults) || 500, MAX_WORKSPACE_FILES));
+  const rows: Array<{ path: string; size?: number; kind: 'directory' | 'text' | 'binary' }> = [];
+  const pendingDirectories = [resolvedDir];
+  let directoryCursor = 0;
+  let truncated = false;
+
+  while (directoryCursor < pendingDirectories.length && rows.length < limit) {
+    const currentDir = pendingDirectories[directoryCursor];
+    directoryCursor += 1;
+    const entries = await fs.readdir(currentDir, { withFileTypes: true }).catch(() => []);
+    entries.sort((a, b) => Number(b.isDirectory()) - Number(a.isDirectory()) || a.name.localeCompare(b.name));
+    for (let entryIndex = 0; entryIndex < entries.length; entryIndex += 1) {
+      const entry = entries[entryIndex];
+      const absolutePath = path.join(currentDir, entry.name);
+      const relativePath = path.relative(root, absolutePath).replace(/\\/g, '/');
+      if (entry.isDirectory()) {
+        rows.push({ path: relativePath, kind: 'directory' });
+        pendingDirectories.push(absolutePath);
+      } else if (entry.isFile()) {
+        const fileStat = await fs.stat(absolutePath).catch(() => null);
+        if (!fileStat) continue;
+        rows.push({
+          path: relativePath,
+          size: fileStat.size,
+          kind: isTextLikeFile(absolutePath, fileStat.size) ? 'text' : 'binary',
+        });
+      } else {
+        // Do not follow links or junctions whose canonical target may leave root.
+        continue;
+      }
+      if (rows.length >= limit) {
+        truncated = entryIndex < entries.length - 1 || directoryCursor < pendingDirectories.length;
+        break;
+      }
+    }
+  }
+  if (directoryCursor < pendingDirectories.length) truncated = true;
+
+  // additionalRoots are authorized descendants and therefore already included
+  // by the recursive root walk. Keep validating them to avoid silently accepting
+  // an external path supplied by an old client.
+  for (const additionalRoot of additionalRoots) {
+    const candidate = String(additionalRoot || '').trim();
+    if (candidate) {
+      try {
+        assertPathAuthorizedByWorkspaceRoot(root, path.resolve(candidate));
+      } catch {
+        throw new Error('附加工作目录超出已授权根目录');
+      }
+    }
+  }
   return {
     root,
     dir: path.relative(root, resolvedDir).replace(/\\/g, '/') || '.',
+    recursive: true,
     files: rows,
-    truncated: discovered.length > rows.length,
+    truncated,
   };
 }
 
@@ -579,11 +710,12 @@ export async function listWorkspaceFiles(
 export async function searchWorkspaceFileMentions(
   root: string,
   query = '',
-  maxResults = 120
+  maxResults = 120,
+  additionalRoots: string[] = []
 ): Promise<WorkspaceFileMentionSearchResult> {
   const normalizedQuery = String(query || '').trim();
   const max = Math.max(1, Math.min(Number(maxResults) || 120, 200));
-  const discovered = sortFilesForContext(await getWorkspaceFiles(root));
+  const discovered = sortFilesForContext(await getWorkspaceFilesAcrossRoots(root, additionalRoots));
   const requestedKinds = getRequestedWorkspaceKinds(normalizedQuery);
   const rankedByQuery = normalizedQuery
     ? discovered
@@ -652,7 +784,6 @@ export async function listWorkspaceDirectoryEntries(
 
   for (const entry of entries) {
     if (rows.length >= maxResults) break;
-    if (entry.isDirectory() && shouldSkipDirectoryName(entry.name)) continue;
     const absolutePath = path.join(resolvedDir, entry.name);
     const relativePath = path.relative(root, absolutePath).replace(/\\/g, '/') || entry.name;
     if (entry.isDirectory()) {
@@ -750,6 +881,10 @@ function scoreWorkspacePathMatch(relativePath: string, query: string): number {
   if (/(?:word|docx?|文档|word文件)/i.test(query) && /\.(docx?|rtf)$/i.test(relativePath)) {
     return 120;
   }
+  if (/(?:草稿|稿件|manuscript|draft)/i.test(query)) {
+    if (/(?:草稿|稿件|manuscript|draft|paper|article)/i.test(basename)) return 180;
+    if (/\.(?:docx?|rtf|txt|md|markdown|tex)$/i.test(relativePath)) return 80;
+  }
 
   let cursor = 0;
   let fuzzyScore = 0;
@@ -765,7 +900,7 @@ function scoreWorkspacePathMatch(relativePath: string, query: string): number {
 function getRequestedWorkspaceKinds(query: string): WorkspacePreviewKind[] {
   const kinds: WorkspacePreviewKind[] = [];
   const text = String(query || '');
-  if (/(?:word|docx?|rtf|文档|word文件)/i.test(text)) kinds.push('word');
+  if (/(?:word|docx?|rtf|文档|word文件|草稿|稿件|manuscript|draft)/i.test(text)) kinds.push('word');
   if (/(?:excel|xlsx?|csv|tsv|表格|数据表|sheet)/i.test(text)) kinds.push('spreadsheet');
   if (/(?:pptx?|powerpoint|幻灯片|演示文稿)/i.test(text)) kinds.push('presentation');
   if (/(?:pdf|论文|文献)/i.test(text)) kinds.push('pdf');
@@ -806,14 +941,17 @@ function formatWorkspaceSearchResults(results: WorkspaceSearchResult[], limit = 
 export async function searchWorkspaceFiles(
   root: string,
   query: string,
-  maxResults = 80
+  maxResults = 80,
+  additionalRoots: string[] = []
 ): Promise<{ query: string; results: WorkspaceSearchResult[]; truncated: boolean }> {
   const normalizedQuery = String(query || '').trim();
   if (!normalizedQuery) throw new Error('搜索关键词为空');
   const max = Math.max(1, Math.min(maxResults, 200));
   const newestRequested = requestsNewestWorkspaceFile(normalizedQuery);
   // “最新文件”必须看磁盘当前状态；缓存可能漏掉刚由 AI/Office 保存的新版本。
-  const discovered = sortFilesForContext(await getWorkspaceFiles(root, MAX_WORKSPACE_FILES, newestRequested));
+  const discovered = sortFilesForContext(
+    await getWorkspaceFilesAcrossRoots(root, additionalRoots, MAX_WORKSPACE_FILES, newestRequested)
+  );
   const results: WorkspaceSearchResult[] = [];
   const matcher = new RegExp(escapeRegex(normalizedQuery), 'i');
   const seenResultKeys = new Set<string>();
@@ -969,7 +1107,8 @@ function extractWorkspaceSearchTerms(text: string): string[] {
 export async function buildWorkspaceAgentPrelude(
   root: string,
   userMessage: string,
-  onToolEvent?: (event: WorkspaceToolEvent) => void
+  onToolEvent?: (event: WorkspaceToolEvent) => void,
+  additionalRoots: string[] = []
 ): Promise<string> {
   const sections: string[] = [];
 
@@ -1001,6 +1140,45 @@ export async function buildWorkspaceAgentPrelude(
     });
   }
 
+  const aiWorkspaceContainerRoot = resolveAiWorkspaceContainerRoot(root);
+  if (isSubPath(root, aiWorkspaceContainerRoot) && path.resolve(aiWorkspaceContainerRoot) !== path.resolve(root)) {
+    const relativeContainerRoot = path.relative(root, aiWorkspaceContainerRoot).replace(/\\/g, '/');
+    try {
+      const entries = await listWorkspaceDirectoryEntries(root, relativeContainerRoot, 160);
+      const rows = entries.entries
+        .slice(0, 120)
+        .map(entry => `- ${entry.path}${entry.kind === 'directory' ? '/' : ''} (${entry.kind}${entry.size ? `, ${entry.size} bytes` : ''})`)
+        .join('\n');
+      sections.push([
+        '### AI 工作区容器直接内容',
+        `根路径：${relativeContainerRoot}`,
+        '这里包含当前会话和其他会话的 AI 产物目录；后续关键词搜索会递归覆盖整个容器。',
+        rows || '（目录尚未创建或为空）',
+        entries.truncated ? '- ... 结果已截断' : '',
+      ].filter(Boolean).join('\n'));
+    } catch {
+      // The container is created lazily for the first write. The recursive
+      // search helper will inspect it as soon as it exists.
+    }
+  }
+
+  for (const additionalRoot of additionalRoots) {
+    const resolvedAdditionalRoot = path.resolve(String(additionalRoot || '').trim());
+    if (!additionalRoot || !isSubPath(root, resolvedAdditionalRoot) || resolvedAdditionalRoot === path.resolve(root)) continue;
+    const relativeRoot = path.relative(root, resolvedAdditionalRoot).replace(/\\/g, '/');
+    try {
+      const entries = await listWorkspaceDirectoryEntries(root, relativeRoot, 120);
+      const rows = entries.entries
+        .slice(0, 80)
+        .map(entry => `- ${entry.path}${entry.kind === 'directory' ? '/' : ''} (${entry.kind}${entry.size ? `, ${entry.size} bytes` : ''})`)
+        .join('\n');
+      sections.push(`### 当前会话 AI 工作目录直接内容\n根路径：${relativeRoot}\n${rows || '（空目录）'}${entries.truncated ? '\n- ... 结果已截断' : ''}`);
+    } catch {
+      // A just-created AI work directory may not be available until the native
+      // tool runtime initializes it; search tools will still inspect it later.
+    }
+  }
+
   const terms = extractWorkspaceSearchTerms(userMessage);
   for (const term of terms) {
     try {
@@ -1010,7 +1188,7 @@ export async function buildWorkspaceAgentPrelude(
         target: term,
         summary: `预检搜索：${term}`,
       });
-      const result = await searchWorkspaceFiles(root, term, 80);
+      const result = await searchWorkspaceFiles(root, term, 80, additionalRoots);
       const rows = formatWorkspaceSearchResults(result.results, 20);
       const excerpts: string[] = [];
       const excerptKeys = new Set<string>();
@@ -1054,18 +1232,22 @@ export async function buildWorkspaceAgentPrelude(
   if (sections.length === 0) return '';
   return [
     '## 工作目录预检结果',
-    '系统已经在模型回答前主动执行了根目录检查、关键词搜索和命中代码片段读取。回答时必须优先使用这些真实工具结果。',
+    '系统已经在模型回答前主动执行了根目录入口检查、整个 ScholarHarness_AI_Workspaces 容器检查、整棵授权目录树的递归关键词搜索和命中代码片段读取。回答时必须优先使用这些真实工具结果，不能把根目录直接条目或当前会话目录误当成完整范围。',
     ...sections,
   ].join('\n\n');
 }
 
-export async function buildWorkspaceQueryHints(root: string, userMessage: string): Promise<string> {
+export async function buildWorkspaceQueryHints(
+  root: string,
+  userMessage: string,
+  additionalRoots: string[] = []
+): Promise<string> {
   const terms = extractWorkspaceSearchTerms(userMessage);
   if (terms.length === 0) return '';
 
   const sections: string[] = [];
   for (const term of terms) {
-    const result = await searchWorkspaceFiles(root, term, 30).catch(() => null);
+    const result = await searchWorkspaceFiles(root, term, 30, additionalRoots).catch(() => null);
     if (!result || result.results.length === 0) continue;
     const rows = formatWorkspaceSearchResults(result.results, 12);
     const excerpts: string[] = [];
@@ -1084,7 +1266,7 @@ export async function buildWorkspaceQueryHints(root: string, userMessage: string
   if (sections.length === 0) return '';
   return [
     '### 与本次用户问题相关的自动工作目录检索结果',
-    '这些结果由后端按用户问题中的文件名、对象名或代码标识符自动检索生成。回答查找代码/文件位置类问题时，优先引用这些命中结果；必要时再调用原生 read_file 工具读取具体文件片段。',
+    '这些结果由后端按用户问题中的文件名、对象名或代码标识符，递归搜索授权根目录的全部后代目录后生成。回答查找代码/文件位置类问题时，优先引用这些命中结果；必要时再调用原生 read_file 工具读取具体文件片段。',
     ...sections,
   ].join('\n');
 }
@@ -1221,8 +1403,15 @@ export async function runWorkspaceToolBlocks(
         summary: `调用 ${parsed.action}${target ? `：${target}` : ''}`,
       });
       if (parsed.action === 'list') {
-        const result = await listWorkspaceFiles(workspace.root, parsed.filePath || '', parsed.maxResults);
-        const rows = result.files.map(file => `- ${file.path} (${file.kind}, ${file.size} bytes)`).join('\n');
+        const result = await listWorkspaceFiles(
+          workspace.root,
+          parsed.filePath || '',
+          parsed.maxResults,
+          [workspace.aiWorkRoot || workspace.safeWorkRoot || ''].filter(Boolean)
+        );
+        const rows = result.files
+          .map(file => `- ${file.path}${file.kind === 'directory' ? '/' : ''} (${file.kind}${typeof file.size === 'number' ? `, ${file.size} bytes` : ''})`)
+          .join('\n');
         const replacement = `\n\n✅ 已列出工作目录：${result.dir}${result.truncated ? '（结果已截断）' : ''}\n\n${rows || '（空目录）'}\n`;
         nextResponse = nextResponse.replace(block, replacement);
         toolResults.push(`已列出工作目录：${result.dir}${result.truncated ? '（结果已截断）' : ''}\n${rows || '（空目录）'}`);
@@ -1230,11 +1419,16 @@ export async function runWorkspaceToolBlocks(
           phase: 'success',
           action: parsed.action,
           target: result.dir,
-          summary: `列出 ${result.dir}，返回 ${result.files.length} 个文件${result.truncated ? '，结果已截断' : ''}`,
+          summary: `递归列出 ${result.dir}，返回 ${result.files.length} 个目录或文件${result.truncated ? '，结果已截断' : ''}`,
         });
         executedCount += 1;
       } else if (parsed.action === 'search') {
-        const result = await searchWorkspaceFiles(workspace.root, parsed.query, parsed.maxResults);
+        const result = await searchWorkspaceFiles(
+          workspace.root,
+          parsed.query,
+          parsed.maxResults,
+          [workspace.aiWorkRoot || workspace.safeWorkRoot || ''].filter(Boolean)
+        );
         const rows = formatWorkspaceSearchResults(result.results, result.results.length);
         const replacement = `\n\n✅ 已搜索工作目录：${result.query}${result.truncated ? '（结果已截断）' : ''}\n\n${rows || '未找到匹配项'}\n`;
         nextResponse = nextResponse.replace(block, replacement);

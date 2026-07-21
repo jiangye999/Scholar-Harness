@@ -20,6 +20,14 @@ import type {
   WorkspaceDirectoryContext,
   WorkspaceDirectoryPermission,
 } from './workspace-directory';
+import {
+  assertPathAuthorizedByWorkspaceRoot,
+  isPathWithinRoot,
+} from './workspace-path-authorization';
+import {
+  mirrorWorkspaceOutputFiles,
+  type WorkspaceOutputMirrorResult,
+} from './workspace-output-mirror';
 
 interface FileSnapshot {
   mtimeMs: number;
@@ -30,7 +38,17 @@ interface GeneratedWorkspaceFile {
   path: string;
   size: number;
   mtimeMs: number;
-  kind: 'image' | 'pdf' | 'data' | 'word' | 'presentation' | 'code' | 'text' | 'archive' | 'file';
+  kind: 'directory' | 'image' | 'pdf' | 'data' | 'word' | 'presentation' | 'code' | 'text' | 'archive' | 'file';
+}
+
+interface WorkspaceTreeEntry {
+  path: string;
+  kind: 'directory' | 'file';
+}
+
+interface WorkspaceTreeScan {
+  entries: WorkspaceTreeEntry[];
+  truncated: boolean;
 }
 
 export interface WorkspaceNativeToolResult {
@@ -49,7 +67,7 @@ export interface WorkspaceNativeToolEvent {
   summary: string;
 }
 
-const SKIP_DIRS = new Set([
+const GENERATED_ATTACHMENT_SKIP_DIRS = new Set([
   '.git',
   '.hg',
   '.svn',
@@ -83,7 +101,9 @@ const GENERATED_ATTACHMENT_EXTENSIONS = new Set([
   '.doc', '.docx',
   '.xls', '.xlsx', '.csv', '.tsv',
   '.ppt', '.pptx',
-  '.r', '.rmd', '.json', '.tex', '.html', '.htm',
+  '.r', '.rmd', '.py', '.ipynb', '.js', '.jsx', '.ts', '.tsx', '.ps1', '.sh',
+  '.qmd', '.json', '.jsonl', '.yaml', '.yml', '.bib', '.tex', '.html', '.htm',
+  '.rds', '.rda', '.rdata', '.sav', '.dta', '.parquet', '.feather', '.ods',
   '.txt', '.md', '.markdown',
   '.zip',
 ]);
@@ -102,7 +122,7 @@ const OFFICECLI_DEFAULT_TIMEOUT_MS = 60_000;
 const OFFICECLI_MAX_TIMEOUT_MS = 180_000;
 const SAFE_WORKSPACE_DIR_NAME = 'ScholarHarness_AI_Workspaces';
 const SAFE_WORKSPACE_README = 'README_ScholarHarness_AI_Workspace.md';
-const TOOL_FILE_KIND_ORDER: GeneratedWorkspaceFile['kind'][] = ['word', 'data', 'presentation', 'pdf', 'image', 'code', 'text', 'archive', 'file'];
+const TOOL_FILE_KIND_ORDER: GeneratedWorkspaceFile['kind'][] = ['directory', 'word', 'data', 'presentation', 'pdf', 'image', 'code', 'text', 'archive', 'file'];
 const GENERIC_CJK_SEARCH_TERMS = new Set([
   '一个',
   '这个',
@@ -138,6 +158,9 @@ interface WorkspaceEditBackupMeta {
   action: 'write_file' | 'edit_file';
   createdAt: string;
   backupPath?: string;
+  mirrorPath?: string;
+  mirrorExisted?: boolean;
+  mirrorBackupPath?: string;
 }
 
 export interface WorkspaceSafeWorkInfo {
@@ -166,7 +189,7 @@ function createSafeWorkspaceFolderName(): string {
 
 function sanitizeBackupId(value: unknown): string {
   const id = String(value || '').trim();
-  if (!/^[a-f0-9]{20}__[0-9T.-]+__[a-f0-9-]+$/i.test(id)) {
+  if (!/^[a-f0-9]{20}__[0-9TZ.-]+__[a-f0-9-]+$/i.test(id)) {
     throw new Error('无效的工作目录备份 ID');
   }
   return id;
@@ -230,8 +253,7 @@ function buildUnifiedDiff(displayPath: string, before: string, after: string): s
 }
 
 function isSubPath(parent: string, child: string): boolean {
-  const relative = path.relative(parent, child);
-  return relative === '' || (!!relative && !relative.startsWith('..') && !path.isAbsolute(relative));
+  return isPathWithinRoot(parent, child);
 }
 
 function normalizeRelativePath(value: unknown): string {
@@ -355,12 +377,19 @@ async function readTextFile(filePath: string): Promise<string> {
   return buffer.toString('utf-8');
 }
 
-async function walkFiles(root: string, startDir: string, maxFiles = MAX_SEARCH_FILES): Promise<string[]> {
-  const files: string[] = [];
-  const stack = [startDir];
+async function walkWorkspaceTree(
+  root: string,
+  startDir: string,
+  maxEntries = MAX_SEARCH_FILES
+): Promise<WorkspaceTreeScan> {
+  const entriesFound: WorkspaceTreeEntry[] = [];
+  const pendingDirectories = [startDir];
+  let directoryCursor = 0;
+  let truncated = false;
 
-  while (stack.length > 0 && files.length < maxFiles) {
-    const current = stack.pop() as string;
+  while (directoryCursor < pendingDirectories.length && entriesFound.length < maxEntries) {
+    const current = pendingDirectories[directoryCursor];
+    directoryCursor += 1;
     let entries: Array<import('fs').Dirent>;
     try {
       entries = await fs.readdir(current, { withFileTypes: true });
@@ -368,22 +397,35 @@ async function walkFiles(root: string, startDir: string, maxFiles = MAX_SEARCH_F
       continue;
     }
     entries.sort((a, b) => a.name.localeCompare(b.name));
-    for (const entry of entries) {
+    for (let entryIndex = 0; entryIndex < entries.length; entryIndex += 1) {
+      const entry = entries[entryIndex];
       const absolutePath = path.join(current, entry.name);
+      const relativePath = (path.relative(root, absolutePath) || entry.name).replace(/\\/g, '/');
       if (entry.isDirectory()) {
-        if (!SKIP_DIRS.has(entry.name.toLowerCase())) {
-          stack.push(absolutePath);
+        entriesFound.push({ path: relativePath, kind: 'directory' });
+        pendingDirectories.push(absolutePath);
+        if (entriesFound.length >= maxEntries) {
+          truncated = entryIndex < entries.length - 1 || directoryCursor < pendingDirectories.length;
+          break;
         }
         continue;
       }
       if (entry.isFile()) {
-        files.push(path.relative(root, absolutePath) || entry.name);
-        if (files.length >= maxFiles) break;
+        entriesFound.push({ path: relativePath, kind: 'file' });
+        if (entriesFound.length >= maxEntries) {
+          truncated = entryIndex < entries.length - 1 || directoryCursor < pendingDirectories.length;
+          break;
+        }
       }
+      // Symbolic links and junction-like entries are deliberately not followed:
+      // their real target may be outside the user-authorized root.
     }
   }
 
-  return files;
+  if (directoryCursor < pendingDirectories.length) {
+    truncated = true;
+  }
+  return { entries: entriesFound, truncated };
 }
 
 function scorePathMatch(relativePath: string, query: string): number {
@@ -406,6 +448,10 @@ function scorePathMatch(relativePath: string, query: string): number {
   if (/(?:word|docx?|文档|word文件)/i.test(query) && /\.(docx?|rtf)$/i.test(relativePath)) {
     return 120;
   }
+  if (/(?:草稿|稿件|manuscript|draft)/i.test(query)) {
+    if (/(?:草稿|稿件|manuscript|draft|paper|article)/i.test(basename)) return 180;
+    if (/\.(?:docx?|rtf|txt|md|markdown|tex)$/i.test(relativePath)) return 80;
+  }
   let cursor = 0;
   let fuzzyScore = 0;
   for (const char of needle) {
@@ -420,7 +466,8 @@ function scorePathMatch(relativePath: string, query: string): number {
 function getRequestedToolFileKinds(query: string): GeneratedWorkspaceFile['kind'][] {
   const kinds: GeneratedWorkspaceFile['kind'][] = [];
   const text = String(query || '');
-  if (/(?:word|docx?|rtf|文档|word文件)/i.test(text)) kinds.push('word');
+  if (/(?:文件夹|子目录|目录|folder|director(?:y|ies))/i.test(text)) kinds.push('directory');
+  if (/(?:word|docx?|rtf|文档|word文件|草稿|稿件|manuscript|draft)/i.test(text)) kinds.push('word');
   if (/(?:excel|xlsx?|csv|tsv|表格|数据表|sheet)/i.test(text)) kinds.push('data');
   if (/(?:pptx?|powerpoint|幻灯片|演示文稿)/i.test(text)) kinds.push('presentation');
   if (/(?:pdf|论文|文献)/i.test(text)) kinds.push('pdf');
@@ -539,14 +586,28 @@ export class WorkspaceToolRuntime {
     this.permission = workspace.permission;
     const requestedSafeWorkRoot = String(workspace.safeWorkRoot || workspace.aiWorkRoot || '').trim();
     const resolvedRequestedSafeWorkRoot = requestedSafeWorkRoot ? path.resolve(requestedSafeWorkRoot) : '';
-    const validRequestedSafeWorkRoot = !!resolvedRequestedSafeWorkRoot
+    const rootIsSafeWorkspaceContainer = path.basename(this.root).toLowerCase() === SAFE_WORKSPACE_DIR_NAME.toLowerCase();
+    let validRequestedSafeWorkRoot = !!resolvedRequestedSafeWorkRoot
       && isSubPath(this.root, resolvedRequestedSafeWorkRoot)
-      && path.relative(this.root, resolvedRequestedSafeWorkRoot).toLowerCase().split(/[\\/]+/).includes(SAFE_WORKSPACE_DIR_NAME.toLowerCase());
+      && (
+        rootIsSafeWorkspaceContainer
+        || path.relative(this.root, resolvedRequestedSafeWorkRoot).toLowerCase().split(/[\\/]+/).includes(SAFE_WORKSPACE_DIR_NAME.toLowerCase())
+      );
+    if (validRequestedSafeWorkRoot) {
+      try {
+        assertPathAuthorizedByWorkspaceRoot(this.root, resolvedRequestedSafeWorkRoot);
+      } catch {
+        validRequestedSafeWorkRoot = false;
+      }
+    }
     this.safeWorkRoot = workspace.permission === 'read-only'
       ? null
       : (validRequestedSafeWorkRoot
           ? resolvedRequestedSafeWorkRoot
-          : path.join(this.root, SAFE_WORKSPACE_DIR_NAME, createSafeWorkspaceFolderName()));
+          : path.join(
+              rootIsSafeWorkspaceContainer ? this.root : path.join(this.root, SAFE_WORKSPACE_DIR_NAME),
+              createSafeWorkspaceFolderName()
+            ));
   }
 
   getRoot(): string {
@@ -582,12 +643,13 @@ export class WorkspaceToolRuntime {
         type: 'function',
         function: {
           name: 'list_dir',
-          description: '列出工作目录内某个目录的直接子项。用于先了解目录结构，不会递归读取全文。',
+          description: '列出工作目录内某个目录及其后代目录。默认递归返回全部层级的文件夹和文件路径，但不会读取文件全文；需要只看直接子项时传 recursive=false。',
           parameters: {
             type: 'object',
             properties: {
               path: { type: 'string', description: '相对工作目录的目录路径；空字符串表示根目录。' },
               max_entries: { type: 'number', description: '最多返回多少项，默认 200，最大 500。' },
+              recursive: { type: 'boolean', description: '是否递归列出全部后代目录和文件，默认 true。' },
             },
             required: [],
           },
@@ -597,12 +659,12 @@ export class WorkspaceToolRuntime {
         type: 'function',
         function: {
           name: 'file_search',
-          description: '按文件名、路径片段或对象名在工作目录内查找候选文件。适合找 R 脚本、图名、数据文件名。',
+          description: '递归搜索授权根目录的整棵目录树，按文件夹名、文件名、路径片段或对象名查找候选目录和文件；同时覆盖用户配置目录、整个 ScholarHarness_AI_Workspaces 容器以及当前会话和其他会话的 AI 产物子目录。适合找深层 R 脚本、图名、数据文件名、目录和最新草稿。',
           parameters: {
             type: 'object',
             properties: {
               query: { type: 'string', description: '要查找的文件名、图名、函数名或路径关键词。' },
-              path: { type: 'string', description: '可选：限制在某个子目录内搜索。' },
+              path: { type: 'string', description: '可选：限制在某个子目录及其全部后代目录内搜索。' },
               limit: { type: 'number', description: '最多返回候选数量，默认 50。' },
             },
             required: ['query'],
@@ -613,12 +675,12 @@ export class WorkspaceToolRuntime {
         type: 'function',
         function: {
           name: 'grep_files',
-          description: '在工作目录文本文件中全文搜索关键词或正则。适合查找变量名、图名、函数调用和 R 代码片段。',
+          description: '递归搜索用户配置目录和整个 ScholarHarness_AI_Workspaces 容器全部后代目录中的文本文件内容，当前会话 AI 工作目录优先。适合查找变量名、图名、函数调用和 R 代码片段。',
           parameters: {
             type: 'object',
             properties: {
               pattern: { type: 'string', description: '关键词或 JavaScript 正则表达式。' },
-              path: { type: 'string', description: '可选：限制在某个子目录内搜索。' },
+              path: { type: 'string', description: '可选：限制在某个子目录及其全部后代目录内搜索。' },
               include: { type: 'string', description: '可选：文件扩展名或 glob-like 片段，例如 .R、.Rmd、genes。' },
               case_insensitive: { type: 'boolean', description: '是否忽略大小写，默认 true。' },
               context_lines: { type: 'number', description: '每个命中前后返回多少行上下文，默认 1，最大 5。' },
@@ -739,7 +801,7 @@ export class WorkspaceToolRuntime {
           type: 'function',
           function: {
             name: 'write_file',
-            description: '新建或完整替换一个文本文件。写权限下实际写入安全工作区副本，原始目录不直接改动。仅在用户明确要求创建/保存/重写文件时使用。',
+            description: '新建或完整替换一个文本文件。写权限下先写入当前会话 AI 工作目录，再按相对路径同步到用户配置目录。仅在用户明确要求创建/保存/重写文件时使用。',
             parameters: {
               type: 'object',
               properties: {
@@ -754,7 +816,7 @@ export class WorkspaceToolRuntime {
           type: 'function',
           function: {
             name: 'edit_file',
-            description: '在已经读取过且未变化的文本文件中做唯一字符串替换。写权限下实际编辑安全工作区副本，原始目录不直接改动。search 必须唯一命中。',
+            description: '在已经读取过且未变化的文本文件中做唯一字符串替换。写权限下在当前会话 AI 工作目录编辑，并同步更新用户配置目录中的对应文件。search 必须唯一命中。',
             parameters: {
               type: 'object',
               properties: {
@@ -798,7 +860,7 @@ export class WorkspaceToolRuntime {
       type: 'function',
       function: {
         name: 'exec_shell',
-        description: `在工作目录内执行必要的 shell 命令。当前 shell：${shellName}。写权限下命令默认在安全工作区副本中执行，原始目录不直接改动。如果用户已配置 R/Python/OfficeCLI 插件，Rscript、Python、officecli 会自动加入 PATH，并提供 RSCRIPT_PATH/R_HOME/PYTHON_PATH/OFFICECLI_PATH。read-only 权限只允许只读命令；写命令需要 workspace-write 或 danger-full-access。`,
+        description: `在工作目录内执行必要的 shell 命令。当前 shell：${shellName}。写权限下命令默认在当前会话 AI 工作目录执行，检测到的生成/更新文件会按相对路径同步到用户配置目录。如果用户已配置 R/Python/OfficeCLI 插件，Rscript、Python、officecli 会自动加入 PATH，并提供 RSCRIPT_PATH/R_HOME/PYTHON_PATH/OFFICECLI_PATH。read-only 权限只允许只读命令；写命令需要 workspace-write 或 danger-full-access。`,
         parameters: {
           type: 'object',
           properties: {
@@ -868,6 +930,9 @@ export class WorkspaceToolRuntime {
     if (this.permission !== 'danger-full-access' && !isSubPath(this.root, candidate)) {
       throw new Error(`路径超出工作目录授权范围: ${relativeInput}`);
     }
+    if (this.permission !== 'danger-full-access') {
+      assertPathAuthorizedByWorkspaceRoot(this.root, candidate);
+    }
     if (expected === 'directory' && path.basename(candidate) && /\.[^\\/]+$/.test(candidate) && !relativeInput.endsWith(path.sep)) {
       // Only a hint: actual stat below is authoritative.
     }
@@ -910,13 +975,16 @@ export class WorkspaceToolRuntime {
     const readme = [
       '# Scholar Harness AI Workspace',
       '',
-      'This folder is an automatic copy-on-write workspace created before AI file changes.',
+      'This folder is the conversation-scoped AI workspace created before AI file changes.',
       `Original workspace: ${this.root}`,
       '',
       'Rules:',
+      '- The configured root authorization covers every ordinary descendant directory and file.',
+      '- File and content search recurse through the full configured workspace tree and this AI workspace.',
+      '- Symbolic links and junctions are not followed outside the authorized root.',
       '- Source files are copied here before edits.',
-      '- AI writes and shell commands should operate in this folder.',
-      '- The original workspace is kept unchanged unless the user manually copies results back.',
+      '- AI writes and shell commands operate here first.',
+      '- Generated and updated outputs are mirrored to the configured workspace with the same relative path.',
       '',
     ].join('\n');
     await fs.writeFile(readmePath, readme, { encoding: 'utf-8', flag: 'wx' }).catch(() => undefined);
@@ -1009,6 +1077,29 @@ export class WorkspaceToolRuntime {
     await this.tryRunGit(['commit', '-m', message.slice(0, 180)]);
   }
 
+  private async mirrorOutputsToBothRoots(filePaths: string[]): Promise<WorkspaceOutputMirrorResult[]> {
+    if (!this.safeWorkRoot || filePaths.length === 0) return [];
+    const results = await mirrorWorkspaceOutputFiles(filePaths, this.root, this.safeWorkRoot);
+    results
+      .filter(result => !result.mirrored)
+      .forEach(result => logger.warn(
+        `[WorkspaceToolRuntime] Failed to mirror output ${result.sourcePath} -> ${result.targetPath}: ${result.error || 'unknown error'}`
+      ));
+    return results;
+  }
+
+  private getSearchableEntries(startDir: string): Promise<WorkspaceTreeScan> {
+    return walkWorkspaceTree(this.root, startDir);
+  }
+
+  private async getSearchableFiles(startDir: string): Promise<{ files: string[]; truncated: boolean }> {
+    const scan = await this.getSearchableEntries(startDir);
+    return {
+      files: scan.entries.filter(entry => entry.kind === 'file').map(entry => entry.path),
+      truncated: scan.truncated,
+    };
+  }
+
   private async snapshot(filePath: string): Promise<FileSnapshot> {
     const stat = await fs.stat(filePath);
     return { mtimeMs: stat.mtimeMs, size: stat.size };
@@ -1024,7 +1115,7 @@ export class WorkspaceToolRuntime {
       for (const entry of entries) {
         if (scanned >= MAX_GENERATED_ATTACHMENT_SCAN_FILES) break;
         if (entry.isDirectory()) {
-          if (SKIP_DIRS.has(entry.name.toLowerCase())) continue;
+          if (GENERATED_ATTACHMENT_SKIP_DIRS.has(entry.name.toLowerCase())) continue;
           await walk(path.join(dir, entry.name));
           continue;
         }
@@ -1083,6 +1174,22 @@ export class WorkspaceToolRuntime {
     if (backupPath) {
       await fs.writeFile(backupPath, beforeContent, 'utf-8');
     }
+    let mirrorPath: string | undefined;
+    let mirrorExisted = false;
+    let mirrorBackupPath: string | undefined;
+    if (this.safeWorkRoot && isSubPath(this.safeWorkRoot, filePath)) {
+      const relativePath = path.relative(this.safeWorkRoot, filePath);
+      const candidate = path.resolve(this.root, relativePath);
+      if (relativePath && isSubPath(this.root, candidate) && !isSubPath(this.safeWorkRoot, candidate)) {
+        mirrorPath = candidate;
+        const mirrorStat = await fs.stat(candidate).catch(() => null);
+        mirrorExisted = !!mirrorStat?.isFile();
+        if (mirrorExisted) {
+          mirrorBackupPath = path.join(backupDir, `${backupId}.mirror.bak`);
+          await fs.copyFile(candidate, mirrorBackupPath);
+        }
+      }
+    }
     const meta: WorkspaceEditBackupMeta = {
       version: 1,
       backupId,
@@ -1093,6 +1200,9 @@ export class WorkspaceToolRuntime {
       action,
       createdAt: new Date().toISOString(),
       backupPath,
+      mirrorPath,
+      mirrorExisted,
+      mirrorBackupPath,
     };
     await fs.writeFile(path.join(backupDir, `${backupId}.json`), JSON.stringify(meta, null, 2), 'utf-8');
     return meta;
@@ -1129,7 +1239,44 @@ export class WorkspaceToolRuntime {
       throw new Error(`不是目录: ${this.displayPath(dirPath)}`);
     }
     const maxEntries = Math.min(MAX_LIST_ENTRIES, Math.max(1, Number(args.max_entries) || 200));
-    const entries = await fs.readdir(dirPath, { withFileTypes: true });
+    const recursive = args.recursive !== false;
+    if (recursive) {
+      const scan = await walkWorkspaceTree(this.root, dirPath, maxEntries + 1);
+      const selected = scan.entries.slice(0, maxEntries);
+      const rows = await Promise.all(selected.map(async entry => {
+        const absolutePath = path.resolve(this.root, entry.path);
+        if (entry.kind === 'directory') {
+          return {
+            name: path.basename(entry.path),
+            path: entry.path,
+            kind: 'directory',
+          };
+        }
+        const fileStat = await fs.stat(absolutePath).catch(() => null);
+        return {
+          name: path.basename(entry.path),
+          path: entry.path,
+          kind: isLikelyTextPath(absolutePath) ? 'text' : 'binary',
+          size: fileStat?.size ?? null,
+        };
+      }));
+      const truncated = scan.truncated || scan.entries.length > rows.length;
+      return {
+        ok: true,
+        toolName: 'list_dir',
+        target: this.displayPath(dirPath),
+        summary: `递归列出 ${this.displayPath(dirPath)}：返回 ${rows.length} 个目录或文件${truncated ? '，结果已截断' : ''}`,
+        data: {
+          path: this.displayPath(dirPath),
+          recursive: true,
+          entries: rows,
+          truncated,
+        },
+      };
+    }
+
+    const entries = (await fs.readdir(dirPath, { withFileTypes: true }))
+      .filter(entry => entry.isDirectory() || entry.isFile());
     entries.sort((a, b) => Number(b.isDirectory()) - Number(a.isDirectory()) || a.name.localeCompare(b.name));
     const rows = await Promise.all(entries.slice(0, maxEntries).map(async (entry) => {
       const absolutePath = path.join(dirPath, entry.name);
@@ -1151,7 +1298,7 @@ export class WorkspaceToolRuntime {
       toolName: 'list_dir',
       target: this.displayPath(dirPath),
       summary: `列出 ${this.displayPath(dirPath)}：${rows.length}/${entries.length} 项`,
-      data: { path: this.displayPath(dirPath), entries: rows, truncated },
+      data: { path: this.displayPath(dirPath), recursive: false, entries: rows, truncated },
     };
   }
 
@@ -1160,14 +1307,14 @@ export class WorkspaceToolRuntime {
     if (!query) throw new Error('query 不能为空');
     const startDir = this.resolveWorkspacePath(args.path || '.', 'directory');
     const limit = Math.min(200, Math.max(1, Number(args.limit) || 50));
-    const files = await walkFiles(this.root, startDir);
+    const scan = await this.getSearchableEntries(startDir);
     const requestedKinds = getRequestedToolFileKinds(query);
     const newestRequested = requestsNewestToolFile(query);
-    const candidates = files
-      .map((relativePath) => ({
-        path: relativePath,
-        kind: getGeneratedFileKind(relativePath),
-        score: scorePathMatch(relativePath, query),
+    const candidates = scan.entries
+      .map((entry) => ({
+        path: entry.path,
+        kind: entry.kind === 'directory' ? 'directory' as const : getGeneratedFileKind(entry.path),
+        score: scorePathMatch(entry.path, query),
       }))
       .filter((item) => item.score > 0);
     const scored = await Promise.all(candidates.map(async (item) => {
@@ -1198,8 +1345,17 @@ export class WorkspaceToolRuntime {
       ok: true,
       toolName: 'file_search',
       target: query,
-      summary: `文件搜索 "${query}" 命中 ${ranked.length} 个候选${groupSummary ? `（按类型分组：${groupSummary}）` : ''}`,
-      data: { query, results: ranked, filesSearched: files.length, truncated: scored.length > ranked.length },
+      summary: `递归搜索 "${query}" 命中 ${ranked.length} 个目录或文件候选${groupSummary ? `（按类型分组：${groupSummary}）` : ''}${scan.truncated ? '；目录树扫描达到安全上限' : ''}`,
+      data: {
+        query,
+        scope: 'recursive',
+        results: ranked,
+        entriesSearched: scan.entries.length,
+        filesSearched: scan.entries.filter(entry => entry.kind === 'file').length,
+        directoriesSearched: scan.entries.filter(entry => entry.kind === 'directory').length,
+        scanTruncated: scan.truncated,
+        truncated: scan.truncated || scored.length > ranked.length,
+      },
     };
   }
 
@@ -1212,7 +1368,8 @@ export class WorkspaceToolRuntime {
     const contextLines = Math.min(5, Math.max(0, Number(args.context_lines) || 1));
     const maxResults = Math.min(500, Math.max(1, Number(args.max_results) || 80));
     const regex = new RegExp(pattern, caseInsensitive ? 'i' : undefined);
-    const files = await walkFiles(this.root, startDir);
+    const searchable = await this.getSearchableFiles(startDir);
+    const files = searchable.files;
     const results: Array<{
       path: string;
       line_number: number;
@@ -1260,7 +1417,8 @@ export class WorkspaceToolRuntime {
         results,
         filesSearched,
         candidateFiles: files.length,
-        truncated: results.length >= maxResults,
+        scanTruncated: searchable.truncated,
+        truncated: searchable.truncated || results.length >= maxResults,
       },
     };
   }
@@ -1428,6 +1586,12 @@ export class WorkspaceToolRuntime {
           beforeGeneratedFiles,
           await this.snapshotGeneratedAttachmentFiles().catch(() => new Map<string, FileSnapshot>())
         );
+    const mirroredOutputs = output.exitCode === 0
+      ? await this.mirrorOutputsToBothRoots([
+          ...(outputPath ? [outputPath.writePath] : []),
+          ...generatedFiles.map(file => path.resolve(this.root, file.path)),
+        ])
+      : [];
 
     const copiedSummary = resolved.readPath !== resolved.sourcePath
       ? `；已使用安全副本 ${this.displayPath(resolved.readPath)}`
@@ -1435,17 +1599,21 @@ export class WorkspaceToolRuntime {
     const outputSummary = outputPath
       ? `；输出 ${this.displayPath(outputPath.writePath)}`
       : '';
+    const mirrorSummary = mirroredOutputs.some(result => result.mirrored)
+      ? '；已同步到用户目录和 AI 工作目录'
+      : '';
     return {
       ok: output.exitCode === 0,
       toolName: 'office_view',
       target: `${this.displayPath(resolved.sourcePath)} ${mode}`,
-      summary: `OfficeCLI view ${mode}：${this.displayPath(resolved.sourcePath)} 退出码 ${output.exitCode ?? 'unknown'}${copiedSummary}${outputSummary}`,
+      summary: `OfficeCLI view ${mode}：${this.displayPath(resolved.sourcePath)} 退出码 ${output.exitCode ?? 'unknown'}${copiedSummary}${outputSummary}${mirrorSummary}`,
       data: {
         path: this.displayPath(resolved.sourcePath),
         safePath: resolved.readPath !== resolved.sourcePath ? this.displayPath(resolved.readPath) : undefined,
         mode,
         outputPath: outputPath ? this.displayPath(outputPath.writePath) : undefined,
         generatedFiles,
+        mirroredOutputs,
         exitCode: output.exitCode,
         stdout: truncateText(output.stdout, MAX_OFFICECLI_OUTPUT_CHARS),
         stderr: truncateText(output.stderr, 10_000),
@@ -1583,11 +1751,18 @@ export class WorkspaceToolRuntime {
       beforeGeneratedFiles,
       await this.snapshotGeneratedAttachmentFiles().catch(() => new Map<string, FileSnapshot>())
     );
+    const mirroredOutputs = output.exitCode === 0
+      ? await this.mirrorOutputsToBothRoots([
+          writable.writePath,
+          ...(outputPath ? [outputPath.writePath] : []),
+          ...generatedFiles.map(file => path.resolve(this.root, file.path)),
+        ])
+      : [];
     if (output.exitCode === 0) {
       await this.commitSafeWorkspaceChange(`AI office ${operation} ${this.displayPath(writable.writePath)}`);
     }
     const safeNote = writable.safeRedirected
-      ? `；原始文件未改，已操作安全副本 ${this.displayPath(writable.writePath)}`
+      ? `；已同时更新用户目录和 AI 工作目录中的 ${this.displayPath(writable.writePath)}`
       : '';
     const generatedSummary = generatedFiles.length
       ? `；生成/更新文件：${generatedFiles.map(file => file.path).slice(0, 6).join('、')}${generatedFiles.length > 6 ? ' 等' : ''}`
@@ -1602,10 +1777,11 @@ export class WorkspaceToolRuntime {
         path: this.displayPath(writable.writePath),
         originalPath: this.displayPath(writable.sourcePath),
         safeWorkspaceRoot: this.safeWorkRoot ? this.displaySafeWorkspacePath() : undefined,
-        originalUntouched: writable.safeRedirected,
+        originalUntouched: writable.safeRedirected && !mirroredOutputs.some(result => result.mirrored),
         outputPath: outputPath ? this.displayPath(outputPath.writePath) : undefined,
         tempInputPath: tempInputPath ? this.displayPath(tempInputPath) : undefined,
         generatedFiles,
+        mirroredOutputs,
         exitCode: output.exitCode,
         stdout: truncateText(output.stdout, MAX_OFFICECLI_OUTPUT_CHARS),
         stderr: truncateText(output.stderr, 10_000),
@@ -1628,9 +1804,10 @@ export class WorkspaceToolRuntime {
     await fs.rename(tempPath, writable.writePath);
     await this.noteRead(writable.writePath);
     await this.commitSafeWorkspaceChange(`AI write ${this.displayPath(writable.writePath)}`);
+    const mirroredOutputs = await this.mirrorOutputsToBothRoots([writable.writePath]);
     const diff = buildUnifiedDiff(this.displayPath(writable.writePath), beforeContent, content);
     const safeNote = writable.safeRedirected
-      ? `；原始文件未改，已写入安全副本 ${this.displayPath(writable.writePath)}`
+      ? '；已同步写入用户目录和 AI 工作目录'
       : '';
     return {
       ok: true,
@@ -1641,7 +1818,8 @@ export class WorkspaceToolRuntime {
         path: this.displayPath(writable.writePath),
         originalPath: this.displayPath(writable.sourcePath),
         safeWorkspaceRoot: this.safeWorkRoot ? this.displaySafeWorkspacePath() : undefined,
-        originalUntouched: writable.safeRedirected,
+        originalUntouched: writable.safeRedirected && !mirroredOutputs.some(result => result.mirrored),
+        mirroredOutputs,
         action: existed ? 'replaced' : 'created',
         bytes: Buffer.byteLength(content, 'utf-8'),
         lines: content.split(/\r?\n/).length,
@@ -1671,9 +1849,10 @@ export class WorkspaceToolRuntime {
     await fs.rename(tempPath, writable.writePath);
     await this.noteRead(writable.writePath);
     await this.commitSafeWorkspaceChange(`AI edit ${this.displayPath(writable.writePath)}`);
+    const mirroredOutputs = await this.mirrorOutputsToBothRoots([writable.writePath]);
     const diff = buildUnifiedDiff(this.displayPath(writable.writePath), content, next);
     const safeNote = writable.safeRedirected
-      ? `；原始文件未改，已编辑安全副本 ${this.displayPath(writable.writePath)}`
+      ? '；已同步更新用户目录和 AI 工作目录'
       : '';
     return {
       ok: true,
@@ -1684,7 +1863,8 @@ export class WorkspaceToolRuntime {
         path: this.displayPath(writable.writePath),
         originalPath: this.displayPath(writable.sourcePath),
         safeWorkspaceRoot: this.safeWorkRoot ? this.displaySafeWorkspacePath() : undefined,
-        originalUntouched: writable.safeRedirected,
+        originalUntouched: writable.safeRedirected && !mirroredOutputs.some(result => result.mirrored),
+        mirroredOutputs,
         replacedChars: search.length,
         insertedChars: replace.length,
         diff,
@@ -1775,6 +1955,11 @@ export class WorkspaceToolRuntime {
           beforeGeneratedFiles,
           await this.snapshotGeneratedAttachmentFiles().catch(() => new Map<string, FileSnapshot>())
         );
+    const mirroredOutputs = output.code === 0
+      ? await this.mirrorOutputsToBothRoots(
+          generatedFiles.map(file => path.resolve(this.root, file.path))
+        )
+      : [];
     await this.commitSafeWorkspaceChange(`AI shell ${summarizeShellCommand(command)}`);
     const generatedSummary = generatedFiles.length
       ? `；生成/更新文件：${generatedFiles.map(file => file.path).slice(0, 8).join('、')}${generatedFiles.length > 8 ? ' 等' : ''}`
@@ -1790,9 +1975,10 @@ export class WorkspaceToolRuntime {
         cwd: this.displayPath(cwd),
         requestedCwd: this.displayPath(shellCwd.originalCwd),
         safeWorkspaceRoot: this.safeWorkRoot ? this.displaySafeWorkspacePath() : undefined,
-        originalUntouched: shellCwd.safeRedirected,
+        originalUntouched: shellCwd.safeRedirected && !mirroredOutputs.some(result => result.mirrored),
         exitCode: output.code,
         generatedFiles,
+        mirroredOutputs,
         rscriptPath: shellEnv.SCHOLAR_HARNESS_RSCRIPT || shellEnv.RSCRIPT_PATH || undefined,
         pythonPath: shellEnv.SCHOLAR_HARNESS_PYTHON || shellEnv.PYTHON_PATH || undefined,
         officeCliPath: shellEnv.SCHOLAR_HARNESS_OFFICECLI || shellEnv.OFFICECLI_PATH || undefined,
@@ -1829,8 +2015,26 @@ export async function restoreWorkspaceEditBackup(backupId: string): Promise<{
     throw new Error('备份目标路径不在原工作目录内，已拒绝回滚');
   }
 
+  const restoreMirror = async (): Promise<void> => {
+    if (!meta.mirrorPath) return;
+    const mirrorPath = path.resolve(meta.mirrorPath);
+    if (!isSubPath(root, mirrorPath)) {
+      throw new Error('镜像备份目标路径不在原工作目录内，已拒绝回滚');
+    }
+    if (!meta.mirrorExisted) {
+      await fs.rm(mirrorPath, { force: true });
+      return;
+    }
+    if (!meta.mirrorBackupPath) {
+      throw new Error('镜像备份文件缺失，无法完整回滚双目录输出');
+    }
+    await fs.mkdir(path.dirname(mirrorPath), { recursive: true });
+    await fs.copyFile(meta.mirrorBackupPath, mirrorPath);
+  };
+
   if (!meta.existed) {
     await fs.rm(targetPath, { force: true });
+    await restoreMirror();
     return {
       backupId: safeBackupId,
       restoredPath: meta.displayPath || targetPath,
@@ -1846,6 +2050,7 @@ export async function restoreWorkspaceEditBackup(backupId: string): Promise<{
   const tempPath = `${targetPath}.${process.pid}.${Date.now()}.restore.tmp`;
   await fs.writeFile(tempPath, backupContent, 'utf-8');
   await fs.rename(tempPath, targetPath);
+  await restoreMirror();
   return {
     backupId: safeBackupId,
     restoredPath: meta.displayPath || targetPath,

@@ -37,8 +37,18 @@ describe('main page dragged file provenance', () => {
   });
 
   it('keeps a concrete attachment question on the selected AI provider path', () => {
+    expect(html).toContain('if (allPendingFilesAreImages && raw) return true;');
     expect(html).toContain('if (hasExperimentUploadIntent(raw)) return false;');
     expect(html).toContain('if (raw) return true;');
     expect(html).toContain('附件只是本轮 query 的材料');
+  });
+
+  it('keeps a reference image and workspace data in the same multimodal turn', () => {
+    expect(html).toContain('function hasWorkspaceBackedVisualReferenceIntent(text)');
+    expect(html).toContain('工作路径|工作目录|当前目录|本地路径|项目目录');
+    expect(html).toContain('var hasVisualReferenceAttachments = hasChatAttachmentVision(pendingChatAttachments);');
+    expect(html).toContain('selectedWorkspaceFiles.length > 0 || hasVisualReferenceAttachments');
+    expect(html).toContain('chatBridgeRequestBody.workspaceDirectory = activeWorkspaceDirectory;');
+    expect(html).toContain('chatBridgeRequestBody.codexImages = chatAttachmentImagePaths;');
   });
 });

@@ -36,6 +36,31 @@ export interface AgentApiConfig {
   description?: string;
 }
 
+export interface PiSteeringMessage {
+  id: string;
+  message: string;
+  chatAttachments?: Array<{
+    name?: string;
+    path?: string;
+    type?: string;
+    [key: string]: unknown;
+  }>;
+  workspaceFileMentions?: Array<{
+    name?: string;
+    path?: string;
+    kind?: string;
+    [key: string]: unknown;
+  }>;
+}
+
+/** Server-internal callbacks used by the Pi-style active agent session. */
+export interface PiSessionRuntime {
+  sessionId: string;
+  takeSteeringMessages: (options?: { allowAttachments?: boolean }) => Promise<PiSteeringMessage[]>;
+  markSteeringApplied: (messageId: string) => Promise<void>;
+  requeueSteeringMessage: (messageId: string) => Promise<void>;
+}
+
 export interface ChatOptions {
   model?: string;
   messages: Message[];
@@ -55,6 +80,8 @@ export interface ChatOptions {
    * - undefined: 自动选择
    */
   forceProvider?: 'browser' | 'api' | 'primary' | 'secondary' | 'codex';
+  /** 强制直接使用指定 API provider，不允许“优先 Codex”设置接管；用于隔离评测。 */
+  bypassCodexPreference?: boolean;
   /**
    * forceProvider='codex' 时禁用小牛马降级；用于长任务避免 Codex 超时后把超大上下文再发给小牛马。
    */
@@ -146,6 +173,10 @@ export interface ChatOptions {
   visionApiUrl?: string;
   visionApiKey?: string;
   visionModel?: string;
+  /** Internal Pi-style steering queue. Never accepted directly from an HTTP client. */
+  piSession?: PiSessionRuntime;
+  /** Server-internal cancellation probe for the active Pi/Codex run. */
+  isCancelled?: () => boolean;
 }
 
 export interface Message {

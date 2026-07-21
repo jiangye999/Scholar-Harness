@@ -1,4 +1,5 @@
-import { readFileSync } from 'fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import os from 'os';
 import path from 'path';
 
 import { describe, expect, it } from 'vitest';
@@ -7,6 +8,7 @@ import {
   buildCodexVerifiedArtifactBlock,
   buildCodexConversationHandoff,
   buildCodexResumePrompt,
+  filterChangedCodexSourceArtifacts,
   isCodexDraftWordExportRequest,
   isCodexFileMutationRequest,
   sanitizeCodexFinalAnswer,
@@ -39,6 +41,46 @@ describe('Codex visible-conversation handoff', () => {
     expect(prompt).toContain('WFPS 作为水文开关');
     expect(prompt).toContain('按照方案 A 进行全篇重写');
     expect(prompt).toContain('不要要求用户重复粘贴已经出现的定义');
+  });
+
+  it('carries the verified file-follow-up intent into an existing Codex thread', () => {
+    const prompt = buildCodexResumePrompt({
+      messages: [{ role: 'user', content: '除了这个呢：supporting information' }],
+      queryEnvelope: {
+        text: '除了这个呢：supporting information',
+        provider: 'codex',
+      },
+      draftContext: {
+        queryIntent: {
+          version: 1,
+          source: 'ai',
+          primaryIntent: 'workspace_file',
+          secondaryIntents: [],
+          action: 'search',
+          dataSource: 'workspace',
+          isContextualFollowUp: true,
+          needsWorkspaceSearch: true,
+          needsWebSearch: false,
+          needsLiteratureRetrieval: false,
+          needsToolExecution: true,
+          needsClarification: false,
+          resolvedQuery: '排除 supporting information.docx 后，按 mtime 查找下一个最新 DOCX。',
+          referencedFiles: ['supporting information.docx'],
+          excludedFiles: ['supporting information.docx'],
+          requestedOutputs: [],
+          requestedMethods: [],
+          confidence: 0.99,
+          reason: '上一轮文件结果的排除式追问。',
+          recognizedAt: new Date().toISOString(),
+        },
+      },
+    }, 'D:\\paper', 'D:\\paper\\ScholarHarness_AI_Workspaces\\run-1', 'workspace-write');
+
+    expect(prompt).toContain('## 统一 AI Query 意图（本轮路由）');
+    expect(prompt).toContain('primaryIntent: workspace_file');
+    expect(prompt).toContain('needsLiteratureRetrieval: false');
+    expect(prompt).toContain('excludedFiles: supporting information.docx');
+    expect(prompt).toContain('不能改判为文献检索');
   });
 
   it('clears a thread after any failed Codex run instead of retaining a half-started thread', () => {
@@ -110,5 +152,47 @@ describe('Codex visible-conversation handoff', () => {
     expect(block).toContain('生成/更新文件（已验证）');
     expect(block).toContain('paper-draft.docx');
     expect(block).toContain('[[SH_VERIFIED_ARTIFACTS_END]]');
+  });
+
+  it('does not expose page-by-page visual-QA screenshots as verified artifacts', () => {
+    const block = buildCodexVerifiedArtifactBlock([
+      'D:\\paper\\ScholarHarness_AI_Workspaces\\run-1\\review_v9\\page1.png',
+      'D:\\paper\\ScholarHarness_AI_Workspaces\\run-1\\review_v9\\page2.png',
+      'D:\\paper\\ScholarHarness_AI_Workspaces\\run-1\\paper_manuscript_revised_v9.docx',
+    ]);
+
+    expect(block).toContain('paper_manuscript_revised_v9.docx');
+    expect(block).not.toContain('page1.png');
+    expect(block).not.toContain('page2.png');
+  });
+
+  it('detects overwritten artifacts even when their size and modified time are preserved', () => {
+    const source = readFileSync(
+      path.resolve(__dirname, '../../src/bridge/chat-bridge/chat-bridge.ts'),
+      'utf-8',
+    );
+
+    expect(source).toContain('ctimeMs: stat.ctimeMs');
+    expect(source).toContain('previous.ctimeMs !== current.ctimeMs');
+  });
+
+  it('verifies a changed source-workspace file when Codex reports only its bare file name', () => {
+    const workspaceRoot = mkdtempSync(path.join(os.tmpdir(), 'scholar-harness-artifact-'));
+    const artifactPath = path.join(workspaceRoot, 'paper_manuscript_revised_v7.docx');
+    const unrelatedPath = path.join(workspaceRoot, 'unrelated.docx');
+    writeFileSync(artifactPath, 'verified artifact');
+    writeFileSync(unrelatedPath, 'unrelated');
+
+    try {
+      const verified = filterChangedCodexSourceArtifacts(
+        [artifactPath, unrelatedPath],
+        workspaceRoot,
+        '文件链接：\n- paper_manuscript_revised_v7.docx',
+      );
+
+      expect(verified).toEqual([artifactPath]);
+    } finally {
+      rmSync(workspaceRoot, { recursive: true, force: true });
+    }
   });
 });

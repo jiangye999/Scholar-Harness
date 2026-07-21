@@ -5,288 +5,330 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Scholar Harness 使用指导手册</title>
   <style>
-    @page { size: A4; margin: 18mm 16mm; }
+    @page { size: A4; margin: 16mm 15mm 17mm; }
     * { box-sizing: border-box; }
+    html { print-color-adjust: exact; -webkit-print-color-adjust: exact; }
     body {
       margin: 0;
       color: #17211b;
-      background: #ffffff;
+      background: #fff;
       font-family: "Microsoft YaHei", "Noto Sans CJK SC", Arial, sans-serif;
-      line-height: 1.68;
-      font-size: 12.5px;
+      font-size: 11.6px;
+      line-height: 1.58;
     }
-    h1, h2, h3 { color: #0f3f35; line-height: 1.28; margin: 0 0 10px; }
-    h1 { font-size: 31px; letter-spacing: 0.2px; }
-    h2 { font-size: 19px; margin-top: 26px; padding-top: 8px; border-top: 2px solid #dce8e2; }
-    h3 { font-size: 14.5px; margin-top: 14px; color: #15584b; }
-    p { margin: 6px 0 10px; }
-    ul, ol { margin: 6px 0 10px 20px; padding: 0; }
-    li { margin: 3px 0; }
-    table { width: 100%; border-collapse: collapse; margin: 10px 0 14px; page-break-inside: avoid; }
-    th, td { border: 1px solid #d7e2dc; padding: 7px 8px; vertical-align: top; }
-    th { background: #eef5f2; color: #123c33; text-align: left; }
-    code { font-family: Consolas, "Courier New", monospace; background: #eef5f2; padding: 1px 4px; border-radius: 3px; }
+    h1, h2, h3 { color: #103f35; line-height: 1.28; break-after: avoid; }
+    h1 { margin: 0 0 12px; font-size: 31px; }
+    h2 { margin: 22px 0 9px; padding-top: 7px; border-top: 2px solid #dce8e2; font-size: 18px; }
+    h3 { margin: 13px 0 5px; color: #15584b; font-size: 13.5px; }
+    p { margin: 5px 0 8px; }
+    ul, ol { margin: 5px 0 9px 19px; padding: 0; }
+    li { margin: 2px 0; }
+    strong { color: #132f28; }
+    a { color: #0b6b5c; text-decoration: none; }
+    code { padding: 1px 4px; border-radius: 3px; background: #eef5f2; font-family: Consolas, "Courier New", monospace; font-size: 0.95em; }
+    table { width: 100%; margin: 8px 0 12px; border-collapse: collapse; break-inside: avoid; }
+    th, td { padding: 6px 7px; border: 1px solid #d7e2dc; text-align: left; vertical-align: top; }
+    th { color: #123c33; background: #eef5f2; }
     .cover {
-      min-height: 930px;
+      min-height: 255mm;
       display: flex;
       flex-direction: column;
       justify-content: center;
-      border: 1px solid #d7e2dc;
-      padding: 42px;
-      background: linear-gradient(135deg, #f7faf8 0%, #eef6f2 52%, #ffffff 100%);
+      padding: 38px;
+      border: 1px solid #cfded7;
+      background: linear-gradient(135deg, #f7faf8 0%, #eef6f2 52%, #fff 100%);
       page-break-after: always;
     }
-    .brand { color: #0b6b5c; font-weight: 700; font-size: 15px; margin-bottom: 14px; }
-    .subtitle { font-size: 18px; color: #405047; max-width: 620px; margin-top: 14px; }
-    .meta { margin-top: 42px; color: #52625a; font-size: 13px; }
+    .brand { margin-bottom: 14px; color: #0b6b5c; font-size: 15px; font-weight: 700; }
+    .subtitle { max-width: 620px; margin-top: 12px; color: #405047; font-size: 17px; }
+    .version-chip { display: inline-block; width: fit-content; margin-top: 20px; padding: 5px 10px; border: 1px solid #9fc1b5; border-radius: 4px; color: #0b5c4f; background: #f4faf7; font-weight: 700; }
+    .meta { margin-top: 36px; color: #52625a; font-size: 12px; }
     .toc { page-break-after: always; }
-    .note {
+    .toc-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 5px 22px; margin-top: 12px; }
+    .toc-item { padding: 6px 0; border-bottom: 1px solid #e5ece8; }
+    .lead { color: #31463d; font-size: 12.4px; }
+    .note, .warn, .success {
+      margin: 9px 0 12px;
+      padding: 8px 10px;
       border-left: 4px solid #0b6b5c;
       background: #f2f8f5;
-      padding: 9px 11px;
-      margin: 10px 0 14px;
+      break-inside: avoid;
     }
-    .warn {
-      border-left: 4px solid #b35b00;
-      background: #fff7ed;
-      padding: 9px 11px;
-      margin: 10px 0 14px;
-    }
-    .small { color: #5d6b63; font-size: 11.5px; }
+    .warn { border-left-color: #b35b00; background: #fff7ed; }
+    .success { border-left-color: #287a47; background: #f1f8f3; }
+    .steps { counter-reset: step; margin: 8px 0 12px; }
+    .step { position: relative; min-height: 34px; margin: 0 0 7px; padding: 7px 9px 7px 39px; border: 1px solid #dce6e1; border-radius: 5px; break-inside: avoid; }
+    .step::before { counter-increment: step; content: counter(step); position: absolute; left: 9px; top: 7px; width: 21px; height: 21px; border-radius: 50%; color: #fff; background: #0b6b5c; font-weight: 700; line-height: 21px; text-align: center; }
+    .flow { display: flex; flex-wrap: wrap; gap: 5px; margin: 8px 0 12px; }
+    .flow span { padding: 5px 8px; border: 1px solid #bfd2ca; border-radius: 4px; background: #f7faf8; }
+    .flow span:not(:last-child)::after { content: "  →"; color: #6d7f76; }
+    .tag { display: inline-block; margin: 1px 2px 1px 0; padding: 1px 5px; border: 1px solid #c9d8d2; border-radius: 3px; background: #fafcfb; font-size: 10.5px; }
+    .checklist { list-style: none; margin-left: 0; }
+    .checklist li::before { content: "□"; margin-right: 6px; color: #0b6b5c; font-weight: 700; }
+    .small { color: #5d6b63; font-size: 10.6px; }
     .page-break { page-break-before: always; }
+    .avoid-break { break-inside: avoid; }
+    .footer-note { margin-top: 18px; padding-top: 8px; border-top: 1px solid #dce6e1; color: #5b6b63; font-size: 10.6px; }
   </style>
 </head>
 <body>
   <section class="cover">
     <div class="brand">Scholar Harness</div>
     <h1>使用指导手册</h1>
-    <p class="subtitle">从账号配置、软件安装、文件导入到 Auto Research、一键写论文、讨论式写作、Meta 分析、文献计量、AI 文献管理与数据分析的完整操作说明。</p>
+    <p class="subtitle">面向科研项目的 AI 工作台：从资料入库、句子级证据检索、研究规划，到章节写作、数据分析、R 作图和整篇导出。</p>
+    <div class="version-chip">适用版本：1.0.7</div>
     <div class="meta">
-      <p>适用版本：Scholar Harness 1.0.0</p>
-      <p>更新日期：2026-06-10</p>
-      <p>官网：https://scholarharness.com</p>
+      <p>更新日期：2026-07-15</p>
+      <p>官网：<a href="https://scholarharness.com">https://scholarharness.com</a></p>
       <p>支持邮箱：sjs@cau.edu.cn</p>
     </div>
   </section>
 
   <section class="toc">
-    <h2>目录</h2>
-    <ol>
-      <li>产品定位与推荐工作流</li>
-      <li>账号、安装与首次配置</li>
-      <li>API、模型、PDF 解析与本地工具配置</li>
-      <li>文件导入：文献、PDF、数据表、Meta 编码表和文献计量数据</li>
-      <li>Auto Research 使用流程</li>
-      <li>一键写论文使用流程</li>
-      <li>讨论式写作与草稿管理</li>
-      <li>AI 文献管理与 PDF Wiki 论点库</li>
-      <li>Meta 分析全流程</li>
-      <li>文献计量分析全流程</li>
-      <li>数据分析与 R 语言作图</li>
-      <li>引用、证据溯源与常见问题</li>
-    </ol>
+    <h2>开始之前</h2>
+    <p class="lead">本手册按真实任务组织。新用户建议先阅读第 1-4 节，再根据自己的研究任务进入对应模块。</p>
+    <div class="toc-grid">
+      <div class="toc-item"><strong>1.</strong> 五分钟完成首次配置</div>
+      <div class="toc-item"><strong>2.</strong> 界面、模型与对话</div>
+      <div class="toc-item"><strong>3.</strong> 项目、工作目录与数据安全</div>
+      <div class="toc-item"><strong>4.</strong> AI 与本地插件配置</div>
+      <div class="toc-item"><strong>5.</strong> 建立文献库与 Embedding 检索</div>
+      <div class="toc-item"><strong>6.</strong> PDF Wiki 句子级证据库</div>
+      <div class="toc-item"><strong>7.</strong> Auto Research 研究准备</div>
+      <div class="toc-item"><strong>8.</strong> 写作、智能草稿与论文图片</div>
+      <div class="toc-item"><strong>9.</strong> 引用、尾注与目标期刊格式</div>
+      <div class="toc-item"><strong>10.</strong> 数据分析与 R 作图</div>
+      <div class="toc-item"><strong>11.</strong> Meta 分析与图像数字化</div>
+      <div class="toc-item"><strong>12.</strong> 文献计量分析</div>
+      <div class="toc-item"><strong>13.</strong> Skill、长期记忆与 Obsidian</div>
+      <div class="toc-item"><strong>14.</strong> 导出、更新与故障排查</div>
+    </div>
+    <div class="note"><strong>最短上手路径：</strong>运行新手向导 → 选择一个 AI → 建立项目 → 上传文献或设置工作目录 → 直接在主页描述任务。</div>
   </section>
 
-  <h2>1. 产品定位与推荐工作流</h2>
-  <p>Scholar Harness 是面向科研论文全流程的本地优先 AI 学术工作台。它把文献管理、PDF 深度解析、句子级证据、Auto Research、论文写作、Meta 分析、文献计量、数据分析和 R 作图放在同一个项目上下文中。</p>
-  <div class="note">
-    推荐理解方式：不要把它当成单次聊天工具，而要把它当成一个科研项目工作台。先建立项目与资料库，再让 AI 基于项目资料进行调研、分析和写作。
+  <h2>1. 五分钟完成首次配置</h2>
+  <p>首次启动后，软件会检查本机可用的 Codex CLI、R、Python 和 OfficeCLI，并给出推荐设置。开始使用只需要一个可用 AI；R、Python、OfficeCLI 和 Embedding 可在需要时再配置。</p>
+  <div class="steps">
+    <div class="step"><strong>登录账号。</strong>使用官网注册的邮箱账号登录桌面端。</div>
+    <div class="step"><strong>运行“新用户设置向导”。</strong>可在首次启动页进入，也可从右上角齿轮 → 配置 → 新用户设置重新打开。</div>
+    <div class="step"><strong>选择一个 AI。</strong>本机已安装 Codex 时优先启用 Codex CLI；否则配置小牛马或大牛马的 API 地址、Key 和模型。</div>
+    <div class="step"><strong>创建项目。</strong>项目用于隔离文献、草稿、分析结果、图片和长期记忆。</div>
+    <div class="step"><strong>完成第一个任务。</strong>可以直接提问、上传 PDF、上传 WoS/CNKI 导出文件，或设置工作目录让 AI 读取本地材料。</div>
   </div>
-  <h3>推荐工作流</h3>
-  <ol>
-    <li>创建或选择项目，完成账号登录和 API 配置。</li>
-    <li>导入文献 PDF、WoS/CNKI 文献数据、实验数据表或 Meta 编码表。</li>
-    <li>使用 AI 文献管理解析 PDF，生成句子级论点库和论文一览图。</li>
-    <li>用 Auto Research 做选题审查、证据链检查、研究边界锁定和写作蓝图。</li>
-    <li>进入一键写论文或讨论式写作，调用项目资料、Auto Research 报告和证据库。</li>
-    <li>需要统计和图件时，使用 Meta 分析、文献计量或数据分析 + R 作图模块。</li>
-    <li>导出 Word、Markdown、图表包或报告，继续人工审阅和修改。</li>
-  </ol>
+  <div class="warn"><strong>API 地址：</strong>兼容 OpenAI 的服务通常填写到 <code>/v1</code>，不要手工追加 <code>/chat/completions</code>。保存前先使用配置页的连接测试。</div>
 
-  <h2>2. 账号、安装与首次配置</h2>
-  <h3>2.1 下载与安装</h3>
-  <ol>
-    <li>访问官网首页，点击“下载软件”。</li>
-    <li>下载 Windows 安装包 <code>scholar-harness-setup-1.0.0.exe</code>。</li>
-    <li>双击安装包，按安装向导选择安装位置。</li>
-    <li>首次启动时，Windows 可能提示未知发布者或安全提醒，确认来源为官网安装包后继续。</li>
-  </ol>
-  <h3>2.2 登录与账号</h3>
-  <ol>
-    <li>在官网注册账号，或使用已有账号登录。</li>
-    <li>桌面端启动后进入登录页，输入同一账号。</li>
-    <li>登录成功后，桌面端会连接本地服务和云端账号服务。</li>
-  </ol>
-  <h3>2.3 本地数据位置</h3>
-  <p>桌面端会在本机保存项目文件、上传文献、解析缓存、草稿和日志。常见位置：</p>
+  <h2>2. 界面、模型与对话</h2>
+  <h3>2.1 三类模型如何分工</h3>
   <table>
-    <tr><th>内容</th><th>说明</th></tr>
-    <tr><td><code>%APPDATA%\scholar-harness\data</code></td><td>本地主要数据目录，包括项目、上传文件、缓存和日志。</td></tr>
-    <tr><td>项目目录</td><td>每个项目隔离保存，便于长期管理课题资料。</td></tr>
-    <tr><td>论文草稿</td><td>可在软件内继续编辑、导出 Word 或 Markdown。</td></tr>
+    <tr><th>模型</th><th>适合任务</th><th>工作方式</th></tr>
+    <tr><td><strong>小牛马</strong></td><td>日常问答、段落写作、引用匹配、轻量数据解释</td><td>调用已配置 API，响应较快</td></tr>
+    <tr><td><strong>大牛马</strong></td><td>研究规划、复杂质检、Skill 规划、长文结构审查</td><td>调用高能力 API，适合关键节点</td></tr>
+    <tr><td><strong>Codex</strong></td><td>读取和修改工作目录文件、运行工具、生成脚本和文档</td><td>同一 Scholar Harness 会话复用同一 Codex thread</td></tr>
+  </table>
+  <p>同一会话切换模型时，软件会携带最近对话上下文；Codex 的后续消息通过 resume 机制延续，不需要每轮冷启动。</p>
+  <h3>2.2 输入框与任务队列</h3>
+  <ul>
+    <li>直接输入自然语言即可；运行中仍可继续发送，新任务会排队。</li>
+    <li>输入 <code>@</code> 可选择当前工作目录中的文件或文件夹，将路径随问题发送给 AI。</li>
+    <li>可拖动文件到主页；松手后软件记录文件名与本地路径，并按用户问题处理，而不是只做固定的文件解析。</li>
+    <li>输入框上方可持续使用文献计量、Meta、Auto Research、Skill 等结果。</li>
+  </ul>
+  <h3>2.3 侧边栏和页面</h3>
+  <p>左侧是功能导航，右侧用于文章写作进度和论文图片。左右侧栏互斥展开，避免遮挡正文。打开二级页面后，新建对话会关闭当前子页面并返回新会话。</p>
+
+  <h2>3. 项目、工作目录与数据安全</h2>
+  <h3>3.1 项目管理</h3>
+  <p>不同课题应建立不同项目。需要用同一主题写两篇文章时，可复制项目后分别修改，避免草稿和证据混用。</p>
+  <h3>3.2 设置工作目录</h3>
+  <div class="steps">
+    <div class="step">点击主页输入框旁的文件夹按钮，粘贴或选择研究目录。</div>
+    <div class="step">选择权限：<strong>只读</strong>、<strong>工作区可写</strong>或<strong>完全访问</strong>。</div>
+    <div class="step">点击检查目录。软件会分类展示图片、Word、Excel、PDF、R、Python 及其他文件，并支持递归检索子文件夹。</div>
+    <div class="step">勾选文件、从 <code>@</code> 菜单选择文件，或直接在问题中写明路径和任务。</div>
+  </div>
+  <table>
+    <tr><th>权限</th><th>能力</th><th>建议</th></tr>
+    <tr><td>只读</td><td>读取、检索、分析，不修改文件</td><td>首次检查陌生目录时使用</td></tr>
+    <tr><td>工作区可写</td><td>可在安全工作副本中创建和修改文件</td><td>常规写作、分析和作图推荐</td></tr>
+    <tr><td>完全访问</td><td>允许更广泛的本地工具操作</td><td>只在明确理解风险时启用</td></tr>
+  </table>
+  <div class="success"><strong>安全副本：</strong>启用工作目录后，软件会创建 <code>ScholarHarness_AI_Workspaces/SH-...</code> 工作文件夹。AI 优先复制所需材料到该目录并在副本上工作，原始目录主要作为读取来源。</div>
+  <p class="small">注意：任何自动化工具都不能替代备份。重要原始数据仍应保留在独立磁盘、云盘或版本库中。</p>
+
+  <h2>4. AI 与本地插件配置</h2>
+  <h3>4.1 AI 配置</h3>
+  <ol>
+    <li>进入右上角齿轮 → 模型/API 配置。</li>
+    <li>填写服务地址、API Key 和模型名称，先测试再保存。</li>
+    <li>Codex 页面可设置 CLI 路径、模型和 Reasoning Effort。模型切换时，界面会按该模型实际支持的推理档位调整。</li>
+  </ol>
+  <h3>4.2 全局本地插件</h3>
+  <table>
+    <tr><th>插件</th><th>用途</th><th>配置方式</th></tr>
+    <tr><td>R / Rscript</td><td>统计分析、Meta、期刊图件、R 脚本运行</td><td>自动检测、一键安装或保存 <code>Rscript.exe</code> 路径</td></tr>
+    <tr><td>Python</td><td>数据处理、文档与图片辅助、脚本运行</td><td>自动检测、一键安装或保存 <code>python.exe</code> 路径</td></tr>
+    <tr><td>OfficeCLI</td><td>创建、检查和修改 Word/Excel/PPT</td><td>一键安装或保存可执行文件路径</td></tr>
+  </table>
+  <p>插件保存后全局可用，主页、讨论式写作、Meta、数据分析和工作目录 Agent 都应使用同一配置。</p>
+
+  <h2>5. 建立文献库与 Embedding 检索</h2>
+  <h3>5.1 导入支持</h3>
+  <p>可上传 WoS、CNKI 或文献管理软件导出的 <span class="tag">RIS</span><span class="tag">BibTeX</span><span class="tag">TXT</span><span class="tag">CSV</span><span class="tag">Excel</span> 文件。系统统一解析题名、作者、年份、期刊、DOI、摘要和关键词。</p>
+  <div class="flow"><span>上传导出文件</span><span>解析与去重</span><span>生成 Embedding</span><span>语义检索</span><span>写作引用</span></div>
+  <h3>5.2 推荐操作</h3>
+  <ol>
+    <li>在新手向导选择“上传 WoS/CNKI 导出文件，建立句子级 Embedding 知识库”，或从 Embedding 文献库页面上传。</li>
+    <li>等待解析、去重和向量化完成；新会话会自动加载当前项目文献库状态。</li>
+    <li>在主页描述需要证据支持的句子或论点，或进入“快速句子级论点检索”。</li>
+    <li>检索会优先匹配摘要中的结论性内容，并按“支持、高质量相关、仅相关、相反、无关”组织结果。</li>
+  </ol>
+  <div class="note"><strong>Embedding 文献库适合广泛检索；PDF Wiki 适合精确回到原文句子。</strong>写作中可以同时使用，但两者的证据标识不能混淆。</div>
+
+  <h2>6. PDF Wiki 句子级证据库</h2>
+  <p>PDF Wiki 不是普通摘要工具。它把 PDF 原文拆成稳定编号的句子，并将句子级论点、来源页码、文内引用和参考文献索引关联起来。</p>
+  <div class="steps">
+    <div class="step">上传 PDF，等待文本解析；扫描件可切换更强的 OCR/Marker 解析。</div>
+    <div class="step">生成句子级 Wiki 论点库。PDF 较多时可在配置页增加 Codex CLI 并发数。</div>
+    <div class="step">在快速检索中输入需要文献支撑的句子，查看支持、相反和相关证据。</div>
+    <div class="step">打开原文核查上下文、页码、原始引用和参考文献。</div>
+  </div>
+  <h3>6.1 编号与尾注对应</h3>
+  <table>
+    <tr><th>位置</th><th>规范</th></tr>
+    <tr><td>文中</td><td>使用该证据句的唯一编号，不能由 AI 根据相似度猜编号。</td></tr>
+    <tr><td>尾注</td><td>使用“编号 + 句子内容 + 来源信息”，与文中编号一一对应。</td></tr>
+    <tr><td>证据不足</td><td>保留“需核查”标记，回到 PDF 原文确认后再用于投稿。</td></tr>
   </table>
 
-  <h2>3. API、模型、PDF 解析与本地工具配置</h2>
-  <h3>3.1 AI API 配置</h3>
+  <h2>7. Auto Research 研究准备</h2>
+  <p>Auto Research 用于选题审查、研究边界锁定、证据矩阵和写作蓝图。它应在正式长文写作前运行，而不是代替用户定义科学问题。</p>
+  <div class="flow"><span>输入主题</span><span>拆解科学问题</span><span>检索证据</span><span>评估风险</span><span>生成蓝图</span></div>
+  <h3>主要产物</h3>
+  <ul>
+    <li><strong>选题审查：</strong>论文类型、创新边界、证据缺口和不可过度声称的结论。</li>
+    <li><strong>Evidence Matrix：</strong>主张、变量、机制、结果与证据强度。</li>
+    <li><strong>写作蓝图：</strong>中心论点、章节任务、支持主张、反证与局限。</li>
+    <li><strong>内容增强报告：</strong>供 Results、Discussion 和 Conclusion 持续调用。</li>
+  </ul>
+  <p>完成后的报告会出现在聊天气泡下方，可下载，也可勾选为后续对话的持续上下文。</p>
+
+  <h2>8. 写作、智能草稿与论文图片</h2>
+  <h3>8.1 一键写论文</h3>
   <ol>
-    <li>打开左下角设置或模型配置入口。</li>
-    <li>填写 API 地址，例如 <code>https://api.openai.com/v1</code> 或其他兼容 OpenAI 格式的服务地址。</li>
-    <li>填写 API Key，并选择主模型和辅助模型。</li>
-    <li>保存后执行一次测试对话，确认模型能正常返回内容。</li>
+    <li>选择论文类型、语言、目标期刊、字数和可用资料。</li>
+    <li>系统先规划章节，再按段落检索证据并写作。</li>
+    <li>长任务会显示进度；完成后的 Word、PDF、Markdown 和图件直接放在气泡下方。</li>
   </ol>
-  <div class="warn">
-    API 地址通常只填写到 <code>/v1</code>，不要填写 <code>/chat/completions</code> 这样的端点路径。
+  <h3>8.2 讨论式写作与智能保存</h3>
+  <p>右侧“文章写作进度”动态展示当前项目的章节 TXT。保存时，系统根据用户明确选择的章节、正在写的章节和内容结构确定目标，不应把 Results 小节创建成与 Results 平行的主章节。</p>
+  <ul>
+    <li>每个主章节只使用一个 TXT，例如 <code>introduction.txt</code>、<code>results.txt</code>、<code>discussion.txt</code>。</li>
+    <li>小节写入所属主章节 TXT，不再创建 <code>results_33.txt</code> 等碎片文件。</li>
+    <li>用户可勾选章节提问，章节路径和最新内容会随 query 发送给 AI。</li>
+    <li>可在右侧编辑、保存或删除章节；允许 AI 按写作要求创建新的合理章节。</li>
+    <li>章节 TXT 更新后，整篇导出文件自动同步，AI 读取的也是最新草稿和写作进度。</li>
+  </ul>
+  <h3>8.3 论文图片</h3>
+  <p>上传图片时可填写 Figure 分组、名称、标题和图注；未填写分组时也可按普通任务让 AI 分析。已归档图片在右侧“论文图片”中展示，支持打开、编辑、多选删除和合并。AI 或工具新生成的图片也会作为最新文件附件显示。</p>
+
+  <h2>9. 引用、尾注与目标期刊格式</h2>
+  <h3>9.1 文内引用</h3>
+  <p>常规作者-年份制应写为 <code>(Zhang et al., 2026)</code>。正文中的引用标记与文末参考文献条目用途不同，不能把作者-年份标记重复放在文末条目前。</p>
+  <h3>9.2 文末参考文献</h3>
+  <p>在快速论点检索输入框上方设置“目标期刊参考文献尾注格式”，可上传或粘贴该期刊的真实参考文献样例。AI 应按样例输出全部作者、年份、题名、期刊、卷期页码和 DOI；样例没有的前缀不要自行添加。</p>
+  <div class="warn"><strong>提交前必须核查：</strong>作者是否完整、年份和题名是否正确、DOI 是否真实、正文每条引用是否在文末出现，以及文末是否存在未引用条目。</div>
+  <h3>9.3 引用来源边界</h3>
+  <ul>
+    <li>PDF Wiki：保留句子证据编号和可追溯来源。</li>
+    <li>Embedding 文献库：使用正常作者-年份或编号制引用。</li>
+    <li>AI 不得编造缺失的卷、页码、DOI 或作者；未知信息应明确标记待核查。</li>
+  </ul>
+
+  <h2>10. 数据分析与 R 作图</h2>
+  <div class="steps">
+    <div class="step">上传 Excel/CSV，或从工作目录选择数据文件与指定 sheet。</div>
+    <div class="step">说明因变量、自变量、处理、时间、重复、单位和需要的统计方法。</div>
+    <div class="step">确认各处理/分组颜色。AI 可推荐 Okabe-Ito、Nature、NEJM/Lancet、Cell 等常用配色。</div>
+    <div class="step">运行分析与 R 脚本，检查统计输出、图件和脚本文件。</div>
   </div>
-  <h3>3.2 Codex CLI 与本地写作链条</h3>
-  <p>部分高级写作、PDF Wiki 和 Auto Research 能力会调用 Codex CLI。若出现“Not inside a trusted directory”之类错误，请升级到包含修复的安装包；新版已在调用参数中加入仓库检查跳过逻辑。</p>
-  <h3>3.3 PDF 解析配置</h3>
-  <p>PDF 解析可使用本地解析、LiteParse、Marker、pdf-marker-md 或外部模型链路。建议先使用默认解析；遇到扫描版、图表多、正文提取差的 PDF，再切换更强的解析方式。</p>
-  <h3>3.4 R 语言与图件工具</h3>
-  <ol>
-    <li>进入 R 语言作图或数据分析模块。</li>
-    <li>点击检测 R 环境。</li>
-    <li>若未安装 R，可使用软件内的一键安装入口，或先从 R 官网安装。</li>
-    <li>生成 R 脚本后可直接执行，输出 PDF/PNG 图件。</li>
-  </ol>
+  <p>颜色确认会形成命名颜色向量；同一处理在不同图、panel、<code>color</code> 和 <code>fill</code> 中保持一致。AI 修复 R 代码时也应保留这套配置。</p>
+  <h3>作图前应提供的信息</h3>
+  <ul>
+    <li>数据文件与 sheet 名；变量含义、单位和缺失值规则。</li>
+    <li>处理组顺序、对照组、误差类型（SD/SE/CI）和显著性标记。</li>
+    <li>目标图尺寸、期刊风格、颜色和输出格式（PNG/PDF/TIFF）。</li>
+  </ul>
 
-  <h2>4. 文件导入</h2>
+  <h2>11. Meta 分析与图像数字化</h2>
+  <h3>11.1 AI 驱动的 Meta 目标</h3>
+  <p>Meta 页面输入框与主页一致，可选择模型、上传文件、停止运行。用自然语言说明因变量、处理、连续/分类调节变量、效应量和聚类字段，AI 会先检查数据结构再提出分析方案。</p>
+  <h3>11.2 标准流程</h3>
+  <div class="flow"><span>导入编码表</span><span>复核列与单位</span><span>计算效应量</span><span>拟合模型</span><span>诊断与作图</span><span>写作输出</span></div>
+  <ul>
+    <li>检查 Study/Obs、处理组/对照组、均值、SD/SE、样本量和方向。</li>
+    <li>运行总体效应、异质性、调节变量、敏感性、漏斗图和发表偏倚检验。</li>
+    <li>下载效应量 CSV、模型结果、R 脚本、森林图和漏斗图。</li>
+  </ul>
+  <h3>11.3 图像数字化复核</h3>
+  <p>先标定 X/Y 最小值和最大值，再采点、撤销或清空。采点结果可写入指定单元格、批量竖填或填入全部行；“确定”会保存处理后的最终数据，而不是只改变页面显示。</p>
+  <div class="warn">数字化结果必须抽样复核坐标、坐标轴变换和单位。对数轴、倒序轴和分组图不能按普通线性坐标处理。</div>
+
+  <h2>12. 文献计量分析</h2>
+  <ol>
+    <li>导入 WoS/CNKI 导出文件，检查记录数、年份、作者、机构、关键词和来源期刊。</li>
+    <li>运行关键词共现、作者/机构合作、主题聚类、研究热点、主题演化和知识结构分析。</li>
+    <li>在写作准备区域查看：计量学论文草稿、10 项分析就绪度、方法可写内容、结果可写内容、讨论角度和局限性。</li>
+    <li>将结果勾选为持续上下文后，随 query 一起发送给 AI。</li>
+  </ol>
+  <p>鼠标移动到写作准备气泡时，下方会展开相应内容。写作前应确认数据来源、检索式、检索日期、去重规则和软件参数均可复现。</p>
+
+  <h2>13. Skill、长期记忆与 Obsidian</h2>
+  <h3>13.1 Skill</h3>
+  <p>软件会把可用 Skill 的名称和功能发给 AI，由 AI 按用户意图自动调用；这与用户手动选择 Skill 不冲突。</p>
+  <ul>
+    <li>内置章节写作、引用相关性、科研审稿、数据/文档处理等 Skill。</li>
+    <li>Skill 发现器可根据需求联网检索候选，并列出来源后供用户安装。</li>
+    <li>支持从 GitHub 仓库、目录、<code>SKILL.md</code> 或 raw 链接导入。</li>
+  </ul>
+  <h3>13.2 长期记忆</h3>
+  <p>长期记忆按当前 query 检索筛选；历史会话主要发送最近 3-5 条摘要，并按先后顺序携带最近 15 条用户 query，帮助 AI 理解最新要求。不同项目的研究事实应分别维护。</p>
+  <h3>13.3 Obsidian</h3>
+  <p>内置 Obsidian 知识库用于整理 PDF Wiki 句子级论点，可一键生成并同步 Obsidian 兼容 Markdown Vault。该操作不会安装或启动 Obsidian 客户端；整理后的论点可在软件内检索，也可以把生成目录作为 Vault 在 Obsidian 中打开。</p>
+
+  <h2>14. 导出、更新与故障排查</h2>
+  <h3>14.1 导出与打开文件</h3>
+  <ul>
+    <li>AI 生成的 Word、PDF、Excel、R 脚本和图片会显示在对应气泡下方。</li>
+    <li>“打开文件”由 Electron 使用本地绝对路径打开；不要把 Windows 路径当作网页 URL。</li>
+    <li>Word 草稿默认使用 Times New Roman；中文字体可按期刊或学校模板进一步设置。</li>
+    <li>附件展示以最新路径和最新修改时间为准；同一路径更新后应刷新预览，避免旧缓存。</li>
+  </ul>
+  <h3>14.2 软件更新</h3>
+  <p>客户端会检查官网的最新版本清单。发现更高版本后，页面左下角显示更新提示，点击即可下载最新安装包。升级前建议完成当前长任务并备份重要项目。</p>
+  <h3>14.3 常见问题</h3>
   <table>
-    <tr><th>文件类型</th><th>入口</th><th>用途</th></tr>
-    <tr><td>论文 PDF</td><td>AI 文献管理 / PDF Wiki</td><td>解析全文、图表、句子级论点、论文一览图，并供写作调用。</td></tr>
-    <tr><td>WoS / CNKI / RIS / BibTeX</td><td>文献库或文献计量入口</td><td>建立 embedding 文献库、文献计量数据库或写作参考库。</td></tr>
-    <tr><td>Excel / CSV 数据表</td><td>数据分析模块</td><td>统计分析、变量选择、显著性整理和 R 作图。</td></tr>
-    <tr><td>Meta 编码表</td><td>Meta 分析向导</td><td>效应量计算、模型设置、森林图、漏斗图和敏感性分析。</td></tr>
-    <tr><td>实验资料 / 研究说明</td><td>项目记忆 / 对话上传</td><td>沉淀研究背景、试验设计、数据总结和写作上下文。</td></tr>
-  </table>
-  <h3>导入建议</h3>
-  <ul>
-    <li>一个项目只放同一研究主题相关资料，避免不同课题资料混杂。</li>
-    <li>PDF 文件名尽量包含作者、年份或主题，便于后续人工识别。</li>
-    <li>Meta 编码表和数据表应保留清晰列名，单位和处理组信息不要写在备注里。</li>
-    <li>导入后先检查解析预览，再进入写作或分析。</li>
-  </ul>
-
-  <h2>5. Auto Research 使用流程</h2>
-  <p>Auto Research 用于从研究问题出发，生成调研任务、证据链、选题审查、内容增强报告和写作蓝图。</p>
-  <ol>
-    <li>输入研究主题、关键词或初步论文题目。</li>
-    <li>系统拆解研究问题、检索方向和资料需求。</li>
-    <li>生成选题审查：判断论文类型、范围风险、证据是否足够。</li>
-    <li>生成内容增强报告：Evidence Matrix、变量-机制-结果矩阵、证据强度热图、创新框架等。</li>
-    <li>任务完成后，可在已完成任务记录中折叠查看、勾选删除或下载报告。</li>
-  </ol>
-  <h3>结果如何进入写作</h3>
-  <ul>
-    <li><code>paperTopicReview</code> 控制论文类型、风险、边界和是否进入写作。</li>
-    <li><code>paperWritingBlueprint</code> 控制中心论点、科学问题、支持主张和不能写的结论。</li>
-    <li><code>contentEnhancementReport</code> 控制 Results、Discussion 和 Conclusion 的内容厚度。</li>
-  </ul>
-
-  <h2>6. 一键写论文使用流程</h2>
-  <ol>
-    <li>在一键写论文入口填写论文主题、字数、语言、引用格式和用户要求。</li>
-    <li>选择是否调用 Auto Research 最新报告、PDF Wiki、embedding 文献库和长期项目记忆。</li>
-    <li>系统先生成章节提纲，再拆成段落和句子级写作单元。</li>
-    <li>每个句子会先检索证据，再生成正文，避免无来源写作。</li>
-    <li>完成后可导出 Word，并查看引用核查清单。</li>
-  </ol>
-  <div class="note">
-    一键写论文适合生成第一版可编辑草稿。导出后仍建议人工检查研究逻辑、统计结果、引用支撑和期刊格式。
-  </div>
-  <h3>证据来源规则</h3>
-  <ul>
-    <li>PDF Wiki 句子级证据：使用 <code>来源Wiki论点库: 句子证XXXXXXX（需核查）</code> 保持可追溯。</li>
-    <li>Embedding 文献库证据：使用正常文内引用，例如 <code>(Zhang et al., 2026)</code>。</li>
-    <li>不要把 embedding 文献库证据标成 Wiki 句子证据。</li>
-  </ul>
-
-  <h2>7. 讨论式写作与草稿管理</h2>
-  <p>讨论式写作适合边思考边写论文。用户可以要求系统解释结果、比较文献、扩写段落、压缩表达、改成目标期刊风格或补充证据。</p>
-  <ol>
-    <li>在主对话中说明要写的章节，例如“写 Discussion 第二段，解释机制”。</li>
-    <li>需要时明确调用资料，例如“调用 PDF Wiki 论点库”“调用 Auto Research 报告”。</li>
-    <li>系统会根据当前项目上下文生成或修改段落。</li>
-    <li>满意后说“保存到草稿”，系统会写入对应章节草稿。</li>
-    <li>在论文草稿面板继续编辑、下载 Word 或 Markdown。</li>
-  </ol>
-  <h3>Discussion 写作注意事项</h3>
-  <ul>
-    <li>Discussion 不是 Results 的重复，应解释为什么出现这些结果。</li>
-    <li>把变量、机制和结果连成机制链。</li>
-    <li>区分直接证据、相邻证据、机制证据和背景证据。</li>
-    <li>遵守 Auto Research 给出的 claimsToAvoid，不要写证据不支持的强结论。</li>
-  </ul>
-
-  <h2>8. AI 文献管理与 PDF Wiki 论点库</h2>
-  <p>AI 文献管理负责把 PDF 从普通文件变成可分析、可检索、可写作调用的知识库。</p>
-  <ol>
-    <li>上传 PDF 文献。</li>
-    <li>执行 PDF 解析，检查正文、图表和页码信息。</li>
-    <li>运行深度分析，生成论文摘要、研究设计、关键结论和局限。</li>
-    <li>生成论文一览图，帮助快速理解文献结构。</li>
-    <li>抽取句子级论点，形成 PDF Wiki 论点库。</li>
-  </ol>
-  <h3>句子级证据编号</h3>
-  <p>PDF Wiki 句子级证据会带 7 位证据编号，用于把论文正文中的可疑引用追溯到具体 PDF 句子。写作时如果无法确认该句直接支持正文论断，应保留“需核查”标记。</p>
-
-  <h2>9. Meta 分析全流程</h2>
-  <ol>
-    <li>进入 Meta 分析向导，创建或选择研究主题。</li>
-    <li>导入 Meta 编码表，或从 PDF 提取研究数据后形成编码表。</li>
-    <li>检查 Study、Obs、处理组、对照组、均值、标准差、样本量和单位。</li>
-    <li>选择效应量类型、因变量、模型、调节变量和聚类字段。</li>
-    <li>运行模型，查看森林图、漏斗图、敏感性分析、Egger 检验和调节变量结果。</li>
-    <li>下载效应量 CSV、图件和 R 脚本，或调用结果写作方法和结果章节。</li>
-  </ol>
-  <div class="warn">
-    Meta 分析最容易出错的是单位、处理组/对照组方向、同一研究多观测值和样本量字段。运行前务必复核编码表。
-  </div>
-
-  <h2>10. 文献计量分析全流程</h2>
-  <ol>
-    <li>导入 WoS、CNKI 或其他支持格式的文献计量数据。</li>
-    <li>系统解析标题、作者、机构、关键词、摘要、来源期刊和年份。</li>
-    <li>运行关键词、作者、机构、主题聚类、趋势等分析。</li>
-    <li>下载图件、表格和完整分析结果。</li>
-    <li>在写作中调用文献计量分析结果，生成方法、结果解释和图注。</li>
-  </ol>
-  <p>写作文献计量论文时，应调用已经分析好的结果和图件索引，不要只把原始导入文件交给 AI 解释。</p>
-
-  <h2>11. 数据分析与 R 语言作图</h2>
-  <ol>
-    <li>上传 Excel 或 CSV 数据表。</li>
-    <li>选择因变量、自变量、分组变量、时间变量或处理变量。</li>
-    <li>选择分析类型，例如描述统计、相关分析、回归、分组比较或自定义分析。</li>
-    <li>生成统计解释和 R 作图代码。</li>
-    <li>检测 R 环境并运行脚本，输出 PDF/PNG 图件。</li>
-    <li>把统计结果和图件说明调用到论文 Results 或 Discussion 中。</li>
-  </ol>
-  <h3>数据表整理建议</h3>
-  <ul>
-    <li>第一行为列名，列名不要重复。</li>
-    <li>每一列只放一种变量，不要把数值和单位混写。</li>
-    <li>缺失值统一为 NA 或空白，不要混用多个符号。</li>
-    <li>分类变量保持命名一致，例如 Control、Treatment A、Treatment B。</li>
-  </ul>
-
-  <h2>12. 引用、证据溯源与常见问题</h2>
-  <h3>12.1 引用和证据</h3>
-  <table>
-    <tr><th>证据来源</th><th>正文标记</th><th>说明</th></tr>
-    <tr><td>PDF Wiki 句子级证据</td><td><code>来源Wiki论点库: 句子证XXXXXXX（需核查）</code></td><td>用于追溯到具体 PDF 句子。需核查表示仍需人工确认直接支撑关系。</td></tr>
-    <tr><td>Embedding 文献库证据</td><td><code>(Author et al., Year)</code></td><td>使用普通文内引用，不添加 Wiki 句子证据标记。</td></tr>
-    <tr><td>用户上传实验资料</td><td>不作为文献引用</td><td>可作为研究背景或数据上下文，但不能冒充论文引用。</td></tr>
-  </table>
-  <h3>12.2 常见问题</h3>
-  <table>
-    <tr><th>问题</th><th>处理方式</th></tr>
-    <tr><td>模型返回空内容</td><td>降低字数、检查 API 地址和 Key、减少一次性上下文，或改用稳定模型重试。</td></tr>
-    <tr><td>PDF 解析失败</td><td>尝试更换解析方式，检查是否为扫描版，必要时先 OCR。</td></tr>
-    <tr><td>引用显示需核查</td><td>查看句子证据编号，回到 PDF Wiki 论点库核对原句是否直接支持。</td></tr>
-    <tr><td>R 图件无法生成</td><td>检查 R 是否安装、路径是否可识别、依赖包是否安装、数据列名是否含特殊符号。</td></tr>
-    <tr><td>一键写论文太慢</td><td>这是逐句检索和逐句写作导致的正常现象；可降低字数或减少调用资料源。</td></tr>
+    <tr><th>问题</th><th>处理方法</th></tr>
+    <tr><td>小牛马连接失败：fetch failed</td><td>先在配置页测试 API；检查地址、Key、模型、代理、防火墙和服务商状态。查看本地日志中的真实网络错误。</td></tr>
+    <tr><td>R 未安装，但已经配置过</td><td>在配置 → 本地插件重新检测，确认保存的是可执行的 <code>Rscript.exe</code>；配置应全局生效。</td></tr>
+    <tr><td>Codex 一直运行或工具失败</td><td>检查 Codex 日志、工作目录权限和本机 CLI；Notion MCP 等外部连接失败通常不影响本地文件读取。</td></tr>
+    <tr><td>找不到子文件夹中的 Word/数据</td><td>确认工作目录正确、索引已刷新，并通过 <code>@</code> 或分类文件区直接选择；大型目录可缩小检索范围。</td></tr>
+    <tr><td>图片预览失败或还是旧图</td><td>点击刷新目录，确认文件存在且未被移动；同名图更新后按修改时间刷新，必要时重新打开会话。</td></tr>
+    <tr><td>右侧草稿没有更新</td><td>确认目标项目和主章节 TXT；刷新文章写作进度，检查保存结果是否明确返回章节 key 和文件路径。</td></tr>
+    <tr><td>新用户不知道如何配置</td><td>从右上角齿轮重新运行“新用户设置向导”，只配置一个可用 AI 后先完成示例任务。</td></tr>
   </table>
 
-  <p class="small page-break">本文档为 Scholar Harness 用户使用手册。软件功能会持续更新，具体界面以当前版本为准。</p>
+  <h3>14.4 投稿前检查清单</h3>
+  <ul class="checklist">
+    <li>研究问题、方法和结果之间一致，没有 AI 擅自扩大结论。</li>
+    <li>统计方法、样本量、单位、误差线和显著性标记均已人工复核。</li>
+    <li>正文引用与文末参考文献逐条对应，作者、年份、DOI 可验证。</li>
+    <li>PDF Wiki 证据已回到原文核查，不保留未经确认的“需核查”内容。</li>
+    <li>图表颜色、处理顺序、字体、尺寸和图注符合目标期刊要求。</li>
+    <li>最终 Word/PDF 已人工通读，并保存独立备份。</li>
+  </ul>
+
+  <div class="footer-note">
+    Scholar Harness 提供的是科研辅助能力。用户对数据真实性、统计结论、引用准确性、伦理合规和最终投稿内容承担最终责任。功能会随版本更新，界面细节以当前安装版本为准。
+  </div>
 </body>
 </html>

@@ -9,6 +9,14 @@ import { anchorPromptWithCurrentRequest } from '../../utils/prompt-request-ancho
 import { ChatBridgeAdapter } from '../../bridge/chat-bridge/chat-bridge';
 import { ScholarClawOrchestrator, ProcessingMode } from '../../orchestrator/task-orchestrator';
 import {
+  buildQueryIntentPromptBlock,
+  classifyQueryIntentFallback,
+  parseQueryIntentResponse,
+  type QueryIntent,
+  type QueryIntentClassifierInput,
+  type QueryIntentHistoryMessage,
+} from '../../orchestrator/query-intent';
+import {
   applyPendingMemoryEdit,
   cancelPendingMemoryEdit,
   createMemoryEditPreview,
@@ -45,6 +53,34 @@ interface OrdinaryDraftContext {
 }
 
 let getDraftContextForUser: ((userId: string, request: string) => Promise<OrdinaryDraftContext | null>) | null = null;
+
+function resolveVerifiedQueryIntent(options: {
+  message: string;
+  history?: unknown;
+  submittedIntent?: unknown;
+  invokedSkills?: Array<{ trigger?: string }>;
+}): QueryIntent {
+  const history = (Array.isArray(options.history) ? options.history : [])
+    .filter((item): item is Record<string, unknown> =>
+      Boolean(item) && typeof item === 'object' && !Array.isArray(item)
+    )
+    .map((item): QueryIntentHistoryMessage => ({
+      role: item.role === 'assistant' || item.role === 'system' ? item.role : 'user',
+      content: String(item.content || ''),
+    }))
+    .slice(-20);
+  const classifierInput: QueryIntentClassifierInput = {
+    message: options.message,
+    history,
+    explicitParts: (options.invokedSkills || []).map(skill => ({
+      type: 'slash',
+      trigger: String(skill.trigger || ''),
+    })),
+  };
+  return options.submittedIntent && typeof options.submittedIntent === 'object'
+    ? parseQueryIntentResponse(JSON.stringify(options.submittedIntent), classifierInput)
+    : classifyQueryIntentFallback(classifierInput);
+}
 
 // 使用统一的路径管理模块（确保 Electron/pkg 打包后路径一致）
 const dataDir = getDataDir();
@@ -186,6 +222,7 @@ router.post('/chat', async (req: Request, res: Response) => {
       literatureContext,
       journalStyle,
       writingProgress,
+      queryIntent: submittedQueryIntent,
       // 强制模式（可选）
       forceMode,
     } = req.body;
@@ -251,6 +288,12 @@ router.post('/chat', async (req: Request, res: Response) => {
     if (userSkillInvocation.invokedSkills.length > 0) {
       logger.info(`[UserSkills] UnifiedChat invoked skills: ${userSkillInvocation.invokedSkills.map(skill => `/${skill.trigger}`).join(', ')}`);
     }
+    const verifiedQueryIntent = resolveVerifiedQueryIntent({
+      message: messageForTask,
+      history,
+      submittedIntent: submittedQueryIntent,
+      invokedSkills: userSkillInvocation.invokedSkills,
+    });
     
     // 步骤 0: 服务端加载记忆（确保所有模式都能获取记忆）
     // 修复：之前 HYBRID 和 CHATBRIDGE_ONLY 模式依赖前端传递 memoryContext，现在改为服务端加载
@@ -297,7 +340,12 @@ router.post('/chat', async (req: Request, res: Response) => {
     if (ordinaryDraftContext) {
       serverWritingProgress = '';
     }
-    const memoryWithDraftContext = [userSkillPrompt, ordinaryDraftContext, serverMemoryContext].filter(Boolean).join('\n\n');
+    const memoryWithDraftContext = [
+      buildQueryIntentPromptBlock(verifiedQueryIntent),
+      userSkillPrompt,
+      ordinaryDraftContext,
+      serverMemoryContext,
+    ].filter(Boolean).join('\n\n');
 
     // 步骤 1: 分析任务，决定处理模式
     let mode: ProcessingMode;
@@ -368,17 +416,19 @@ router.post('/chat', async (req: Request, res: Response) => {
             memoryDir: getMemoryDir(),
             skillDir: skillDir,
           };
-          
-          const processorMessage = ordinaryDraftContext
-            ? `${memoryWithDraftContext}\n\n---\n\n用户问题：${messageForTask}`
-            : (userSkillPrompt ? `${userSkillPrompt}\n\n---\n\n用户问题：${messageForTask}` : messageForTask);
 
           // 调用统一的聊天处理器（userId 已从 session 获取）
           const result = await processUnifiedChatMessage(
             userId, // 使用已从 session 解析的 userId
-            processorMessage, 
+            messageForTask,
             processorConfig,
-            { history }
+            {
+              history,
+              requestContext: [userSkillPrompt, ordinaryDraftContext, serverMemoryContext]
+                .filter(Boolean)
+                .join('\n\n'),
+              queryIntent: verifiedQueryIntent,
+            }
           );
           response = result.response;
           metadata.provider = 'api';
@@ -398,6 +448,7 @@ router.post('/chat', async (req: Request, res: Response) => {
         mode,
         processingTime: metadata.generationTime || 0,
         invokedUserSkills: userSkillInvocation.invokedSkills,
+        queryIntent: verifiedQueryIntent,
         ...metadata,
       },
     });
@@ -431,15 +482,18 @@ router.post('/chat-with-context', async (req: Request, res: Response) => {
     const {
       message,
       userId,
+      history = [],
+      queryIntent: submittedQueryIntent,
       // 是否启用各功能
       useMemory = true,
-      useLiterature = false,
+      useLiterature,
+      forceLiteratureRetrieval = false,
       useJournalStyle = true,
       useWebSearch = false,  // ChatBridge 自带搜索
     } = req.body;
 
     logger.info(`[UnifiedChat] Context-rich request from ${userId}`);
-    const automaticLiteratureRetrievalEnabled = process.env.AUTO_LITERATURE_RETRIEVAL === '1';
+    const automaticLiteratureRetrievalEnabled = process.env.AUTO_LITERATURE_RETRIEVAL !== '0';
 
     // Bug 修复：从 session 获取 userId
     const resolvedUserId = await resolveUserId(userId);
@@ -449,6 +503,12 @@ router.post('/chat-with-context', async (req: Request, res: Response) => {
     if (userSkillInvocation.invokedSkills.length > 0) {
       logger.info(`[UserSkills] UnifiedChat context invoked skills: ${userSkillInvocation.invokedSkills.map(skill => `/${skill.trigger}`).join(', ')}`);
     }
+    const verifiedQueryIntent = resolveVerifiedQueryIntent({
+      message: messageForTask,
+      history,
+      submittedIntent: submittedQueryIntent,
+      invokedSkills: userSkillInvocation.invokedSkills,
+    });
     
     // 准备上下文
     const context: {
@@ -472,12 +532,15 @@ router.post('/chat-with-context', async (req: Request, res: Response) => {
       }
     }
 
-    // 自动文献摘要检索默认禁用：文献检索主要由用户在界面中手动触发
-    if (useLiterature && !automaticLiteratureRetrievalEnabled) {
-      logger.info('[UnifiedChat] Automatic literature retrieval is disabled; skipping literature context injection');
+    const shouldRetrieveLiterature = automaticLiteratureRetrievalEnabled
+      && useLiterature !== false
+      && (forceLiteratureRetrieval === true || verifiedQueryIntent.needsLiteratureRetrieval);
+
+    if ((useLiterature !== false || forceLiteratureRetrieval === true) && !automaticLiteratureRetrievalEnabled) {
+      logger.info('[UnifiedChat] Automatic literature retrieval explicitly disabled; skipping literature context injection');
     }
 
-    if (automaticLiteratureRetrievalEnabled && useLiterature) {
+    if (shouldRetrieveLiterature) {
       try {
         const retrievalEngine = getRetrievalEngine();
         const retrieveResult = await retrievalEngine.retrieve({
@@ -505,6 +568,10 @@ router.post('/chat-with-context', async (req: Request, res: Response) => {
         logger.warn(`[UnifiedChat] Literature retrieval failed:`, error);
         context.literatureContext = '';
       }
+    } else {
+      logger.info(
+        `[UnifiedChat] Literature retrieval skipped by verified query intent: ${verifiedQueryIntent.primaryIntent}`
+      );
     }
 
     // 真实实现期刊风格加载（使用 resolvedUserId）
@@ -577,6 +644,10 @@ router.post('/chat-with-context', async (req: Request, res: Response) => {
     if (userSkillInvocation.promptBlock) {
       context.memoryContext = [userSkillInvocation.promptBlock, context.memoryContext].filter(Boolean).join('\n\n');
     }
+    context.memoryContext = [
+      buildQueryIntentPromptBlock(verifiedQueryIntent),
+      context.memoryContext,
+    ].filter(Boolean).join('\n\n');
 
     // 执行混合处理
     const result = await orchestrator.processHybrid(
@@ -612,6 +683,7 @@ router.post('/chat-with-context', async (req: Request, res: Response) => {
       metadata: {
         ...result.metadata,
         invokedUserSkills: userSkillInvocation.invokedSkills,
+        queryIntent: verifiedQueryIntent,
       },
     });
 
@@ -638,6 +710,7 @@ router.post('/chat-stream', async (req: Request, res: Response) => {
     message,
     userId: bodyUserId, // Bug 修复：改名避免与 session 解析的 userId 冲突
     history = [],
+    queryIntent: submittedQueryIntent,
     useMemory = true,
     useLiterature = false,
     useJournalStyle = false,
@@ -656,6 +729,12 @@ router.post('/chat-stream', async (req: Request, res: Response) => {
   if (userSkillInvocation.invokedSkills.length > 0) {
     logger.info(`[UserSkills] UnifiedChat stream invoked skills: ${userSkillInvocation.invokedSkills.map(skill => `/${skill.trigger}`).join(', ')}`);
   }
+  const verifiedQueryIntent = resolveVerifiedQueryIntent({
+    message: messageForTask,
+    history,
+    submittedIntent: submittedQueryIntent,
+    invokedSkills: userSkillInvocation.invokedSkills,
+  });
 
   // 设置 SSE headers
   res.writeHead(200, {
@@ -691,6 +770,10 @@ router.post('/chat-stream', async (req: Request, res: Response) => {
     if (userSkillInvocation.promptBlock) {
       context.memoryContext = [userSkillInvocation.promptBlock, context.memoryContext].filter(Boolean).join('\n\n');
     }
+    context.memoryContext = [
+      buildQueryIntentPromptBlock(verifiedQueryIntent),
+      context.memoryContext,
+    ].filter(Boolean).join('\n\n');
 
     // 构建增强提示词
     const enrichedPrompt = orchestrator.buildEnrichedPrompt(messageForTask, context);
@@ -709,7 +792,11 @@ router.post('/chat-stream', async (req: Request, res: Response) => {
     });
 
     // 发送完成信号
-    res.write(`data: ${JSON.stringify({ type: 'end', content: fullResponse })}\n\n`);
+    res.write(`data: ${JSON.stringify({
+      type: 'end',
+      content: fullResponse,
+      queryIntent: verifiedQueryIntent,
+    })}\n\n`);
     res.end();
 
     logger.info(`[UnifiedChat] Stream completed, total ${fullResponse.length} chars`);
@@ -743,6 +830,7 @@ router.post('/analyze', async (req: Request, res: Response) => {
         complexity: analysis.complexity,
         estimatedTime: analysis.estimatedTime,
         reason: analysis.reason,
+        queryIntent: analysis.queryIntent,
         features: {
           needsWebSearch: analysis.requiresWebSearch,
           needsLiterature: analysis.requiresLiterature,

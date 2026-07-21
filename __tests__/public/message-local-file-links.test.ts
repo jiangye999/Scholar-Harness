@@ -31,7 +31,12 @@ function loadLocalLinkHelpers() {
       decodeMessageLinkTarget: (value: string) => string;
       isMessageLocalFileLinkTarget: (value: string) => boolean;
       renderMessageMarkdownLink: (label: string, target: string) => string;
+      protectInlineLocalFileMarkdownLinks: (text: string) => {
+        text: string;
+        replacements: string[];
+      };
       openMessageLocalFileLink: (link: unknown, event: unknown) => Promise<boolean>;
+      handleMessageLocalFileLinkKeydown: (link: unknown, event: unknown) => boolean;
     },
     openOutputAttachmentFile,
     source,
@@ -48,7 +53,11 @@ describe('message local-file links', () => {
     expect(context.isMessageLocalFileLinkTarget(target)).toBe(true);
     const html = context.renderMessageMarkdownLink('paper_manuscript_clean_revised.docx', target);
     expect(html).toContain('data-file-path="D:/桌面文件/R123/paper_manuscript_clean_revised.docx"');
+    expect(html).toContain('class="message-local-file-link"');
+    expect(html).toContain('role="button"');
     expect(html).toContain('openMessageLocalFileLink(this,event)');
+    expect(html).not.toContain('<a ');
+    expect(html).not.toContain('href=');
     expect(html).not.toContain('target="_blank"');
   });
 
@@ -63,6 +72,33 @@ describe('message local-file links', () => {
     expect(event.preventDefault).toHaveBeenCalledOnce();
     expect(event.stopPropagation).toHaveBeenCalledOnce();
     expect(openOutputAttachmentFile).toHaveBeenCalledWith(link);
+  });
+
+  it('does not nest backtick-wrapped local file links inside fragmented code elements', () => {
+    const { context } = loadLocalLinkHelpers();
+    const result = context.protectInlineLocalFileMarkdownLinks(
+      '`[paper manuscript.docx](<D:/work/paper manuscript.docx>)`',
+    );
+
+    expect(result.text).toBe('§§SCHOLAR_HARNESS_LOCAL_FILE_LINK_0§§');
+    expect(result.replacements).toHaveLength(1);
+    expect(result.replacements[0]).toContain('class="message-local-file-link"');
+    expect(result.replacements[0]).not.toContain('<code');
+    expect(result.replacements[0]).not.toContain('<a ');
+  });
+
+  it('opens local files from Enter or Space without allowing a navigation default', () => {
+    const { context, openOutputAttachmentFile } = loadLocalLinkHelpers();
+    const link = { getAttribute: () => 'D:/work/result.docx' };
+    const enter = { key: 'Enter', preventDefault: vi.fn(), stopPropagation: vi.fn() };
+    const letter = { key: 'a', preventDefault: vi.fn(), stopPropagation: vi.fn() };
+
+    expect(context.handleMessageLocalFileLinkKeydown(link, enter)).toBe(false);
+    expect(enter.preventDefault).toHaveBeenCalledOnce();
+    expect(enter.stopPropagation).toHaveBeenCalledOnce();
+    expect(openOutputAttachmentFile).toHaveBeenCalledWith(link);
+    expect(context.handleMessageLocalFileLinkKeydown(link, letter)).toBe(true);
+    expect(letter.preventDefault).not.toHaveBeenCalled();
   });
 
   it('recognizes forward-slash Windows artifact paths when rendering file cards', () => {

@@ -22,7 +22,7 @@ const submissionPrepSchema = z.object({
   useAi: z.boolean().optional(),
 });
 
-interface SubmissionPrepRuntimeConfig {
+export interface SubmissionPrepRuntimeConfig {
   configured: boolean;
   apiUrl: string;
   apiKey: string;
@@ -30,8 +30,132 @@ interface SubmissionPrepRuntimeConfig {
   label: string;
 }
 
-interface SubmissionPrepRouterDeps {
+export interface SubmissionPrepRouterDeps {
   getSecondaryRuntime?: () => SubmissionPrepRuntimeConfig;
+}
+
+export type SubmissionPrepInput = z.infer<typeof submissionPrepSchema>;
+
+export interface SubmissionPrepResult {
+  generatedAt: string;
+  filePath: string;
+  outputDir: string;
+  markdown: string;
+  session: unknown;
+  artifact: unknown;
+  provenanceRecord: unknown;
+  aiUsed: boolean;
+  aiProvider: string;
+  aiWarning: string;
+}
+
+export async function generateSubmissionPrepPackage(
+  rawInput: SubmissionPrepInput,
+  deps: SubmissionPrepRouterDeps = {},
+): Promise<SubmissionPrepResult> {
+  const body = submissionPrepSchema.parse(rawInput || {});
+  const userId = sanitizeUserId(body.userId || 'web-user');
+  const generatedAt = new Date().toISOString();
+  const manuscriptTitle = cleanText(body.manuscriptTitle) || '未命名稿件';
+  const targetJournal = cleanText(body.targetJournal) || '目标期刊待定';
+  const manuscriptType = cleanText(body.manuscriptType) || 'Research Article';
+  const prepInput = {
+    generatedAt,
+    manuscriptTitle,
+    targetJournal,
+    manuscriptType,
+    abstractText: cleanText(body.abstractText),
+    keywords: cleanText(body.keywords),
+    authorGuidelines: cleanText(body.authorGuidelines),
+    coverLetterRequirements: cleanText(body.coverLetterRequirements),
+    reviewerFocus: cleanText(body.reviewerFocus),
+  };
+  let markdown = buildSubmissionPrepMarkdown(prepInput);
+  let aiUsed = false;
+  let aiProvider = '';
+  let aiWarning = '';
+
+  if (body.useAi !== false && deps.getSecondaryRuntime) {
+    const runtime = deps.getSecondaryRuntime();
+    if (runtime.configured) {
+      try {
+        markdown = await generateSubmissionPrepWithSecondary(runtime, prepInput, markdown);
+        aiUsed = true;
+        aiProvider = runtime.label || runtime.model;
+      } catch (error) {
+        aiWarning = error instanceof Error ? error.message : String(error);
+        logger.warn('[SubmissionPrep] Secondary AI generation failed, using rule-based fallback:', error);
+      }
+    } else {
+      aiWarning = '小牛马未配置，已使用本地规则模板生成。';
+    }
+  }
+
+  const outputDir = path.join(getUserUploadDir(userId), 'submission-prep', timestampForPath(generatedAt));
+  await fs.mkdir(outputDir, { recursive: true });
+  const filePath = path.join(outputDir, 'submission-prep.md');
+  await fs.writeFile(filePath, markdown, 'utf-8');
+
+  const provenance = await researchSessionManager.appendProvenance({
+    userId,
+    projectId: body.projectId,
+    sessionId: body.sessionId,
+    sessionTitle: '投稿准备',
+    sessionTopic: manuscriptTitle,
+    targetType: 'writing',
+    targetId: `submission-prep-${timestampForPath(generatedAt)}`,
+    operation: 'submission-prep.generate',
+    sourceModule: 'submission-prep',
+    input: {
+      manuscriptTitle,
+      manuscriptType,
+      targetJournal,
+      hasAbstract: Boolean(cleanText(body.abstractText)),
+      hasGuidelines: Boolean(cleanText(body.authorGuidelines)),
+      hasCoverLetterRequirements: Boolean(cleanText(body.coverLetterRequirements)),
+      hasReviewerFocus: Boolean(cleanText(body.reviewerFocus)),
+    },
+    output: {
+      filePath,
+      markdownPreview: markdown.slice(0, 2000),
+    },
+  });
+
+  const artifact = await researchSessionManager.appendArtifact({
+    userId,
+    projectId: body.projectId,
+    sessionId: provenance.session.id,
+    sessionTitle: '投稿准备',
+    sessionTopic: manuscriptTitle,
+    kind: 'writing',
+    name: `投稿准备 - ${targetJournal}`,
+    filePath,
+    content: markdown,
+    contentType: 'text/markdown; charset=utf-8',
+    provenanceRecordIds: [provenance.record.id],
+    metadata: {
+      enhancementType: 'submission-prep',
+      targetJournal,
+      manuscriptType,
+      generatedAt,
+      aiUsed,
+      aiProvider,
+      aiWarning,
+    },
+  });
+
+  return {
+    generatedAt,
+    filePath,
+    outputDir,
+    markdown,
+    session: provenance.session,
+    artifact: artifact.artifact,
+    provenanceRecord: provenance.record,
+    aiUsed,
+    aiProvider,
+    aiWarning,
+  };
 }
 
 export default function createSubmissionPrepRouter(deps: SubmissionPrepRouterDeps = {}): Router {
@@ -39,109 +163,8 @@ export default function createSubmissionPrepRouter(deps: SubmissionPrepRouterDep
 
   router.post('/generate', async (req: Request, res: Response) => {
     try {
-      const body = submissionPrepSchema.parse(req.body || {});
-      const userId = sanitizeUserId(body.userId || 'web-user');
-      const generatedAt = new Date().toISOString();
-      const manuscriptTitle = cleanText(body.manuscriptTitle) || '未命名稿件';
-      const targetJournal = cleanText(body.targetJournal) || '目标期刊待定';
-      const manuscriptType = cleanText(body.manuscriptType) || 'Research Article';
-      const prepInput = {
-        generatedAt,
-        manuscriptTitle,
-        targetJournal,
-        manuscriptType,
-        abstractText: cleanText(body.abstractText),
-        keywords: cleanText(body.keywords),
-        authorGuidelines: cleanText(body.authorGuidelines),
-        coverLetterRequirements: cleanText(body.coverLetterRequirements),
-        reviewerFocus: cleanText(body.reviewerFocus),
-      };
-      let markdown = buildSubmissionPrepMarkdown(prepInput);
-      let aiUsed = false;
-      let aiProvider = '';
-      let aiWarning = '';
-
-      if (body.useAi !== false && deps.getSecondaryRuntime) {
-        const runtime = deps.getSecondaryRuntime();
-        if (runtime.configured) {
-          try {
-            markdown = await generateSubmissionPrepWithSecondary(runtime, prepInput, markdown);
-            aiUsed = true;
-            aiProvider = runtime.label || runtime.model;
-          } catch (error) {
-            aiWarning = error instanceof Error ? error.message : String(error);
-            logger.warn('[SubmissionPrep] Secondary AI generation failed, using rule-based fallback:', error);
-          }
-        } else {
-          aiWarning = '小牛马未配置，已使用本地规则模板生成。';
-        }
-      }
-
-      const outputDir = path.join(getUserUploadDir(userId), 'submission-prep', timestampForPath(generatedAt));
-      await fs.mkdir(outputDir, { recursive: true });
-      const filePath = path.join(outputDir, 'submission-prep.md');
-      await fs.writeFile(filePath, markdown, 'utf-8');
-
-      const provenance = await researchSessionManager.appendProvenance({
-        userId,
-        projectId: body.projectId,
-        sessionId: body.sessionId,
-        sessionTitle: '投稿准备',
-        sessionTopic: manuscriptTitle,
-        targetType: 'writing',
-        targetId: `submission-prep-${timestampForPath(generatedAt)}`,
-        operation: 'submission-prep.generate',
-        sourceModule: 'submission-prep',
-        input: {
-          manuscriptTitle,
-          manuscriptType,
-          targetJournal,
-          hasAbstract: Boolean(cleanText(body.abstractText)),
-          hasGuidelines: Boolean(cleanText(body.authorGuidelines)),
-          hasCoverLetterRequirements: Boolean(cleanText(body.coverLetterRequirements)),
-          hasReviewerFocus: Boolean(cleanText(body.reviewerFocus)),
-        },
-        output: {
-          filePath,
-          markdownPreview: markdown.slice(0, 2000),
-        },
-      });
-
-      const artifact = await researchSessionManager.appendArtifact({
-        userId,
-        projectId: body.projectId,
-        sessionId: provenance.session.id,
-        sessionTitle: '投稿准备',
-        sessionTopic: manuscriptTitle,
-        kind: 'writing',
-        name: `投稿准备 - ${targetJournal}`,
-        filePath,
-        content: markdown,
-        contentType: 'text/markdown; charset=utf-8',
-        provenanceRecordIds: [provenance.record.id],
-        metadata: {
-          targetJournal,
-          manuscriptType,
-          generatedAt,
-          aiUsed,
-          aiProvider,
-          aiWarning,
-        },
-      });
-
-      res.json({
-        success: true,
-        generatedAt,
-        filePath,
-        outputDir,
-        markdown,
-        session: provenance.session,
-        artifact: artifact.artifact,
-        provenanceRecord: provenance.record,
-        aiUsed,
-        aiProvider,
-        aiWarning,
-      });
+      const result = await generateSubmissionPrepPackage(req.body || {}, deps);
+      res.json({ success: true, ...result });
     } catch (error) {
       sendSubmissionPrepError(res, error);
     }

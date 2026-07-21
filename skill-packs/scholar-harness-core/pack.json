@@ -2,9 +2,27 @@
   "schemaVersion": 1,
   "id": "scholar-harness-core",
   "name": "Scholar Harness Core Skills",
-  "version": "1.0.5",
+  "version": "1.0.6",
   "license": "Proprietary",
   "skills": [
+    {
+      "id": "establish-paper-core-argument",
+      "name": "论文核心论点奠基",
+      "category": "writing",
+      "description": "正式写作前通过逐步询问锁定小论文的科学问题、核心论点、直接证据链、解释边界、创新性和全文写作基调。",
+      "entry": "skills/writing/establish-paper-core-argument/SKILL.md",
+      "aliases": [
+        "核心论点",
+        "核心论据",
+        "论文主线",
+        "写论文前",
+        "小论文写作",
+        "论点奠基",
+        "central argument",
+        "scientific story"
+      ],
+      "policyOverlay": "必须逐步询问并等待用户确认；不得编造数据、机制、创新性或证据。核心论点未锁定前不应直接展开整篇正文，除非用户明确要求边问边写。"
+    },
     {
       "id": "target-venue-peer-review",
       "name": "目标期刊严格审稿",

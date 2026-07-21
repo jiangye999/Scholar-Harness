@@ -1,3 +1,4 @@
+import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -52,7 +53,39 @@ function createStoreEntry(id: string, claim: string): any {
   };
 }
 
-function writeWikiStore(tempDir: string, userId: string, entries: any[]): void {
+function createSentencePoint(id: string, topicKey: string, sourcePdfId: string): any {
+  return {
+    id,
+    sourcePdfId,
+    sourcePdfName: `${sourcePdfId}.pdf`,
+    sourcePdfTitle: `Source ${sourcePdfId}`,
+    section: 'Discussion',
+    sentenceIndex: 1,
+    sentence: `This is a sufficiently detailed source sentence for ${id} and its evidence relationship.`,
+    citations: ['[1]'],
+    references: [{
+      id: `ref-${id}`,
+      raw: `Reference for ${id}`,
+      index: 1,
+      matchType: 'citation',
+    }],
+    referenceCount: 1,
+    claimCandidate: true,
+    claimText: `Claim represented by ${id}`,
+    claimType: 'argument',
+    claimReason: 'Test claim candidate',
+    topicKey,
+    topicLabel: `Topic ${topicKey}`,
+    keywords: [topicKey],
+    x: 50,
+    y: 50,
+    radius: 12,
+    matchMethod: 'citation',
+    confidence: 0.9,
+  };
+}
+
+function writeWikiStore(tempDir: string, userId: string, entries: any[], sentencePoints: any[] = []): void {
   const wikiDir = path.join(tempDir, 'uploads', userId, 'pdf-wiki');
   fs.mkdirSync(wikiDir, { recursive: true });
   fs.writeFileSync(path.join(wikiDir, 'wiki.json'), JSON.stringify({
@@ -62,7 +95,20 @@ function writeWikiStore(tempDir: string, userId: string, entries: any[]): void {
     pdfs: [],
     referenceIndex: [],
     entries,
+    sentenceCloud: {
+      generatedAt: new Date().toISOString(),
+      points: sentencePoints,
+      clouds: [],
+    },
   }, null, 2), 'utf-8');
+}
+
+async function waitForCondition(check: () => boolean | Promise<boolean>, timeoutMs = 3000): Promise<void> {
+  const startedAt = Date.now();
+  while (!(await check())) {
+    if (Date.now() - startedAt > timeoutMs) throw new Error('Timed out waiting for condition');
+    await new Promise(resolve => setTimeout(resolve, 15));
+  }
 }
 
 function mockQwenDirectPdfResponses(claim: string): Array<any> {
@@ -172,6 +218,67 @@ describe('PdfWikiManager', () => {
     expect(status.entryCount).toBe(0);
   });
 
+  it('keeps stable work progress across heartbeat status writes', async () => {
+    const workProgress = {
+      phase: 'codex',
+      phaseLabel: '核对引用并归纳结论',
+      phaseIndex: 2,
+      phaseCount: 3,
+      completedUnits: 3,
+      totalUnits: 9,
+      currentPdfIndex: 2,
+      currentPdfName: 'source.pdf',
+      attempt: 1,
+      maxAttempts: 3,
+      attemptElapsedMs: 10_000,
+    };
+    await (manager as any).saveStatus('web-user', {
+      status: 'processing',
+      taskKind: 'pdf-wiki',
+      totalPdfs: 4,
+      processedPdfs: 1,
+      failedPdfs: 0,
+      totalChunks: 4,
+      processedChunks: 1,
+      entryCount: 0,
+      message: 'Codex heartbeat',
+      updatedAt: new Date().toISOString(),
+      workProgress,
+    });
+    await (manager as any).saveStatus('web-user', {
+      status: 'processing',
+      taskKind: 'pdf-wiki',
+      totalPdfs: 4,
+      processedPdfs: 1,
+      failedPdfs: 0,
+      totalChunks: 4,
+      processedChunks: 1,
+      entryCount: 0,
+      message: 'Codex heartbeat 2',
+      updatedAt: new Date().toISOString(),
+    });
+
+    const status = await manager.getStatus('web-user');
+    expect(status.workProgress).toEqual(workProgress);
+  });
+
+  it('never changes a running PDF Wiki task based only on elapsed time', () => {
+    const runningStatus = {
+      status: 'processing',
+      taskKind: 'pdf-wiki',
+      totalPdfs: 4,
+      processedPdfs: 1,
+      totalChunks: 4,
+      processedChunks: 1,
+      entryCount: 0,
+      message: 'Codex is running',
+      updatedAt: new Date(0).toISOString(),
+    };
+    const guarded = (manager as any).withStaleProcessingGuard(runningStatus);
+
+    expect(guarded).toEqual(runningStatus);
+  });
+
   it('splits mean plus-minus error cells across meta-analysis columns', () => {
     const normalized = (manager as any).normalizeMetaAnalysisRow({
       'Cum N2O (kg N2O ha-1)': '7.32 ± 0.38 d',
@@ -242,6 +349,86 @@ describe('PdfWikiManager', () => {
     expect(points.some((point: any) => point.claimCandidate && point.claimText)).toBe(true);
     expect(store.clouds.length).toBeGreaterThan(0);
     expect(store.points[0]).toHaveProperty('topicLabel');
+  });
+
+  it('keeps fast-mode sentence drafts free of locally extracted citations and reference matches', () => {
+    const pdf = {
+      id: 'pdf-fast-ai',
+      originalName: 'fast-source.pdf',
+      fileName: 'fast-source.pdf',
+      filePath: 'fast-source.pdf',
+      size: 100,
+      title: 'Fast AI citation matching',
+    };
+    const text = [
+      'Introduction',
+      'Nitrogen fertilizer management strongly affects nitrous oxide emissions in cropland systems [12].',
+      'Methods',
+      'Samples were collected from the field.',
+      'Discussion',
+      'Optimized fertilization reduced nitrate accumulation and N2O losses (Smith et al., 2020).',
+      'Conclusion',
+      'Optimized management mitigated emissions.',
+      'References',
+      '[12] Smith J. 2020. Nitrogen fertilizer and N2O emissions. Soil.',
+    ].join('\n');
+
+    const points = (manager as any).buildSentenceCloudDraftPointsForAi(text, pdf);
+    const prompt = (manager as any).composeFastCodexSentenceWikiPrompt(pdf, points, [], [{
+      id: 'ref-12',
+      index: 12,
+      raw: '[12] Smith J. 2020. Nitrogen fertilizer and N2O emissions. Soil.',
+      sourcePdfId: pdf.id,
+      sourcePdfName: pdf.originalName,
+    }]);
+
+    expect(points.map((point: any) => point.section)).toEqual(['Introduction', 'Discussion']);
+    expect(points.every((point: any) => point.citations.length === 0)).toBe(true);
+    expect(points.every((point: any) => point.references.length === 0)).toBe(true);
+    expect(points.every((point: any) => point.claimCandidate === false)).toBe(true);
+    expect(prompt).not.toContain('detectedCitations:');
+    expect(prompt).not.toContain('localReferenceIndexes:');
+    expect(prompt).toContain('aiDetectedCitations: none');
+    expect(prompt).toContain('来自上一阶段 AI 对原句的并发识别');
+    expect(prompt).toContain('Nitrogen fertilizer management strongly affects');
+    expect(prompt).toContain('[12] Smith J. 2020. Nitrogen fertilizer');
+  });
+
+  it('narrows each AI matching batch to references named by AI-detected citations', () => {
+    const references = [
+      { id: 'ref-1', index: 1, authors: 'Jones A.', year: '2019', raw: 'Jones A. 2019. Unrelated.' },
+      { id: 'ref-12', index: 12, authors: 'Smith J.', year: '2020', raw: 'Smith J. 2020. Nitrogen emissions.' },
+      { id: 'ref-13', index: 13, authors: 'Brown B.', year: '2021', raw: 'Brown B. 2021. Soil carbon.' },
+    ];
+    const numericPoint = {
+      ...createSentencePoint('sent-numeric', 'nitrogen', 'pdf-fast'),
+      citations: ['[12]'],
+    };
+    const authorYearPoint = {
+      ...createSentencePoint('sent-author-year', 'nitrogen', 'pdf-fast'),
+      citations: ['Smith et al. (2020)'],
+    };
+
+    expect((manager as any).selectReferencesForAiDetectedCitations([numericPoint], references).map((ref: any) => ref.id))
+      .toEqual(['ref-12']);
+    expect((manager as any).selectReferencesForAiDetectedCitations([authorYearPoint], references).map((ref: any) => ref.id))
+      .toEqual(['ref-12']);
+  });
+
+  it('accepts citation detection output only when the citation is present in the source sentence', () => {
+    const point = {
+      ...createSentencePoint('sent-detection', 'nitrogen', 'pdf-fast'),
+      sentence: 'Smith et al. (2020) reported a substantial reduction in agricultural emissions.',
+      citations: [],
+    };
+    const detected = (manager as any).applyFastCitationDetection([point], {
+      matches: [{
+        pointId: point.id,
+        citations: ['Smith et al. (2020)', '[99]'],
+      }],
+    });
+
+    expect(detected[0].citations).toEqual(['Smith et al. (2020)']);
   });
 
   it('keeps only publishable argument sentences in the sentence cloud and retrieval output', () => {
@@ -431,6 +618,568 @@ describe('PdfWikiManager', () => {
     expect(status.status).toBe('error');
     expect(status.error).toBe('API_NOT_CONFIGURED');
     expect(fs.readdirSync(sourceDir)).toHaveLength(1);
+  });
+
+  it('requires Codex for the fast sentence Wiki even when an API is configured', async () => {
+    vi.spyOn(manager as any, 'canUseCodexCli').mockReturnValue(false);
+
+    await manager.processUploadedPdfs('web-user', [{
+      originalname: 'fast-codex-required.pdf',
+      buffer: Buffer.from('%PDF-1.4\n%%EOF'),
+      size: 14,
+    }], {
+      apiUrl: 'https://example.test/v1',
+      apiKey: 'test-key',
+      model: 'test-model',
+      processingProfile: 'fast',
+      textExtractionEngine: 'liteparse',
+      metadataEngine: 'local',
+      claimExtractionEngine: 'off',
+      sentenceReferenceMatchingEngine: 'codex',
+      groupingEngine: 'local',
+      metaAnalysisEnabled: false,
+      metaAnalysisEngine: 'off',
+    });
+
+    const status = await manager.getStatus('web-user');
+    expect(status.status).toBe('error');
+    expect(status.error).toBe('CODEX_NOT_AVAILABLE');
+    expect(status.message).toContain('句中/句末引用');
+  });
+
+  it('supports an explicit custom local sentence-only build when compatibility claims are disabled', async () => {
+    const text = [
+      'Introduction',
+      'Previous studies show that optimized nitrogen management substantially reduces nitrous oxide emissions from agricultural soils [1].',
+      'Discussion',
+      'These results demonstrate that lower nitrogen inputs reduce gaseous nitrogen losses while maintaining crop production [1].',
+      'Conclusion',
+      'Optimized nitrogen inputs reduce nitrous oxide emissions without sacrificing crop production.',
+      'References',
+      '1. Smith J. 2020. Nitrogen management reduces nitrous oxide emissions. Soil Biology.',
+    ].join('\n');
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    const parsedContent = {
+      text,
+      metadata: { title: 'Local nitrogen study' },
+      references: [{
+        id: 'ref-local-1',
+        raw: 'Smith J. 2020. Nitrogen management reduces nitrous oxide emissions. Soil Biology.',
+        sourcePdfId: 'pdf-placeholder',
+        sourcePdfName: 'local-fast.pdf',
+        index: 1,
+        title: 'Nitrogen management reduces nitrous oxide emissions',
+        authors: 'Smith J.',
+        year: '2020',
+      }],
+      parser: 'liteparse',
+    };
+    vi.spyOn(manager as any, 'tryExtractPdfWithLiteParse').mockResolvedValue(parsedContent);
+    vi.spyOn(manager as any, 'extractPdfContent').mockResolvedValue(parsedContent);
+
+    await manager.processUploadedPdfs('web-user', [{
+      originalname: 'local-fast.pdf',
+      buffer: Buffer.from('%PDF-1.4\nlocal-fast\n%%EOF'),
+      size: 27,
+    }], {
+      apiUrl: '',
+      apiKey: '',
+      model: '',
+      processingProfile: 'custom',
+      textExtractionEngine: 'liteparse',
+      metadataEngine: 'local',
+      claimExtractionEngine: 'off',
+      sentenceReferenceMatchingEngine: 'local',
+      groupingEngine: 'local',
+      metaAnalysisEnabled: false,
+      metaAnalysisEngine: 'off',
+    });
+
+    const status = await manager.getStatus('web-user');
+    const store = await manager.getStore('web-user');
+
+    expect(status.status).toBe('completed');
+    expect(store.entries).toHaveLength(0);
+    expect(store.sentenceCloud?.points.length).toBeGreaterThan(0);
+    expect(store.pdfs[0].metaData?.meta_analysis_enabled).toBe(false);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('persists uploaded PDF jobs, runs them serially, and never stores API secrets', async () => {
+    const inputDir = path.join(tempDir, 'incoming');
+    fs.mkdirSync(inputDir, { recursive: true });
+    const firstPath = path.join(inputDir, 'first.pdf');
+    const secondPath = path.join(inputDir, 'second.pdf');
+    fs.writeFileSync(firstPath, '%PDF-1.4\nfirst\n%%EOF');
+    fs.writeFileSync(secondPath, '%PDF-1.4\nsecond\n%%EOF');
+
+    let active = 0;
+    let maxActive = 0;
+    const processed: string[] = [];
+    vi.spyOn(manager, 'processUploadedPdfs').mockImplementation(async (_userId, files) => {
+      active++;
+      maxActive = Math.max(maxActive, active);
+      processed.push(files[0].originalname);
+      await new Promise(resolve => setTimeout(resolve, 25));
+      active--;
+    });
+    manager.setQueueRuntimeConfigProvider(() => ({ apiUrl: 'https://secret.example/v1', apiKey: 'never-persist', model: 'test' }));
+
+    const firstEnqueue = await manager.enqueueUploadedPdfs('web-user', [{ originalname: 'first.pdf', path: firstPath, size: 20 }], {
+      apiUrl: 'https://secret.example/v1', apiKey: 'never-persist', model: 'test', processingProfile: 'fast',
+    });
+    const secondEnqueue = await manager.enqueueUploadedPdfs('web-user', [{ originalname: 'second.pdf', path: secondPath, size: 21 }], {
+      apiUrl: 'https://secret.example/v1', apiKey: 'never-persist', model: 'test', processingProfile: 'fast',
+    });
+
+    await waitForCondition(async () => (await manager.getQueueSnapshot('web-user')).completedJobs === 2);
+    await (manager as any).queueWorkers.get('web-user');
+    const queuePath = path.join(tempDir, 'uploads', 'web-user', 'pdf-wiki', 'queue.json');
+    const queueText = fs.readFileSync(queuePath, 'utf-8');
+
+    expect(processed).toEqual(['first.pdf', 'second.pdf']);
+    expect(maxActive).toBe(1);
+    expect(firstEnqueue.addedJobIds).toHaveLength(1);
+    expect(secondEnqueue.addedJobIds).toHaveLength(1);
+    expect(firstEnqueue.addedJobIds?.[0]).not.toBe(secondEnqueue.addedJobIds?.[0]);
+    expect(queueText).not.toContain('never-persist');
+    expect(queueText).not.toContain('secret.example');
+  });
+
+  it('recovers an interrupted persistent PDF job after restart', async () => {
+    const inputPath = path.join(tempDir, 'recovered.pdf');
+    fs.writeFileSync(inputPath, '%PDF-1.4\nrecovered\n%%EOF');
+    const queueDir = path.join(tempDir, 'uploads', 'web-user', 'pdf-wiki');
+    fs.mkdirSync(queueDir, { recursive: true });
+    fs.writeFileSync(path.join(queueDir, 'queue.json'), JSON.stringify({
+      version: 1,
+      userId: 'web-user',
+      updatedAt: new Date().toISOString(),
+      jobs: [{
+        id: 'pdfq-interrupted',
+        status: 'running',
+        files: [{ originalname: 'recovered.pdf', path: inputPath, size: 24 }],
+        taskConfig: { processingProfile: 'fast' },
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        startedAt: new Date().toISOString(),
+      }],
+    }, null, 2));
+
+    const recoveredManager = new PdfWikiManager(tempDir);
+    const processSpy = vi.spyOn(recoveredManager, 'processUploadedPdfs').mockResolvedValue(undefined);
+    recoveredManager.setQueueRuntimeConfigProvider(() => ({ apiUrl: '', apiKey: '', model: '' }));
+    await recoveredManager.recoverPersistentQueues();
+    await waitForCondition(async () => (await recoveredManager.getQueueSnapshot('web-user')).completedJobs === 1);
+    await (recoveredManager as any).queueWorkers.get('web-user');
+
+    expect(processSpy).toHaveBeenCalledTimes(1);
+    expect(processSpy.mock.calls[0][1][0].originalname).toBe('recovered.pdf');
+  });
+
+  it('matches processed and queued PDF hashes before upload', async () => {
+    const processedHash = 'a'.repeat(64);
+    const queuedHash = 'b'.repeat(64);
+    const wikiDir = path.join(tempDir, 'uploads', 'web-user', 'pdf-wiki');
+    fs.mkdirSync(wikiDir, { recursive: true });
+    fs.writeFileSync(path.join(wikiDir, 'wiki.json'), JSON.stringify({
+      version: 1,
+      userId: 'web-user',
+      generatedAt: new Date().toISOString(),
+      pdfs: [{ id: `pdf_${processedHash.slice(0, 24)}`, originalName: 'processed.pdf', fileName: 'processed.pdf', filePath: 'processed.pdf', size: 1 }],
+      referenceIndex: [],
+      entries: [],
+    }));
+    fs.writeFileSync(path.join(wikiDir, 'queue.json'), JSON.stringify({
+      version: 1,
+      userId: 'web-user',
+      updatedAt: new Date().toISOString(),
+      jobs: [{
+        id: 'pdfq-waiting',
+        status: 'queued',
+        files: [{ originalname: 'waiting.pdf', path: 'waiting.pdf', size: 1, sha256: queuedHash }],
+        taskConfig: { processingProfile: 'fast' },
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      }],
+    }));
+
+    const result = await manager.matchUploadedPdfHashes('web-user', [
+      { name: 'renamed-processed.pdf', size: 10, sha256: processedHash },
+      { name: 'renamed-waiting.pdf', size: 20, sha256: queuedHash },
+      { name: 'new.pdf', size: 30, sha256: 'c'.repeat(64) },
+    ]);
+
+    expect(result.duplicates.map(item => item.name)).toEqual(['renamed-processed.pdf', 'renamed-waiting.pdf']);
+    expect(result.newFiles.map(item => item.name)).toEqual(['new.pdf']);
+  });
+
+  it('rejects duplicate PDF content again when adding it to the backend queue', async () => {
+    const inputPath = path.join(tempDir, 'same-content.pdf');
+    fs.writeFileSync(inputPath, '%PDF-1.4\nsame-content\n%%EOF');
+    const hash = crypto.createHash('sha256').update(fs.readFileSync(inputPath)).digest('hex');
+    const wikiDir = path.join(tempDir, 'uploads', 'web-user', 'pdf-wiki');
+    fs.mkdirSync(wikiDir, { recursive: true });
+    fs.writeFileSync(path.join(wikiDir, 'wiki.json'), JSON.stringify({
+      version: 1,
+      userId: 'web-user',
+      generatedAt: new Date().toISOString(),
+      pdfs: [{ id: `pdf_${hash.slice(0, 24)}`, originalName: 'original.pdf', fileName: 'original.pdf', filePath: inputPath, size: 30 }],
+      referenceIndex: [],
+      entries: [],
+    }));
+    const processSpy = vi.spyOn(manager, 'processUploadedPdfs');
+
+    const result = await manager.enqueueUploadedPdfs('web-user', [{ originalname: 'renamed.pdf', path: inputPath, size: 30 }], {
+      apiUrl: '', apiKey: '', model: '', processingProfile: 'fast',
+    });
+
+    expect(result.addedPdfs).toBe(0);
+    expect(result.addedJobIds).toEqual([]);
+    expect(result.skippedDuplicatePdfs).toBe(1);
+    expect(processSpy).not.toHaveBeenCalled();
+  });
+
+  it('keeps only Introduction and Discussion claims with citations present in the source sentence', () => {
+    const reference = {
+      id: 'ref-smith-2020',
+      raw: 'Smith J. 2020. Nitrogen management reduces emissions. Soil Biology.',
+      sourcePdfId: 'pdf-fast',
+      sourcePdfName: 'fast.pdf',
+      index: 1,
+      title: 'Nitrogen management reduces emissions',
+      authors: 'Smith J.',
+      year: '2020',
+    };
+    const citedPoint = {
+      ...createSentencePoint('sentence-cited', 'nitrogen', 'pdf-fast'),
+      sentence: 'Smith et al. (2020) showed that optimized nitrogen management substantially reduces agricultural emissions.',
+      citations: [],
+      references: [],
+      referenceCount: 0,
+      matchMethod: 'none',
+    };
+    const uncitedPoint = {
+      ...createSentencePoint('sentence-uncited', 'nitrogen', 'pdf-fast'),
+      sentence: 'Optimized nitrogen management substantially reduces agricultural emissions without an explicit source.',
+      citations: [],
+      references: [],
+      referenceCount: 0,
+      matchMethod: 'none',
+    };
+
+    const points = (manager as any).applyFastCodexSentenceMatches(
+      [citedPoint, uncitedPoint],
+      [reference],
+      {
+        matches: [{
+          pointId: 'sentence-cited',
+          citations: ['Smith et al. (2020)'],
+          referenceIndexes: [1],
+          claimCandidate: true,
+          claimText: '优化氮管理可降低农业排放',
+          claimType: 'argument',
+          topicLabel: '氮管理',
+          topicKey: 'nitrogen-management',
+          confidence: 0.96,
+        }, {
+          pointId: 'sentence-uncited',
+          citations: ['Smith et al. (2020)'],
+          referenceIndexes: [1],
+          claimCandidate: true,
+          claimText: '这条没有原文引用的句子不能进入论点库',
+          claimType: 'argument',
+          confidence: 0.99,
+        }],
+      },
+    );
+
+    expect(points).toHaveLength(1);
+    expect(points[0].id).toBe('sentence-cited');
+    expect(points[0].citations).toEqual(['Smith et al. (2020)']);
+    expect(points[0].references).toEqual([expect.objectContaining({ id: 'ref-smith-2020', index: 1 })]);
+  });
+
+  it('reconstructs two-column References and keeps complete bibliographic details', () => {
+    const columnLine = (left: string, right: string): string => left.padEnd(92, ' ') + right;
+    const text = [
+      'Introduction',
+      'Earlier work reported a strong soil response (Aires et al., 2008).',
+      'Discussion',
+      'The response remained detectable across seasons (Han et al., 2017).',
+      columnLine('REFERENCES', 'Han, W. J., Shi, M. M., Chang, J., and'),
+      columnLine('Aires, L. M. I., Pio, C. A., Pereira, J. S., 2008. Carbon dioxide exchange', 'Y Ge 2017. Plant species diversity reduces nitrous oxide emissions.'),
+      columnLine('above a Mediterranean grassland. Global Change Biology 14, 539-555.', 'Environmental Science and Pollution Research 24, 5938-5948.'),
+      columnLine('https://doi.org/10.1111/gcb.2008.01507', 'https://doi.org/10.1007/s11356-016-8288-3'),
+      columnLine('Bai, W. M., Wan, S. Q., 2010. Warming changes root production.', 'He, N. P., Chen, Q. S., 2012. Warming influences soil carbon.'),
+    ].join('\n');
+
+    const references = (manager as any).parseReferences(text, 'pdf-columns', 'columns.pdf');
+    const aires = references.find((reference: any) => reference.authors?.includes('Aires'));
+    const han = references.find((reference: any) => reference.authors?.includes('Han'));
+
+    expect(references.length).toBeGreaterThanOrEqual(4);
+    expect(aires).toMatchObject({
+      year: '2008',
+      doi: '10.1111/gcb.2008.01507',
+    });
+    expect(aires.title).toContain('Carbon dioxide exchange');
+    expect(aires.raw).toContain('Global Change Biology 14, 539-555');
+    expect(han).toMatchObject({
+      year: '2017',
+      doi: '10.1007/s11356-016-8288-3',
+    });
+    expect(han.raw).toContain('Environmental Science and Pollution Research');
+
+    const matches = (manager as any).matchReferencesForCitations(
+      ['(Aires et al., 2008)', '(Han et al., 2017)'],
+      references,
+      ['pdf-columns'],
+    );
+    expect(matches.map((reference: any) => reference.authors)).toEqual(expect.arrayContaining([
+      expect.stringContaining('Aires'),
+      expect.stringContaining('Han'),
+    ]));
+  });
+
+  it('ignores the unfinished body column when References starts in the right column', () => {
+    const columnLine = (left: string, right: string): string => left.padEnd(86, ' ') + right;
+    const text = [
+      'Discussion',
+      columnLine('Brown et al. (2019) described a body-text result that is not a bibliography entry.', 'References'),
+      columnLine('Lin et al. (2020) also appears in the unfinished discussion body.', 'Smith, J., Doe, R., 2020. Nitrogen management reduces emissions.'),
+      columnLine('The left column continues with study interpretation and limitations.', 'Soil Biology and Biochemistry 150, 108000. https://doi.org/10.1000/smith.2020'),
+      columnLine('', 'Jones, A., 2019. Soil moisture regulates denitrification. Global Change Biology 25, 10-20.'),
+    ].join('\n');
+
+    const references = (manager as any).parseReferences(text, 'pdf-right-column', 'right-column.pdf');
+
+    expect(references).toHaveLength(2);
+    expect(references[0]).toMatchObject({ authors: 'Smith, J., Doe, R', year: '2020' });
+    expect(references[0].raw).toContain('Soil Biology and Biochemistry');
+    expect(references.map((reference: any) => reference.raw).join(' ')).not.toContain('unfinished discussion');
+    expect(references.map((reference: any) => reference.raw).join(' ')).not.toContain('Brown et al.');
+  });
+
+  it('does not locally recover an AI alignment failure from an author-year citation', () => {
+    const reference = {
+      id: 'ref-smith-detailed',
+      raw: 'Smith, J., Doe, R., 2020. Nitrogen management reduces emissions. Soil Biology and Biochemistry 150, 108000. https://doi.org/10.1000/smith.2020',
+      sourcePdfId: 'pdf-fast',
+      sourcePdfName: 'fast.pdf',
+      index: 1,
+      title: 'Nitrogen management reduces emissions',
+      authors: 'Smith, J., Doe, R.',
+      year: '2020',
+      journal: 'Soil Biology and Biochemistry',
+      doi: '10.1000/smith.2020',
+    };
+    const point = {
+      ...createSentencePoint('sentence-recovered', 'nitrogen', 'pdf-fast'),
+      section: 'Introduction',
+      sentence: 'Previous studies demonstrated that optimized nitrogen management substantially reduces agricultural emissions (Smith et al., 2020).',
+      citations: ['(Smith et al., 2020)'],
+      references: [],
+      referenceCount: 0,
+      matchMethod: 'none',
+    };
+
+    const points = (manager as any).applyFastCodexSentenceMatches([point], [reference], {
+      matches: [{
+        pointId: point.id,
+        citations: ['(Smith et al., 2020)'],
+        referenceIndexes: [],
+        claimCandidate: false,
+        claimText: '',
+        claimType: 'non_claim',
+        claimReason: '引用未对齐',
+        confidence: 0.9,
+      }],
+    });
+
+    expect(points).toHaveLength(0);
+  });
+
+  it('does not match a shorter surname inside a different reference author', () => {
+    const references = [{
+      id: 'ref-linn-2020',
+      raw: 'Linn, D. M., 2020. Soil moisture and emissions.',
+      sourcePdfId: 'pdf-boundary',
+      sourcePdfName: 'boundary.pdf',
+      index: 1,
+      authors: 'Linn, D. M.',
+      year: '2020',
+    }];
+
+    expect((manager as any).matchReferencesForCitations(
+      ['(Lin et al., 2020)'],
+      references,
+      ['pdf-boundary'],
+    )).toEqual([]);
+  });
+
+  it('does not treat a leading publication year as a numbered reference index', () => {
+    const reference = (manager as any).parseReferenceDetails(
+      '2020. Smith, J. Nitrogen management reduces emissions.',
+      'pdf-year',
+      'year.pdf',
+      6,
+    );
+
+    expect(reference.index).toBe(7);
+    expect(reference.year).toBe('2020');
+    expect(reference.raw).toBe('2020. Smith, J. Nitrogen management reduces emissions.');
+  });
+
+  it('repairs a DOI split by a two-column line wrap', () => {
+    const reference = (manager as any).parseReferenceDetails(
+      'Bijoor, N. S., 2008. Urban nitrogen cycling. https://doi.org/10.1111/j.1365- 2486.2008.01617.x',
+      'pdf-doi',
+      'doi.pdf',
+      0,
+    );
+
+    expect(reference.doi).toBe('10.1111/j.1365-2486.2008.01617.x');
+  });
+
+  it('reparses References when an older parsed-text cache stored an empty list', async () => {
+    const parsedDir = path.join(tempDir, 'uploads', 'web-user', 'pdf-wiki', 'parsed-texts');
+    fs.mkdirSync(parsedDir, { recursive: true });
+    const pdf = {
+      id: 'pdf-empty-reference-cache',
+      originalName: 'cached.pdf',
+      fileName: 'cached.pdf',
+      filePath: path.join(tempDir, 'cached.pdf'),
+      size: 100,
+      uploadedAt: new Date().toISOString(),
+    };
+    const textFileName = `${pdf.id}.liteparse.txt`;
+    fs.writeFileSync(path.join(parsedDir, textFileName), [
+      'Introduction',
+      'Prior work reported lower emissions (Smith et al., 2020).',
+      'References',
+      'Smith, J., Doe, R., 2020. Nitrogen management reduces emissions. Soil Biology and Biochemistry 150, 108000. https://doi.org/10.1000/smith.2020',
+    ].join('\n'), 'utf-8');
+    fs.writeFileSync(path.join(parsedDir, `${pdf.id}.liteparse.json`), JSON.stringify({
+      sourcePdfId: pdf.id,
+      parser: 'liteparse',
+      metadata: {},
+      references: [],
+      files: { text: textFileName },
+    }), 'utf-8');
+
+    const cached = await (manager as any).loadParsedTextCache('web-user', pdf);
+
+    expect(cached.references).toHaveLength(1);
+    expect(cached.references[0]).toMatchObject({
+      authors: 'Smith, J., Doe, R',
+      year: '2020',
+      doi: '10.1000/smith.2020',
+    });
+  });
+
+  it('binds Codex-derived main conclusions to the source paper citation and metadata', () => {
+    const pdf = {
+      id: 'pdf-source-2024',
+      originalName: 'source-paper.pdf',
+      fileName: 'source-paper.pdf',
+      filePath: path.join(tempDir, 'source-paper.pdf'),
+      size: 100,
+      uploadedAt: new Date().toISOString(),
+      title: 'Precision nitrogen management sustains yield',
+      authors: 'Smith J.; Doe R.',
+      year: '2024',
+      journal: 'Global Change Biology',
+      doi: '10.1000/source.2024',
+    };
+    const conclusionSentences = [
+      'Precision nitrogen management reduced nitrous oxide emissions while maintaining grain yield across the field trials.',
+      'The treatment therefore provides a practical mitigation strategy for intensive agricultural systems.',
+    ];
+
+    const points = (manager as any).buildFastCodexConclusionPoints(pdf, conclusionSentences, {
+      conclusions: [{
+        sourceSentenceIndexes: [1, 2],
+        conclusionText: '精准氮管理在维持产量的同时降低氧化亚氮排放，并可用于集约化农业减排。',
+        confidence: 0.97,
+        claimType: 'result',
+        topicLabel: '主要结论',
+        topicKey: 'main-conclusion',
+        keywords: ['nitrogen', 'N2O'],
+      }],
+    });
+
+    expect(points).toHaveLength(1);
+    expect(points[0].section).toBe('Conclusion');
+    expect(points[0].claimText).toContain('2024');
+    expect(points[0].sentence).toContain(conclusionSentences[0]);
+    expect(points[0].references[0]).toMatchObject({
+      sourcePdfId: 'pdf-source-2024',
+      title: 'Precision nitrogen management sustains yield',
+      doi: '10.1000/source.2024',
+      fallbackSourcePdf: true,
+    });
+    expect((manager as any).getSentencePointCitationReferences(points[0])[0]).toMatchObject({
+      title: 'Precision nitrogen management sustains yield',
+      journal: 'Global Change Biology',
+    });
+  });
+
+  it('builds a focused Codex prompt from sections, references, conclusion, and source metadata', () => {
+    const point = {
+      ...createSentencePoint('sentence-prompt', 'soil-carbon', 'pdf-prompt'),
+      sentence: 'Soil carbon availability regulates denitrification (Doe et al., 2021).',
+      citations: ['(Doe et al., 2021)'],
+    };
+    const prompt = (manager as any).composeFastCodexSentenceWikiPrompt(
+      {
+        id: 'pdf-prompt',
+        originalName: 'prompt.pdf',
+        title: 'Source title',
+        authors: 'Author A.',
+        year: '2025',
+        journal: 'Soil Biology',
+        doi: '10.1000/prompt',
+      },
+      [point],
+      ['The study concludes that carbon availability controls denitrification outcomes.'],
+      [{ id: 'ref-doe', index: 1, raw: 'Doe J. 2021. Carbon and denitrification.' }],
+    );
+
+    expect(prompt).toContain('SECTION_SENTENCES');
+    expect(prompt).toContain('CONCLUSION_SENTENCES');
+    expect(prompt).toContain('SOURCE_PAPER_METADATA');
+    expect(prompt).toContain('REFERENCES');
+    expect(prompt).toContain('句中和句末都没有明确参考文献时');
+    expect(prompt).toContain('系统会在结论后追加');
+    expect(prompt).toContain('10.1000/prompt');
+  });
+
+  it('does not apply the shared Codex timeout setting to PDF Wiki tasks', () => {
+    vi.stubEnv('PDF_WIKI_CODEX_TIMEOUT_MS', '300000');
+
+    const config = (manager as any).loadPdfWikiCodexConfig();
+
+    expect(config.timeoutMs).toBeUndefined();
+  });
+
+  it('hard-links a disk upload into the canonical PDF source directory', async () => {
+    const incomingDir = path.join(tempDir, 'incoming');
+    const incomingPath = path.join(incomingDir, 'linked.pdf');
+    fs.mkdirSync(incomingDir, { recursive: true });
+    fs.writeFileSync(incomingPath, Buffer.from('%PDF-1.4\nlinked\n%%EOF'));
+
+    const [registered] = await (manager as any).registerPdfFiles('web-user', [{
+      originalname: 'linked.pdf',
+      path: incomingPath,
+      size: fs.statSync(incomingPath).size,
+    }]);
+    const sourceStat = fs.statSync(incomingPath);
+    const canonicalStat = fs.statSync(registered.filePath);
+
+    expect(canonicalStat.dev).toBe(sourceStat.dev);
+    expect(canonicalStat.ino).toBe(sourceStat.ino);
   });
 
   it('rejects rebuild when no PDF sources exist', async () => {
@@ -1048,6 +1797,43 @@ describe('PdfWikiManager', () => {
     expect(result.entryCount).toBe(1);
     expect(store.entries.map(entry => entry.id)).toEqual(['entry-b']);
     expect(status.entryCount).toBe(1);
+  });
+
+  it('deletes selected sentence-level claims and rebuilds topic metadata', async () => {
+    writeWikiStore(tempDir, 'web-user', [
+      createStoreEntry('entry-a', 'Compatibility claim'),
+    ], [
+      createSentencePoint('sentence-a', 'topic-a', 'pdf-a'),
+      createSentencePoint('sentence-b', 'topic-a', 'pdf-b'),
+      createSentencePoint('sentence-c', 'topic-b', 'pdf-c'),
+    ]);
+
+    const result = await manager.deleteSentencePoints('web-user', [
+      'sentence-a',
+      'sentence-a',
+      'sentence-b',
+      'missing-sentence',
+    ]);
+    const store = await manager.getStore('web-user');
+    const status = await manager.getStatus('web-user');
+
+    expect(result).toEqual({
+      deletedCount: 2,
+      missingCount: 1,
+      sentencePointCount: 1,
+      topicCount: 1,
+    });
+    expect(store.entries.map(entry => entry.id)).toEqual(['entry-a']);
+    expect(store.sentenceCloud?.points.map(point => point.id)).toEqual(['sentence-c']);
+    expect(store.sentenceCloud?.clouds).toHaveLength(1);
+    expect(store.sentenceCloud?.clouds[0]).toMatchObject({
+      topicKey: 'topic-b',
+      pointIds: ['sentence-c'],
+      sentenceCount: 1,
+      referenceCount: 1,
+      pdfIds: ['pdf-c'],
+    });
+    expect(status.sentencePointCount).toBe(1);
   });
 
   it('merges selected wiki entries into a manual claim group', async () => {

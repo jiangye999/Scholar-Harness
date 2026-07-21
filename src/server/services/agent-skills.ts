@@ -4,7 +4,7 @@ import * as path from 'path';
 
 import { z } from 'zod';
 
-import { getDataDir, sanitizeUserId } from '../../utils/paths';
+import { getDataDir, getUserUploadDir, sanitizeUserId } from '../../utils/paths';
 import { logger } from '../../utils/logger';
 import type { LLMToolCall, LLMToolDefinition } from '../../utils/llm-client';
 import { listUserSkills, type UserSkill } from './user-skills';
@@ -65,10 +65,10 @@ interface UserAgentSkill {
   rawId: string;
   name: string;
   description: string;
-  category: 'user';
+  category: string;
   aliases: string[];
   sourceKind: 'user';
-  sourceLabel: '用户配置';
+  sourceLabel: string;
   trigger: string;
   prompt: string;
 }
@@ -101,6 +101,33 @@ export interface CodexAgentSkillContext {
   allowedRoots: string[];
 }
 
+const DISCUSSION_AUTO_SKILL_PRIORITY: Record<string, number> = {
+  'scientific-writing': 400,
+  'scientific-critical-thinking': 300,
+  'citation-management': 200,
+  'literature-review': 100,
+};
+
+export function selectDiscussionAutoSkillIds(
+  descriptors: AgentSkillDescriptor[],
+  limit = 6,
+): string[] {
+  const discussionPattern = /discussion|讨论|论文写作|学术写作|scientific writing|critical thinking|批判性思维|citation|引用管理|literature review|文献综述/i;
+  return descriptors
+    .filter(skill => !skill.explicitlyActive)
+    .map(skill => {
+      const rawId = skill.id.split(':').pop() || skill.id;
+      const metadata = [skill.name, skill.description, ...skill.aliases].join(' ');
+      const priority = DISCUSSION_AUTO_SKILL_PRIORITY[rawId]
+        || (discussionPattern.test(metadata) ? (skill.source === 'user' ? 500 : 50) : 0);
+      return { id: skill.id, priority };
+    })
+    .filter(skill => skill.priority > 0)
+    .sort((left, right) => right.priority - left.priority || left.id.localeCompare(right.id))
+    .slice(0, Math.max(0, limit))
+    .map(skill => skill.id);
+}
+
 interface BundledSkillCache {
   expiresAt: number;
   skills: BundledAgentSkill[];
@@ -108,6 +135,41 @@ interface BundledSkillCache {
 }
 
 let bundledSkillCache: BundledSkillCache | null = null;
+
+function getDisabledBundledSkillsPath(userId: string): string {
+  return path.join(
+    getDataDir(),
+    'agent-skills',
+    sanitizeUserId(userId),
+    'disabled-bundled-skills.json',
+  );
+}
+
+async function readDisabledBundledSkillIds(userId: string): Promise<Set<string>> {
+  try {
+    const parsed = JSON.parse(await fs.readFile(getDisabledBundledSkillsPath(userId), 'utf-8')) as unknown;
+    const ids = Array.isArray(parsed)
+      ? parsed
+      : (parsed && typeof parsed === 'object' && Array.isArray((parsed as { skillIds?: unknown }).skillIds)
+        ? (parsed as { skillIds: unknown[] }).skillIds
+        : []);
+    return new Set(ids.map(id => String(id || '').trim()).filter(Boolean));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return new Set();
+    logger.warn(`[AgentSkills] Failed to read disabled bundled Skills for ${sanitizeUserId(userId)}:`, error);
+    return new Set();
+  }
+}
+
+async function writeDisabledBundledSkillIds(userId: string, skillIds: Set<string>): Promise<void> {
+  const filePath = getDisabledBundledSkillsPath(userId);
+  await fs.mkdir(path.dirname(filePath), { recursive: true });
+  await writeAtomic(filePath, `${JSON.stringify({
+    version: 1,
+    skillIds: Array.from(skillIds).sort(),
+    updatedAt: new Date().toISOString(),
+  }, null, 2)}\n`);
+}
 
 function isPathWithin(parentPath: string, childPath: string): boolean {
   const relative = path.relative(path.resolve(parentPath), path.resolve(childPath));
@@ -252,13 +314,80 @@ function toUserAgentSkill(skill: UserSkill): UserAgentSkill {
   };
 }
 
+const JOURNAL_STYLE_SECTIONS = ['abstract', 'introduction', 'methods', 'results', 'discussion', 'conclusion'];
+
+async function loadJournalStyleAgentSkills(userId: string): Promise<UserAgentSkill[]> {
+  const roots = [
+    { dir: path.join(getUserUploadDir(userId), 'journal-styles'), sourceLabel: 'PDF 提取章节风格' },
+    ...(userId === 'web-user'
+      ? []
+      : [{ dir: path.join(getUserUploadDir('web-user'), 'journal-styles'), sourceLabel: '共享章节风格' }]),
+  ];
+  const skills: UserAgentSkill[] = [];
+  const seen = new Set<string>();
+  for (const root of roots) {
+    const entries = await fs.readdir(root.dir, { withFileTypes: true }).catch(() => []);
+    for (const entry of entries) {
+      if (!entry.isDirectory() || !/^[a-zA-Z0-9_\-.]+$/.test(entry.name)) continue;
+      const stylePath = path.join(root.dir, entry.name, 'style.json');
+      try {
+        const raw = await fs.readFile(stylePath, 'utf-8');
+        const parsed = JSON.parse(raw) as unknown;
+        const papers = Array.isArray(parsed) ? parsed : [];
+        if (!papers.length) continue;
+        const first = papers[0] && typeof papers[0] === 'object' ? papers[0] as Record<string, unknown> : {};
+        const journalName = String(first.journal || entry.name.replace(/_/g, ' ')).trim();
+        for (const section of JOURNAL_STYLE_SECTIONS) {
+          const id = `journal-style:${entry.name}:${section}`;
+          if (seen.has(id)) continue;
+          seen.add(id);
+          const sectionLabel = section === 'methods' ? '方法'
+            : section === 'results' ? '结果'
+            : section === 'discussion' ? '讨论'
+            : section === 'introduction' ? '引言'
+            : section === 'abstract' ? '摘要'
+            : '结论';
+          skills.push({
+            id,
+            rawId: id,
+            name: `${journalName} ${sectionLabel}写作风格`,
+            description: `在撰写${sectionLabel}章节时复用 ${journalName} 已提取的结构、措辞、论证节奏与语气特征。`,
+            category: 'writing-style',
+            aliases: [journalName, section, sectionLabel, `${journalName} ${sectionLabel}`],
+            sourceKind: 'user',
+            sourceLabel: root.sourceLabel,
+            trigger: `style-${entry.name}-${section}`.replace(/[^a-zA-Z0-9_-]+/g, '-').slice(0, 80),
+            prompt: [
+              `你正在使用从 PDF 文献中提取的 ${journalName} ${sectionLabel}章节写作风格。`,
+              `请只把这些材料作为结构、措辞、论证节奏与语气参考，不得复制原文，不得虚构数据或引用。`,
+              `当前目标章节：${sectionLabel}（${section}）。`,
+              '',
+              '提取的风格数据：',
+              raw.slice(0, MAX_SKILL_FILE_CHARS),
+            ].join('\n'),
+          });
+        }
+      } catch (error) {
+        logger.warn(`[AgentSkills] Failed to load journal style ${stylePath}:`, error);
+      }
+    }
+  }
+  return skills;
+}
+
 async function loadInternalAgentSkills(userId: string): Promise<{ skills: InternalAgentSkill[]; packRoots: string[] }> {
   const bundled = await loadBundledAgentSkills();
+  const disabledBundledSkillIds = await readDisabledBundledSkillIds(userId);
   const userSkills = (await listUserSkills(userId))
     .filter(skill => skill.enabled)
     .map(toUserAgentSkill);
+  const journalStyleSkills = await loadJournalStyleAgentSkills(userId);
   return {
-    skills: [...bundled.skills, ...userSkills],
+    skills: [
+      ...bundled.skills.filter(skill => !disabledBundledSkillIds.has(skill.id)),
+      ...userSkills,
+      ...journalStyleSkills,
+    ],
     packRoots: bundled.packRoots,
   };
 }
@@ -307,7 +436,7 @@ function buildCatalogPrompt(descriptors: AgentSkillDescriptor[], codexPaths?: Ma
     codexPaths
       ? '当前执行者是 Codex CLI：请使用 Codex 自带的文件读取工具打开所选 Skill 的入口文件；需要配套资料时继续读取同目录 references/assets/scripts。不要执行第三方脚本，除非用户任务确实需要且当前权限允许。'
       : '当前执行者支持原生工具：调用 load_skill(skill_id) 加载所选 Skill；需要配套资料时调用 read_skill_resource。可以组合多个互补 Skill，但不要重复加载。',
-    '用户通过斜杠命令手动启用的 Skill 优先级更高，并与自动调用并存。Skill 不会扩大文件、网络、Shell 或草稿写入权限。',
+    '只有用户消息的首个非空白字符是 / 且命令匹配时，才算手动启用 Skill；句中出现的 /命令 只是普通文本，不得视为手动调用。有效的手动调用优先级更高，并与自动意图识别并存。Skill 不会扩大文件、网络、Shell 或草稿写入权限。',
     ...lines,
   ].join('\n');
 }
@@ -699,6 +828,22 @@ export async function listAvailableAgentSkills(
   explicitSkillIds: Iterable<string> = [],
 ): Promise<AgentSkillDescriptor[]> {
   return (await createAgentSkillRuntime(userId, explicitSkillIds)).getCatalog();
+}
+
+export async function deleteBundledAgentSkill(
+  userId: string,
+  skillId: string,
+): Promise<{ id: string; name: string }> {
+  const normalizedId = String(skillId || '').trim();
+  const bundled = await loadBundledAgentSkills();
+  const skill = bundled.skills.find(item => item.id === normalizedId);
+  if (!skill) {
+    throw new Error(`未找到可删除的内置 Skill：${normalizedId}`);
+  }
+  const disabledIds = await readDisabledBundledSkillIds(userId);
+  disabledIds.add(skill.id);
+  await writeDisabledBundledSkillIds(userId, disabledIds);
+  return { id: skill.id, name: skill.name };
 }
 
 export function formatAgentSkillToolResult(result: AgentSkillToolResult): string {

@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "scholarHarnessMetaAnalysis": {
+      "title": "Scholar Harness Meta Analysis",
+      "description": "Operate the complete Scholar Harness Meta-analysis workflow through the local desktop service.",
+      "cwd": ".",
+      "command": "node",
+      "args": ["./dist/server.js"]
+    }
+  }
+}

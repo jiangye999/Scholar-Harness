@@ -93,11 +93,19 @@ import * as path from "path";
 import * as fs from "fs";
 import * as os from "os";
 import * as crypto from "crypto";
+import mammoth = require("mammoth");
 import multer from "multer";
 import archiver from "archiver";
 import type { ChatOptions, Message } from "../types";
 import type { UnifiedLiterature } from "../types/literature";
 import { ConversationFlow } from "../../workflows/conversation-flow";
+import {
+  buildQueryIntentPromptBlock,
+  classifyQueryIntentFallback,
+  parseQueryIntentResponse,
+  type QueryIntent,
+  type QueryIntentHistoryMessage,
+} from "../orchestrator/query-intent";
 import { HybridRetrievalEngine } from "../literature/retrieval";
 import { setRetrievalEngine } from "./routes/literature";
 import chatBridgeRoutes, { initializeChatBridgeRoutes } from "./routes/chat-bridge";
@@ -121,6 +129,7 @@ import experimentResultsRoutes from "./routes/experiment-results";
 import rCodeRoutes from "./routes/r-code";
 import pythonPluginRoutes from "./routes/python-plugin";
 import officePluginRoutes from "./routes/office-plugin";
+import mcpPluginRoutes from "./routes/mcp-plugins";
 import dataAnalysisRoutes from "./routes/data-analysis";
 import { createDraftAssetsRouter, loadDraftFigureAssetsForUser } from "./routes/draft-assets";
 import ocrRoutes from "./routes/ocr";
@@ -135,8 +144,12 @@ import {
 import academicResearchRoutes from "./routes/academic-research";
 import projectMemoryRoutes from "./routes/project-memory";
 import { createResearchSessionRouter } from "./routes/research-session";
-import createSubmissionPrepRouter from "./routes/submission-prep";
+import createSubmissionPrepRouter, { generateSubmissionPrepPackage } from "./routes/submission-prep";
 import { getAuthorizedLocalPreviewRoots } from "./services/local-preview-roots";
+import {
+  getMirroredLocalOutputCandidatePaths,
+  pickNewestExistingLocalOutputPath,
+} from "./services/local-output-path-candidates";
 import {
   createBibliometricsRouter,
   importBibliometricPlainTextForUser,
@@ -1310,10 +1323,11 @@ interface PdfWikiLlmUserConfig {
   textInSecretCode?: string;
   textInParseMode?: string;
   dedicated?: boolean;
+  processingProfile?: 'fast' | 'deep' | 'custom' | 'meta';
   textExtractionEngine?: 'auto' | 'codex' | 'liteparse' | 'marker' | 'fast-text' | 'qwen-long' | 'pdf-parse';
   metadataEngine?: 'auto' | 'api' | 'local';
-  claimExtractionEngine?: 'auto' | 'codex' | 'qwen-long' | 'api';
-  sentenceReferenceMatchingEngine?: 'auto' | 'api' | 'local';
+  claimExtractionEngine?: 'auto' | 'codex' | 'qwen-long' | 'api' | 'off';
+  sentenceReferenceMatchingEngine?: 'auto' | 'codex' | 'api' | 'local';
   groupingEngine?: 'auto' | 'codex' | 'api' | 'local';
   metaAnalysisEnabled?: boolean;
   metaAnalysisEngine?: 'auto' | 'codex' | 'api' | 'off';
@@ -1321,7 +1335,7 @@ interface PdfWikiLlmUserConfig {
 }
 
 type PdfWikiTaskConfig = Pick<PdfWikiLlmUserConfig,
-  'textExtractionEngine' | 'metadataEngine' | 'claimExtractionEngine' | 'sentenceReferenceMatchingEngine' | 'groupingEngine' | 'metaAnalysisEnabled' | 'metaAnalysisEngine' | 'metaAnalysisUserRequirements'
+  'processingProfile' | 'textExtractionEngine' | 'metadataEngine' | 'claimExtractionEngine' | 'sentenceReferenceMatchingEngine' | 'groupingEngine' | 'metaAnalysisEnabled' | 'metaAnalysisEngine' | 'metaAnalysisUserRequirements'
 >;
 
 function pickPdfWikiTaskChoice<T extends string>(
@@ -1335,11 +1349,13 @@ function pickPdfWikiTaskChoice<T extends string>(
 }
 
 function parsePdfWikiTaskConfigFromBody(body: Record<string, unknown>): PdfWikiTaskConfig {
-  return {
+  const processingProfile = pickPdfWikiTaskChoice(body, 'pdfWikiProcessingProfile', ['fast', 'deep', 'custom', 'meta'] as const, 'custom');
+  const taskConfig: PdfWikiTaskConfig = {
+    processingProfile,
     textExtractionEngine: pickPdfWikiTaskChoice(body, 'pdfWikiTextExtractionEngine', ['auto', 'codex', 'liteparse', 'marker', 'fast-text', 'qwen-long', 'pdf-parse'] as const, 'auto'),
     metadataEngine: pickPdfWikiTaskChoice(body, 'pdfWikiMetadataEngine', ['auto', 'api', 'local'] as const, 'auto'),
-    claimExtractionEngine: pickPdfWikiTaskChoice(body, 'pdfWikiClaimExtractionEngine', ['auto', 'codex', 'qwen-long', 'api'] as const, 'auto'),
-    sentenceReferenceMatchingEngine: pickPdfWikiTaskChoice(body, 'pdfWikiSentenceReferenceMatchingEngine', ['auto', 'api', 'local'] as const, 'auto'),
+    claimExtractionEngine: pickPdfWikiTaskChoice(body, 'pdfWikiClaimExtractionEngine', ['auto', 'codex', 'qwen-long', 'api', 'off'] as const, 'auto'),
+    sentenceReferenceMatchingEngine: pickPdfWikiTaskChoice(body, 'pdfWikiSentenceReferenceMatchingEngine', ['auto', 'codex', 'api', 'local'] as const, 'auto'),
     groupingEngine: pickPdfWikiTaskChoice(body, 'pdfWikiGroupingEngine', ['auto', 'codex', 'api', 'local'] as const, 'auto'),
     metaAnalysisEnabled: body.pdfWikiMetaAnalysisEnabled !== false && body.pdfWikiMetaAnalysisEnabled !== 'false',
     metaAnalysisEngine: pickPdfWikiTaskChoice(body, 'pdfWikiMetaAnalysisEngine', ['auto', 'codex', 'api', 'off'] as const, 'auto'),
@@ -1347,6 +1363,40 @@ function parsePdfWikiTaskConfigFromBody(body: Record<string, unknown>): PdfWikiT
       ? body.pdfWikiMetaAnalysisUserRequirements.trim().slice(0, 5000)
       : '',
   };
+
+  if (processingProfile === 'fast') {
+    return {
+      ...taskConfig,
+      textExtractionEngine: 'liteparse',
+      metadataEngine: 'local',
+      claimExtractionEngine: 'off',
+      sentenceReferenceMatchingEngine: 'local',
+      groupingEngine: 'local',
+      metaAnalysisEnabled: false,
+      metaAnalysisEngine: 'off',
+      metaAnalysisUserRequirements: '',
+    };
+  }
+
+  return taskConfig;
+}
+
+function isPdfWikiLocalSentenceTask(taskConfig: PdfWikiTaskConfig): boolean {
+  return taskConfig.claimExtractionEngine === 'off'
+    && taskConfig.metadataEngine === 'local'
+    && taskConfig.sentenceReferenceMatchingEngine === 'local'
+    && taskConfig.groupingEngine === 'local'
+    && taskConfig.metaAnalysisEnabled === false
+    && taskConfig.metaAnalysisEngine === 'off'
+    && ['liteparse', 'marker', 'fast-text', 'pdf-parse'].includes(taskConfig.textExtractionEngine || '');
+}
+
+function isPdfWikiCodexSentenceTask(taskConfig: PdfWikiTaskConfig): boolean {
+  return taskConfig.claimExtractionEngine === 'off'
+    && taskConfig.sentenceReferenceMatchingEngine === 'codex'
+    && taskConfig.groupingEngine === 'local'
+    && taskConfig.metaAnalysisEnabled === false
+    && taskConfig.metaAnalysisEngine === 'off';
 }
 
 function syncPdfWikiRequestConfig(body: Record<string, unknown>): void {
@@ -1397,6 +1447,7 @@ function buildPdfWikiRuntimeTaskConfig(
     textInSecretCode: runtime.textInSecretCode,
     textInParseMode: runtime.textInParseMode,
     dedicated: runtime.dedicated,
+    processingProfile: taskConfig.processingProfile,
     textExtractionEngine: taskConfig.textExtractionEngine,
     metadataEngine: taskConfig.metadataEngine,
     claimExtractionEngine: taskConfig.claimExtractionEngine,
@@ -1928,8 +1979,11 @@ function getPdfWikiLlmRuntimeConfig(): {
 async function generateMetaAnalysisAiPlan(input: MetaAnalysisAssistantInput): Promise<MetaAnalysisAssistantResult> {
   const attempts: string[] = [];
   let llmPrompt: string | null = null;
+  const requestedProvider = input.forceProvider;
 
-  if (isCodexCliPreferredForPdfWiki() && isCodexCliLikelyAvailableForPdfWiki()) {
+  if ((!requestedProvider || requestedProvider === 'codex')
+    && (requestedProvider === 'codex' || isCodexCliPreferredForPdfWiki())
+    && isCodexCliLikelyAvailableForPdfWiki()) {
     try {
       const prompt = await buildMetaAnalysisAiAssistantPrompt(input, {
         includeUserQuery: true,
@@ -1942,19 +1996,19 @@ async function generateMetaAnalysisAiPlan(input: MetaAnalysisAssistantInput): Pr
         ...parsed,
         provider: `Codex CLI (${loadCodexConfigForPdfWiki().model})`,
         rawText,
-        fallbackChain: ['codex'],
+        fallbackChain: requestedProvider ? [requestedProvider] : ['codex'],
       };
     } catch (error) {
       const message = (error as Error).message || String(error);
       attempts.push(`Codex失败：${message}`);
       logger.warn('[MetaAnalysisAI] Codex assistant failed:', error);
     }
-  } else {
+  } else if (!requestedProvider || requestedProvider === 'codex') {
     attempts.push('Codex未启用或不可用');
   }
 
   const secondaryRuntime = getDeepAnalysisSecondaryRuntimeConfig();
-  if (secondaryRuntime.configured) {
+  if ((!requestedProvider || requestedProvider === 'secondary') && secondaryRuntime.configured) {
     try {
       llmPrompt = llmPrompt || await buildMetaAnalysisAiAssistantPrompt(input, {
         includeUserQuery: true,
@@ -1967,19 +2021,19 @@ async function generateMetaAnalysisAiPlan(input: MetaAnalysisAssistantInput): Pr
         ...parsed,
         provider: secondaryRuntime.label,
         rawText,
-        fallbackChain: ['codex', 'secondary'],
+        fallbackChain: requestedProvider ? [requestedProvider] : ['codex', 'secondary'],
       };
     } catch (error) {
       const message = (error as Error).message || String(error);
       attempts.push(`小牛马失败：${message}`);
       logger.warn('[MetaAnalysisAI] Secondary assistant failed:', error);
     }
-  } else {
+  } else if (!requestedProvider || requestedProvider === 'secondary') {
     attempts.push('小牛马未配置');
   }
 
   const primaryRuntime = getPrimaryRuntimeConfig();
-  if (primaryRuntime.configured) {
+  if ((!requestedProvider || requestedProvider === 'primary') && primaryRuntime.configured) {
     try {
       llmPrompt = llmPrompt || await buildMetaAnalysisAiAssistantPrompt(input, {
         includeUserQuery: true,
@@ -1992,14 +2046,14 @@ async function generateMetaAnalysisAiPlan(input: MetaAnalysisAssistantInput): Pr
         ...parsed,
         provider: primaryRuntime.label,
         rawText,
-        fallbackChain: ['codex', 'secondary', 'primary'],
+        fallbackChain: requestedProvider ? [requestedProvider] : ['codex', 'secondary', 'primary'],
       };
     } catch (error) {
       const message = (error as Error).message || String(error);
       attempts.push(`大牛马失败：${message}`);
       logger.warn('[MetaAnalysisAI] Primary assistant failed:', error);
     }
-  } else {
+  } else if (!requestedProvider || requestedProvider === 'primary') {
     attempts.push('大牛马未配置');
   }
 
@@ -2093,8 +2147,8 @@ async function buildMetaAnalysisAiAssistantPrompt(
         steps: [
           'Compute study-level effect sizes from means only: lnRR = log(treatmentMean/controlMean) when both means are positive, or MD = treatmentMean - controlMean when raw-unit differences are biologically meaningful and units are harmonized.',
           'Do not compute or impute inverse-variance weights from missing SD/SE.',
-          'Pool effects using the unweighted mean unless the user explicitly configures a justified non-variance weight.',
-          'Use non-parametric bootstrap/resampling of study-level effect sizes, default 9999 iterations, to estimate confidence intervals.',
+          'When a study contributes multiple effects, average them within the confirmed study/cluster identifier first so every independent study/cluster has equal weight.',
+          'Use non-parametric bootstrap/resampling of the study/cluster summaries, default 9999 iterations, to estimate confidence intervals.',
           'Report that Q, I2 and tau2 from inverse-variance models are not applicable for pure mean-only bootstrap results.',
           'Use subgroup bootstrap summaries descriptively when subgroup levels have enough effect sizes.',
           'For subgroup analysis, pool all effect sizes with the same subgroup level into one subgroup-level pooled effect; for example, all rows with the same Crop value become one Crop subgroup estimate.',
@@ -2134,11 +2188,12 @@ async function buildMetaAnalysisAiAssistantPrompt(
 4. 当前阶段应优先输出：你理解的用户需求、需要整理的 Excel 副本内容、拟执行的数据清洗/拆列/换算/分组/筛行/补列操作、需要用户确认的问题。
 5. 你必须先自己判断哪些列是因变量/结果变量，哪些列是自变量、亚组变量、调节变量或处理描述变量；不能一开始要求用户手动配置下拉框。
 6. 你必须根据列名、样例值、单位、candidateOutcomes、recommendedConfig、CK/control/对照/blank 等信号判断哪些处理是 CK/control，哪些处理是 treatment。
+6a. 不同科学问题必须建立不同 controlRules，例如“施氮 vs 0N”“减氮 vs 常规施氮”“抑制剂 vs 相同施氮量但无抑制剂”；不能把它们全部自动匹配到 0N。优先使用逐行 control_for_contrast。
 7. 你必须判断哪些列需要合并为同一个因变量、哪些列需要拆分、哪些列需要单位换算、哪些列需要标签标准化。
 8. 如果均值列中含有 “均值 ± SD/SE” 这种混合文本，应在 operations 和 dataUnderstanding.mergeCandidates 中提出 split_mean_sd 或 convert_se_to_sd 的副本整理操作。
 9. 如果单位不统一，应在 operations 中提出 unit_convert，并说明目标单位。
 10. 如果值是范围，应提出 range_midpoint 或 range_group 操作；范围分组使用 { "column": "...", "type": "rangeGroups", "spec": "0-30=短期;30-90=中期;>90=长期" }。
-11. 如果只有处理组/对照组均值，没有可用 SD/SE/n，不要伪造方差；应建议 mean-only response ratio 或 mean-only mean difference + non-parametric bootstrap/resampling。lnRR_mean_only 只要求 treatmentMean/controlMean 且均值大于 0；MD_mean_only 只要求 treatmentMean/controlMean。该方案不使用 SD/SE 逆方差权重，I²/tau² 不适用。
+11. 如果只有处理组/对照组均值，没有可用 SD/SE/n，不要伪造方差；应建议 mean-only response ratio 或 mean-only mean difference + study-cluster bootstrap。lnRR_mean_only 只要求 treatmentMean/controlMean 且均值大于 0；MD_mean_only 只要求 treatmentMean/controlMean且单位统一，可以保留零值/负值。同一研究多行先在研究内求均值，再对研究/聚类等权 bootstrap。该方案不使用 SD/SE 逆方差权重，I²/tau²/Egger/漏斗图/Baujat 不适用。
 12. 亚组分析必须针对“合并效应值”进行：如果某列参与亚组分析，例如 Crop/作物，则同一个作物水平下的所有效应量必须先合并成一个该作物的 pooled subgroup effect，再用于亚组图和表；不要把每个 PDF/每行数据当作亚组结果。
 13. suggestedConfig 只作为“后续分析草案”，不是现在就运行的指令。若字段尚不可靠，可以为空或只填高置信部分。
 14. 必须利用 crossSessionLongTermMemory、chatHistoryLast10Turns、recentUserQueriesLast10 理解用户偏好、研究背景、常用指标和前文约束。
@@ -2233,6 +2288,19 @@ JSON Schema：
     "subgroupColumns": [],
     "columnPreprocess": [],
     "minCompleteRows": 2,
+    "excludeManualReview": true,
+    "manualReviewColumn": "needs_manual_review",
+    "controlRules": [
+      {
+        "id": "fertilizer_vs_zero_n",
+        "label": "施氮处理 vs 0N",
+        "treatmentLabels": [],
+        "treatmentPattern": "处理标签正则（可选）",
+        "controlLabels": ["CK", "N0"],
+        "controlPattern": "对照标签正则（可选）",
+        "matchColumns": ["Study#", "Crop", "Season"]
+      }
+    ],
     "outcomes": [
       {
         "id": "outcome_id",
@@ -2335,6 +2403,7 @@ async function callMetaAnalysisCodexAssistant(input: MetaAnalysisAssistantInput,
         lastMessagePath,
       ];
   if (codexConfig.model) args.push('-m', codexConfig.model);
+  args.push('-c', 'sandbox_workspace_write.network_access=true');
   if (codexConfig.reasoningEffort) args.push('-c', `model_reasoning_effort="${codexConfig.reasoningEffort}"`);
   if (existingSessionId) args.push(existingSessionId);
   args.push('-');
@@ -2687,52 +2756,39 @@ function detectChapterType(message: string, history?: Array<{ role: string; cont
   // ========== 1. 先检测用户当前消息中的明确章节提及 ==========
   
   // 检测明确的章节动词："写"、"开始写"、"生成" 等
-  const explicitWriteActions = [
-    '写', '开始写', '开始', '生成', '帮我', '给我', 
-    'write', 'start writing', 'begin', 'generate', 'draft'
-  ];
-  
-  const hasWriteAction = explicitWriteActions.some(action => 
-    messageLower.includes(action)
-  );
+  const hasWriteAction = /(?:写|开始写|生成|帮我|给我)|\b(?:write|start\s+writing|begin|generate|draft)\b/i.test(messageLower);
   
   // 如果消息包含写作动作，优先检测章节类型
   if (hasWriteAction) {
-    if (messageLower.includes('引言') || messageLower.includes('introduction') || 
-        messageLower.includes('intro')) {
+    if (/(?:引言|绪论)|\b(?:introduction|intro)\b/i.test(messageLower)) {
       return 'introduction';
     }
     
-    if (messageLower.includes('方法') || messageLower.includes('methods') || 
-        messageLower.includes('methodology') || messageLower.includes('材料')) {
+    if (/(?:方法|材料与方法)|\b(?:method|methods|methodology)\b/i.test(messageLower)) {
       return 'methods';
     }
     
-    if (messageLower.includes('结果') || messageLower.includes('results') || 
-        messageLower.includes('数据')) {
+    if (/(?:结果|数据)|\b(?:result|results)\b/i.test(messageLower)) {
       return 'results';
     }
     
-    if (messageLower.includes('讨论') || messageLower.includes('discussion') || 
-        messageLower.includes('discuss')) {
+    if (/(?:讨论)|\b(?:discussion|discuss)\b/i.test(messageLower)) {
       return 'discussion';
     }
     
-    if (messageLower.includes('结论') || messageLower.includes('conclusion') || 
-        messageLower.includes('总结')) {
+    if (/(?:结论|总结)|\b(?:conclusion|conclusions)\b/i.test(messageLower)) {
       return 'conclusion';
     }
     
-    if (messageLower.includes('摘要') || messageLower.includes('abstract')) {
+    if (/(?:摘要)|\babstract\b/i.test(messageLower)) {
       return 'abstract';
     }
     
-    if (messageLower.includes('标题') || messageLower.includes('title')) {
+    if (/(?:标题)|\btitle\b/i.test(messageLower)) {
       return 'title';
     }
     
-    if (messageLower.includes('图表') || messageLower.includes('figures') || 
-        messageLower.includes('tables') || messageLower.includes('图') || messageLower.includes('表')) {
+    if (/(?:图表|图形|图片|表格)|\b(?:figure|figures|table|tables)\b/i.test(messageLower)) {
       return 'figures';
     }
   }
@@ -2798,11 +2854,11 @@ function detectChapterType(message: string, history?: Array<{ role: string; cont
     
     // 统计每个章节在上下文中出现的频率
     const chapterMentions = {
-      'introduction': (contextText.match(/引言 |introduction|intro/g) || []).length,
-      'methods': (contextText.match(/方法|methods|methodology/g) || []).length,
-      'results': (contextText.match(/结果|results|数据/g) || []).length,
-      'discussion': (contextText.match(/讨论|discussion/g) || []).length,
-      'conclusion': (contextText.match(/结论|conclusion/g) || []).length
+      'introduction': (contextText.match(/引言|\b(?:introduction|intro)\b/g) || []).length,
+      'methods': (contextText.match(/方法|\b(?:method|methods|methodology)\b/g) || []).length,
+      'results': (contextText.match(/(?:结果|数据)|\b(?:result|results)\b/g) || []).length,
+      'discussion': (contextText.match(/讨论|\bdiscussion\b/g) || []).length,
+      'conclusion': (contextText.match(/结论|\b(?:conclusion|conclusions)\b/g) || []).length
     };
     
     // 找出最频繁提到的章节
@@ -4275,7 +4331,12 @@ async function webSearch(query: string, numResults: number = 10, customUrl?: str
   }
 }
 
-async function processChatMessage(userId: string, userMessage: string, externalHistory?: Array<{ role: string; content: string }>): Promise<string> {
+async function processChatMessage(
+  userId: string,
+  userMessage: string,
+  externalHistory?: Array<{ role: string; content: string }>,
+  submittedQueryIntent?: unknown
+): Promise<string> {
   // 统一用户 ID：所有用户（飞书 + Web UI）共用同一个 "web-user" ID
   // 这样飞书和 Web UI 用户可以共享记忆、文献库、写作进度等所有数据
   const unifiedUserId = sanitizeUserId(userId || "web-user");
@@ -4304,6 +4365,24 @@ async function processChatMessage(userId: string, userMessage: string, externalH
   if (externalHistory) {
     logger.info(`[ChatProcessor] Using external history: ${externalHistory.length} messages`);
   }
+  const queryIntentHistory = history
+    .filter(item => item && typeof item.content === 'string')
+    .map((item): QueryIntentHistoryMessage => ({
+      role: item.role === 'assistant' || item.role === 'system' ? item.role : 'user',
+      content: item.content,
+    }))
+    .slice(-20);
+  const queryIntentInput = {
+    message: messageForTask,
+    history: queryIntentHistory,
+    explicitParts: userSkillInvocation.invokedSkills.map(skill => ({
+      type: 'slash',
+      trigger: skill.trigger,
+    })),
+  };
+  const queryIntent: QueryIntent = submittedQueryIntent && typeof submittedQueryIntent === 'object'
+    ? parseQueryIntentResponse(JSON.stringify(submittedQueryIntent), queryIntentInput)
+    : classifyQueryIntentFallback(queryIntentInput);
   
   const userMemory = await loadUserMemory(unifiedUserId);
   let memoryContext = "";
@@ -4334,6 +4413,10 @@ async function processChatMessage(userId: string, userMessage: string, externalH
       }
     }
   }
+  memoryContext = [
+    buildQueryIntentPromptBlock(queryIntent),
+    memoryContext,
+  ].filter(Boolean).join('\n\n');
 
   // 使用统一的路径管理模块获取用户文献路径
   const userDir = getUserUploadDir(unifiedUserId);
@@ -4444,71 +4527,33 @@ async function processChatMessage(userId: string, userMessage: string, externalH
     }
   }
   
-  const decisionPrompt = `你是一个专业的学术论文写作助手。
-
-## 文献库信息
-${hasLiterature ? literatureSummary : "用户还没有上传文献。"}
-${journalStyleHint}
-
-## 用户问题
-"${messageForTask}"
-
-## 你的任务
-分析用户的问题，做出决策：
-1. 是否需要联网搜索最新信息？
-2. 用户想要做什么？（回答问题/写讨论/写引言/逐句检索/其他）
-
-## 决策规则
-- 如果问题涉及最新研究成果（2024-2026）、实时数据，**必须联网搜索**
-- 如果用户要求"逐句检索"、"为这句话找文献"、"检索支撑文献"等，**task_type = "逐句检索"**
-- 如果用户要求写某个章节（引言/讨论/方法等），**task_type = "写XX"**
-- 普通问答，**task_type = "回答问题"**
-
-## 输出格式
-返回以下 JSON 格式：
-{
-  "need_web_search": true/false,
-  "web_search_query": "联网搜索关键词",
-  "task_type": "回答问题/写讨论/写引言/逐句检索/其他",
-  "reason": "判断理由"
-}
-
-只返回 JSON，不要有其他文字。`;
-
-  let needWebSearch = false;
-  let webSearchQuery = "";
+  const needWebSearch = queryIntent.needsWebSearch;
+  const webSearchQuery = queryIntent.resolvedQuery || messageForTask;
   let taskType = "回答问题";
-  
-  try {
-    const decisionText = await callChatCompletion(
-      {
-        apiUrl: useApiUrl,
-        apiKey: useApiKey,
-        label: "LocalChatDecision",
-        defaultModel: model,
-      },
-      {
-        model,
-        messages: [
-          { role: "system", content: decisionPrompt },
-          { role: "user", content: buildAnchoredUserMessage(messageForTask, { source: "local-chat-decision" }) }
-        ],
-        temperature: 0.3,
-        maxTokens: MAX_LLM_OUTPUT_TOKENS,
-      }
-    );
-
-    const jsonMatch = decisionText.match(/\{[\s\S]*\}/);
-    if (jsonMatch) {
-      const decision = JSON.parse(jsonMatch[0]);
-      needWebSearch = decision.need_web_search === true;
-      webSearchQuery = decision.web_search_query || messageForTask;
-      taskType = decision.task_type || "回答问题";
-      logger.info(`[ChatProcessor] Decision: web=${needWebSearch}, task=${taskType}`);
+  if (queryIntent.primaryIntent === 'literature_retrieval') {
+    taskType = '逐句检索';
+  } else if (queryIntent.primaryIntent === 'academic_writing') {
+    if (/(?:讨论)|\bdiscussion\b/i.test(messageForTask)) {
+      taskType = '写讨论';
+    } else if (/(?:引言|绪论)|\b(?:introduction|intro)\b/i.test(messageForTask)) {
+      taskType = '写引言';
+    } else if (/(?:方法|材料与方法)|\b(?:method|methods|methodology)\b/i.test(messageForTask)) {
+      taskType = '写方法';
+    } else if (/(?:结果)|\b(?:result|results)\b/i.test(messageForTask)) {
+      taskType = '写结果';
+    } else if (/(?:结论)|\b(?:conclusion|conclusions)\b/i.test(messageForTask)) {
+      taskType = '写结论';
+    } else if (/(?:摘要)|\babstract\b/i.test(messageForTask)) {
+      taskType = '写摘要';
+    } else {
+      taskType = '写作';
     }
-  } catch (e) {
-    logger.warn("[ChatProcessor] Decision API failed:", e);
+  } else if (queryIntent.needsToolExecution) {
+    taskType = '其他';
   }
+  logger.info(
+    `[ChatProcessor] Verified decision: primary=${queryIntent.primaryIntent}, web=${needWebSearch}, literature=${queryIntent.needsLiteratureRetrieval}, task=${taskType}`
+  );
   
   // ========== 🚀 写作任务检测：使用 ConversationFlow 完整流程 ==========
   const isWritingTask = taskType.includes('写') || 
@@ -4622,7 +4667,9 @@ ${journalStyleHint}
   
   // 获取对话历史用于上下文检测
   const contextHistory = conversationHistory.get(unifiedUserId) || [];
-  const detectedChapter = detectChapterType(messageForTask, contextHistory);
+  const detectedChapter = queryIntent.primaryIntent === 'academic_writing'
+    ? detectChapterType(messageForTask, contextHistory)
+    : null;
   
   if (detectedChapter) {
     writingSkillContent = loadWritingSkill(detectedChapter);
@@ -4833,8 +4880,14 @@ references: |
     }
     
     // 捕获AI的句子检索工具调用
-    const sentenceSearchMatch = aiResponse.match(/```[\s\S]*?🔧 调用工具：sentence_search[\s\S]*?```/);
-    if (sentenceSearchMatch) {
+    const sentenceSearchMatch = aiResponse.match(/```[\s\S]*?🔧 调用工具：sentence_search(?!_single)\b[\s\S]*?```/);
+    if (sentenceSearchMatch && !queryIntent.needsLiteratureRetrieval) {
+      logger.warn('[ChatProcessor] Blocked sentence_search because verified Query Intent did not authorize literature retrieval');
+      aiResponse = aiResponse.replace(
+        sentenceSearchMatch[0],
+        '\n[系统未执行文献检索：本轮经过校验的 Query Intent 未授权文献检索。]\n'
+      );
+    } else if (sentenceSearchMatch) {
       const searchBlock = sentenceSearchMatch[0];
       const sentencesMatch = searchBlock.match(/sentences:\s*([\s\S]*?)(?=```|$)/);
       
@@ -4904,7 +4957,13 @@ references: |
     
     // 捕获AI的单句检索工具调用（sentence_search_single）
     const singleSentenceSearchMatch = aiResponse.match(/```[\s\S]*?🔧 调用工具：sentence_search_single[\s\S]*?```/);
-    if (singleSentenceSearchMatch) {
+    if (singleSentenceSearchMatch && !queryIntent.needsLiteratureRetrieval) {
+      logger.warn('[ChatProcessor] Blocked sentence_search_single because verified Query Intent did not authorize literature retrieval');
+      aiResponse = aiResponse.replace(
+        singleSentenceSearchMatch[0],
+        '\n[系统未执行单句文献检索：本轮经过校验的 Query Intent 未授权文献检索。]\n'
+      );
+    } else if (singleSentenceSearchMatch) {
       const searchBlock = singleSentenceSearchMatch[0];
       const sentenceIdMatch = searchBlock.match(/sentence_id:\s*(S\d+)/);
       const topicMatch = searchBlock.match(/topic:\s*([^\n]+)/);
@@ -5685,6 +5744,60 @@ chatBridge.loadConfig().then(() => {
       );
     },
     getDraftContext: getOrdinaryDraftContextForChat,
+    executeResearchEnhancementTool: async ({ name, userId, arguments: args }) => {
+      if (name === 'research_sync_obsidian') {
+        const store = await pdfWikiManager.getStore(userId);
+        const result = await deployPdfWikiObsidianVault(userId, store);
+        return {
+          ok: true,
+          summary: `内置 Obsidian 知识库已同步：句子级论点 ${result.sentencePointCount} 条，Markdown ${result.fileCount} 个。`,
+          ...result,
+        };
+      }
+      if (name === 'research_search_obsidian') {
+        const query = String(args.query || '').trim();
+        if (!query) return { ok: false, summary: 'Obsidian 检索未执行', error: '缺少 query。' };
+        const limit = Math.max(1, Math.min(80, Number(args.limit || 20) || 20));
+        const result = await searchPdfWikiObsidianVault(userId, query, limit);
+        return {
+          ok: true,
+          summary: `Obsidian 知识库检索完成：找到 ${result.results.length} 条结果。`,
+          query,
+          ...result,
+        };
+      }
+      if (name === 'research_prepare_submission') {
+        const result = await generateSubmissionPrepPackage({
+          userId,
+          projectId: String(args.projectId || '').trim() || undefined,
+          sessionId: String(args.sessionId || '').trim() || undefined,
+          targetJournal: String(args.targetJournal || '').trim(),
+          manuscriptTitle: String(args.manuscriptTitle || '').trim(),
+          manuscriptType: String(args.manuscriptType || '').trim() || 'Research Article',
+          abstractText: String(args.abstractText || '').trim(),
+          keywords: String(args.keywords || '').trim(),
+          authorGuidelines: String(args.authorGuidelines || '').trim(),
+          coverLetterRequirements: String(args.coverLetterRequirements || '').trim(),
+          reviewerFocus: String(args.reviewerFocus || '').trim(),
+          useAi: true,
+        }, {
+          getSecondaryRuntime: getDeepAnalysisSecondaryRuntimeConfig,
+        });
+        return {
+          ok: true,
+          summary: `投稿准备包已生成：${String(args.targetJournal || '目标期刊待定')}。`,
+          filePath: result.filePath,
+          outputDir: result.outputDir,
+          generatedAt: result.generatedAt,
+          markdownPreview: result.markdown.slice(0, 2400),
+          artifact: result.artifact,
+          aiUsed: result.aiUsed,
+          aiProvider: result.aiProvider,
+          aiWarning: result.aiWarning,
+        };
+      }
+      return { ok: false, summary: '科研增强工具未执行', error: `不支持的工具：${name}` };
+    },
   });
   // 初始化 unified-chat 路由
   initializeUnifiedChatRoutes(chatBridge, {
@@ -5704,6 +5817,7 @@ app.use("/api/experiment-results", experimentResultsRoutes);
 app.use("/api/r-code", rCodeRoutes);
 app.use("/api/python-plugin", pythonPluginRoutes);
 app.use("/api/office-plugin", officePluginRoutes);
+app.use("/api/mcp-plugins", mcpPluginRoutes);
 app.use("/api/data-analysis", dataAnalysisRoutes);
 app.use("/api/draft-assets", createDraftAssetsRouter({
   sessionStore,
@@ -7623,6 +7737,7 @@ app.post("/api/upload", handleLiteratureUpload, async (req: Request, res: Respon
     let bibliometricsImportResult: ReturnType<typeof importBibliometricPlainTextForUser> | null = null;
     let bibliometricsImportError = '';
     let pdfManagerLiteResult: Awaited<ReturnType<typeof pdfWikiManager.registerUploadedPdfsWithLiteParse>> | null = null;
+    let pdfWikiQueueSnapshot: Awaited<ReturnType<typeof pdfWikiManager.getQueueSnapshot>> | null = null;
     
     for (const file of files) {
       try {
@@ -7943,14 +8058,12 @@ app.post("/api/upload", handleLiteratureUpload, async (req: Request, res: Respon
         logger.info(`[PdfWiki] LiteParse registered ${pdfFilesForWiki.length} PDF(s) for PDF manager; parsed=${pdfManagerLiteResult.parsedCount}, failed=${pdfManagerLiteResult.failedCount}, figures=${pdfManagerLiteResult.figureCount}`);
       } else {
         const pdfWikiLlm = getPdfWikiLlmRuntimeConfig();
-        pdfWikiManager.processUploadedPdfs(
+        pdfWikiQueueSnapshot = await pdfWikiManager.enqueueUploadedPdfs(
           userId,
           pdfFilesForWiki,
           buildPdfWikiRuntimeTaskConfig(pdfWikiLlm, requestPdfWikiTaskConfig)
-        ).catch(error => {
-          logger.error('[PdfWiki] Background build failed:', error);
-        });
-        logger.info(`[PdfWiki] Queued ${pdfFilesForWiki.length} PDF(s) for user ${userId}; apiConfigured=${pdfWikiLlm.configured}; source=${pdfWikiLlm.label}`);
+        );
+        logger.info(`[PdfWikiQueue] Persisted ${pdfFilesForWiki.length} PDF(s) for user ${userId}; waiting=${pdfWikiQueueSnapshot.queuedPdfs}; running=${pdfWikiQueueSnapshot.runningPdfs}; source=${pdfWikiLlm.label}`);
       }
     }
     
@@ -7973,8 +8086,15 @@ app.post("/api/upload", handleLiteratureUpload, async (req: Request, res: Respon
           uniqueReferenceCount: bibliometricsImportResult.quality.uniqueReferenceCount,
         },
       } : null,
-      pdfWikiStarted: !isPdfManagerLiteUpload && pdfFilesForWiki.length > 0 && getPdfWikiLlmRuntimeConfig().configured,
-      pdfWikiQueued: !isPdfManagerLiteUpload && pdfFilesForWiki.length > 0,
+      pdfWikiStarted: !isPdfManagerLiteUpload
+        && Number(pdfWikiQueueSnapshot?.addedPdfs || 0) > 0
+        && (() => {
+          const runtime = getPdfWikiLlmRuntimeConfig();
+          if (isPdfWikiCodexSentenceTask(requestPdfWikiTaskConfig)) return runtime.codexAvailable;
+          return runtime.configured || isPdfWikiLocalSentenceTask(requestPdfWikiTaskConfig);
+        })(),
+      pdfWikiQueued: !isPdfManagerLiteUpload && Number(pdfWikiQueueSnapshot?.addedPdfs || 0) > 0,
+      pdfWikiQueue: pdfWikiQueueSnapshot,
       pdfWikiLlm: (() => {
         if (isPdfManagerLiteUpload) return null;
         const runtime = getPdfWikiLlmRuntimeConfig();
@@ -7999,6 +8119,8 @@ app.post("/api/upload", handleLiteratureUpload, async (req: Request, res: Respon
         duplicateCount: duplicateCount,         // 被去重跳过的文献数量
         uploadedCount: allPapers.length,        // 本次上传的文献总数
         pdfCount: pdfFilesForWiki.length,
+        pdfQueuedCount: Number(pdfWikiQueueSnapshot?.addedPdfs || 0),
+        pdfDuplicateCount: Number(pdfWikiQueueSnapshot?.skippedDuplicatePdfs || 0),
         years,
         journals,
         keywords
@@ -8448,6 +8570,7 @@ const LOCAL_OUTPUT_FILE_EXTENSIONS = new Set([
   ".rmd",
   ".json",
   ".tex",
+  ".latex",
   ".html",
   ".htm",
   ".ppt",
@@ -8481,37 +8604,38 @@ function getLocalPreviewAllowedRoots(): string[] {
   return Array.from(new Set(roots.map(root => path.resolve(root))));
 }
 
-function resolveLocalPreviewImagePath(rawPath: unknown, preferLatest = false): string | null {
+function resolveLocalPreviewFilePath(
+  rawPath: unknown,
+  preferLatest = false,
+  extraRoot?: unknown,
+  extraRoots?: unknown,
+): string | null {
   const value = String(rawPath || "").trim();
   if (!value || value.length > 2048 || /^https?:\/\//i.test(value)) return null;
   const resolved = path.resolve(value);
   const ext = path.extname(resolved).toLowerCase();
-  if (!LOCAL_PREVIEW_IMAGE_EXTENSIONS.has(ext)) return null;
+  if (!LOCAL_OUTPUT_FILE_EXTENSIONS.has(ext)) return null;
   const allowedRoots = getLocalPreviewAllowedRoots();
   if (!allowedRoots.some(root => isPathInside(root, resolved))) return null;
+  const preferredRoots = getValidatedLocalFileResolveRoots(extraRoot, extraRoots);
+  const candidates = [resolved];
 
-  const candidates: Array<{ filePath: string; mtimeMs: number }> = [];
-  const addCandidate = (candidatePath: string): void => {
-    try {
-      const stat = fs.statSync(candidatePath);
-      if (!stat.isFile() || !LOCAL_PREVIEW_IMAGE_EXTENSIONS.has(path.extname(candidatePath).toLowerCase())) return;
-      if (!allowedRoots.some(root => isPathInside(root, candidatePath))) return;
-      candidates.push({ filePath: candidatePath, mtimeMs: stat.mtimeMs });
-    } catch {
-      // Missing candidates are expected when a historical safe-workspace path is stale.
-    }
-  };
-
-  addCandidate(resolved);
-  if (preferLatest || candidates.length === 0) {
+  if (preferLatest && preferredRoots.length) {
+    candidates.push(...getMirroredLocalOutputCandidatePaths(resolved, preferredRoots, allowedRoots));
+  } else if (preferLatest || !fs.existsSync(resolved)) {
     const baseName = path.basename(resolved);
-    for (const root of allowedRoots) {
-      addCandidate(path.join(root, baseName));
-    }
+    allowedRoots.forEach(root => candidates.push(path.join(root, baseName)));
   }
-  if (candidates.length === 0) return null;
-  candidates.sort((a, b) => b.mtimeMs - a.mtimeMs);
-  return candidates[0].filePath;
+
+  let selected = pickNewestExistingLocalOutputPath(
+    candidates,
+    allowedRoots,
+    LOCAL_OUTPUT_FILE_EXTENSIONS,
+  );
+  if (!selected && preferredRoots.length) {
+    selected = findLatestAllowedLocalFileByName(path.basename(resolved), preferredRoots);
+  }
+  return selected;
 }
 
 function getLocalOutputFileName(rawPath: unknown, rawName?: unknown): string {
@@ -8572,9 +8696,29 @@ function parseLocalFileResolveExtraRoots(extraRoot?: unknown, extraRoots?: unkno
   return roots;
 }
 
+function getValidatedLocalFileResolveRoots(extraRoot?: unknown, extraRoots?: unknown): string[] {
+  const allowedRoots = getLocalPreviewAllowedRoots();
+  const seen = new Set<string>();
+  const roots: string[] = [];
+  parseLocalFileResolveExtraRoots(extraRoot, extraRoots).forEach(value => {
+    const resolved = path.resolve(value);
+    const key = process.platform === "win32" ? resolved.toLowerCase() : resolved;
+    if (seen.has(key)) return;
+    if (!allowedRoots.some(allowedRoot => isPathInside(allowedRoot, resolved))) return;
+    try {
+      if (!fs.statSync(resolved).isDirectory()) return;
+    } catch {
+      return;
+    }
+    seen.add(key);
+    roots.push(resolved);
+  });
+  return roots;
+}
+
 function getLocalFileResolveSearchRoots(extraRoot?: unknown, extraRoots?: unknown): string[] {
   const roots = [
-    ...parseLocalFileResolveExtraRoots(extraRoot, extraRoots),
+    ...getValidatedLocalFileResolveRoots(extraRoot, extraRoots),
     ...getLocalPreviewAllowedRoots(),
     path.join(getDataDir(), "r-plugin"),
     path.join(getDataDir(), "uploads"),
@@ -8650,13 +8794,45 @@ function findLatestAllowedLocalFileByName(fileName: string, roots: string[]): st
 
 app.get("/api/local-file/resolve", (req: Request, res: Response) => {
   try {
+    const primaryRoots = getValidatedLocalFileResolveRoots(req.query.workspaceRoot);
     const roots = getLocalFileResolveSearchRoots(req.query.workspaceRoot, req.query.workspaceRoots);
     const direct = resolveExistingAllowedLocalFile(req.query.path, roots);
     const relative = direct ? null : resolveRelativeAllowedLocalFile(req.query.path, roots);
-    const resolved = direct || relative || findLatestAllowedLocalFileByName(
-      getLocalOutputFileName(req.query.path, req.query.name),
-      roots
-    );
+    const mirrored = primaryRoots.length
+      ? pickNewestExistingLocalOutputPath(
+          getMirroredLocalOutputCandidatePaths(
+            req.query.path,
+            primaryRoots,
+            getLocalPreviewAllowedRoots(),
+          ),
+          getLocalPreviewAllowedRoots(),
+          LOCAL_OUTPUT_FILE_EXTENSIONS,
+        )
+      : null;
+    const preferLatest = req.query.preferLatest === "1";
+    const latestSearchRoots = primaryRoots.length && !mirrored
+      ? primaryRoots
+      : (direct || relative ? [] : roots);
+    const latestByName = latestSearchRoots.length
+      ? findLatestAllowedLocalFileByName(
+          getLocalOutputFileName(req.query.path, req.query.name),
+          latestSearchRoots,
+        )
+      : null;
+    const resolved = preferLatest
+      ? pickNewestExistingLocalOutputPath(
+          [direct, relative, mirrored, latestByName].filter((item): item is string => !!item),
+          getLocalPreviewAllowedRoots(),
+          LOCAL_OUTPUT_FILE_EXTENSIONS,
+        )
+      : (direct || relative || mirrored || latestByName);
+    const resolvedBy = resolved && mirrored && path.resolve(resolved) === path.resolve(mirrored)
+      ? "latest-workspace-match"
+      : resolved && latestByName && path.resolve(resolved) === path.resolve(latestByName)
+        ? "latest-name-match"
+        : resolved && relative && path.resolve(resolved) === path.resolve(relative)
+          ? "relative-root-match"
+          : "exact";
     if (!resolved) {
       res.status(404).json({ success: false, error: "文件不存在，且未找到同名最新文件" });
       return;
@@ -8668,7 +8844,7 @@ app.get("/api/local-file/resolve", (req: Request, res: Response) => {
       name: path.basename(resolved),
       size: stat.size,
       mtimeMs: stat.mtimeMs,
-      resolvedBy: direct ? "exact" : (relative ? "relative-root-match" : "latest-name-match"),
+      resolvedBy,
     });
   } catch (error) {
     logger.warn("[LocalFile] Resolve failed", error);
@@ -8676,9 +8852,384 @@ app.get("/api/local-file/resolve", (req: Request, res: Response) => {
   }
 });
 
+const LOCAL_FORMATTED_SPREADSHEET_EXTENSIONS = new Set([".xlsx", ".xls", ".csv", ".tsv"]);
+const LOCAL_FORMATTED_CODE_EXTENSIONS = new Set([
+  ".r",
+  ".rmd",
+  ".json",
+  ".tex",
+  ".txt",
+  ".md",
+  ".markdown",
+  ".html",
+  ".htm",
+]);
+const LOCAL_EDITABLE_TEXT_EXTENSIONS = new Set([
+  ".txt", ".md", ".markdown", ".csv", ".tsv", ".json",
+  ".r", ".rmd", ".py", ".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx",
+  ".css", ".html", ".htm", ".tex", ".latex", ".yaml", ".yml", ".xml",
+]);
+const LOCAL_EDITABLE_TEXT_MAX_BYTES = 2 * 1024 * 1024;
+const LOCAL_OFFICE_EDITOR_MAX_BYTES = 40 * 1024 * 1024;
+const LOCAL_EXCEL_EDITOR_MAX_ROWS = 2000;
+const LOCAL_EXCEL_EDITOR_MAX_COLUMNS = 200;
+const LOCAL_FORMATTED_PREVIEW_MAX_BYTES = 40 * 1024 * 1024;
+const LOCAL_FORMATTED_CODE_MAX_CHARS = 360_000;
+const localFormattedPreviewCache = new Map<string, string>();
+
+function escapeLocalPreviewHtml(value: unknown): string {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function rememberLocalFormattedPreview(cacheKey: string, html: string): void {
+  localFormattedPreviewCache.set(cacheKey, html);
+  while (localFormattedPreviewCache.size > 12) {
+    const oldest = localFormattedPreviewCache.keys().next().value as string | undefined;
+    if (!oldest) break;
+    localFormattedPreviewCache.delete(oldest);
+  }
+}
+
+function buildLocalFormattedPreviewDocument(options: {
+  title: string;
+  kind: "spreadsheet" | "word" | "code" | "notice";
+  body: string;
+}): string {
+  const accent = options.kind === "spreadsheet"
+    ? "#188038"
+    : (options.kind === "word" ? "#2563eb" : (options.kind === "code" ? "#2b6cb0" : "#6b7280"));
+  return `<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>${escapeLocalPreviewHtml(options.title)}</title>
+  <style>
+    :root{color-scheme:light;--accent:${accent};--line:#dfe3e8;--muted:#667085;--paper:#fff;--chrome:#f7f8fa}
+    *{box-sizing:border-box}
+    html,body{width:100%;min-height:100%;margin:0;background:#eef1f5;color:#1f2937;font:13px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei UI",sans-serif}
+    body{overflow:auto;contain:layout paint style}
+    .preview-shell{min-height:100vh;background:var(--chrome)}
+    .preview-titlebar{position:sticky;top:0;z-index:20;display:flex;align-items:center;gap:8px;min-height:36px;padding:7px 11px;border-bottom:1px solid var(--line);background:rgba(255,255,255,.96);backdrop-filter:blur(8px)}
+    .preview-dot{width:8px;height:8px;border-radius:50%;background:var(--accent)}
+    .preview-title{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:750}
+    .preview-muted{margin-left:auto;color:var(--muted);font-size:11px;white-space:nowrap}
+    .sheet-tabs{display:flex;gap:4px;overflow:auto;padding:7px 9px;border-bottom:1px solid var(--line);background:#fff;scrollbar-width:thin}
+    .sheet-tab{flex:0 0 auto;padding:4px 9px;border:1px solid var(--line);border-radius:6px;color:#475467;text-decoration:none;background:#fff;font-size:11px}
+    .sheet-tab.active{border-color:var(--accent);background:#edf7ef;color:var(--accent);font-weight:750}
+    .sheet-wrap{overflow:auto;max-width:100%;min-height:calc(100vh - 78px);background:#fff}
+    .sheet-grid{border-collapse:separate;border-spacing:0;min-width:100%;table-layout:auto;font:12px/1.35 "Segoe UI","Microsoft YaHei UI",sans-serif}
+    .sheet-grid th,.sheet-grid td{height:25px;min-width:72px;max-width:320px;padding:4px 7px;border-right:1px solid #e5e7eb;border-bottom:1px solid #e5e7eb;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;background:#fff}
+    .sheet-grid thead th{position:sticky;top:0;z-index:5;min-width:42px;background:#f2f4f7;color:#475467;text-align:center;font-weight:650}
+    .sheet-grid .row-number{position:sticky;left:0;z-index:4;min-width:42px;width:42px;background:#f2f4f7;color:#667085;text-align:right;font-weight:500}
+    .sheet-grid thead .row-number{z-index:8}
+    .sheet-grid td.number{text-align:right;font-variant-numeric:tabular-nums}
+    .sheet-grid td:hover{outline:2px solid var(--accent);outline-offset:-2px;background:#f6fbf7}
+    .preview-note{padding:8px 11px;border-top:1px solid var(--line);background:#fff8e8;color:#8a5a00;font-size:11px}
+    .word-stage{padding:18px 12px 44px;background:#e9edf2;min-height:calc(100vh - 36px)}
+    .word-page{width:min(794px,100%);min-height:980px;margin:0 auto;padding:58px clamp(24px,7vw,72px);background:var(--paper);box-shadow:0 2px 12px rgba(16,24,40,.14);font:15px/1.75 "Times New Roman","宋体",serif;overflow-wrap:anywhere}
+    .word-page h1,.word-page h2,.word-page h3{font-family:"Segoe UI","Microsoft YaHei UI",sans-serif;line-height:1.35;color:#111827}
+    .word-page h1{font-size:24px}.word-page h2{font-size:20px}.word-page h3{font-size:17px}
+    .word-page p{margin:0 0 10px}.word-page img{display:block;max-width:100%;height:auto;margin:12px auto}
+    .word-page table{width:100%;border-collapse:collapse;margin:12px 0;font-size:12px}.word-page td,.word-page th{border:1px solid #b8c0cc;padding:5px 7px;vertical-align:top}
+    .word-page ul,.word-page ol{padding-left:24px}
+    .code-stage{min-height:calc(100vh - 36px);overflow:auto;background:#fbfcfe}
+    .code-lines{min-width:max-content;margin:0;padding:10px 0 24px 54px;background:#fbfcfe;color:#24292f;font:12px/1.62 Consolas,"SFMono-Regular","Cascadia Code",monospace;counter-reset:line}
+    .code-lines li{min-height:19px;padding:0 18px 0 10px;border-left:1px solid #e5e7eb;white-space:pre;tab-size:2}
+    .code-lines li::marker{color:#98a2b3;font-size:10px}
+    .tok-comment{color:#6a737d;font-style:italic}.tok-string{color:#a31515}.tok-number{color:#098658}.tok-keyword{color:#0000ff;font-weight:650}.tok-key{color:#0451a5}.tok-operator{color:#7c3aed}
+    .notice{margin:28px;padding:20px;border:1px solid var(--line);border-radius:10px;background:#fff;color:#475467;text-align:center}.notice strong{display:block;margin-bottom:6px;color:#1f2937}
+    @media(max-width:560px){.word-stage{padding:8px 0 24px}.word-page{min-height:100vh;padding:30px 18px;box-shadow:none}.preview-muted{display:none}}
+  </style>
+</head>
+<body><div class="preview-shell">${options.body}</div></body>
+</html>`;
+}
+
+function buildLocalFormattedPreviewTitle(title: string, meta: string): string {
+  return `<div class="preview-titlebar"><span class="preview-dot"></span><span class="preview-title">${escapeLocalPreviewHtml(title)}</span><span class="preview-muted">${escapeLocalPreviewHtml(meta)}</span></div>`;
+}
+
+async function buildLocalSpreadsheetPreview(filePath: string, requestedSheet: string): Promise<string> {
+  const xlsx = await import("xlsx");
+  const buffer = await fs.promises.readFile(filePath);
+  const workbook = xlsx.read(buffer, { type: "buffer", raw: false, cellDates: true, cellStyles: true });
+  const sheetNames = workbook.SheetNames || [];
+  const activeSheetName = sheetNames.includes(requestedSheet) ? requestedSheet : (sheetNames[0] || "Sheet1");
+  const sheet = workbook.Sheets[activeSheetName];
+  const encodedPath = encodeURIComponent(filePath);
+  const tabs = sheetNames.map(name => {
+    const active = name === activeSheetName ? " active" : "";
+    const href = `/api/local-file/formatted-preview?path=${encodedPath}&sheet=${encodeURIComponent(name)}`;
+    return `<a class="sheet-tab${active}" href="${escapeLocalPreviewHtml(href)}">${escapeLocalPreviewHtml(name)}</a>`;
+  }).join("");
+
+  if (!sheet || !sheet["!ref"]) {
+    return buildLocalFormattedPreviewDocument({
+      title: path.basename(filePath),
+      kind: "spreadsheet",
+      body: buildLocalFormattedPreviewTitle(path.basename(filePath), activeSheetName)
+        + `<div class="sheet-tabs">${tabs}</div><div class="notice"><strong>空工作表</strong>当前工作表没有可显示的单元格。</div>`,
+    });
+  }
+
+  const range = xlsx.utils.decode_range(sheet["!ref"]);
+  const firstRow = Math.max(0, range.s.r);
+  const firstCol = Math.max(0, range.s.c);
+  const lastRow = Math.min(range.e.r, firstRow + 399);
+  const lastCol = Math.min(range.e.c, firstCol + 59);
+  const truncated = lastRow < range.e.r || lastCol < range.e.c;
+  let head = `<thead><tr><th class="row-number"></th>`;
+  for (let column = firstCol; column <= lastCol; column += 1) {
+    head += `<th>${escapeLocalPreviewHtml(xlsx.utils.encode_col(column))}</th>`;
+  }
+  head += `</tr></thead>`;
+  let rows = `<tbody>`;
+  for (let row = firstRow; row <= lastRow; row += 1) {
+    rows += `<tr><th class="row-number">${row + 1}</th>`;
+    for (let column = firstCol; column <= lastCol; column += 1) {
+      const address = xlsx.utils.encode_cell({ r: row, c: column });
+      const cell = sheet[address] as { w?: string; v?: unknown; f?: string; t?: string } | undefined;
+      const displayValue = cell ? (cell.w ?? cell.v ?? "") : "";
+      const title = cell?.f ? ` title="${escapeLocalPreviewHtml(`=${cell.f}`)}"` : "";
+      const numericClass = cell?.t === "n" ? ` class="number"` : "";
+      rows += `<td${numericClass}${title}>${escapeLocalPreviewHtml(displayValue)}</td>`;
+    }
+    rows += `</tr>`;
+  }
+  rows += `</tbody>`;
+  const note = truncated
+    ? `<div class="preview-note">为保持输入和滚动流畅，当前预览显示前 400 行、60 列；原文件数据未被截断。</div>`
+    : "";
+  return buildLocalFormattedPreviewDocument({
+    title: path.basename(filePath),
+    kind: "spreadsheet",
+    body: buildLocalFormattedPreviewTitle(path.basename(filePath), `${activeSheetName} · ${range.e.r - range.s.r + 1} 行 × ${range.e.c - range.s.c + 1} 列`)
+      + `<div class="sheet-tabs">${tabs}</div><div class="sheet-wrap"><table class="sheet-grid">${head}${rows}</table></div>${note}`,
+  });
+}
+
+function sanitizeLocalWordPreviewHtml(value: string): string {
+  return String(value || "")
+    .replace(/<(script|style|iframe|object|embed|form|input|button|textarea|select)\b[^>]*>[\s\S]*?<\/\1\s*>/gi, "")
+    .replace(/<(script|style|iframe|object|embed|form|input|button|textarea|select)\b[^>]*\/?\s*>/gi, "")
+    .replace(/\son[a-z]+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, "")
+    .replace(/\s(href|src)\s*=\s*(["'])\s*javascript:[\s\S]*?\2/gi, "");
+}
+
+async function buildLocalWordPreview(filePath: string): Promise<string> {
+  const extension = path.extname(filePath).toLowerCase();
+  const fileName = path.basename(filePath);
+  if (extension !== ".docx") {
+    return buildLocalFormattedPreviewDocument({
+      title: fileName,
+      kind: "notice",
+      body: buildLocalFormattedPreviewTitle(fileName, "Word 97–2003")
+        + `<div class="notice"><strong>旧版 DOC 只读预览受限</strong>请另存为 DOCX 后，即可在右侧栏按 Word 页面格式查看；原文件不会被修改。</div>`,
+    });
+  }
+  const buffer = await fs.promises.readFile(filePath);
+  const result = await mammoth.convertToHtml({ buffer }, {
+    convertImage: mammoth.images.imgElement(async image => {
+      const imageBuffer = await image.readAsBuffer();
+      const allowedType = /^(image\/(?:png|jpeg|gif|webp))$/i.test(image.contentType || "")
+        ? image.contentType.toLowerCase()
+        : "";
+      if (!allowedType || imageBuffer.length > 4 * 1024 * 1024) {
+        return { src: "data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=" };
+      }
+      return { src: `data:${allowedType};base64,${imageBuffer.toString("base64")}` };
+    }),
+    externalFileAccess: false,
+    ignoreEmptyParagraphs: false,
+  });
+  return buildLocalFormattedPreviewDocument({
+    title: fileName,
+    kind: "word",
+    body: buildLocalFormattedPreviewTitle(fileName, "Word 只读视图")
+      + `<div class="word-stage"><article class="word-page">${sanitizeLocalWordPreviewHtml(result.value)}</article></div>`,
+  });
+}
+
+const LOCAL_R_PREVIEW_KEYWORDS = new Set([
+  "if", "else", "repeat", "while", "function", "for", "in", "next", "break",
+  "TRUE", "FALSE", "NULL", "Inf", "NaN", "NA", "NA_integer_", "NA_real_", "NA_complex_", "NA_character_",
+  "library", "require", "return", "switch",
+]);
+
+function highlightLocalCodeLine(line: string, extension: string): string {
+  let html = "";
+  let index = 0;
+  while (index < line.length) {
+    const char = line[index];
+    if ((extension === ".r" || extension === ".rmd") && char === "#") {
+      html += `<span class="tok-comment">${escapeLocalPreviewHtml(line.slice(index))}</span>`;
+      break;
+    }
+    if (char === '"' || char === "'") {
+      const quote = char;
+      let end = index + 1;
+      while (end < line.length) {
+        if (line[end] === "\\") {
+          end += 2;
+          continue;
+        }
+        end += 1;
+        if (line[end - 1] === quote) break;
+      }
+      const token = line.slice(index, end);
+      const suffix = line.slice(end);
+      const isJsonKey = extension === ".json" && /^\s*:/.test(suffix);
+      html += `<span class="${isJsonKey ? "tok-key" : "tok-string"}">${escapeLocalPreviewHtml(token)}</span>`;
+      index = end;
+      continue;
+    }
+    if (/[0-9]/.test(char) && (index === 0 || !/[A-Za-z0-9_.]/.test(line[index - 1]))) {
+      const match = line.slice(index).match(/^(?:0x[\da-f]+|\d+(?:\.\d+)?(?:e[+-]?\d+)?)/i);
+      if (match) {
+        html += `<span class="tok-number">${escapeLocalPreviewHtml(match[0])}</span>`;
+        index += match[0].length;
+        continue;
+      }
+    }
+    if (/[A-Za-z_.]/.test(char)) {
+      const match = line.slice(index).match(/^[A-Za-z_.][A-Za-z0-9_.]*/);
+      if (match) {
+        const token = match[0];
+        const keyword = LOCAL_R_PREVIEW_KEYWORDS.has(token) || /^(true|false|null)$/i.test(token);
+        html += keyword ? `<span class="tok-keyword">${escapeLocalPreviewHtml(token)}</span>` : escapeLocalPreviewHtml(token);
+        index += token.length;
+        continue;
+      }
+    }
+    if (/[<>=+\-*\/%|&~!:]/.test(char)) {
+      html += `<span class="tok-operator">${escapeLocalPreviewHtml(char)}</span>`;
+    } else {
+      html += escapeLocalPreviewHtml(char);
+    }
+    index += 1;
+  }
+  return html || " ";
+}
+
+async function buildLocalCodePreview(filePath: string): Promise<string> {
+  const extension = path.extname(filePath).toLowerCase();
+  const fileName = path.basename(filePath);
+  const buffer = await fs.promises.readFile(filePath);
+  let source = buffer.toString("utf8").replace(/\r\n?/g, "\n");
+  let truncated = false;
+  if (source.length > LOCAL_FORMATTED_CODE_MAX_CHARS) {
+    source = source.slice(0, LOCAL_FORMATTED_CODE_MAX_CHARS);
+    truncated = true;
+  }
+  if (extension === ".json") {
+    try {
+      source = JSON.stringify(JSON.parse(source), null, 2);
+    } catch {
+      // Keep malformed JSON as source text so the user can inspect it.
+    }
+  }
+  const lines = source.split("\n").slice(0, 8_000);
+  if (lines.length >= 8_000) truncated = true;
+  const code = lines.map(line => `<li><code>${highlightLocalCodeLine(line, extension)}</code></li>`).join("");
+  const note = truncated
+    ? `<div class="preview-note">为保持编辑输入流畅，超长文件仅显示前 ${LOCAL_FORMATTED_CODE_MAX_CHARS.toLocaleString("en-US")} 个字符。</div>`
+    : "";
+  return buildLocalFormattedPreviewDocument({
+    title: fileName,
+    kind: "code",
+    body: buildLocalFormattedPreviewTitle(fileName, `${extension.slice(1).toUpperCase() || "TEXT"} 只读视图`)
+      + `<div class="code-stage"><ol class="code-lines">${code}</ol></div>${note}`,
+  });
+}
+
+app.get("/api/local-file/formatted-preview", async (req: Request, res: Response) => {
+  try {
+    const filePath = resolveLocalPreviewFilePath(
+      req.query.path,
+      req.query.latest === "1",
+      req.query.workspaceRoot,
+      req.query.workspaceRoots,
+    );
+    if (!filePath) {
+      res.status(404).type("html").send(buildLocalFormattedPreviewDocument({
+        title: "文件预览",
+        kind: "notice",
+        body: `<div class="notice"><strong>文件不存在或未授权</strong>请从 AI 输出附件中重新打开该文件。</div>`,
+      }));
+      return;
+    }
+    const stat = fs.statSync(filePath);
+    const extension = path.extname(filePath).toLowerCase();
+    const requestedSheet = String(req.query.sheet || "").trim().slice(0, 180);
+    const cacheKey = `${filePath}\u0000${stat.size}\u0000${Math.round(stat.mtimeMs)}\u0000${requestedSheet}`;
+    const cached = localFormattedPreviewCache.get(cacheKey);
+    const etag = `"formatted-${stat.size}-${Math.round(stat.mtimeMs)}-${crypto.createHash("sha1").update(requestedSheet).digest("hex").slice(0, 8)}"`;
+    res.setHeader("Cache-Control", "private, no-cache, must-revalidate");
+    res.setHeader("ETag", etag);
+    res.setHeader("Content-Type", "text/html; charset=utf-8");
+    res.setHeader("Content-Disposition", `inline; filename*=UTF-8''${encodeURIComponent(path.basename(filePath))}`);
+    res.setHeader("Content-Security-Policy", "default-src 'none'; img-src data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'; sandbox allow-same-origin");
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    if (req.headers["if-none-match"] === etag) {
+      res.status(304).end();
+      return;
+    }
+    if (cached) {
+      res.send(cached);
+      return;
+    }
+    if (stat.size > LOCAL_FORMATTED_PREVIEW_MAX_BYTES) {
+      const oversized = buildLocalFormattedPreviewDocument({
+        title: path.basename(filePath),
+        kind: "notice",
+        body: buildLocalFormattedPreviewTitle(path.basename(filePath), "只读预览")
+          + `<div class="notice"><strong>文件过大，未在侧栏完整渲染</strong>文件仍可通过“所在文件夹”定位；预览上限为 40 MB，以免影响聊天输入。</div>`,
+      });
+      res.send(oversized);
+      return;
+    }
+
+    let html: string;
+    if (LOCAL_FORMATTED_SPREADSHEET_EXTENSIONS.has(extension)) {
+      html = await buildLocalSpreadsheetPreview(filePath, requestedSheet);
+    } else if (extension === ".doc" || extension === ".docx") {
+      html = await buildLocalWordPreview(filePath);
+    } else if (LOCAL_FORMATTED_CODE_EXTENSIONS.has(extension)) {
+      html = await buildLocalCodePreview(filePath);
+    } else {
+      html = buildLocalFormattedPreviewDocument({
+        title: path.basename(filePath),
+        kind: "notice",
+        body: buildLocalFormattedPreviewTitle(path.basename(filePath), "文件预览")
+          + `<div class="notice"><strong>该格式暂不支持软件内排版预览</strong>可通过“所在文件夹”使用系统关联软件打开。</div>`,
+      });
+    }
+    rememberLocalFormattedPreview(cacheKey, html);
+    res.send(html);
+  } catch (error) {
+    logger.warn("[LocalFile] Formatted preview failed", error);
+    res.status(500).type("html").send(buildLocalFormattedPreviewDocument({
+      title: "文件预览失败",
+      kind: "notice",
+      body: `<div class="notice"><strong>格式化预览失败</strong>${escapeLocalPreviewHtml((error as Error).message || "未知错误")}</div>`,
+    }));
+  }
+});
+
 app.get("/api/local-file/preview", (req: Request, res: Response) => {
   try {
-    const filePath = resolveLocalPreviewImagePath(req.query.path, req.query.latest === "1");
+    const filePath = resolveLocalPreviewFilePath(
+      req.query.path,
+      req.query.latest === "1",
+      req.query.workspaceRoot,
+      req.query.workspaceRoots,
+    );
     if (!filePath) {
       res.status(404).json({ success: false, error: "文件不存在或不允许预览" });
       return;
@@ -8689,13 +9240,339 @@ app.get("/api/local-file/preview", (req: Request, res: Response) => {
       res.status(304).end();
       return;
     }
-    res.setHeader("Cache-Control", "private, max-age=86400");
+    res.setHeader("Cache-Control", "private, no-cache, must-revalidate");
     res.setHeader("ETag", etag);
     res.setHeader("Last-Modified", stat.mtime.toUTCString());
+    res.setHeader("X-File-Mtime-Ms", String(stat.mtimeMs));
+    res.setHeader("Content-Disposition", `inline; filename*=UTF-8''${encodeURIComponent(path.basename(filePath))}`);
+    const extension = path.extname(filePath).toLowerCase();
+    if (extension === ".html" || extension === ".htm") {
+      // Generated HTML is shown as source text in the sidebar. Serving it as
+      // text prevents an output artifact from running scripts in the app origin.
+      res.setHeader("Content-Type", "text/plain; charset=utf-8");
+      res.setHeader("Content-Security-Policy", "default-src 'none'; sandbox");
+    }
     res.sendFile(filePath);
   } catch (error) {
     logger.warn("[LocalFile] Preview failed", error);
-    res.status(500).json({ success: false, error: "本地图片预览失败" });
+    res.status(500).json({ success: false, error: "本地文件预览失败" });
+  }
+});
+
+app.put("/api/local-file/text", async (req: Request, res: Response) => {
+  try {
+    const filePath = resolveLocalPreviewFilePath(
+      req.body?.path,
+      false,
+      req.body?.workspaceRoot,
+      req.body?.workspaceRoots,
+    );
+    if (!filePath) {
+      res.status(404).json({ success: false, code: "FILE_NOT_FOUND", message: "文件不存在或不允许修改", recoverable: true });
+      return;
+    }
+    const extension = path.extname(filePath).toLowerCase();
+    if (!LOCAL_EDITABLE_TEXT_EXTENSIONS.has(extension)) {
+      res.status(415).json({ success: false, code: "UNSUPPORTED_FILE_TYPE", message: "该文件格式不支持文本编辑", recoverable: false });
+      return;
+    }
+    const content = typeof req.body?.content === "string" ? req.body.content : null;
+    if (content === null) {
+      res.status(400).json({ success: false, code: "INVALID_CONTENT", message: "缺少要保存的文本内容", recoverable: true });
+      return;
+    }
+    const contentBytes = Buffer.byteLength(content, "utf8");
+    if (contentBytes > LOCAL_EDITABLE_TEXT_MAX_BYTES) {
+      res.status(413).json({ success: false, code: "FILE_TOO_LARGE", message: "文本超过 2 MB，不能在侧栏中保存", recoverable: true });
+      return;
+    }
+    const stat = await fs.promises.stat(filePath);
+    if (!stat.isFile()) {
+      res.status(400).json({ success: false, code: "NOT_A_FILE", message: "目标不是普通文件", recoverable: false });
+      return;
+    }
+    const expectedMtimeMs = Number(req.body?.expectedMtimeMs);
+    if (Number.isFinite(expectedMtimeMs) && Math.abs(stat.mtimeMs - expectedMtimeMs) > 1) {
+      res.status(409).json({
+        success: false,
+        code: "FILE_CHANGED",
+        message: "文件已被其他程序修改。请关闭编辑并重新打开文件后再修改。",
+        recoverable: true,
+      });
+      return;
+    }
+    await fs.promises.writeFile(filePath, content, "utf8");
+    const savedStat = await fs.promises.stat(filePath);
+    localFormattedPreviewCache.clear();
+    logger.info("[LocalFile] Text file saved from right sidebar", {
+      filePath,
+      bytes: contentBytes,
+    });
+    res.json({
+      success: true,
+      path: filePath,
+      name: path.basename(filePath),
+      size: savedStat.size,
+      mtimeMs: savedStat.mtimeMs,
+    });
+  } catch (error) {
+    logger.warn("[LocalFile] Text save failed", error);
+    res.status(500).json({ success: false, code: "FILE_SAVE_FAILED", message: "本地文件保存失败", recoverable: true });
+  }
+});
+
+function decodeOfficeXmlText(value: string): string {
+  return String(value || "")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, "\"")
+    .replace(/&apos;/g, "'")
+    .replace(/&amp;/g, "&");
+}
+
+function encodeOfficeXmlText(value: string): string {
+  return String(value || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;");
+}
+
+function getLocalOfficeEditorFile(req: Request, extensions: Set<string>): string | null {
+  const filePath = resolveLocalPreviewFilePath(
+    req.method === "GET" ? req.query.path : req.body?.path,
+    false,
+    req.method === "GET" ? req.query.workspaceRoot : req.body?.workspaceRoot,
+    req.method === "GET" ? req.query.workspaceRoots : req.body?.workspaceRoots,
+  );
+  if (!filePath || !extensions.has(path.extname(filePath).toLowerCase())) return null;
+  return filePath;
+}
+
+app.get("/api/local-file/excel-editor", async (req: Request, res: Response) => {
+  try {
+    const filePath = getLocalOfficeEditorFile(req, new Set([".xlsx", ".xls"]));
+    if (!filePath) {
+      res.status(404).json({ success: false, code: "FILE_NOT_FOUND", message: "Excel 文件不存在或未授权", recoverable: true });
+      return;
+    }
+    const stat = await fs.promises.stat(filePath);
+    if (stat.size > LOCAL_OFFICE_EDITOR_MAX_BYTES) {
+      res.status(413).json({ success: false, code: "FILE_TOO_LARGE", message: "Excel 文件超过 40 MB，不能在侧栏中编辑", recoverable: true });
+      return;
+    }
+    const xlsx = await import("xlsx");
+    const workbook = xlsx.read(await fs.promises.readFile(filePath), {
+      type: "buffer",
+      cellDates: true,
+      cellStyles: true,
+      cellFormula: true,
+    });
+    const sheets = workbook.SheetNames.map(name => {
+      const sheet = workbook.Sheets[name];
+      const decoded = sheet?.["!ref"]
+        ? xlsx.utils.decode_range(sheet["!ref"])
+        : { s: { r: 0, c: 0 }, e: { r: 19, c: 9 } };
+      const rowCount = Math.min(LOCAL_EXCEL_EDITOR_MAX_ROWS, Math.max(20, decoded.e.r + 1));
+      const columnCount = Math.min(LOCAL_EXCEL_EDITOR_MAX_COLUMNS, Math.max(10, decoded.e.c + 1));
+      const cells: Array<{ address: string; value: unknown; formula?: string; type?: string }> = [];
+      for (let row = 0; row < rowCount; row += 1) {
+        for (let column = 0; column < columnCount; column += 1) {
+          const address = xlsx.utils.encode_cell({ r: row, c: column });
+          const cell = sheet?.[address] as { v?: unknown; f?: string; t?: string } | undefined;
+          if (!cell || (cell.v === undefined && !cell.f)) continue;
+          cells.push({
+            address,
+            value: cell.v instanceof Date ? cell.v.toISOString() : (cell.v ?? ""),
+            formula: cell.f || undefined,
+            type: cell.t || undefined,
+          });
+        }
+      }
+      return {
+        name,
+        rowCount,
+        columnCount,
+        truncated: decoded.e.r + 1 > rowCount || decoded.e.c + 1 > columnCount,
+        cells,
+      };
+    });
+    res.json({
+      success: true,
+      path: filePath,
+      name: path.basename(filePath),
+      mtimeMs: stat.mtimeMs,
+      sheets,
+      limits: { rows: LOCAL_EXCEL_EDITOR_MAX_ROWS, columns: LOCAL_EXCEL_EDITOR_MAX_COLUMNS },
+    });
+  } catch (error) {
+    logger.warn("[LocalFile] Excel editor load failed", error);
+    res.status(500).json({ success: false, code: "EXCEL_LOAD_FAILED", message: "Excel 编辑数据读取失败", recoverable: true });
+  }
+});
+
+app.put("/api/local-file/excel-editor", async (req: Request, res: Response) => {
+  try {
+    const filePath = getLocalOfficeEditorFile(req, new Set([".xlsx", ".xls"]));
+    if (!filePath) {
+      res.status(404).json({ success: false, code: "FILE_NOT_FOUND", message: "Excel 文件不存在或未授权", recoverable: true });
+      return;
+    }
+    const stat = await fs.promises.stat(filePath);
+    const expectedMtimeMs = Number(req.body?.expectedMtimeMs);
+    if (Number.isFinite(expectedMtimeMs) && Math.abs(stat.mtimeMs - expectedMtimeMs) > 1) {
+      res.status(409).json({ success: false, code: "FILE_CHANGED", message: "Excel 文件已被其他程序修改，请重新打开后再编辑", recoverable: true });
+      return;
+    }
+    const changes = Array.isArray(req.body?.changes) ? req.body.changes.slice(0, 100000) : [];
+    const xlsx = await import("xlsx");
+    const workbook = xlsx.read(await fs.promises.readFile(filePath), {
+      type: "buffer",
+      cellDates: true,
+      cellStyles: true,
+      cellFormula: true,
+    });
+    for (const change of changes) {
+      const sheetName = String(change?.sheet || "");
+      const address = String(change?.address || "").toUpperCase();
+      if (!workbook.SheetNames.includes(sheetName) || !/^[A-Z]{1,3}[1-9]\d{0,6}$/.test(address)) continue;
+      const decoded = xlsx.utils.decode_cell(address);
+      if (decoded.r >= LOCAL_EXCEL_EDITOR_MAX_ROWS || decoded.c >= LOCAL_EXCEL_EDITOR_MAX_COLUMNS) continue;
+      const sheet = workbook.Sheets[sheetName];
+      const rawValue = change?.value == null ? "" : String(change.value);
+      if (!rawValue) {
+        delete sheet[address];
+      } else {
+        const existingCell = (sheet[address] || {}) as Record<string, unknown>;
+        delete existingCell.v;
+        delete existingCell.w;
+        delete existingCell.f;
+        if (rawValue.startsWith("=")) {
+          existingCell.t = "n";
+          existingCell.f = rawValue.slice(1);
+        } else if (/^-?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?$/i.test(rawValue.trim())) {
+          existingCell.t = "n";
+          existingCell.v = Number(rawValue);
+        } else if (/^(true|false)$/i.test(rawValue.trim())) {
+          existingCell.t = "b";
+          existingCell.v = rawValue.trim().toLowerCase() === "true";
+        } else {
+          existingCell.t = "s";
+          existingCell.v = rawValue;
+        }
+        sheet[address] = existingCell;
+      }
+      const currentRange = sheet["!ref"] ? xlsx.utils.decode_range(sheet["!ref"]) : { s: decoded, e: decoded };
+      currentRange.s.r = Math.min(currentRange.s.r, decoded.r);
+      currentRange.s.c = Math.min(currentRange.s.c, decoded.c);
+      currentRange.e.r = Math.max(currentRange.e.r, decoded.r);
+      currentRange.e.c = Math.max(currentRange.e.c, decoded.c);
+      sheet["!ref"] = xlsx.utils.encode_range(currentRange);
+    }
+    const extension = path.extname(filePath).toLowerCase();
+    const output = xlsx.write(workbook, { type: "buffer", bookType: extension === ".xls" ? "biff8" : "xlsx", cellStyles: true });
+    await fs.promises.writeFile(filePath, output);
+    const savedStat = await fs.promises.stat(filePath);
+    localFormattedPreviewCache.clear();
+    res.json({ success: true, mtimeMs: savedStat.mtimeMs, size: savedStat.size, changedCells: changes.length });
+  } catch (error) {
+    logger.warn("[LocalFile] Excel editor save failed", error);
+    res.status(500).json({ success: false, code: "EXCEL_SAVE_FAILED", message: "Excel 文件保存失败", recoverable: true });
+  }
+});
+
+app.get("/api/local-file/word-editor", async (req: Request, res: Response) => {
+  try {
+    const filePath = getLocalOfficeEditorFile(req, new Set([".docx"]));
+    if (!filePath) {
+      res.status(404).json({ success: false, code: "FILE_NOT_FOUND", message: "Word 文件不存在或未授权", recoverable: true });
+      return;
+    }
+    const stat = await fs.promises.stat(filePath);
+    if (stat.size > LOCAL_OFFICE_EDITOR_MAX_BYTES) {
+      res.status(413).json({ success: false, code: "FILE_TOO_LARGE", message: "Word 文件超过 40 MB，不能在侧栏中编辑", recoverable: true });
+      return;
+    }
+    const JSZip = (await import("jszip")).default;
+    const zip = await JSZip.loadAsync(await fs.promises.readFile(filePath));
+    const documentFile = zip.file("word/document.xml");
+    if (!documentFile) throw new Error("DOCX 缺少 word/document.xml");
+    const documentXml = await documentFile.async("string");
+    const paragraphs: Array<{ index: number; text: string }> = [];
+    let paragraphIndex = 0;
+    for (const match of documentXml.matchAll(/<w:p(?:\s[^>]*)?>[\s\S]*?<\/w:p>/g)) {
+      const text = Array.from(match[0].matchAll(/<w:t(?:\s[^>]*)?>([\s\S]*?)<\/w:t>/g))
+        .map(item => decodeOfficeXmlText(item[1]))
+        .join("");
+      if (text) paragraphs.push({ index: paragraphIndex, text });
+      paragraphIndex += 1;
+    }
+    res.json({
+      success: true,
+      path: filePath,
+      name: path.basename(filePath),
+      mtimeMs: stat.mtimeMs,
+      paragraphs,
+    });
+  } catch (error) {
+    logger.warn("[LocalFile] Word editor load failed", error);
+    res.status(500).json({ success: false, code: "WORD_LOAD_FAILED", message: "Word 文字读取失败", recoverable: true });
+  }
+});
+
+app.put("/api/local-file/word-editor", async (req: Request, res: Response) => {
+  try {
+    const filePath = getLocalOfficeEditorFile(req, new Set([".docx"]));
+    if (!filePath) {
+      res.status(404).json({ success: false, code: "FILE_NOT_FOUND", message: "Word 文件不存在或未授权", recoverable: true });
+      return;
+    }
+    const stat = await fs.promises.stat(filePath);
+    const expectedMtimeMs = Number(req.body?.expectedMtimeMs);
+    if (Number.isFinite(expectedMtimeMs) && Math.abs(stat.mtimeMs - expectedMtimeMs) > 1) {
+      res.status(409).json({ success: false, code: "FILE_CHANGED", message: "Word 文件已被其他程序修改，请重新打开后再编辑", recoverable: true });
+      return;
+    }
+    const replacements = new Map<number, string>();
+    if (Array.isArray(req.body?.paragraphs)) {
+      for (const item of req.body.paragraphs.slice(0, 20000)) {
+        const index = Number(item?.index);
+        if (Number.isInteger(index) && index >= 0) replacements.set(index, String(item?.text ?? ""));
+      }
+    }
+    const JSZip = (await import("jszip")).default;
+    const zip = await JSZip.loadAsync(await fs.promises.readFile(filePath));
+    const documentFile = zip.file("word/document.xml");
+    if (!documentFile) throw new Error("DOCX 缺少 word/document.xml");
+    const documentXml = await documentFile.async("string");
+    let paragraphIndex = 0;
+    const updatedXml = documentXml.replace(/<w:p(?:\s[^>]*)?>[\s\S]*?<\/w:p>/g, paragraphXml => {
+      const currentIndex = paragraphIndex;
+      paragraphIndex += 1;
+      if (!replacements.has(currentIndex)) return paragraphXml;
+      const text = encodeOfficeXmlText(replacements.get(currentIndex) || "")
+        .replace(/\r?\n/g, '</w:t><w:br/><w:t xml:space="preserve">');
+      let wroteText = false;
+      return paragraphXml.replace(/<w:t(?:\s[^>]*)?>[\s\S]*?<\/w:t>/g, textNode => {
+        if (wroteText) return textNode.replace(/>[\s\S]*?<\/w:t>/, "></w:t>");
+        wroteText = true;
+        const openTag = textNode.match(/^<w:t(?:\s[^>]*)?>/)?.[0] || "<w:t>";
+        const normalizedOpenTag = /\sxml:space=/.test(openTag)
+          ? openTag
+          : openTag.replace(/>$/, ' xml:space="preserve">');
+        return `${normalizedOpenTag}${text}</w:t>`;
+      });
+    });
+    zip.file("word/document.xml", updatedXml);
+    const output = await zip.generateAsync({ type: "nodebuffer", compression: "DEFLATE" });
+    await fs.promises.writeFile(filePath, output);
+    const savedStat = await fs.promises.stat(filePath);
+    localFormattedPreviewCache.clear();
+    res.json({ success: true, mtimeMs: savedStat.mtimeMs, size: savedStat.size, changedParagraphs: replacements.size });
+  } catch (error) {
+    logger.warn("[LocalFile] Word editor save failed", error);
+    res.status(500).json({ success: false, code: "WORD_SAVE_FAILED", message: "Word 文件保存失败", recoverable: true });
   }
 });
 
@@ -9205,6 +10082,26 @@ app.get("/api/pdf-wiki/entries", async (req: Request, res: Response) => {
   }
 });
 
+app.post("/api/pdf-wiki/upload/check-duplicates", async (req: Request, res: Response) => {
+  try {
+    const userId = sanitizeUserId(req.body?.userId || "web-user");
+    const files = Array.isArray(req.body?.files) ? req.body.files : [];
+    const normalizedFiles = files.slice(0, 50).map((file: unknown) => {
+      const record = file && typeof file === 'object' ? file as Record<string, unknown> : {};
+      return {
+        name: String(record.name || 'document.pdf'),
+        size: Number(record.size || 0),
+        sha256: String(record.sha256 || ''),
+      };
+    });
+    const result = await pdfWikiManager.matchUploadedPdfHashes(userId, normalizedFiles);
+    res.json({ success: true, ...result });
+  } catch (error) {
+    logger.error('[PdfWiki] Duplicate preflight failed:', error);
+    res.status(500).json({ success: false, error: (error as Error).message });
+  }
+});
+
 app.post("/api/pdf-wiki/export-obsidian", async (req: Request, res: Response) => {
   try {
     const userId = sanitizeUserId(req.body?.userId || req.query.userId || "web-user");
@@ -9240,6 +10137,36 @@ app.post("/api/pdf-wiki/obsidian/deploy", async (req: Request, res: Response) =>
   }
 });
 
+app.post("/api/pdf-wiki/obsidian/galaxy-view/install", async (req: Request, res: Response) => {
+  try {
+    const userId = sanitizeUserId(req.body?.userId || req.query.userId || "web-user");
+    const store = await pdfWikiManager.getStore(userId);
+    const deployed = await deployPdfWikiObsidianVault(userId, store);
+    const result = await installPdfWikiGalaxyView(deployed.vaultDir);
+    res.json({ success: true, ...deployed, ...result });
+  } catch (error) {
+    logger.error("[PdfWiki] Galaxy View install route error:", error);
+    res.status(500).json({ success: false, error: (error as Error).message });
+  }
+});
+
+app.post("/api/pdf-wiki/obsidian/galaxy-view/open", async (req: Request, res: Response) => {
+  try {
+    const userId = sanitizeUserId(req.body?.userId || req.query.userId || "web-user");
+    const vaultDir = getPdfWikiObsidianVaultDir(userId);
+    const indexPath = path.join(vaultDir, `${PDF_WIKI_OBSIDIAN_ROOT_NAME}.md`);
+    if (!fs.existsSync(indexPath)) {
+      throw new Error("尚未同步 PDF Wiki Vault，请先安装 3D 知识星系。");
+    }
+    const obsidianUrl = `obsidian://open?path=${encodeURIComponent(vaultDir)}`;
+    openSystemTarget(obsidianUrl, "url");
+    res.json({ success: true, vaultDir, obsidianUrl });
+  } catch (error) {
+    logger.error("[PdfWiki] Galaxy View open route error:", error);
+    res.status(500).json({ success: false, error: (error as Error).message });
+  }
+});
+
 app.get("/api/pdf-wiki/obsidian/search", async (req: Request, res: Response) => {
   try {
     const userId = sanitizeUserId(req.query.userId || "web-user");
@@ -9261,6 +10188,18 @@ app.post("/api/pdf-wiki/entries/delete", async (req: Request, res: Response) => 
     res.json({ success: true, ...result });
   } catch (error) {
     logger.error("[PdfWiki] Delete entries route error:", error);
+    res.status(400).json({ success: false, error: (error as Error).message });
+  }
+});
+
+app.post("/api/pdf-wiki/sentence-points/delete", async (req: Request, res: Response) => {
+  try {
+    const userId = sanitizeUserId(req.body.userId || "web-user");
+    const pointIds = Array.isArray(req.body.pointIds) ? req.body.pointIds.map(String) : [];
+    const result = await pdfWikiManager.deleteSentencePoints(userId, pointIds);
+    res.json({ success: true, ...result });
+  } catch (error) {
+    logger.error("[PdfWiki] Delete sentence points route error:", error);
     res.status(400).json({ success: false, error: (error as Error).message });
   }
 });
@@ -9458,6 +10397,8 @@ const PDF_WIKI_OBSIDIAN_TOPIC_DIR = "主题";
 const PDF_WIKI_OBSIDIAN_ENTRY_DIR = "兼容论点组";
 const PDF_WIKI_OBSIDIAN_WORKSPACE_DIR = "obsidian-vaults";
 const PDF_WIKI_OBSIDIAN_MANIFEST_FILE = ".scholar-harness-obsidian.json";
+const PDF_WIKI_GALAXY_VIEW_PLUGIN_ID = "galaxy-view";
+const PDF_WIKI_GALAXY_VIEW_RELEASE_BASE = "https://github.com/Longwind1984/galaxy-view/releases/latest/download";
 
 async function exportPdfWikiObsidianVault(userId: string, store: PdfWikiStore, options: PdfWikiObsidianExportOptions = {}): Promise<PdfWikiObsidianExportResult> {
   const points = sortPdfWikiSentencePointsForObsidian(store.sentenceCloud?.points || []);
@@ -9597,6 +10538,8 @@ async function exportPdfWikiObsidianVault(userId: string, store: PdfWikiStore, o
     })
   );
 
+  await configurePdfWikiGalaxyViewVault(exportDir);
+
   return {
     exportDir,
     fileCount,
@@ -9605,6 +10548,102 @@ async function exportPdfWikiObsidianVault(userId: string, store: PdfWikiStore, o
     topicCount: topics.length,
     pdfCount: sourceDocs.length,
   };
+}
+
+async function readPdfWikiObsidianJson(filePath: string): Promise<Record<string, unknown>> {
+  try {
+    const parsed = JSON.parse(await fs.promises.readFile(filePath, "utf-8"));
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, unknown> : {};
+  } catch {
+    return {};
+  }
+}
+
+async function configurePdfWikiGalaxyViewVault(vaultDir: string): Promise<void> {
+  const obsidianDir = path.join(vaultDir, ".obsidian");
+  await fs.promises.mkdir(obsidianDir, { recursive: true });
+  const graphPath = path.join(obsidianDir, "graph.json");
+  const graph = await readPdfWikiObsidianJson(graphPath);
+  const managedQueries = new Set([
+    `path:"${PDF_WIKI_OBSIDIAN_SENTENCE_DIR}"`,
+    `path:"${PDF_WIKI_OBSIDIAN_TOPIC_DIR}"`,
+    `path:"${PDF_WIKI_OBSIDIAN_PDF_DIR}"`,
+    `path:"${PDF_WIKI_OBSIDIAN_ENTRY_DIR}"`,
+  ]);
+  const existingGroups = Array.isArray(graph.groups)
+    ? graph.groups.filter(group => {
+      if (!group || typeof group !== "object") return false;
+      return !managedQueries.has(String((group as Record<string, unknown>).query || ""));
+    })
+    : [];
+  graph.groups = [
+    { query: `path:"${PDF_WIKI_OBSIDIAN_SENTENCE_DIR}"`, color: { a: 1, rgb: 0x2563eb } },
+    { query: `path:"${PDF_WIKI_OBSIDIAN_TOPIC_DIR}"`, color: { a: 1, rgb: 0x7c3aed } },
+    { query: `path:"${PDF_WIKI_OBSIDIAN_PDF_DIR}"`, color: { a: 1, rgb: 0x059669 } },
+    { query: `path:"${PDF_WIKI_OBSIDIAN_ENTRY_DIR}"`, color: { a: 1, rgb: 0xea580c } },
+    ...existingGroups,
+  ];
+  graph.showOrphans = true;
+  graph.showTags = true;
+  await fs.promises.writeFile(graphPath, JSON.stringify(graph, null, 2), "utf-8");
+}
+
+async function fetchPdfWikiGalaxyViewAsset(fileName: string): Promise<Buffer> {
+  const url = `${PDF_WIKI_GALAXY_VIEW_RELEASE_BASE}/${encodeURIComponent(fileName)}`;
+  const response = await fetch(url, {
+    headers: {
+      "Accept": "application/octet-stream",
+      "User-Agent": "Scholar-Harness-Pdf-Wiki",
+    },
+    redirect: "follow",
+  });
+  if (!response.ok) {
+    throw new Error(`下载 Galaxy View ${fileName} 失败（HTTP ${response.status}）`);
+  }
+  return Buffer.from(await response.arrayBuffer());
+}
+
+async function installPdfWikiGalaxyView(vaultDir: string): Promise<{ galaxyViewInstalled: boolean; pluginDir: string; version: string }> {
+  const safeVaultDir = assertPdfWikiObsidianVaultPathInsideDataDir(vaultDir);
+  await configurePdfWikiGalaxyViewVault(safeVaultDir);
+  const pluginDir = path.join(safeVaultDir, ".obsidian", "plugins", PDF_WIKI_GALAXY_VIEW_PLUGIN_ID);
+  await fs.promises.mkdir(pluginDir, { recursive: true });
+  const assetNames = ["main.js", "manifest.json", "styles.css"];
+  const assets = await Promise.all(assetNames.map(async fileName => ({
+    fileName,
+    content: await fetchPdfWikiGalaxyViewAsset(fileName),
+  })));
+  for (const asset of assets) {
+    await fs.promises.writeFile(path.join(pluginDir, asset.fileName), asset.content);
+  }
+
+  const communityPluginsPath = path.join(safeVaultDir, ".obsidian", "community-plugins.json");
+  let communityPlugins: string[] = [];
+  try {
+    const parsed = JSON.parse(await fs.promises.readFile(communityPluginsPath, "utf-8"));
+    if (Array.isArray(parsed)) communityPlugins = parsed.map(String);
+  } catch {
+    communityPlugins = [];
+  }
+  if (!communityPlugins.includes(PDF_WIKI_GALAXY_VIEW_PLUGIN_ID)) {
+    communityPlugins.push(PDF_WIKI_GALAXY_VIEW_PLUGIN_ID);
+  }
+  await fs.promises.writeFile(communityPluginsPath, JSON.stringify(communityPlugins, null, 2), "utf-8");
+
+  const appConfigPath = path.join(safeVaultDir, ".obsidian", "app.json");
+  const appConfig = await readPdfWikiObsidianJson(appConfigPath);
+  appConfig.safeMode = false;
+  await fs.promises.writeFile(appConfigPath, JSON.stringify(appConfig, null, 2), "utf-8");
+
+  let version = "";
+  try {
+    const manifest = JSON.parse((assets.find(asset => asset.fileName === "manifest.json")?.content || Buffer.from("{}")) .toString("utf-8"));
+    version = String(manifest.version || "");
+  } catch {
+    version = "";
+  }
+  logger.info(`[PdfWiki] Galaxy View ${version || "latest"} installed: ${pluginDir}`);
+  return { galaxyViewInstalled: true, pluginDir, version };
 }
 
 function getPdfWikiObsidianVaultDir(userId: string): string {
@@ -9671,10 +10710,20 @@ async function getPdfWikiObsidianVaultStatus(userId: string): Promise<Record<str
   } catch (error) {
     manifest = {};
   }
+  const galaxyManifestPath = path.join(vaultDir, ".obsidian", "plugins", PDF_WIKI_GALAXY_VIEW_PLUGIN_ID, "manifest.json");
+  let galaxyViewVersion = "";
+  try {
+    const galaxyManifest = JSON.parse(await fs.promises.readFile(galaxyManifestPath, "utf-8"));
+    galaxyViewVersion = String(galaxyManifest.version || "");
+  } catch {
+    galaxyViewVersion = "";
+  }
   return {
     deployed: true,
     vaultDir,
     indexPath,
+    galaxyViewInstalled: fs.existsSync(galaxyManifestPath),
+    galaxyViewVersion,
     ...manifest,
   };
 }
@@ -9730,7 +10779,7 @@ async function searchPdfWikiObsidianVault(userId: string, rawQuery: string, limi
   const vaultDir = getPdfWikiObsidianVaultDir(userId);
   const indexPath = path.join(vaultDir, `${PDF_WIKI_OBSIDIAN_ROOT_NAME}.md`);
   if (!fs.existsSync(indexPath)) {
-    throw new Error("尚未部署内置 Obsidian 知识库，请先点击“部署 Obsidian”。");
+    throw new Error("尚未同步内置 Obsidian Vault，请先点击“同步内置 Vault”。");
   }
   const files = await listPdfWikiObsidianMarkdownFiles(vaultDir);
   const terms = query.split(/\s+/).map(term => term.trim()).filter(Boolean);
@@ -11447,6 +12496,7 @@ app.post("/api/pdf-wiki/meta/upload", handleLiteratureUpload, async (req: Reques
       ...(req.body as Record<string, unknown>),
       pdfWikiMetaAnalysisEnabled: "true",
       pdfWikiMetaAnalysisEngine: req.body.pdfWikiMetaAnalysisEngine || "auto",
+      pdfWikiProcessingProfile: "meta",
     });
     pdfWikiManager.processUploadedPdfsForMetaAnalysis(
       userId,
@@ -11498,6 +12548,7 @@ app.post("/api/pdf-wiki/meta/extract", async (req: Request, res: Response) => {
       ...(req.body as Record<string, unknown>),
       pdfWikiMetaAnalysisEnabled: "true",
       pdfWikiMetaAnalysisEngine: req.body?.pdfWikiMetaAnalysisEngine || "auto",
+      pdfWikiProcessingProfile: "meta",
     });
     pdfWikiManager.extractMetaAnalysisForPdfs(
       userId,
@@ -12087,7 +13138,12 @@ app.post("/api/pdf-wiki/rebuild", async (req: Request, res: Response) => {
     const pdfWikiLlm = getPdfWikiLlmRuntimeConfig();
     const taskConfig = parsePdfWikiTaskConfigFromBody(req.body as Record<string, unknown>);
 
-    if (!pdfWikiLlm.configured) {
+    if (isPdfWikiCodexSentenceTask(taskConfig) && !pdfWikiLlm.codexAvailable) {
+      res.status(400).json({ success: false, error: "快速模式需要先安装并配置可用的 Codex CLI，才能核对句中/句末引用并归纳本文主要结论" });
+      return;
+    }
+
+    if (!pdfWikiLlm.configured && !isPdfWikiLocalSentenceTask(taskConfig)) {
       res.status(400).json({ success: false, error: "请先配置可用于论点抽取的 LLM API（千问 API 或小牛马 API），再重建 PDF Wiki" });
       return;
     }
@@ -12096,7 +13152,14 @@ app.post("/api/pdf-wiki/rebuild", async (req: Request, res: Response) => {
       logger.error("[PdfWiki] Rebuild failed:", error);
     });
 
-    res.json({ success: true, message: `PDF Wiki 已开始后台重建，将使用 ${pdfWikiLlm.label}` });
+    res.json({
+      success: true,
+      message: isPdfWikiCodexSentenceTask(taskConfig)
+        ? 'PDF Wiki 已开始快速重建：LiteParse 提取指定章节，Codex 严格整理引用论点和本文主要结论'
+        : isPdfWikiLocalSentenceTask(taskConfig)
+          ? 'PDF Wiki 已开始纯代码重建：本地提取指定章节、显式引用和 References，并执行确定性匹配'
+        : `PDF Wiki 已开始后台重建，将使用 ${pdfWikiLlm.label}`,
+    });
   } catch (error) {
     logger.error("[PdfWiki] Rebuild route error:", error);
     res.status(500).json({ success: false, error: (error as Error).message });
@@ -12109,6 +13172,10 @@ app.get("/health", (req: Request, res: Response) => {
     timestamp: new Date().toISOString(),
     model: primaryModel,
     dataDir,
+    capabilities: {
+      mcpPluginMarketplace: true,
+      mcpPluginMarketplaceVersion: 3,
+    },
   });
 });
 
@@ -12741,7 +13808,36 @@ app.post("/api/backups/restore", async (req: Request, res: Response) => {
 app.post("/api/chat", chatUpload.none(), async (req: Request, res: Response) => {
   const userId = req.body.userId || "web-user";
   const userMessage = req.body.message || "";
-  const history = JSON.parse(req.body.history || "[]");
+  let history: Array<{ role: string; content: string }> = [];
+  try {
+    const parsedHistory: unknown = typeof req.body.history === 'string'
+      ? JSON.parse(req.body.history || '[]')
+      : req.body.history;
+    history = Array.isArray(parsedHistory)
+      ? parsedHistory
+        .filter((item: unknown): item is Record<string, unknown> =>
+          Boolean(item)
+          && typeof item === 'object'
+          && !Array.isArray(item)
+          && typeof (item as Record<string, unknown>).content === 'string'
+        )
+        .map(item => ({
+          role: item.role === 'assistant' || item.role === 'system' ? item.role : 'user',
+          content: String(item.content || ''),
+        }))
+        .slice(-50)
+      : [];
+  } catch (error) {
+    logger.warn('[Chat] Ignored malformed history payload:', error);
+  }
+  let submittedQueryIntent: unknown;
+  try {
+    submittedQueryIntent = typeof req.body.queryIntent === 'string'
+      ? JSON.parse(req.body.queryIntent)
+      : req.body.queryIntent;
+  } catch {
+    submittedQueryIntent = undefined;
+  }
   
   // Override API config from frontend if provided (per-request)
   if (req.body.apiUrl) currentApiUrl = req.body.apiUrl;
@@ -12751,7 +13847,12 @@ app.post("/api/chat", chatUpload.none(), async (req: Request, res: Response) => 
   
   try {
     // 传递外部历史给 processChatMessage
-    const response = await processChatMessage(userId, userMessage, history.length > 0 ? history : undefined);
+    const response = await processChatMessage(
+      userId,
+      userMessage,
+      history.length > 0 ? history : undefined,
+      submittedQueryIntent
+    );
     const conversationId = req.body.conversationId || `conv-${Date.now()}`;
     res.json({ response, conversationId });
   } catch (error) {
@@ -17545,6 +18646,8 @@ interface RetrievalExecutionResult {
   fullContent: string;
   evidenceSources?: ResearchSourceReference[];
   results?: RetrievalExecutionResult[];
+  requestedLibrarySources?: Array<"abstract" | "pdfWiki">;
+  sourceErrors?: Array<{ source: "abstract" | "pdfWiki"; error: string }>;
 }
 
 app.post("/api/retrieval/detect", async (req: Request, res: Response) => {
@@ -17556,6 +18659,28 @@ app.post("/api/retrieval/detect", async (req: Request, res: Response) => {
       res.json({ success: false, error: "消息不能为空" });
       return;
     }
+
+    const routedQueryIntent = context && typeof context === 'object' && !Array.isArray(context)
+      ? (context as Record<string, unknown>).queryIntent
+      : null;
+    const routedIntentRecord = routedQueryIntent && typeof routedQueryIntent === 'object' && !Array.isArray(routedQueryIntent)
+      ? routedQueryIntent as Record<string, unknown>
+      : null;
+    if (!forceGenerate && routedIntentRecord?.needsLiteratureRetrieval !== true) {
+      res.json({
+        success: true,
+        need_retrieval: false,
+        reason: routedIntentRecord
+          ? '统一 Query 意图识别器判定本轮不需要文献检索。'
+          : '自动检索请求缺少经过后端校验的 Query Intent，已按默认拒绝策略阻止。',
+        points: [],
+        literatureCount: 0,
+        pdfWikiCount: 0,
+        libraries: null,
+        detectionProvider: 'query-intent-router',
+      });
+      return;
+    }
     
     const unifiedUserId = sanitizeUserId(userId || "web-user");
     
@@ -17563,22 +18688,17 @@ app.post("/api/retrieval/detect", async (req: Request, res: Response) => {
     const useApiKey = currentApiKey || process.env.API_KEY;
     const model = currentModel || process.env.MODEL || "gpt-4o";
     
-    logger.info(`[Retrieval] Detect request - API configured: ${!!useApiUrl && !!useApiKey}, model: ${model}`);
-    
-    if (!useApiUrl || !useApiKey) {
-      logger.warn('[Retrieval] API not configured - URL:', !!useApiUrl, 'Key:', !!useApiKey);
-      res.json({ success: false, error: "API未配置，请在左下角设置 API 地址和密钥" });
-      return;
-    }
+    const codexDetectionAvailable = isCodexCliLikelyAvailableForPdfWiki();
+    logger.info(`[Retrieval] Detect request - API configured: ${!!useApiUrl && !!useApiKey}, Codex available: ${codexDetectionAvailable}, model: ${model}`);
     
     const contextText = typeof context === 'string'
       ? context
       : JSON.stringify(context || {}, null, 2);
     const requestModeInstruction = forceGenerate
       ? `用户已经主动点击“生成检索词”，这是明确的检索意图。只要内容中存在检索式、研究主题、科学术语、事实陈述、数据解释、论文内容、文件名体现的研究对象，或其他可用于检索的实质信息，就必须返回 need_retrieval=true 并生成检索词。不要因为内容同时含有 Codex/工具执行日志、软件操作说明或已经有部分文献而拒绝；忽略这些日志，提取其中的实质内容。仅当内容完全为空或只有“你好/谢谢/收到”等纯寒暄时才允许返回 false。`
-      : `这是自动检测模式。只要内容中存在可由文献检索补充的研究主题、科学术语、事实陈述、数据解释或论文内容，就返回 need_retrieval=true；只有纯寒暄、完全不含主题的界面状态或纯操作指令才返回 false。`;
+      : `这是自动关键词生成模式，统一 Query 意图识别器已经确认用户确实需要学术文献、引用或研究证据。你不再负责判断是否应该检索；直接围绕 resolvedQuery 生成准确检索词并返回 need_retrieval=true。`;
 
-    const detectionPrompt = `你是一个文献检索词生成助手。分析以下对话内容并提取可用于文献检索的实质内容。
+    const detectionPrompt = `你是一个文献检索词生成助手。路由层已经完成检索授权；你的职责仅是从已授权内容中生成高质量检索词。
 
 ## 当前模式
 ${requestModeInstruction}
@@ -17589,23 +18709,11 @@ ${message}
 ## 上下文
 ${contextText || '无额外上下文'}
 
-## 判断标准
-需要检索的情况：
-1. 已经包含英文或中文检索词、Boolean 检索式、关键词列表
-2. 包含需要文献支撑的科学论点、观点、研究问题或机制解释
-3. 提到需要引用、参考文献、文献支撑
-4. 在讨论具体的学术论文写作内容（引言、结果、讨论、方法等）
-5. 包含具体科学术语、变量关系、数据解释、研究对象或可检索的文件主题
-
-不需要检索的情况：
-1. 完全没有主题信息的简单问候或闲聊
-2. 完全没有科学、学术或研究内容的纯界面状态
-
-不要仅因为以下情况返回 false：
-- 内容前半部分是 Codex CLI 或工具调用日志，但后面存在最终回答或学术内容
-- 内容是格式修改、语言润色或软件操作说明，但其中出现了明确的研究主题或检索词
-- 内容已经有部分文献支撑；用户仍可能需要扩展检索
-- 内容没有完整论点，但有可检索的科学概念或关键词
+## 职责边界
+1. 自动模式只会在 needsLiteratureRetrieval=true 且经过后端复核后到达这里。
+2. 不得根据英文、科研术语、年份、文件名或历史消息重新决定路由。
+3. 若上下文含工具日志，忽略日志，只提取 resolvedQuery 中获准检索的研究问题或论点。
+4. 手动模式下，只有内容为空或纯寒暄时才允许返回 false。
 
 ## 输出格式
 返回 JSON：
@@ -17637,34 +18745,57 @@ ${contextText || '无额外上下文'}
 - points 最多提取8个论点
 - 只返回JSON，不要其他文字`;
 
-    const response = await fetch(useApiUrl + "/chat/completions", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": "Bearer " + useApiKey
-      },
-      body: JSON.stringify({
-        model: model,
+    let content = "";
+    let detectionProvider: "api" | "codex" = "api";
+    if (useApiUrl && useApiKey) {
+      const response = await fetch(useApiUrl + "/chat/completions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": "Bearer " + useApiKey
+        },
+        body: JSON.stringify({
+          model: model,
+          messages: [
+            { role: "system", content: detectionPrompt },
+            { role: "user", content: "请分析上面的对话内容" }
+          ],
+          temperature: 0.3,
+          max_tokens: MAX_LLM_OUTPUT_TOKENS
+        })
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text().catch(() => 'Unknown error');
+        logger.error(`[Retrieval] API call failed: ${response.status} ${response.statusText}`, errorText);
+        res.json({ success: false, error: `API调用失败: ${response.status} ${response.statusText}` });
+        return;
+      }
+
+      const data = await response.json() as { choices?: Array<{ message?: { content?: string } }> };
+      content = data.choices?.[0]?.message?.content || "";
+    } else if (codexDetectionAvailable) {
+      detectionProvider = "codex";
+      const codexConfig = loadCodexConfigForPdfWiki();
+      content = await chatBridge.chat({
+        model: codexConfig.model || model,
         messages: [
           { role: "system", content: detectionPrompt },
-          { role: "user", content: "请分析上面的对话内容" }
+          { role: "user", content: "请分析上面的对话内容，只返回要求的 JSON。" }
         ],
-        temperature: 0.3,
-        max_tokens: MAX_LLM_OUTPUT_TOKENS
-      })
-    });
-    
-    if (!response.ok) {
-      const errorText = await response.text().catch(() => 'Unknown error');
-      logger.error(`[Retrieval] API call failed: ${response.status} ${response.statusText}`, errorText);
-      res.json({ success: false, error: `API调用失败: ${response.status} ${response.statusText}` });
+        temperature: 0.2,
+        maxTokens: 4000,
+        forceProvider: "codex",
+        disableFallback: true,
+        codexTimeoutMs: 300000
+      });
+    } else {
+      logger.warn('[Retrieval] Neither API nor Codex is available for autonomous keyword generation');
+      res.json({ success: false, error: "当前没有可用于自动生成检索词的 AI；请配置小牛马 API 或启用 Codex CLI" });
       return;
     }
     
-    const data = await response.json() as { choices?: Array<{ message?: { content?: string } }> };
-    const content = data.choices?.[0]?.message?.content || "";
-    
-    logger.debug(`[Retrieval] AI response: ${content.substring(0, 200)}...`);
+    logger.debug(`[Retrieval] ${detectionProvider} response: ${content.substring(0, 200)}...`);
     
     const jsonMatch = content.match(/\{[\s\S]*\}/);
     if (!jsonMatch) {
@@ -17759,6 +18890,7 @@ ${contextText || '无额外上下文'}
           label: "PDF 论点库",
         },
       },
+      detectionProvider,
     });
     
   } catch (error) {
@@ -17787,12 +18919,28 @@ app.post("/api/retrieval/execute", async (req: Request, res: Response) => {
     
     const unifiedUserId = sanitizeUserId(userId || "web-user");
     const results: RetrievalExecutionResult[] = [];
+    const sourceErrors: Array<{ source: "abstract" | "pdfWiki"; error: string }> = [];
 
     for (const source of librarySources) {
-      const result = source === "pdfWiki"
-        ? await runPdfWikiRetrieval(points, unifiedUserId)
-        : await runAbstractRetrieval(points, unifiedUserId);
-      results.push(result);
+      try {
+        const result = source === "pdfWiki"
+          ? await runPdfWikiRetrieval(points, unifiedUserId)
+          : await runAbstractRetrieval(points, unifiedUserId);
+        results.push(result);
+      } catch (error) {
+        const message = (error as Error).message || `${source} 检索失败`;
+        sourceErrors.push({ source, error: message });
+        logger.warn(`[Retrieval] ${source} library retrieval failed; continuing with remaining library`, error);
+      }
+    }
+    if (results.length === 0) {
+      res.json({
+        success: false,
+        error: sourceErrors.map(item => `${item.source}: ${item.error}`).join("；") || "两个文献库均未返回结果",
+        requestedLibrarySources: librarySources,
+        sourceErrors,
+      });
+      return;
     }
 
     const responsePayload = results.length === 1
@@ -17812,6 +18960,8 @@ app.post("/api/retrieval/execute", async (req: Request, res: Response) => {
 
     res.json({
       ...responsePayload,
+      requestedLibrarySources: librarySources,
+      sourceErrors,
       researchSession,
     });
     
@@ -22790,6 +23940,24 @@ app.listen(port, async () => {
   // 5400+ 篇论文的索引构建可能耗时较长，异步执行不影响 /health 检查
   initializeLiteratureIndex().catch((err) => {
     logger.error('[Startup] Background literature index failed:', err);
+  });
+
+  pdfWikiManager.setQueueRuntimeConfigProvider(() => {
+    const runtime = getPdfWikiLlmRuntimeConfig();
+    return buildPdfWikiRuntimeTaskConfig(runtime, {
+      processingProfile: 'fast',
+      textExtractionEngine: 'liteparse',
+      metadataEngine: 'local',
+      claimExtractionEngine: 'off',
+      sentenceReferenceMatchingEngine: 'local',
+      groupingEngine: 'local',
+      metaAnalysisEnabled: false,
+      metaAnalysisEngine: 'off',
+      metaAnalysisUserRequirements: '',
+    });
+  });
+  pdfWikiManager.recoverPersistentQueues().catch(error => {
+    logger.error('[PdfWikiQueue] Failed to recover persistent queues:', error);
   });
 });
 

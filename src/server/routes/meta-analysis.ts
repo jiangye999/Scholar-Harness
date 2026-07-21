@@ -34,6 +34,16 @@ export type VariableType = 'numeric' | 'categorical' | 'empty';
 export type EffectMeasure = 'lnRR' | 'MD' | 'SMD' | 'lnRR_mean_only' | 'MD_mean_only';
 export type MetaModelType = 'random' | 'fixed' | 'mixed';
 
+export interface MetaControlRule {
+  id: string;
+  label?: string;
+  treatmentLabels?: string[];
+  treatmentPattern?: string;
+  controlLabels: string[];
+  controlPattern?: string;
+  matchColumns?: string[];
+}
+
 interface MetaVariable {
   name: string;
   type: VariableType;
@@ -99,6 +109,9 @@ export interface MetaRunConfig {
   subgroupColumns?: string[];
   columnPreprocess?: MetaColumnPreprocessConfig[];
   minCompleteRows?: number;
+  controlRules?: MetaControlRule[];
+  excludeManualReview?: boolean;
+  manualReviewColumn?: string;
 }
 
 interface FlattenedDataset {
@@ -141,7 +154,9 @@ export interface MetaAnalysisAssistantInput {
   userId: string;
   pdfIds: string[];
   conversationId?: string;
+  writingConversationId?: string;
   confirmedByUser?: boolean;
+  forceProvider?: 'secondary' | 'primary' | 'codex';
   query: string;
   chatHistory?: Array<{ role: 'user' | 'assistant'; content: string; createdAt?: string }>;
   recentUserQueries?: string[];
@@ -178,6 +193,9 @@ export interface EffectRow {
   outcome_label: string;
   measure: EffectMeasure;
   study_id: string;
+  cluster_id: string;
+  contrast_id: string;
+  contrast_label: string;
   pdf_id: string;
   pdf_title: string;
   pdf_file: string;
@@ -239,9 +257,18 @@ export interface MetaAnalysisRArtifacts {
 }
 
 export interface MetaAnalysisWritingContext {
+  analysisId: string;
+  conversationId?: string;
+  workspaceId?: string;
+  userId: string;
+  sourcePdfIds: string[];
+  datasetFingerprint: string;
   generatedAt: string;
   source: 'meta-analysis-writing-context';
   available: boolean;
+  status?: 'completed' | 'stale';
+  staleReason?: string;
+  supersededByWorkspaceId?: string;
   dataset: {
     pdfCount: number;
     tableCount: number;
@@ -273,11 +300,18 @@ export interface MetaAnalysisPreparedDatasetInfo {
   columnCount: number;
   effectRowCount: number;
   skippedCandidateCount: number;
+  excludedManualReviewCount?: number;
+  selectedMeasures?: EffectMeasure[];
   storagePath?: string;
   notes: string[];
 }
 
 export interface MetaAnalysisRunData {
+  analysisId: string;
+  conversationId?: string;
+  workspaceId?: string;
+  sourcePdfIds: string[];
+  datasetFingerprint: string;
   dataset: {
     pdfCount: number;
     tableCount: number;
@@ -307,6 +341,20 @@ export interface SummaryEstimate {
   p: number;
   method?: string;
   bootstrapIterations?: number;
+  clusterCount?: number;
+}
+
+interface MetaAnalysisRunScope {
+  analysisId?: string;
+  conversationId?: string;
+  workspaceId?: string;
+  sourcePdfIds?: string[];
+}
+
+interface MetaWritingContextLookup {
+  analysisId?: string;
+  conversationId?: string;
+  allowLegacyFallback?: boolean;
 }
 
 const EFFECT_MEASURES: Array<{ id: EffectMeasure; name: string; description: string }> = [
@@ -398,12 +446,63 @@ function normalizeEffectMeasure(value: unknown): EffectMeasure {
   return 'lnRR';
 }
 
+function normalizeMetaScopeId(value: unknown, fallback = ''): string {
+  const normalized = stringifyCell(value)
+    .replace(/[^a-zA-Z0-9_-]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .slice(0, 120);
+  return normalized || fallback;
+}
+
+function getMetaAnalysisActiveUserPath(): string {
+  return path.join(path.dirname(getUserUploadDir('web-user')), 'meta-analysis-active-user.json');
+}
+
+async function rememberMetaAnalysisActiveUser(userId: string): Promise<void> {
+  const safeUserId = sanitizeUserId(userId || 'web-user');
+  const filePath = getMetaAnalysisActiveUserPath();
+  await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
+  await fs.promises.writeFile(filePath, JSON.stringify({
+    userId: safeUserId,
+    updatedAt: new Date().toISOString(),
+  }, null, 2), 'utf-8');
+}
+
+function readMetaAnalysisActiveUser(): string {
+  try {
+    const filePath = getMetaAnalysisActiveUserPath();
+    if (!fs.existsSync(filePath)) return 'web-user';
+    const parsed = JSON.parse(fs.readFileSync(filePath, 'utf-8')) as Record<string, unknown>;
+    return sanitizeUserId(parsed.userId || 'web-user');
+  } catch (error) {
+    logger.warn('[MetaAnalysis] Failed to read active user pointer:', error);
+    return 'web-user';
+  }
+}
+
 export function createMetaAnalysisRouter(options: CreateMetaAnalysisRouterOptions): Router {
   const router = Router();
+
+  router.get('/active-user', (_req: Request, res: Response) => {
+    res.json({ success: true, data: { userId: readMetaAnalysisActiveUser() } });
+  });
+
+  router.post('/active-user', async (req: Request, res: Response) => {
+    try {
+      const userId = sanitizeUserId(req.body?.userId || 'web-user');
+      await rememberMetaAnalysisActiveUser(userId);
+      res.json({ success: true, data: { userId } });
+    } catch (error) {
+      logger.error('[MetaAnalysis] Active user update failed:', error);
+      res.status(500).json({ success: false, error: (error as Error).message || '记录 Meta 当前用户失败' });
+    }
+  });
 
   router.post('/inspect', async (req: Request, res: Response) => {
     try {
       const userId = sanitizeUserId(req.body?.userId || 'web-user');
+      await rememberMetaAnalysisActiveUser(userId);
+      const writingConversationId = normalizeMetaScopeId(req.body?.conversationId);
       const pdfIds = normalizeStringArray(req.body?.pdfIds);
       if (pdfIds.length === 0) {
         res.status(400).json({ success: false, error: '请先勾选需要纳入 Meta 分析的 PDF' });
@@ -415,11 +514,21 @@ export function createMetaAnalysisRouter(options: CreateMetaAnalysisRouterOption
         res.status(404).json({ success: false, error: '未找到可分析的 Meta 整合数据行，请先完成 PDF Meta 数据提取' });
         return;
       }
+      if (writingConversationId) {
+        await invalidateMetaAnalysisConversationContext(
+          userId,
+          writingConversationId,
+          pdfIds,
+          buildMetaDatasetFingerprint(dataset, pdfIds),
+          '打开了新的 Meta 数据预检，需重新运行后才能用于写作。',
+        );
+      }
 
       const variables = inferVariables(dataset);
       const candidates = inferCandidateOutcomes(dataset);
       const studyIdColumn = pickExistingColumn(dataset.columns, STUDY_ID_CANDIDATES) || 'Study#';
       const moderators = inferModeratorCandidates(variables, candidates);
+      const manualReviewColumn = pickExistingColumn(dataset.columns, ['needs_manual_review', 'needsManualReview', '需人工复核', '人工复核']);
       const recommendedModerators = moderators
         .filter(item => moderatorPreferenceScore(item.name) > 0)
         .slice(0, 6)
@@ -453,6 +562,9 @@ export function createMetaAnalysisRouter(options: CreateMetaAnalysisRouterOption
             subgroupColumns,
             columnPreprocess: [],
             minCompleteRows: 2,
+            controlRules: [],
+            excludeManualReview: true,
+            manualReviewColumn,
             outcomes: candidates.map(candidate => ({
               id: candidate.id,
               label: candidate.label,
@@ -513,9 +625,15 @@ export function createMetaAnalysisRouter(options: CreateMetaAnalysisRouterOption
         logger.info(`[MetaAnalysisAI] ${message}`);
       };
       const userId = sanitizeUserId(req.body?.userId || 'web-user');
+      await rememberMetaAnalysisActiveUser(userId);
       const conversationId = normalizeMetaAssistantConversationId(req.body?.conversationId);
+      const writingConversationId = normalizeMetaScopeId(req.body?.writingConversationId);
       const pdfIds = normalizeStringArray(req.body?.pdfIds);
       const query = stringifyCell(req.body?.query);
+      const requestedProvider = stringifyCell(req.body?.forceProvider);
+      const forceProvider = requestedProvider === 'secondary' || requestedProvider === 'primary' || requestedProvider === 'codex'
+        ? requestedProvider
+        : undefined;
       const chatHistory = normalizeMetaAssistantChatHistory(req.body?.chatHistory);
       const recentUserQueries = normalizeStringArray(req.body?.recentUserQueries).slice(-10);
       const confirmedByUser = isMetaAssistantConversationConfirmed(query, chatHistory);
@@ -538,6 +656,7 @@ export function createMetaAnalysisRouter(options: CreateMetaAnalysisRouterOption
       appendProgressLog(`已预检效应量字段：候选因变量 ${candidateOutcomes.length} 个。`);
       const studyIdColumn = pickExistingColumn(dataset.columns, STUDY_ID_CANDIDATES) || 'Study#';
       const moderatorCandidates = inferModeratorCandidates(variables, candidateOutcomes);
+      const manualReviewColumn = pickExistingColumn(dataset.columns, ['needs_manual_review', 'needsManualReview', '需人工复核', '人工复核']);
       appendProgressLog(`已筛选自变量候选：调节/亚组候选 ${moderatorCandidates.length} 个。`);
       const recommendedModerators = moderatorCandidates
         .filter(item => moderatorPreferenceScore(item.name) > 0)
@@ -557,6 +676,9 @@ export function createMetaAnalysisRouter(options: CreateMetaAnalysisRouterOption
         subgroupColumns,
         columnPreprocess: [],
         minCompleteRows: 2,
+        controlRules: [],
+        excludeManualReview: true,
+        manualReviewColumn,
         outcomes: candidateOutcomes.map(candidate => ({
           id: candidate.id,
           label: candidate.label,
@@ -575,12 +697,24 @@ export function createMetaAnalysisRouter(options: CreateMetaAnalysisRouterOption
         recommendedConfig,
         warnings,
       });
+      if (writingConversationId) {
+        await invalidateMetaAnalysisConversationContext(
+          userId,
+          writingConversationId,
+          pdfIds,
+          buildMetaDatasetFingerprint(dataset, pdfIds),
+          'Meta AI 已生成新的数据副本，需确认并重新运行后才能用于写作。',
+          workspace.id,
+        );
+      }
       appendProgressLog(`已把 Excel 编码表转换为 JSON 数据包：${workspace.excelJsonPath || '已生成内存数据包'}。`);
       const input: MetaAnalysisAssistantInput = {
         userId,
         pdfIds,
         conversationId,
+        writingConversationId,
         confirmedByUser,
+        forceProvider,
         query,
         chatHistory,
         recentUserQueries,
@@ -620,7 +754,11 @@ export function createMetaAnalysisRouter(options: CreateMetaAnalysisRouterOption
           appendProgressLog('用户已确认规则，正在执行副本整理、自动配对和 mean-only 效应量计算。');
           const prepared = await prepareMetaAssistantConfirmedDataset(input, result);
           if (prepared && prepared.config.outcomes.length > 0) {
-            const autoRun = await runMetaAnalysisOnDataset(userId, prepared.dataset, prepared.config, prepared.info);
+            const autoRun = await runMetaAnalysisOnDataset(userId, prepared.dataset, prepared.config, prepared.info, {
+              conversationId: input.writingConversationId || input.conversationId,
+              workspaceId: input.workspace.id,
+              sourcePdfIds: input.pdfIds,
+            });
             result = {
               ...result,
               workflowStage: 'analysis_completed',
@@ -663,6 +801,7 @@ export function createMetaAnalysisRouter(options: CreateMetaAnalysisRouterOption
   router.post('/run', async (req: Request, res: Response) => {
     try {
       const userId = sanitizeUserId(req.body?.userId || 'web-user');
+      await rememberMetaAnalysisActiveUser(userId);
       const pdfIds = normalizeStringArray(req.body?.pdfIds);
       if (pdfIds.length === 0) {
         res.status(400).json({ success: false, error: '请先勾选需要纳入 Meta 分析的 PDF' });
@@ -682,7 +821,11 @@ export function createMetaAnalysisRouter(options: CreateMetaAnalysisRouterOption
         return;
       }
 
-      const runResult = await runMetaAnalysisOnDataset(userId, dataset, config);
+      const runResult = await runMetaAnalysisOnDataset(userId, dataset, config, undefined, {
+        conversationId: normalizeMetaScopeId(req.body?.conversationId),
+        workspaceId: normalizeMetaScopeId(req.body?.workspaceId),
+        sourcePdfIds: pdfIds,
+      });
       if (runResult.effectRows.length === 0) {
         res.status(400).json({
           success: false,
@@ -708,9 +851,20 @@ export function createMetaAnalysisRouter(options: CreateMetaAnalysisRouterOption
   router.get('/writing-context', async (req: Request, res: Response) => {
     try {
       const userId = sanitizeUserId(req.query.userId || 'web-user');
-      const context = getMetaAnalysisWritingContextForUser(userId);
+      const analysisId = normalizeMetaScopeId(req.query.analysisId);
+      const conversationId = normalizeMetaScopeId(req.query.conversationId);
+      const context = getMetaAnalysisWritingContextForUser(userId, {
+        analysisId,
+        conversationId,
+        allowLegacyFallback: !analysisId && !conversationId,
+      });
       if (!context) {
-        res.status(404).json({ success: false, error: '未找到已运行的 Meta 分析结果，请先在 Meta 分析向导中点击“运行Meta分析”。' });
+        res.status(404).json({
+          success: false,
+          error: conversationId
+            ? '当前会话还没有已完成的 Meta 分析结果；不会自动挂载其他会话的旧结果。'
+            : '未找到已运行的 Meta 分析结果，请先在 Meta 分析向导中点击“运行Meta分析”。',
+        });
         return;
       }
       res.json({ success: true, data: context });
@@ -723,7 +877,13 @@ export function createMetaAnalysisRouter(options: CreateMetaAnalysisRouterOption
   router.get('/writing-context/effect-sizes.csv', (req: Request, res: Response) => {
     try {
       const userId = sanitizeUserId(req.query.userId || 'web-user');
-      const context = getMetaAnalysisWritingContextForUser(userId);
+      const analysisId = normalizeMetaScopeId(req.query.analysisId);
+      const conversationId = normalizeMetaScopeId(req.query.conversationId);
+      const context = getMetaAnalysisWritingContextForUser(userId, {
+        analysisId,
+        conversationId,
+        allowLegacyFallback: !analysisId && !conversationId,
+      });
       if (!context) {
         res.status(404).send('Meta analysis writing context not found');
         return;
@@ -740,7 +900,14 @@ export function createMetaAnalysisRouter(options: CreateMetaAnalysisRouterOption
   router.post('/r-artifacts', async (req: Request, res: Response) => {
     try {
       const userId = sanitizeUserId(req.body?.userId || 'web-user');
-      const context = getMetaAnalysisWritingContextForUser(userId);
+      await rememberMetaAnalysisActiveUser(userId);
+      const analysisId = normalizeMetaScopeId(req.body?.analysisId);
+      const conversationId = normalizeMetaScopeId(req.body?.conversationId);
+      const context = getMetaAnalysisWritingContextForUser(userId, {
+        analysisId,
+        conversationId,
+        allowLegacyFallback: !analysisId && !conversationId,
+      });
       if (!context) {
         res.status(404).json({ success: false, error: '未找到可更新的 Meta 分析结果，请先运行 Meta 分析。' });
         return;
@@ -777,7 +944,13 @@ async function runMetaAnalysisOnDataset(
   dataset: FlattenedDataset,
   config: Required<MetaRunConfig>,
   preparedDataset?: MetaAnalysisPreparedDatasetInfo,
+  scope: MetaAnalysisRunScope = {},
 ): Promise<MetaAnalysisRunData> {
+  const analysisId = normalizeMetaScopeId(scope.analysisId, `meta_run_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`);
+  const conversationId = normalizeMetaScopeId(scope.conversationId);
+  const workspaceId = normalizeMetaScopeId(scope.workspaceId);
+  const sourcePdfIds = normalizeStringArray(scope.sourcePdfIds);
+  const datasetFingerprint = buildMetaDatasetFingerprint(dataset, sourcePdfIds);
   const effectBuild = buildEffectRows(dataset, config);
   const summaries = summarizeEffects(effectBuild.effectRows);
   const subgroups = summarizeSubgroups(effectBuild.effectRows, config.subgroupColumns);
@@ -786,6 +959,11 @@ async function runMetaAnalysisOnDataset(
   const rCode = buildMetaAnalysisRCode(config, effectBuild.effectRows);
   const markdown = buildRunMarkdown(dataset, effectBuild.effectRows, effectBuild.skippedRows, summaries, subgroups, quality, config);
   const runData: MetaAnalysisRunData = {
+    analysisId,
+    conversationId: conversationId || undefined,
+    workspaceId: workspaceId || undefined,
+    sourcePdfIds,
+    datasetFingerprint,
     dataset: {
       pdfCount: dataset.pdfCount,
       tableCount: dataset.tables.length,
@@ -820,28 +998,158 @@ function getMetaAnalysisWritingContextPath(userId: string): string {
   return path.join(getMetaAnalysisWritingContextDir(userId), 'writing-context.json');
 }
 
+function getMetaAnalysisRunContextPath(userId: string, analysisId: string): string {
+  return path.join(getMetaAnalysisWritingContextDir(userId), 'runs', normalizeMetaScopeId(analysisId, 'unknown'), 'writing-context.json');
+}
+
+function getMetaAnalysisConversationContextPath(userId: string, conversationId: string): string {
+  return path.join(getMetaAnalysisWritingContextDir(userId), 'conversations', `${normalizeMetaScopeId(conversationId, 'unknown')}.json`);
+}
+
+function buildMetaDatasetFingerprint(dataset: FlattenedDataset, sourcePdfIds: string[]): string {
+  return crypto
+    .createHash('sha256')
+    .update(JSON.stringify({
+      sourcePdfIds: [...sourcePdfIds].sort(),
+      columns: dataset.columns,
+      rows: dataset.rows,
+    }))
+    .digest('hex');
+}
+
+async function invalidateMetaAnalysisConversationContext(
+  userId: string,
+  conversationId: string,
+  sourcePdfIds: string[],
+  datasetFingerprint: string,
+  reason: string,
+  workspaceId?: string,
+): Promise<void> {
+  const conversationPath = getMetaAnalysisConversationContextPath(userId, conversationId);
+  const latestPath = getMetaAnalysisWritingContextPath(userId);
+  const sourcePath = fs.existsSync(conversationPath)
+    ? conversationPath
+    : (fs.existsSync(latestPath) ? latestPath : '');
+  if (!sourcePath) return;
+  try {
+    const parsed = normalizeStoredMetaAnalysisWritingContext(
+      JSON.parse(await fs.promises.readFile(sourcePath, 'utf-8')) as MetaAnalysisWritingContext,
+      userId,
+    );
+    const currentPdfIds = [...parsed.sourcePdfIds].sort();
+    const nextPdfIds = [...sourcePdfIds].sort();
+    if (parsed.datasetFingerprint === datasetFingerprint && JSON.stringify(currentPdfIds) === JSON.stringify(nextPdfIds)) return;
+    const staleContext: MetaAnalysisWritingContext = {
+      ...parsed,
+      available: false,
+      status: 'stale',
+      staleReason: reason,
+      supersededByWorkspaceId: normalizeMetaScopeId(workspaceId) || undefined,
+    };
+    const runArchivePath = getMetaAnalysisRunContextPath(userId, parsed.analysisId);
+    if (!fs.existsSync(runArchivePath)) {
+      await fs.promises.mkdir(path.dirname(runArchivePath), { recursive: true });
+      await fs.promises.writeFile(runArchivePath, JSON.stringify(parsed, null, 2), 'utf-8');
+    }
+    await fs.promises.mkdir(path.dirname(conversationPath), { recursive: true });
+    await fs.promises.writeFile(conversationPath, JSON.stringify({
+      ...staleContext,
+      conversationId,
+    }, null, 2), 'utf-8');
+    if (fs.existsSync(latestPath)) {
+      const latest = normalizeStoredMetaAnalysisWritingContext(
+        JSON.parse(await fs.promises.readFile(latestPath, 'utf-8')) as MetaAnalysisWritingContext,
+        userId,
+      );
+      if (latest.analysisId === parsed.analysisId) {
+        await fs.promises.writeFile(latestPath, JSON.stringify(staleContext, null, 2), 'utf-8');
+      }
+    }
+  } catch (error) {
+    logger.warn('[MetaAnalysis] Failed to invalidate stale conversation context:', error);
+  }
+}
+
 async function saveMetaAnalysisWritingContext(userId: string, context: MetaAnalysisWritingContext): Promise<void> {
   const dir = getMetaAnalysisWritingContextDir(userId);
   await fs.promises.mkdir(dir, { recursive: true });
-  await fs.promises.writeFile(getMetaAnalysisWritingContextPath(userId), JSON.stringify(context, null, 2), 'utf-8');
+  const serialized = JSON.stringify(context, null, 2);
+  const paths = [getMetaAnalysisWritingContextPath(userId)];
+  if (context.analysisId) paths.push(getMetaAnalysisRunContextPath(userId, context.analysisId));
+  if (context.conversationId) paths.push(getMetaAnalysisConversationContextPath(userId, context.conversationId));
+  for (const filePath of Array.from(new Set(paths))) {
+    await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
+    await fs.promises.writeFile(filePath, serialized, 'utf-8');
+  }
 }
 
-export function getMetaAnalysisWritingContextForUser(userId: string): MetaAnalysisWritingContext | null {
+export function getMetaAnalysisWritingContextForUser(
+  userId: string,
+  lookup: MetaWritingContextLookup = {},
+): MetaAnalysisWritingContext | null {
   try {
-    const filePath = getMetaAnalysisWritingContextPath(userId);
-    if (!fs.existsSync(filePath)) return null;
+    const analysisId = normalizeMetaScopeId(lookup.analysisId);
+    const conversationId = normalizeMetaScopeId(lookup.conversationId);
+    const candidatePaths = [
+      analysisId ? getMetaAnalysisRunContextPath(userId, analysisId) : '',
+      conversationId ? getMetaAnalysisConversationContextPath(userId, conversationId) : '',
+      (!analysisId && !conversationId) || lookup.allowLegacyFallback ? getMetaAnalysisWritingContextPath(userId) : '',
+    ].filter(Boolean);
+    const filePath = candidatePaths.find(candidate => fs.existsSync(candidate));
+    if (!filePath) return null;
     const parsed = JSON.parse(fs.readFileSync(filePath, 'utf-8')) as MetaAnalysisWritingContext;
     if (!parsed || parsed.source !== 'meta-analysis-writing-context' || !parsed.available) return null;
-    return parsed;
+    return normalizeStoredMetaAnalysisWritingContext(parsed, userId);
   } catch (error) {
     logger.warn('[MetaAnalysis] Failed to read writing context:', error);
     return null;
   }
 }
 
+function normalizeStoredMetaAnalysisWritingContext(
+  context: MetaAnalysisWritingContext,
+  userId: string,
+): MetaAnalysisWritingContext {
+  const generatedAt = stringifyCell(context.generatedAt) || new Date(0).toISOString();
+  const legacyHash = crypto
+    .createHash('sha1')
+    .update(`${sanitizeUserId(userId)}|${generatedAt}|${context.effectRows?.length || 0}`)
+    .digest('hex')
+    .slice(0, 12);
+  const effectRows = (context.effectRows || []).map(row => ({
+    ...row,
+    cluster_id: stringifyCell(row.cluster_id || row.study_id),
+    contrast_id: stringifyCell(row.contrast_id) || 'legacy_default',
+    contrast_label: stringifyCell(row.contrast_label) || '历史默认对照',
+  }));
+  return {
+    ...context,
+    analysisId: normalizeMetaScopeId(context.analysisId, `legacy_${legacyHash}`),
+    conversationId: normalizeMetaScopeId(context.conversationId) || undefined,
+    workspaceId: normalizeMetaScopeId(context.workspaceId) || undefined,
+    userId: sanitizeUserId(context.userId || userId),
+    datasetFingerprint: stringifyCell(context.datasetFingerprint) || `legacy_${legacyHash}`,
+    config: {
+      ...context.config,
+      controlRules: Array.isArray(context.config?.controlRules) ? context.config.controlRules : [],
+      excludeManualReview: context.config?.excludeManualReview === true,
+      manualReviewColumn: stringifyCell(context.config?.manualReviewColumn),
+    },
+    effectRows,
+    sourcePdfIds: normalizeStringArray(context.sourcePdfIds).length
+      ? normalizeStringArray(context.sourcePdfIds)
+      : Array.from(new Set(effectRows.map(row => stringifyCell(row.pdf_id)).filter(Boolean))),
+  };
+}
+
 function buildMetaAnalysisWritingContext(
   userId: string,
   runData: {
+    analysisId: string;
+    conversationId?: string;
+    workspaceId?: string;
+    sourcePdfIds: string[];
+    datasetFingerprint: string;
     dataset: MetaAnalysisWritingContext['dataset'];
     config: Required<MetaRunConfig>;
     effectRows: EffectRow[];
@@ -856,10 +1164,19 @@ function buildMetaAnalysisWritingContext(
   },
 ): MetaAnalysisWritingContext {
   const safeUserId = sanitizeUserId(userId);
+  const scopeParams = new URLSearchParams({ userId: safeUserId, analysisId: runData.analysisId });
+  if (runData.conversationId) scopeParams.set('conversationId', runData.conversationId);
   const context: MetaAnalysisWritingContext = {
+    analysisId: runData.analysisId,
+    conversationId: runData.conversationId,
+    workspaceId: runData.workspaceId,
+    userId: safeUserId,
+    sourcePdfIds: runData.sourcePdfIds,
+    datasetFingerprint: runData.datasetFingerprint,
     generatedAt: new Date().toISOString(),
     source: 'meta-analysis-writing-context',
     available: true,
+    status: 'completed',
     dataset: runData.dataset,
     config: runData.config,
     summaries: runData.summaries,
@@ -870,8 +1187,8 @@ function buildMetaAnalysisWritingContext(
     skippedCount: runData.skippedCount,
     markdown: runData.markdown,
     exports: {
-      writingContextUrl: `/api/meta-analysis/writing-context?userId=${encodeURIComponent(safeUserId)}`,
-      effectSizesCsvUrl: `/api/meta-analysis/writing-context/effect-sizes.csv?userId=${encodeURIComponent(safeUserId)}`,
+      writingContextUrl: `/api/meta-analysis/writing-context?${scopeParams.toString()}`,
+      effectSizesCsvUrl: `/api/meta-analysis/writing-context/effect-sizes.csv?${scopeParams.toString()}`,
     },
     effectRowsCsv: runData.effectRowsCsv,
     effectRowsFilename: runData.effectRowsFilename,
@@ -892,13 +1209,26 @@ function buildMetaAnalysisWritingContextMarkdown(context: MetaAnalysisWritingCon
   return [
     '# Meta 分析写作上下文',
     '',
-    '下面内容由 Scholar Harness 从用户最近一次“运行Meta分析”结果中调用。它是已经计算好的 Meta 分析结果，不是 PDF 原始编码表，也不是未分析的原始数据。写作时只能使用这里的效应量、模型汇总、质量检查、跳过原因和 R 图表产物；不要编造未出现在本上下文中的效应量、I²、tau²、p 值、图件或研究数量。',
+    `下面内容来自分析运行 ${context.analysisId}${context.conversationId ? `，绑定会话 ${context.conversationId}` : ''}。它是已经计算好的 Meta 分析结果，不是 PDF 原始编码表，也不是未分析的原始数据。写作时只能使用这里的效应量、模型汇总、质量检查、跳过原因和 R 图表产物；不要编造未出现在本上下文中的效应量、I²、tau²、p 值、图件或研究数量。`,
     '',
     '## 调用规则',
     '- “Meta 分析运行摘要”是用户已经运行出的分析结果，可直接用于结果写作。',
     '- “已计算效应量表”中的 yi、vi、sei、weight 是分析后的效应量数据，不是原始均值/SD/n 编码表。',
     '- 如果需要完整效应量表，使用导出接口中的 effectSizesCsvUrl；不要要求用户重新上传原始数据。',
     '- R 图表文件只有在用户点击“执行R出图”成功后才可引用；未生成时只说明 R 脚本已准备好。',
+    '- mean-only 结果使用研究/聚类内等权汇总和研究级 bootstrap；不得写成常规 REML 逆方差 Meta，也不得引用 I²、tau²、Egger 或漏斗图结论。',
+    '',
+    '## 分析版本',
+    '```json',
+    JSON.stringify({
+      analysisId: context.analysisId,
+      conversationId: context.conversationId,
+      workspaceId: context.workspaceId,
+      userId: context.userId,
+      sourcePdfIds: context.sourcePdfIds,
+      generatedAt: context.generatedAt,
+    }, null, 2),
+    '```',
     '',
     '## 数据集摘要',
     '```json',
@@ -1192,19 +1522,15 @@ function isMetaAssistantConfirmationText(text: string): boolean {
   const raw = String(text || '').trim();
   if (!raw || isMetaAssistantNegativeConfirmationText(raw)) return false;
   return /(接受|确认|同意|可以|没问题|没错|按这个|按此|就这样|开始|执行|运行|进行|继续分析|开始分析|开始执行|进入分析|出图|proceed|confirm|accepted|accept|ok|okay|run)/i.test(raw)
-    || /(使用|采用).{0,12}(lnRR_mean_only|boot|bootstrap|配对|对照|单位|规则)/i.test(raw)
-    || /(剔除|保留|默认按|严格按照).{0,60}(零|无均值|Study#|Crop|Season|单位|对照|匹配)/i.test(raw);
+    || /(使用|采用).{0,20}(lnRR|MD|mean_only|均值差|响应比|boot|bootstrap|配对|对照|单位|规则)/i.test(raw)
+    || /(剔除|排除|纳入|保留|默认按|严格按照).{0,60}(零|无均值|Study#|Crop|Season|单位|对照|匹配|人工复核|manual.review)/i.test(raw);
 }
 
 function isMetaAssistantConversationConfirmed(
   query: string,
-  chatHistory: Array<{ role: 'user' | 'assistant'; content: string; createdAt?: string }>,
+  _chatHistory: Array<{ role: 'user' | 'assistant'; content: string; createdAt?: string }>,
 ): boolean {
-  if (isMetaAssistantConfirmationText(query)) return true;
-  return chatHistory
-    .filter(item => item.role === 'user')
-    .slice(-5)
-    .some(item => isMetaAssistantConfirmationText(item.content));
+  return isMetaAssistantConfirmationText(query);
 }
 
 async function saveMetaAnalysisAssistantWorkspace(
@@ -1258,6 +1584,9 @@ async function saveMetaAnalysisAssistantWorkspace(
           subgroupColumns: [],
           columnPreprocess: [],
           minCompleteRows: 2,
+          controlRules: [],
+          excludeManualReview: true,
+          manualReviewColumn: pickExistingColumn(dataset.columns, ['needs_manual_review', 'needsManualReview', '需人工复核', '人工复核']),
           outcomes: [],
         },
         warnings: [],
@@ -1697,7 +2026,9 @@ interface AutoOutcomeSpec {
   id: string;
   label: string;
   treatmentMeanColumn: string;
+  treatmentSdColumn: string;
   controlMeanColumn: string;
+  controlSdColumn: string;
   treatmentNColumn: string;
   controlNColumn: string;
 }
@@ -1716,51 +2047,117 @@ async function prepareMetaAssistantConfirmedDataset(
   const seasonColumn = pickExistingColumn(sourceDataset.columns, ['Season', '季节', 'season']);
   const matchColumns = [studyIdColumn, cropColumn, seasonColumn].filter(Boolean);
   const specs = buildAutoOutcomeSpecs();
+  const suggestedConfig = result.suggestedConfig || {};
+  const controlRules = normalizeMetaControlRules(suggestedConfig.controlRules, sourceDataset.columns);
+  const manualReviewColumn = pickExistingColumn(sourceDataset.columns, [
+    stringifyCell(suggestedConfig.manualReviewColumn),
+    stringifyCell(input.recommendedConfig.manualReviewColumn),
+    'needs_manual_review',
+    'needsManualReview',
+    '需人工复核',
+    '人工复核',
+  ]);
+  const excludeManualReview = suggestedConfig.excludeManualReview === undefined
+    ? !/(保留|纳入|include|keep).{0,20}(needs_manual_review|manual review|人工复核)/i.test(input.query)
+    : suggestedConfig.excludeManualReview !== false;
+  const measureByOutcome = new Map(specs.map(spec => [spec.key, resolveAutoOutcomeMeasure(spec, result, input)]));
+  specs.forEach(spec => {
+    const measure = measureByOutcome.get(spec.key);
+    if (measure !== 'MD' && measure !== 'MD_mean_only') return;
+    const units = collectAutoOutcomeUnits(sourceDataset, spec.key);
+    if (units.length > 1) {
+      throw new Error(
+        `${spec.label} 选择了 ${measure}，但检测到多个单位（${units.slice(0, 8).join('、')}）。请先统一单位，或改用均值均为正时的 lnRR。`,
+      );
+    }
+  });
   const notes = [
     '自动副本整理规则：不修改原始 Meta 编码表，只生成会话副本。',
-    '对照匹配规则：优先按 Study# + Crop + Season 匹配 CK/Control/N0/F0/0N 行。',
-    '用户已确认：零均值和无均值行剔除；单位不做换算；主效应量为 lnRR_mean_only + bootstrap。',
+    controlRules.length > 0
+      ? `对照匹配规则：使用 ${controlRules.length} 条已确认 contrast 规则，并按规则指定字段配对。`
+      : '对照匹配规则：优先使用逐行 control_for_contrast；否则按 Study# + Crop + Season 匹配 CK/Control/N0/F0/0N 行。',
+    `用户确认的效应量：${Array.from(new Set(measureByOutcome.values())).join('、')}。lnRR 仅剔除非正均值，MD 保留零值和负值。`,
+    excludeManualReview && manualReviewColumn
+      ? `主分析排除 ${manualReviewColumn}=true 的待人工复核行。`
+      : '待人工复核行未被自动排除；结果中保留数据质量警告。',
   ];
 
-  const controlRowsByKey = new Map<string, Array<Record<string, unknown>>>();
-  sourceDataset.rows.forEach(row => {
-    if (!isAutoMetaControlRow(row, treatmentColumn, nInputColumn)) return;
-    const key = buildAutoMetaMatchKey(row, matchColumns);
-    controlRowsByKey.set(key, [...(controlRowsByKey.get(key) || []), row]);
-  });
+  const explicitControlLabels = new Set(
+    sourceDataset.rows
+      .map(row => stringifyCell(row.control_for_contrast || row.controlForContrast || row['control for contrast']).toLowerCase())
+      .filter(Boolean),
+  );
+  controlRules.forEach(rule => rule.controlLabels.forEach(label => explicitControlLabels.add(label.toLowerCase())));
+  const controlRows = sourceDataset.rows.filter(row => isAutoMetaControlRow(
+    row,
+    treatmentColumn,
+    nInputColumn,
+    explicitControlLabels,
+    controlRules,
+  ));
 
   const preparedRows: Array<Record<string, unknown>> = [];
   let skippedCandidateCount = 0;
+  let excludedManualReviewCount = 0;
   sourceDataset.rows.forEach((row, rowIndex) => {
-    if (isAutoMetaControlRow(row, treatmentColumn, nInputColumn)) return;
-    const matchKey = buildAutoMetaMatchKey(row, matchColumns);
-    const candidateControls = controlRowsByKey.get(matchKey) || [];
+    const treatmentLabel = stringifyCell(treatmentColumn ? row[treatmentColumn] : '');
+    const requestedControlLabel = stringifyCell(row.control_for_contrast || row.controlForContrast || row['control for contrast']);
+    const controlRule = selectMetaControlRule(controlRules, treatmentLabel);
+    if (
+      isAutoMetaControlRow(row, treatmentColumn, nInputColumn, explicitControlLabels, controlRules)
+      && !controlRule
+      && !requestedControlLabel
+    ) return;
+    if (excludeManualReview && manualReviewColumn && isMetaManualReviewRequired(row[manualReviewColumn])) {
+      excludedManualReviewCount += 1;
+      return;
+    }
+    const rowMatchColumns = Array.from(new Set([
+      ...matchColumns,
+      ...(controlRule?.matchColumns || []),
+    ].filter(Boolean)));
+    const matchKey = buildAutoMetaMatchKey(row, rowMatchColumns);
+    const candidateControls = controlRows.filter(controlRow => (
+      buildAutoMetaMatchKey(controlRow, rowMatchColumns) === matchKey
+      && (
+        !controlRule
+        || metaControlRowMatchesRule(controlRow, treatmentColumn, controlRule)
+        || normalizeAutoMetaKeyValue(treatmentColumn ? controlRow[treatmentColumn] : '') === normalizeAutoMetaKeyValue(requestedControlLabel)
+      )
+    ));
     let rowHasOutcome = false;
     const nextRow: Record<string, unknown> = {
       ...row,
       meta_ai_source_row_index: rowIndex + 1,
       meta_ai_match_key: matchKey,
-      meta_ai_treatment_label: stringifyCell(treatmentColumn ? row[treatmentColumn] : ''),
+      meta_ai_treatment_label: treatmentLabel,
+      meta_ai_contrast_id: controlRule?.id || (requestedControlLabel ? 'row_control_for_contrast' : 'default_no_input_control'),
+      meta_ai_contrast_label: controlRule?.label || requestedControlLabel || 'CK/Control/N0/F0/0N',
     };
 
     specs.forEach(spec => {
+      const measure = measureByOutcome.get(spec.key) || 'lnRR_mean_only';
       const treatmentMean = pickAutoOutcomeTreatmentMean(sourceDataset.columns, row, spec.key);
-      const controlRow = pickAutoControlRowForOutcome(candidateControls, row, treatmentColumn, spec.key);
+      const controlRow = pickAutoControlRowForOutcome(candidateControls, row, treatmentColumn, spec.key, controlRule);
       const controlMean = pickAutoOutcomeControlMean(sourceDataset.columns, row, controlRow, spec.key);
       const treatmentN = pickAutoOutcomeN(sourceDataset.columns, row, spec.key, 'treatment');
       const controlN = pickAutoOutcomeN(sourceDataset.columns, controlRow || row, spec.key, 'control');
+      const treatmentSd = pickAutoOutcomeSd(sourceDataset.columns, row, spec.key, 'treatment', treatmentN);
+      const controlSd = pickAutoOutcomeSd(sourceDataset.columns, controlRow || row, spec.key, 'control', controlN);
 
       if (!Number.isFinite(treatmentMean) || !Number.isFinite(controlMean)) {
         if (Number.isFinite(treatmentMean) || Number.isFinite(controlMean)) skippedCandidateCount += 1;
         return;
       }
-      if (treatmentMean <= 0 || controlMean <= 0) {
+      if ((measure === 'lnRR' || measure === 'lnRR_mean_only') && (treatmentMean <= 0 || controlMean <= 0)) {
         skippedCandidateCount += 1;
         return;
       }
 
       nextRow[spec.treatmentMeanColumn] = treatmentMean;
       nextRow[spec.controlMeanColumn] = controlMean;
+      if (Number.isFinite(treatmentSd)) nextRow[spec.treatmentSdColumn] = treatmentSd;
+      if (Number.isFinite(controlSd)) nextRow[spec.controlSdColumn] = controlSd;
       if (Number.isFinite(treatmentN)) nextRow[spec.treatmentNColumn] = treatmentN;
       if (Number.isFinite(controlN)) nextRow[spec.controlNColumn] = controlN;
       nextRow[`${spec.key}_control_label`] = stringifyCell(controlRow && treatmentColumn ? controlRow[treatmentColumn] : '');
@@ -1774,11 +2171,19 @@ async function prepareMetaAssistantConfirmedDataset(
 
   const addedColumns = Array.from(new Set(specs.flatMap(spec => [
     spec.treatmentMeanColumn,
+    spec.treatmentSdColumn,
     spec.controlMeanColumn,
+    spec.controlSdColumn,
     spec.treatmentNColumn,
     spec.controlNColumn,
     `${spec.key}_control_label`,
-  ]).concat(['meta_ai_source_row_index', 'meta_ai_match_key', 'meta_ai_treatment_label'])));
+  ]).concat([
+    'meta_ai_source_row_index',
+    'meta_ai_match_key',
+    'meta_ai_treatment_label',
+    'meta_ai_contrast_id',
+    'meta_ai_contrast_label',
+  ])));
   const columns = Array.from(new Set([...sourceDataset.columns, ...addedColumns]));
   const preparedTable: MetaAnalysisIntegratedDataTable = {
     id: `${input.workspace.id}_prepared`,
@@ -1819,14 +2224,19 @@ async function prepareMetaAssistantConfirmedDataset(
     subgroupColumns,
     columnPreprocess: [],
     minCompleteRows: 2,
+    controlRules,
+    excludeManualReview,
+    manualReviewColumn,
     outcomes: specs
       .filter(spec => preparedRows.some(row => Number.isFinite(parseNumeric(row[spec.treatmentMeanColumn])) && Number.isFinite(parseNumeric(row[spec.controlMeanColumn]))))
       .map(spec => ({
-        id: spec.id,
+        id: `${spec.id}_${String(measureByOutcome.get(spec.key) || 'lnRR_mean_only').toLowerCase()}`,
         label: spec.label,
-        measure: 'lnRR_mean_only' as EffectMeasure,
+        measure: measureByOutcome.get(spec.key) || 'lnRR_mean_only',
         treatmentMean: spec.treatmentMeanColumn,
+        treatmentSd: spec.treatmentSdColumn,
         controlMean: spec.controlMeanColumn,
+        controlSd: spec.controlSdColumn,
         treatmentN: spec.treatmentNColumn,
         controlN: spec.controlNColumn,
         moderators: moderatorColumns,
@@ -1844,6 +2254,8 @@ async function prepareMetaAssistantConfirmedDataset(
     columnCount: columns.length,
     effectRowCount: effectPreview.effectRows.length,
     skippedCandidateCount: skippedCandidateCount + effectPreview.skippedRows.length,
+    excludedManualReviewCount,
+    selectedMeasures: Array.from(new Set(config.outcomes.map(outcome => outcome.measure || 'lnRR'))),
     storagePath,
     notes,
   };
@@ -1894,7 +2306,9 @@ function buildAutoOutcomeSpecs(): AutoOutcomeSpec[] {
       id: 'n2o_lnr_mean_only_bootstrap',
       label: '累积 N2O 排放',
       treatmentMeanColumn: 'N2O_treatment_mean_harmonized',
+      treatmentSdColumn: 'N2O_treatment_sd_harmonized',
       controlMeanColumn: 'N2O_control_mean_harmonized',
+      controlSdColumn: 'N2O_control_sd_harmonized',
       treatmentNColumn: 'N2O_treatment_n_harmonized',
       controlNColumn: 'N2O_control_n_harmonized',
     },
@@ -1903,15 +2317,58 @@ function buildAutoOutcomeSpecs(): AutoOutcomeSpec[] {
       id: 'no_lnr_mean_only_bootstrap',
       label: '累积 NO 排放',
       treatmentMeanColumn: 'NO_treatment_mean_harmonized',
+      treatmentSdColumn: 'NO_treatment_sd_harmonized',
       controlMeanColumn: 'NO_control_mean_harmonized',
+      controlSdColumn: 'NO_control_sd_harmonized',
       treatmentNColumn: 'NO_treatment_n_harmonized',
       controlNColumn: 'NO_control_n_harmonized',
     },
   ];
 }
 
-function isAutoMetaControlRow(row: Record<string, unknown>, treatmentColumn: string, nInputColumn: string): boolean {
+function resolveAutoOutcomeMeasure(
+  spec: AutoOutcomeSpec,
+  result: MetaAnalysisAssistantResult,
+  input: MetaAnalysisAssistantInput,
+): EffectMeasure {
+  const suggestedOutcomes = result.suggestedConfig?.outcomes || [];
+  const matching = suggestedOutcomes.find(outcome => {
+    const text = [
+      outcome.id,
+      outcome.label,
+      outcome.treatmentMean,
+      outcome.controlMean,
+      outcome.treatmentSd,
+      outcome.controlSd,
+    ].map(value => stringifyCell(value)).join(' ');
+    return columnMatchesAutoOutcome(text, spec.key);
+  });
+  if (matching?.measure) return normalizeEffectMeasure(matching.measure);
+
+  const query = `${input.query}\n${(input.chatHistory || []).filter(item => item.role === 'user').slice(-3).map(item => item.content).join('\n')}`;
+  if (/\bMD_mean_only\b|均值差.{0,12}(无\s*(SD|SE)|bootstrap|自助法)|mean[-\s]?only\s+MD/i.test(query)) return 'MD_mean_only';
+  if (/\bMD\b|均值差/i.test(query) && !/\blnRR\b|响应比/i.test(query)) return 'MD_mean_only';
+  if (/\blnRR_mean_only\b|响应比|response\s+ratio/i.test(query)) return 'lnRR_mean_only';
+  return 'lnRR_mean_only';
+}
+
+function isMetaManualReviewRequired(value: unknown): boolean {
+  if (value === true || value === 1) return true;
+  const text = stringifyCell(value).toLowerCase();
+  return ['1', 'true', 'yes', 'y', '是', '需要', '待复核', '需复核', 'manual', 'review'].includes(text)
+    || /needs?.{0,4}review|manual.{0,4}review|待.{0,2}复核|需.{0,2}复核/.test(text);
+}
+
+function isAutoMetaControlRow(
+  row: Record<string, unknown>,
+  treatmentColumn: string,
+  nInputColumn: string,
+  explicitControlLabels: Set<string> = new Set(),
+  controlRules: MetaControlRule[] = [],
+): boolean {
   const label = treatmentColumn ? stringifyCell(row[treatmentColumn]) : '';
+  if (explicitControlLabels.has(label.toLowerCase())) return true;
+  if (controlRules.some(rule => metaControlRowMatchesRule(row, treatmentColumn, rule))) return true;
   if (isAutoMetaControlLabel(label)) return true;
   const nInput = nInputColumn ? parseNumeric(row[nInputColumn]) : Number.NaN;
   return Number.isFinite(nInput) && nInput === 0 && /(^|\W)(ck|control|n0|f0|fn0|0n)($|\W)|对照|不施/i.test(label);
@@ -1933,11 +2390,50 @@ function normalizeAutoMetaKeyValue(value: unknown): string {
   return stringifyCell(value).toLowerCase().replace(/\s+/g, ' ').trim();
 }
 
+function selectMetaControlRule(rules: MetaControlRule[], treatmentLabel: string): MetaControlRule | undefined {
+  return rules.find(rule => {
+    const exact = (rule.treatmentLabels || []).some(label => normalizeAutoMetaKeyValue(label) === normalizeAutoMetaKeyValue(treatmentLabel));
+    return exact || matchesMetaControlPattern(treatmentLabel, rule.treatmentPattern);
+  });
+}
+
+function metaControlRowMatchesRule(
+  row: Record<string, unknown>,
+  treatmentColumn: string,
+  rule: MetaControlRule,
+): boolean {
+  const label = treatmentColumn ? stringifyCell(row[treatmentColumn]) : '';
+  return rule.controlLabels.some(item => normalizeAutoMetaKeyValue(item) === normalizeAutoMetaKeyValue(label))
+    || matchesMetaControlPattern(label, rule.controlPattern);
+}
+
+function matchesMetaControlPattern(value: string, pattern?: string): boolean {
+  const source = stringifyCell(pattern).slice(0, 240);
+  if (!source) return false;
+  try {
+    return new RegExp(source, 'i').test(value);
+  } catch {
+    return normalizeAutoMetaKeyValue(value).includes(normalizeAutoMetaKeyValue(source));
+  }
+}
+
 function columnMatchesAutoOutcome(column: string, key: 'N2O' | 'NO'): boolean {
   const text = column.toLowerCase();
   if (key === 'N2O') return /n2o|n₂o|nitrous\s+oxide|氧化亚氮/.test(text);
   if (/n2o|n₂o|nitrous\s+oxide/.test(text)) return false;
   return /(^|[^a-z0-9])no([^a-z0-9]|$)|cum[_\s-]*no|no[_\s-]|[_\s-]no|nitric\s+oxide|一氧化氮/.test(text);
+}
+
+function collectAutoOutcomeUnits(dataset: FlattenedDataset, key: 'N2O' | 'NO'): string[] {
+  const unitColumns = dataset.columns.filter(column => (
+    (columnMatchesAutoOutcome(column, key) && /unit|单位/i.test(column))
+    || /^(unit|units|单位|测量单位)$/i.test(column.trim())
+  ));
+  return Array.from(new Set(
+    dataset.rows
+      .flatMap(row => unitColumns.map(column => normalizeAutoMetaKeyValue(row[column])))
+      .filter(Boolean),
+  ));
 }
 
 function isAutoOutcomeNonMeanColumn(column: string): boolean {
@@ -1975,6 +2471,31 @@ function pickAutoOutcomeControlMean(
   }));
 }
 
+function pickAutoOutcomeSd(
+  columns: string[],
+  row: Record<string, unknown>,
+  key: 'N2O' | 'NO',
+  role: 'treatment' | 'control',
+  sampleSize: number,
+): number {
+  const roleSdPattern = role === 'treatment'
+    ? /tsd|t_sd|treatment.*sd|trt.*sd|source.*sd|(^|[_\s-])sd([_\s-]|$)/
+    : /cksd|ck_sd|control.*sd|c_sd|source.*sd|(^|[_\s-])sd([_\s-]|$)/;
+  const sd = pickAutoNumericFromColumns(row, columns.filter(column => (
+    columnMatchesAutoOutcome(column, key) && roleSdPattern.test(column.toLowerCase())
+  )));
+  if (Number.isFinite(sd)) return sd;
+  const roleSePattern = role === 'treatment'
+    ? /tse|t_se|treatment.*se|trt.*se|source.*se|(^|[_\s-])(se|sem|stderr)([_\s-]|$)/
+    : /ckse|ck_se|control.*se|c_se|source.*se|(^|[_\s-])(se|sem|stderr)([_\s-]|$)/;
+  const se = pickAutoNumericFromColumns(row, columns.filter(column => (
+    columnMatchesAutoOutcome(column, key) && roleSePattern.test(column.toLowerCase())
+  )));
+  return Number.isFinite(se) && Number.isFinite(sampleSize) && sampleSize > 0
+    ? se * Math.sqrt(sampleSize)
+    : Number.NaN;
+}
+
 function pickAutoOutcomeN(columns: string[], row: Record<string, unknown>, key: 'N2O' | 'NO', role: 'treatment' | 'control'): number {
   const rolePattern = role === 'treatment'
     ? /tn|t_n|treatment.*n|trt.*n|sample|replicate|cum.*_n|_n$/
@@ -1995,13 +2516,17 @@ function pickAutoControlRowForOutcome(
   treatmentRow: Record<string, unknown>,
   treatmentColumn: string,
   key: 'N2O' | 'NO',
+  controlRule?: MetaControlRule,
 ): Record<string, unknown> | null {
   if (!candidates.length) return null;
   const requested = stringifyCell(treatmentRow.control_for_contrast || treatmentRow.controlForContrast || treatmentRow['control_for_contrast']);
-  const prioritized = requested
+  const requestedControls = requested
     ? candidates.filter(row => stringifyCell(treatmentColumn ? row[treatmentColumn] : '').toLowerCase() === requested.toLowerCase())
     : [];
-  const pool = prioritized.length ? prioritized : candidates;
+  const ruleControls = controlRule
+    ? candidates.filter(row => metaControlRowMatchesRule(row, treatmentColumn, controlRule))
+    : [];
+  const pool = requestedControls.length ? requestedControls : (ruleControls.length ? ruleControls : candidates);
   const rowColumns = Array.from(new Set(pool.flatMap(row => Object.keys(row))));
   return pool.find(row => Number.isFinite(pickAutoOutcomeControlMean(rowColumns, treatmentRow, row, key))) || pool[0] || null;
 }
@@ -2126,12 +2651,25 @@ function buildLocalMetaAssistantPlan(input: MetaAnalysisAssistantInput): MetaAna
     operations,
     rPlan: {
       packages: ['metafor', 'meta', 'clubSandwich'],
-      plots: ['pooled_effect_summary', 'subgroup_pooled_effects'],
-      diagnostics: ['heterogeneity', 'leave_one_out_csv', 'publication_bias_text_if_k_ge_10'],
+      plots: [
+        'pooled_effect_summary',
+        'subgroup_pooled_effects',
+        'study_cluster_forest',
+        'study_cluster_funnel_if_clusters_ge_10',
+        'numeric_moderator_meta_regression',
+      ],
+      diagnostics: [
+        'prediction_interval',
+        'cluster_robust_CR2_if_available',
+        'leave_one_study_out_csv',
+        'egger_if_clusters_ge_10',
+        'baujat_study_cluster',
+      ],
       notes: [
         'Deferred until the user confirms that the copied Excel-style dataset is ready for analysis.',
         'If SD/SE is unavailable, use mean-only lnRR/MD with non-parametric bootstrap/resampling instead of inverse-variance weighting.',
-        'R figures prioritize pooled overall effects and subgroup pooled effects; row-per-effect long forest plots and secondary diagnostic plots are intentionally not generated.',
+        'Standard variance-based analyses aggregate dependent rows to independent study/cluster summaries for forest, funnel, Egger, leave-one-study-out and Baujat diagnostics.',
+        'Mean-only analyses report equal-cluster bootstrap summaries and explicitly skip diagnostics that require sampling variances.',
       ],
     },
     suggestedConfig: input.recommendedConfig,
@@ -2237,6 +2775,18 @@ function sanitizeMetaAssistantSuggestedConfig(input: unknown, context: MetaAnaly
   const moderatorColumns = normalizeStringArray(record.moderatorColumns).filter(column => columns.includes(column));
   const subgroupColumns = normalizeStringArray(record.subgroupColumns).filter(column => columns.includes(column));
   const columnPreprocess = normalizeColumnPreprocess(record.columnPreprocess, columns);
+  const controlRules = normalizeMetaControlRules(record.controlRules, columns);
+  const excludeManualReview = record.excludeManualReview === undefined
+    ? fallback.excludeManualReview
+    : normalizeBoolean(record.excludeManualReview, true);
+  const manualReviewColumn = pickExistingColumn(columns, [
+    stringifyCell(record.manualReviewColumn),
+    fallback.manualReviewColumn,
+    'needs_manual_review',
+    'needsManualReview',
+    '需人工复核',
+    '人工复核',
+  ]);
   const rawOutcomes = Array.isArray(record.outcomes) ? record.outcomes : [];
   const outcomes = rawOutcomes
     .map(item => normalizeOutcomeConfig(item, columns))
@@ -2251,6 +2801,9 @@ function sanitizeMetaAssistantSuggestedConfig(input: unknown, context: MetaAnaly
     subgroupColumns: subgroupColumns.length ? subgroupColumns : fallback.subgroupColumns,
     columnPreprocess,
     minCompleteRows: Number.isFinite(Number(record.minCompleteRows)) ? Math.max(1, Math.floor(Number(record.minCompleteRows))) : fallback.minCompleteRows,
+    controlRules,
+    excludeManualReview,
+    manualReviewColumn,
     outcomes: outcomes.length ? outcomes : fallback.outcomes,
   };
 }
@@ -2280,6 +2833,15 @@ function normalizeRunConfig(input: unknown, dataset: FlattenedDataset, inferred:
   const moderatorColumns = normalizeStringArray(record.moderatorColumns).filter(column => dataset.columns.includes(column));
   const subgroupColumns = normalizeStringArray(record.subgroupColumns).filter(column => dataset.columns.includes(column));
   const columnPreprocess = normalizeColumnPreprocess(record.columnPreprocess, dataset.columns);
+  const controlRules = normalizeMetaControlRules(record.controlRules, dataset.columns);
+  const excludeManualReview = normalizeBoolean(record.excludeManualReview, true);
+  const manualReviewColumn = pickExistingColumn(dataset.columns, [
+    stringifyCell(record.manualReviewColumn),
+    'needs_manual_review',
+    'needsManualReview',
+    '需人工复核',
+    '人工复核',
+  ]);
   const minCompleteRows = Number.isFinite(Number(record.minCompleteRows)) ? Math.max(1, Math.floor(Number(record.minCompleteRows))) : 2;
 
   return {
@@ -2292,7 +2854,40 @@ function normalizeRunConfig(input: unknown, dataset: FlattenedDataset, inferred:
     subgroupColumns,
     columnPreprocess,
     minCompleteRows,
+    controlRules,
+    excludeManualReview,
+    manualReviewColumn,
   };
+}
+
+function normalizeBoolean(value: unknown, fallback: boolean): boolean {
+  if (typeof value === 'boolean') return value;
+  const text = stringifyCell(value).toLowerCase();
+  if (['1', 'true', 'yes', 'on', '是', '排除'].includes(text)) return true;
+  if (['0', 'false', 'no', 'off', '否', '保留'].includes(text)) return false;
+  return fallback;
+}
+
+function normalizeMetaControlRules(input: unknown, columns: string[]): MetaControlRule[] {
+  if (!Array.isArray(input)) return [];
+  return input
+    .map((item, index): MetaControlRule | null => {
+      if (!isRecord(item)) return null;
+      const controlLabels = normalizeStringArray(item.controlLabels);
+      const controlPattern = stringifyCell(item.controlPattern);
+      if (controlLabels.length === 0 && !controlPattern) return null;
+      return {
+        id: normalizeMetaScopeId(item.id, `contrast_${index + 1}`),
+        label: stringifyCell(item.label),
+        treatmentLabels: normalizeStringArray(item.treatmentLabels),
+        treatmentPattern: stringifyCell(item.treatmentPattern),
+        controlLabels,
+        controlPattern,
+        matchColumns: normalizeStringArray(item.matchColumns).filter(column => columns.includes(column)),
+      };
+    })
+    .filter((item): item is MetaControlRule => !!item)
+    .slice(0, 24);
 }
 
 function normalizeColumnPreprocess(input: unknown, columns: string[]): MetaColumnPreprocessConfig[] {
@@ -2485,9 +3080,21 @@ function buildEffectRows(
   const preprocessByColumn = new Map((config.columnPreprocess || []).map(item => [item.column, item]));
 
   dataset.rows.forEach((row, rowIndex) => {
+    if (config.excludeManualReview && config.manualReviewColumn && isMetaManualReviewRequired(row[config.manualReviewColumn])) {
+      config.outcomes.forEach(outcome => {
+        skippedRows.push({
+          outcomeId: outcome.id || '',
+          rowIndex: rowIndex + 1,
+          studyId: stringifyCell(firstNonEmpty(row[config.studyIdColumn], row['Study#'], row.PDF标题, row.PDF文件名, row['PDF ID'])) || `Study_${rowIndex + 1}`,
+          reason: `${config.manualReviewColumn}=true，已按主分析规则排除`,
+        });
+      });
+      return;
+    }
     for (const outcome of config.outcomes) {
       const measure = outcome.measure || 'lnRR';
       const studyId = stringifyCell(firstNonEmpty(row[config.studyIdColumn], row['Study#'], row.PDF标题, row.PDF文件名, row['PDF ID'])) || `Study_${rowIndex + 1}`;
+      const clusterId = stringifyCell(firstNonEmpty(row[config.clusterBy], row.meta_ai_match_key, studyId)) || studyId;
       const parsed = parseOutcomeNumbers(row, outcome, measure);
       if (!parsed.ok) {
         skippedRows.push({
@@ -2528,6 +3135,9 @@ function buildEffectRows(
         outcome_label: outcome.label || normalizeOutcomeLabel(outcome.id || outcome.treatmentMean),
         measure,
         study_id: studyId,
+        cluster_id: clusterId,
+        contrast_id: stringifyCell(row.meta_ai_contrast_id) || 'default',
+        contrast_label: stringifyCell(row.meta_ai_contrast_label || row.control_for_contrast || row.controlForContrast) || '默认对照',
         pdf_id: stringifyCell(row['PDF ID']),
         pdf_title: stringifyCell(row.PDF标题),
         pdf_file: stringifyCell(row.PDF文件名),
@@ -2730,7 +3340,15 @@ function summarizeEffectGroup(outcomeId: string, rows: EffectRow[]): MetaSummary
 }
 
 function estimatePooledMeanOnly(rows: EffectRow[], iterations: number): SummaryEstimate {
-  const values = rows.map(row => row.yi).filter(value => Number.isFinite(value));
+  const clusterValues = new Map<string, number[]>();
+  rows.forEach((row, index) => {
+    if (!Number.isFinite(row.yi)) return;
+    const clusterId = stringifyCell(row.cluster_id || row.study_id) || `cluster_${index + 1}`;
+    clusterValues.set(clusterId, [...(clusterValues.get(clusterId) || []), row.yi]);
+  });
+  const values = Array.from(clusterValues.values())
+    .map(items => mean(items.filter(value => Number.isFinite(value))))
+    .filter(value => Number.isFinite(value));
   const estimate = mean(values);
   const bootstrap = bootstrapMeans(values, iterations);
   const se = sampleSd(bootstrap);
@@ -2745,8 +3363,9 @@ function estimatePooledMeanOnly(rows: EffectRow[], iterations: number): SummaryE
     ciUpper,
     z,
     p,
-    method: 'mean-only non-parametric bootstrap',
+    method: 'mean-only equal-cluster non-parametric bootstrap',
     bootstrapIterations: iterations,
+    clusterCount: values.length,
   };
 }
 
@@ -2834,6 +3453,7 @@ function buildRunQualityReport(
   const checks: Array<{ label: string; status: 'ok' | 'warn'; message: string }> = [];
   const uniqueStudies = new Set(effectRows.map(row => row.study_id)).size;
   const outcomes = new Set(effectRows.map(row => row.outcome_id)).size;
+  const uniqueClusters = new Set(effectRows.map(row => row.cluster_id || row.study_id)).size;
 
   checks.push({
     label: '效应量行',
@@ -2846,9 +3466,12 @@ function buildRunQualityReport(
     checks.push({
       label: '无 SD/SE mean-only 分析',
       status: 'warn',
-      message: `${meanOnlyCount} 行效应量使用 mean-only response ratio / mean difference + 非参数 bootstrap；未使用 SD/SE 逆方差权重，I²/tau² 等异质性指标不适用或仅作描述。`,
+      message: `${meanOnlyCount} 行效应量先在 ${uniqueClusters} 个研究/聚类内等权汇总，再按研究/聚类执行非参数 bootstrap；未使用 SD/SE 逆方差权重，I²/tau² 等异质性指标不适用。`,
     });
-    warnings.push('存在无 SD/SE 的 mean-only bootstrap 结果。请在论文中明确说明这是无方差信息时的替代方案，不能解释为常规逆方差加权 Meta 分析。');
+    warnings.push('存在无 SD/SE 的 mean-only 研究级聚类 bootstrap 结果。请在论文中明确说明这是无方差信息时的替代方案，不能解释为常规逆方差加权 Meta 分析。');
+    if (uniqueClusters < 3) {
+      warnings.push('mean-only 结果的独立研究/聚类少于 3 个，聚类 bootstrap 置信区间不稳定，只应作描述性展示。');
+    }
   }
   checks.push({
     label: '跳过行',
@@ -2912,9 +3535,41 @@ function buildRunQualityReport(
     if (count < 3) warnings.push(`${label} 有效效应量少于 3，建议补充数据或仅做描述性展示。`);
   });
   if (uniqueStudies < effectRows.length) {
-    warnings.push('同一研究包含多个效应量，正式模型建议在 R 输出中检查 cluster-robust 或多层模型。');
+    warnings.push('同一研究包含多个效应量：mean-only 使用研究级等权聚类 bootstrap；标准方差型数据的 R 模型使用多层随机效应并输出 CR2 聚类稳健检验。');
   }
   if (skippedRows.length > 0) warnings.push('存在被跳过的原始行，请优先核查均值、SD、n、lnRR 正值约束和图像数字化来源；mean-only 模式只要求处理组/对照组均值。');
+
+  const addEvidenceCoverageCheck = (
+    label: string,
+    pattern: RegExp,
+    missingMessage: string,
+  ) => {
+    const columns = dataset.columns.filter(column => pattern.test(String(column || '')));
+    if (columns.length === 0) {
+      checks.push({ label, status: 'warn', message: missingMessage });
+      return;
+    }
+    const coveredRows = dataset.rows.filter(row =>
+      columns.some(column => stringifyCell(row[column]).length > 0)
+    ).length;
+    const coverage = dataset.rows.length > 0 ? coveredRows / dataset.rows.length : 0;
+    checks.push({
+      label,
+      status: coverage >= 0.8 ? 'ok' : 'warn',
+      message: `检测到字段 ${columns.join('、')}；已填写 ${coveredRows}/${dataset.rows.length} 行（${Math.round(coverage * 100)}%）。`,
+    });
+  };
+
+  addEvidenceCoverageCheck(
+    '偏倚风险评价',
+    /(?:^|[_\s-])(?:risk[_\s-]*of[_\s-]*bias|rob(?:2)?|quality[_\s-]*(?:score|assessment))(?:$|[_\s-])|偏倚风险|质量评价|质量评分/i,
+    '当前编码表未检测到偏倚风险/研究质量字段；合并效应可计算，但正式报告前仍需独立完成研究层面的偏倚风险评价。',
+  );
+  addEvidenceCoverageCheck(
+    '证据确定性（GRADE）',
+    /(?:^|[_\s-])(?:grade|certainty|evidence[_\s-]*quality)(?:$|[_\s-])|证据确定性|证据质量/i,
+    '当前编码表未检测到 GRADE/证据确定性字段；不要把统计显著性直接解释为高确定性证据。',
+  );
 
   return { warnings: Array.from(new Set(warnings)), checks };
 }
@@ -2926,6 +3581,9 @@ function buildEffectRowsCsv(effectRows: EffectRow[]): string {
     'outcome_label',
     'measure',
     'study_id',
+    'cluster_id',
+    'contrast_id',
+    'contrast_label',
     'pdf_id',
     'pdf_title',
     'pdf_file',
@@ -2955,6 +3613,9 @@ function buildEffectRowsCsv(effectRows: EffectRow[]): string {
       outcome_label: row.outcome_label,
       measure: row.measure,
       study_id: row.study_id,
+      cluster_id: row.cluster_id,
+      contrast_id: row.contrast_id,
+      contrast_label: row.contrast_label,
       pdf_id: row.pdf_id,
       pdf_title: row.pdf_title,
       pdf_file: row.pdf_file,
@@ -3011,6 +3672,9 @@ function buildMetaAnalysisRCode(config: Required<MetaRunConfig>, effectRows: Eff
     'if (!all(c("yi", "vi", "outcome_id", "study_id") %in% names(dat))) stop("Effect-size data is missing required columns.")',
     'dat$yi <- as.numeric(dat$yi)',
     'dat$vi <- as.numeric(dat$vi)',
+    'if (!"cluster_id" %in% names(dat)) dat$cluster_id <- dat$study_id',
+    'dat$cluster_id[is.na(dat$cluster_id) | dat$cluster_id == ""] <- dat$study_id[is.na(dat$cluster_id) | dat$cluster_id == ""]',
+    'dat$cluster_id <- as.character(dat$cluster_id)',
     'dat$mean_only <- grepl("mean_only", dat$measure, ignore.case = TRUE) | !is.finite(dat$vi) | dat$vi <= 0',
     'dat$sei <- ifelse(is.finite(dat$vi) & dat$vi > 0, sqrt(dat$vi), NA_real_)',
     'dat <- dat[is.finite(dat$yi) & (dat$mean_only | (is.finite(dat$vi) & dat$vi > 0)), , drop = FALSE]',
@@ -3035,8 +3699,8 @@ function buildMetaAnalysisRCode(config: Required<MetaRunConfig>, effectRows: Eff
     '  if (meta_model_type == "fixed") {',
     '    return(metafor::rma(yi = yi, vi = vi, data = d, method = "FE"))',
     '  }',
-    '  if (meta_model_type == "mixed") {',
-    '    return(metafor::rma.mv(yi = yi, V = vi, random = ~ 1 | study_id/effect_uid, data = d, method = meta_method))',
+    '  if (meta_model_type == "mixed" || anyDuplicated(d$cluster_id)) {',
+    '    return(metafor::rma.mv(yi = yi, V = vi, random = ~ 1 | cluster_id/effect_uid, data = d, method = meta_method))',
     '  }',
     '  metafor::rma(yi = yi, vi = vi, data = d, method = meta_method)',
     '}',
@@ -3045,8 +3709,8 @@ function buildMetaAnalysisRCode(config: Required<MetaRunConfig>, effectRows: Eff
     '  if (meta_model_type == "fixed") {',
     '    return(metafor::rma(yi = yi, vi = vi, mods = form, data = d, method = "FE"))',
     '  }',
-    '  if (meta_model_type == "mixed") {',
-    '    return(metafor::rma.mv(yi = yi, V = vi, mods = form, random = ~ 1 | study_id/effect_uid, data = d, method = meta_method))',
+    '  if (meta_model_type == "mixed" || anyDuplicated(d$cluster_id)) {',
+    '    return(metafor::rma.mv(yi = yi, V = vi, mods = form, random = ~ 1 | cluster_id/effect_uid, data = d, method = meta_method))',
     '  }',
     '  metafor::rma(yi = yi, vi = vi, mods = form, data = d, method = meta_method)',
     '}',
@@ -3064,19 +3728,24 @@ function buildMetaAnalysisRCode(config: Required<MetaRunConfig>, effectRows: Eff
     `min_subgroup_studies <- ${META_SUBGROUP_MIN_STUDIES}`,
     `max_subgroup_plot_levels <- ${META_SUBGROUP_MAX_PLOT_LEVELS}`,
     `bootstrap_iterations <- ${MEAN_ONLY_BOOTSTRAP_ITERATIONS}`,
-    'bootstrap_mean <- function(x, iterations = bootstrap_iterations) {',
-    '  x <- x[is.finite(x)]',
-    '  if (length(x) == 0) return(data.frame(estimate = NA_real_, se = NA_real_, ci_lower = NA_real_, ci_upper = NA_real_))',
-    '  if (length(x) == 1) return(data.frame(estimate = x[1], se = NA_real_, ci_lower = x[1], ci_upper = x[1]))',
+    'bootstrap_cluster_mean <- function(d, iterations = bootstrap_iterations) {',
+    '  d <- d[is.finite(d$yi) & !is.na(d$cluster_id) & d$cluster_id != "", c("cluster_id", "yi"), drop = FALSE]',
+    '  cluster_means <- vapply(split(d$yi, d$cluster_id), mean, numeric(1), na.rm = TRUE)',
+    '  cluster_means <- cluster_means[is.finite(cluster_means)]',
+    '  if (length(cluster_means) == 0) return(data.frame(estimate = NA_real_, se = NA_real_, ci_lower = NA_real_, ci_upper = NA_real_, clusters = 0))',
+    '  if (length(cluster_means) == 1) return(data.frame(estimate = cluster_means[1], se = NA_real_, ci_lower = cluster_means[1], ci_upper = cluster_means[1], clusters = 1))',
     '  set.seed(20260609)',
-    '  boots <- replicate(iterations, mean(sample(x, size = length(x), replace = TRUE)))',
-    '  data.frame(estimate = mean(x), se = stats::sd(boots), ci_lower = stats::quantile(boots, 0.025, names = FALSE), ci_upper = stats::quantile(boots, 0.975, names = FALSE))',
+    '  boots <- replicate(iterations, mean(sample(cluster_means, size = length(cluster_means), replace = TRUE)))',
+    '  data.frame(estimate = mean(cluster_means), se = stats::sd(boots), ci_lower = stats::quantile(boots, 0.025, names = FALSE), ci_upper = stats::quantile(boots, 0.975, names = FALSE), clusters = length(cluster_means))',
     '}',
     'make_mean_only_row <- function(d, outcome_id, outcome_label, subgroup_col = "", subgroup_level = "") {',
-    '  boot <- bootstrap_mean(d$yi)',
-    '  data.frame(outcome_id = outcome_id, outcome_label = outcome_label, subgroup_column = subgroup_col, subgroup_level = subgroup_level, k = nrow(d), studies = length(unique(d$study_id)), estimate = boot$estimate[1], se = boot$se[1], ci_lower = boot$ci_lower[1], ci_upper = boot$ci_upper[1], z = NA_real_, p = NA_real_, tau2 = NA_real_, method = "mean-only bootstrap", stringsAsFactors = FALSE)',
+    '  boot <- bootstrap_cluster_mean(d)',
+    '  data.frame(outcome_id = outcome_id, outcome_label = outcome_label, subgroup_column = subgroup_col, subgroup_level = subgroup_level, k = nrow(d), studies = length(unique(d$study_id)), clusters = boot$clusters[1], estimate = boot$estimate[1], se = boot$se[1], ci_lower = boot$ci_lower[1], ci_upper = boot$ci_upper[1], pi_lower = NA_real_, pi_upper = NA_real_, z = NA_real_, p = NA_real_, tau2 = NA_real_, method = "mean-only equal-cluster bootstrap", stringsAsFactors = FALSE)',
     '}',
-    'estimate_row <- function(fit, outcome_id, outcome_label, subgroup_col, subgroup_level, k, studies) {',
+    'estimate_row <- function(fit, outcome_id, outcome_label, subgroup_col, subgroup_level, k, studies, clusters) {',
+    '  prediction <- try(stats::predict(fit), silent = TRUE)',
+    '  pi_lower <- if (!inherits(prediction, "try-error") && !is.null(prediction$pi.lb)) first_num(prediction$pi.lb) else NA_real_',
+    '  pi_upper <- if (!inherits(prediction, "try-error") && !is.null(prediction$pi.ub)) first_num(prediction$pi.ub) else NA_real_',
     '  data.frame(',
     '    outcome_id = outcome_id,',
     '    outcome_label = outcome_label,',
@@ -3084,10 +3753,13 @@ function buildMetaAnalysisRCode(config: Required<MetaRunConfig>, effectRows: Eff
     '    subgroup_level = subgroup_level,',
     '    k = k,',
     '    studies = studies,',
+    '    clusters = clusters,',
     '    estimate = first_num(fit$b),',
     '    se = first_num(fit$se),',
     '    ci_lower = first_num(fit$ci.lb),',
     '    ci_upper = first_num(fit$ci.ub),',
+    '    pi_lower = pi_lower,',
+    '    pi_upper = pi_upper,',
     '    z = first_num(fit$zval),',
     '    p = first_num(fit$pval),',
     '    tau2 = if (!is.null(fit$tau2)) first_num(fit$tau2) else if (!is.null(fit$sigma2)) sum(suppressWarnings(as.numeric(fit$sigma2)), na.rm = TRUE) else NA_real_,',
@@ -3121,6 +3793,46 @@ function buildMetaAnalysisRCode(config: Required<MetaRunConfig>, effectRows: Eff
     '    ggplot2::theme_bw(base_size = 11, base_family = plot_base_family) +',
     '    ggplot2::theme(panel.grid.major.y = ggplot2::element_blank(), axis.text.y = ggplot2::element_text(size = 9))',
     '}',
+    'aggregate_cluster_effects <- function(d) {',
+    '  rows <- lapply(split(d, d$cluster_id), function(dd) {',
+    '    dd <- dd[is.finite(dd$yi) & is.finite(dd$vi) & dd$vi > 0, , drop = FALSE]',
+    '    if (nrow(dd) == 0) return(NULL)',
+    '    fit <- try(metafor::rma(yi = yi, vi = vi, data = dd, method = "FE"), silent = TRUE)',
+    '    if (inherits(fit, "try-error")) return(NULL)',
+    '    data.frame(cluster_id = as.character(dd$cluster_id[1]), study_id = as.character(dd$study_id[1]), k = nrow(dd), yi = first_num(fit$b), vi = first_num(fit$se)^2, sei = first_num(fit$se), ci_lower = first_num(fit$ci.lb), ci_upper = first_num(fit$ci.ub), stringsAsFactors = FALSE)',
+    '  })',
+    '  rows <- rows[!vapply(rows, is.null, logical(1))]',
+    '  if (length(rows) == 0) return(data.frame())',
+    '  do.call(rbind, rows)',
+    '}',
+    'plot_cluster_forest <- function(cluster_dat, title_text) {',
+    '  if (nrow(cluster_dat) == 0) return(NULL)',
+    '  cluster_dat <- cluster_dat[order(cluster_dat$yi), , drop = FALSE]',
+    '  cluster_dat$display_label <- paste0(plot_label(cluster_dat$study_id), " (k=", cluster_dat$k, ")")',
+    '  cluster_dat$display_label <- factor(cluster_dat$display_label, levels = rev(cluster_dat$display_label))',
+    '  ggplot2::ggplot(cluster_dat, ggplot2::aes(x = yi, y = display_label)) +',
+    '    ggplot2::geom_vline(xintercept = 0, linetype = 2, color = "grey60") +',
+    '    ggplot2::geom_segment(ggplot2::aes(x = ci_lower, xend = ci_upper, yend = display_label), linewidth = 0.7, color = "#475569") +',
+    '    ggplot2::geom_point(size = 2.6, color = "#0f766e") +',
+    '    ggplot2::labs(x = "Study/cluster effect size", y = NULL, title = title_text, subtitle = "Multiple effects are first combined within study/cluster using a fixed-effect model") +',
+    '    ggplot2::theme_bw(base_size = 10, base_family = plot_base_family) +',
+    '    ggplot2::theme(panel.grid.major.y = ggplot2::element_blank(), axis.text.y = ggplot2::element_text(size = 8))',
+    '}',
+    'plot_cluster_funnel <- function(cluster_dat, pooled_estimate, title_text) {',
+    '  if (nrow(cluster_dat) < 10) return(NULL)',
+    '  ggplot2::ggplot(cluster_dat, ggplot2::aes(x = yi, y = sei)) +',
+    '    ggplot2::geom_vline(xintercept = pooled_estimate, linetype = 2, color = "#0f766e") +',
+    '    ggplot2::geom_point(size = 2.4, alpha = 0.78, color = "#334155") +',
+    '    ggplot2::scale_y_reverse() +',
+    '    ggplot2::labs(x = "Study/cluster effect size", y = "Standard error", title = title_text, subtitle = "Exploratory funnel plot based on independent study/cluster summaries") +',
+    '    ggplot2::theme_bw(base_size = 11, base_family = plot_base_family)',
+    '}',
+    'save_plot_pair <- function(plot, stem, width = 8.5, height = 6) {',
+    '  if (is.null(plot)) return(invisible(FALSE))',
+    '  ggplot2::ggsave(file.path("plots", paste0(stem, ".png")), plot, width = width, height = safe_plot_height(height), dpi = 600, bg = "white")',
+    '  ggplot2::ggsave(file.path("plots", paste0(stem, ".pdf")), plot, width = width, height = safe_plot_height(height), device = pdf_device, bg = "white")',
+    '  invisible(TRUE)',
+    '}',
     'sink(file.path("plots", "meta_model_summary.txt"))',
     'cat("Scholar Harness Meta Analysis\\n")',
     'cat("Rows:", nrow(dat), "\\n")',
@@ -3140,7 +3852,7 @@ function buildMetaAnalysisRCode(config: Required<MetaRunConfig>, effectRows: Eff
     '  cat("Effect sizes:", nrow(d), " Studies:", length(unique(d$study_id)), "\\n")',
     '  if (nrow(d) < 2) { cat("Skipped: fewer than 2 effect sizes.\\n"); next }',
     '  if (all(d$mean_only)) {',
-    '    cat("Mean-only bootstrap/resampling mode: no SD/SE inverse-variance weights are used.\\n")',
+    '    cat("Mean-only equal-cluster bootstrap mode: effects are averaged within cluster_id, then clusters receive equal weight; no SD/SE inverse-variance weights are used.\\n")',
     '    mean_row <- make_mean_only_row(d, outcome, label)',
     '    print(mean_row)',
     '    mean_only_summaries[[outcome]] <- mean_row',
@@ -3151,7 +3863,7 @@ function buildMetaAnalysisRCode(config: Required<MetaRunConfig>, effectRows: Eff
     '      ggplot2::ggsave(file.path("plots", paste0(slug, "_pooled_effect.png")), p_pooled, width = 8.5, height = 3.8, dpi = 600, bg = "white")',
     '      ggplot2::ggsave(file.path("plots", paste0(slug, "_pooled_effect.pdf")), p_pooled, width = 8.5, height = 3.8, device = pdf_device, bg = "white")',
     '    }',
-    '    cat("Individual mean-only effect-size diagnostics plot skipped; reporting pooled and subgroup pooled effects only.\\n")',
+    '    cat("Funnel, Egger, Baujat and conventional heterogeneity diagnostics are not applicable to mean-only data; reporting pooled and subgroup clustered-bootstrap effects only.\\n")',
     '    for (subgroup_col in subgroup_cols) {',
     '      if (is.numeric(d[[subgroup_col]])) { cat("Subgroup skipped:", subgroup_col, "is numeric; use moderator/meta-regression or define range groups first.\\n"); next }',
     '      levels <- unique(d[[subgroup_col]][!is.na(d[[subgroup_col]]) & d[[subgroup_col]] != ""])',
@@ -3188,7 +3900,7 @@ function buildMetaAnalysisRCode(config: Required<MetaRunConfig>, effectRows: Eff
     '  if (nrow(d) < 2) { cat("Skipped: fewer than 2 inverse-variance effect sizes after excluding mean-only rows.\\n"); next }',
     '  fit <- fit_main_model(d)',
     '  print(summary(fit))',
-    '  main_summary_row <- estimate_row(fit, outcome, label, "", "", nrow(d), length(unique(d$study_id)))',
+    '  main_summary_row <- estimate_row(fit, outcome, label, "", "", nrow(d), length(unique(d$study_id)), length(unique(d$cluster_id)))',
     '  model_summaries[[outcome]] <- main_summary_row',
     '  overall_effect_summaries[[outcome]] <- main_summary_row',
     '  pooled_effect_summaries[[outcome]] <- main_summary_row',
@@ -3197,26 +3909,42 @@ function buildMetaAnalysisRCode(config: Required<MetaRunConfig>, effectRows: Eff
     '    ggplot2::ggsave(file.path("plots", paste0(slug, "_pooled_effect.png")), p_pooled, width = 8.5, height = 3.8, dpi = 600, bg = "white")',
     '    ggplot2::ggsave(file.path("plots", paste0(slug, "_pooled_effect.pdf")), p_pooled, width = 8.5, height = 3.8, device = pdf_device, bg = "white")',
     '  }',
-    '  if (length(unique(d$study_id)) < nrow(d) && requireNamespace("clubSandwich", quietly = TRUE)) {',
-    '    cat("\\nCluster-robust variance by study_id:\\n")',
-    '    print(try(clubSandwich::coef_test(fit, vcov = "CR2", cluster = d$study_id), silent = TRUE))',
+    '  if (length(unique(d$cluster_id)) < nrow(d) && requireNamespace("clubSandwich", quietly = TRUE)) {',
+    '    cat("\\nCluster-robust variance by cluster_id:\\n")',
+    '    print(try(clubSandwich::coef_test(fit, vcov = "CR2", cluster = d$cluster_id), silent = TRUE))',
     '  }',
-    '  cat("Long row-per-effect forest plot skipped; use pooled effect and subgroup pooled effect summaries for reporting.\\n")',
-    '  cat("Funnel plot skipped by default; reporting pooled and subgroup pooled effects only.\\n")',
-    '  if (nrow(d) >= 10) {',
-    '    cat("\\nEgger regression test:\\n")',
-    '    print(try(metafor::regtest(fit, model = "rma"), silent = TRUE))',
+    '  cluster_dat <- aggregate_cluster_effects(d)',
+    '  if (nrow(cluster_dat) >= 1) {',
+    '    write.csv(cluster_dat, file.path("plots", paste0(slug, "_study_cluster_effects.csv")), row.names = FALSE, fileEncoding = "UTF-8")',
+    '    p_forest <- plot_cluster_forest(cluster_dat, paste("Study/cluster forest plot:", label))',
+    '    forest_height <- safe_plot_height(0.34 * nrow(cluster_dat) + 2.4, max_height = 18)',
+    '    save_plot_pair(p_forest, paste0(slug, "_study_cluster_forest"), width = 9, height = forest_height)',
+    '  }',
+    '  cluster_fit <- if (nrow(cluster_dat) >= 2) try(metafor::rma(yi = yi, vi = vi, slab = study_id, data = cluster_dat, method = if (meta_model_type == "fixed") "FE" else meta_method), silent = TRUE) else NULL',
+    '  if (!is.null(cluster_fit) && !inherits(cluster_fit, "try-error") && nrow(cluster_dat) >= 10) {',
+    '    p_funnel <- plot_cluster_funnel(cluster_dat, first_num(cluster_fit$b), paste("Funnel plot:", label))',
+    '    save_plot_pair(p_funnel, paste0(slug, "_study_cluster_funnel"), width = 7, height = 6)',
+    '    cat("\\nEgger regression test on independent study/cluster summaries:\\n")',
+    '    print(try(metafor::regtest(cluster_fit, model = "rma"), silent = TRUE))',
     '  } else {',
-    '    cat("\\nEgger regression test skipped: k < 10.\\n")',
+    '    cat("\\nFunnel plot and Egger regression skipped: fewer than 10 independent study/cluster summaries.\\n")',
     '  }',
-    '  if (nrow(d) >= 3) {',
-    '    cat("\\nLeave-one-out diagnostics:\\n")',
-    '    loo <- try(metafor::leave1out(fit), silent = TRUE)',
+    '  if (!is.null(cluster_fit) && !inherits(cluster_fit, "try-error") && nrow(cluster_dat) >= 3) {',
+    '    cat("\\nLeave-one-study/cluster-out diagnostics:\\n")',
+    '    loo <- try(metafor::leave1out(cluster_fit), silent = TRUE)',
     '    print(loo)',
-    '    try(write.csv(as.data.frame(loo), file.path("plots", paste0(slug, "_leave_one_out.csv")), row.names = FALSE), silent = TRUE)',
-    '    cat("Baujat plot skipped by default; leave-one-out table saved as CSV.\\n")',
+    '    try(write.csv(as.data.frame(loo), file.path("plots", paste0(slug, "_leave_one_study_out.csv")), row.names = FALSE), silent = TRUE)',
+    '    baujat_png <- file.path("plots", paste0(slug, "_study_cluster_baujat.png"))',
+    '    grDevices::png(baujat_png, width = 2200, height = 1800, res = 300, bg = "white")',
+    '    baujat_result <- try(metafor::baujat(cluster_fit), silent = TRUE)',
+    '    grDevices::dev.off()',
+    '    baujat_pdf <- file.path("plots", paste0(slug, "_study_cluster_baujat.pdf"))',
+    '    grDevices::pdf(baujat_pdf, width = 8, height = 6)',
+    '    try(metafor::baujat(cluster_fit), silent = TRUE)',
+    '    grDevices::dev.off()',
+    '    if (inherits(baujat_result, "try-error")) cat("Baujat plot failed:", as.character(baujat_result), "\\n")',
     '  }',
-    '  cat("Individual effect-size row plot skipped.\\n")',
+    '  cat("Diagnostics use independent study/cluster summaries; the full row-level effect table remains available as CSV.\\n")',
     '  for (mod in moderator_cols) {',
     '    values <- d[[mod]]',
     '    if (length(unique(values[!is.na(values) & values != ""])) < 2 || nrow(d) < 4) next',
@@ -3227,7 +3955,23 @@ function buildMetaAnalysisRCode(config: Required<MetaRunConfig>, effectRows: Eff
     '    if (!inherits(mod_fit, "try-error")) {',
     '      mod_slug <- safe_slug(paste0(outcome, "_", mod))',
     '      capture.output(summary(mod_fit), file = file.path("plots", paste0(mod_slug, "_meta_regression.txt")))',
-    '      cat("Moderator plot skipped by default; regression summary saved as text.\\n")',
+    '      if (is.numeric(d[[mod]])) {',
+    '        grid <- seq(min(d[[mod]], na.rm = TRUE), max(d[[mod]], na.rm = TRUE), length.out = 100)',
+    '        pred <- try(stats::predict(mod_fit, newmods = matrix(grid, ncol = 1)), silent = TRUE)',
+    '        if (!inherits(pred, "try-error")) {',
+    '          pred_df <- data.frame(x = grid, estimate = as.numeric(pred$pred), ci_lower = as.numeric(pred$ci.lb), ci_upper = as.numeric(pred$ci.ub))',
+    '          p_mod <- ggplot2::ggplot(d, ggplot2::aes(x = .data[[mod]], y = yi)) +',
+    '            ggplot2::geom_point(ggplot2::aes(size = 1 / sqrt(vi)), alpha = 0.55, color = "#475569") +',
+    '            ggplot2::geom_ribbon(data = pred_df, ggplot2::aes(x = x, ymin = ci_lower, ymax = ci_upper), inherit.aes = FALSE, alpha = 0.18, fill = "#0f766e") +',
+    '            ggplot2::geom_line(data = pred_df, ggplot2::aes(x = x, y = estimate), inherit.aes = FALSE, linewidth = 1, color = "#0f766e") +',
+    '            ggplot2::scale_size_continuous(range = c(1.5, 5), guide = "none") +',
+    '            ggplot2::labs(x = mod, y = "Effect size", title = paste("Meta-regression:", label, "by", mod), subtitle = "Line and band are model prediction and 95% CI") +',
+    '            ggplot2::theme_bw(base_size = 11, base_family = plot_base_family)',
+    '          save_plot_pair(p_mod, paste0(mod_slug, "_meta_regression"), width = 7.5, height = 5.5)',
+    '        }',
+    '      } else {',
+    '        cat("Categorical moderator summary saved as text; pooled levels are shown in subgroup plots when selected.\\n")',
+    '      }',
     '    }',
     '  }',
     '  for (subgroup_col in subgroup_cols) {',
@@ -3245,7 +3989,7 @@ function buildMetaAnalysisRCode(config: Required<MetaRunConfig>, effectRows: Eff
     '      cat("\\nSubgroup:", subgroup_col, "=", subgroup_level, " k=", nrow(sd), " studies=", length(unique(sd$study_id)), "\\n")',
     '      print(sub_fit)',
     '      if (!inherits(sub_fit, "try-error")) {',
-    '        subgroup_rows[[length(subgroup_rows) + 1]] <- estimate_row(sub_fit, outcome, label, subgroup_col, subgroup_level, nrow(sd), length(unique(sd$study_id)))',
+    '        subgroup_rows[[length(subgroup_rows) + 1]] <- estimate_row(sub_fit, outcome, label, subgroup_col, subgroup_level, nrow(sd), length(unique(sd$study_id)), length(unique(sd$cluster_id)))',
     '        cat("  Subgroup pooled effect recorded; subgroup row-per-effect forest plot skipped.\\n")',
     '      }',
     '    }',
@@ -3307,10 +4051,20 @@ function buildRunMarkdown(
   lines.push(`- 原始编码行：${dataset.rows.length} 行`);
   lines.push(`- 有效效应量：${effectRows.length} 行`);
   lines.push(`- 跳过组合：${skippedRows.length} 个`);
-  lines.push(`- 模型：${formatMetaModelLabel(config.model, config.method)}`);
   const meanOnlyRows = effectRows.filter(row => isMeanOnlyMeasure(row.measure) || !Number.isFinite(row.vi) || row.vi <= 0);
+  const allMeanOnly = effectRows.length > 0 && meanOnlyRows.length === effectRows.length;
+  lines.push(`- 模型：${allMeanOnly
+    ? '无方差信息：研究/聚类内等权汇总 + 研究级非参数 bootstrap'
+    : formatMetaModelLabel(config.model, config.method)}`);
   if (meanOnlyRows.length > 0) {
-    lines.push(`- 无 SD/SE 替代方案：${meanOnlyRows.length} 行使用 mean-only effect size + ${MEAN_ONLY_BOOTSTRAP_ITERATIONS} 次非参数 bootstrap/resampling，不使用逆方差权重。`);
+    const clusterCount = new Set(meanOnlyRows.map(row => row.cluster_id || row.study_id)).size;
+    lines.push(`- 无 SD/SE 替代方案：${meanOnlyRows.length} 行先汇总为 ${clusterCount} 个研究/聚类，再执行 ${MEAN_ONLY_BOOTSTRAP_ITERATIONS} 次聚类 bootstrap；不使用逆方差权重。`);
+  }
+  if (config.excludeManualReview && config.manualReviewColumn) {
+    lines.push(`- 人工复核：主分析排除 ${config.manualReviewColumn}=true 的数据行。`);
+  }
+  if (config.controlRules.length > 0) {
+    lines.push(`- 对照规则：${config.controlRules.map(rule => rule.label || rule.id).join('；')}`);
   }
   if (config.columnPreprocess.length > 0) {
     lines.push(`- 数据列预处理：${config.columnPreprocess.map(item => `${item.column} => ${item.spec}`).join('；')}`);
@@ -3374,7 +4128,7 @@ function buildRunMarkdown(
   lines.push('### R 输出');
   lines.push(meanOnlyRows.length > 0
     ? '已生成 `meta_effect_sizes.csv` 和 R 脚本。mean-only 效应量会使用无权重 bootstrap/resampling 输出总体合并效应、置信区间和亚组合并效应；不再生成每条效应量一行的长图。'
-    : '已生成 `meta_effect_sizes.csv` 和完整 `metafor` 脚本。点击“执行R出图”会生成总体合并效应图、亚组合并效应图/CSV、总体/亚组合并效应汇总表和模型摘要文件；不再生成每条效应量一行的长 forest 图或默认诊断图。');
+    : '已生成 `meta_effect_sizes.csv` 和完整 `metafor` 脚本。点击“执行R出图”会生成总体/亚组合并效应、预测区间、研究/聚类级 forest、满足门槛时的 funnel 与 Egger、leave-one-study-out、Baujat、数值调节变量回归图及模型摘要。依赖效应先在研究/聚类层级处理，不再绘制误导性的逐效应量长 forest 图。');
   return lines.join('\n');
 }
 

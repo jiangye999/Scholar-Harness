@@ -1,0 +1,10 @@
+{
+  "name": "scholar-harness-meta-analysis-plugin",
+  "version": "1.1.0",
+  "private": true,
+  "type": "commonjs",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "smoke": "node scripts/smoke-test.cjs"
+  }
+}

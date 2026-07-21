@@ -4,7 +4,7 @@ import * as path from 'path';
 import { join } from 'path';
 import * as os from 'os';
 import http from 'http';
-import { existsSync, writeFileSync, readFileSync, unlinkSync, readdirSync, statSync } from 'fs';
+import { existsSync, writeFileSync, readFileSync, unlinkSync, readdirSync, renameSync, statSync } from 'fs';
 import { createHash, randomUUID } from 'crypto';
 import { logger } from '../../utils/logger';
 import { maskEmail, maskSecret } from '../../utils/sanitize';
@@ -18,7 +18,9 @@ import {
 } from '../../utils/llm-client';
 import type { ChatOptions, Message } from '../../types';
 import {
+  CodexTurnCancelledError,
   codexAppServerManager,
+  isCodexTurnCancelledError,
   type CodexAppServerTurnResult,
   type CodexToolGatewayConnection,
 } from './codex-app-server';
@@ -27,26 +29,66 @@ import { isDraftSaveRequest } from '../../utils/draft-save-block';
 import { extractExplicitWorkspaceFileWriteIntent } from '../../utils/workspace-file-intent';
 import { writeWordDraftDocx } from '../../utils/word-draft-docx';
 import { getDataDir, sanitizeUserId as sanitizePathUserId } from '../../utils/paths';
+import { mirrorWorkspaceOutputFiles } from '../../server/services/workspace-output-mirror';
+import { filterUserFacingWorkspaceOutputPaths } from '../../server/services/workspace-output-artifacts';
 
 // PID 文件路径（用于防止 openclaw serve 多开）
 const OPENCLAW_PID_FILE = 'openclaw-serve.pid';
 const codexSessionByConversation = new Map<string, string>();
+const codexCliRuntimeSignatureByConversation = new Map<string, string>();
 const codexSafeWorkspaceByConversation = new Map<string, string>();
 const codexLastUsageByConversation = new Map<string, CodexUsageSnapshot>();
 const codexLastAnswerByConversation = new Map<string, string>();
 const CODEX_SAFE_WORKSPACE_DIR_NAME = 'ScholarHarness_AI_Workspaces';
 const CODEX_SAFE_WORKSPACE_README = 'README_ScholarHarness_AI_Workspace.md';
 const CODEX_AUTO_COMPACT_INPUT_TOKEN_THRESHOLD = 2_000_000;
+const CODEX_MAX_MIRRORED_ARTIFACTS = 2_000;
+const CODEX_MAX_VERIFIED_ARTIFACT_PATHS = 48;
 const CODEX_ARTIFACT_SKIP_DIRS = new Set(['.git', 'node_modules', '.next', 'dist', 'coverage', '__pycache__']);
+const CODEX_TRANSIENT_QA_ARTIFACT_RULE = 'Office/PDF 逐页排版截图（例如 review_v9/page1.png、page2.png）仅供内部视觉 QA：不要把它们列为最终文件或用户附件；只报告真正交付的 DOCX、PDF、表格、代码和论文图。如果临时渲染页面，复核后不要复制到用户目录。';
 export const CODEX_VERIFIED_ARTIFACTS_BEGIN = '[[SH_VERIFIED_ARTIFACTS_BEGIN]]';
 export const CODEX_VERIFIED_ARTIFACTS_END = '[[SH_VERIFIED_ARTIFACTS_END]]';
+
+function repairLegacyCodexModelsCache(): void {
+  const codexHome = String(process.env.CODEX_HOME || join(os.homedir(), '.codex')).trim();
+  const cachePath = join(codexHome, 'models_cache.json');
+  if (!existsSync(cachePath)) return;
+  try {
+    const parsed = JSON.parse(readFileSync(cachePath, 'utf-8')) as {
+      models?: Array<Record<string, unknown>>;
+    };
+    if (!Array.isArray(parsed.models)) return;
+    let repaired = 0;
+    for (const model of parsed.models) {
+      if (Object.prototype.hasOwnProperty.call(model, 'supports_reasoning_summaries')) continue;
+      model.supports_reasoning_summaries = false;
+      repaired += 1;
+    }
+    if (repaired === 0) return;
+    const temporaryPath = `${cachePath}.scholar-harness-${process.pid}.tmp`;
+    writeFileSync(temporaryPath, `${JSON.stringify(parsed, null, 2)}\n`, 'utf-8');
+    renameSync(temporaryPath, cachePath);
+    logger.info(`[ChatBridge] Repaired ${repaired} legacy Codex model cache entries before App Server startup.`);
+  } catch (error) {
+    logger.warn(`[ChatBridge] Unable to repair legacy Codex models cache: ${(error as Error).message}`);
+  }
+}
 
 interface CodexArtifactSnapshotItem {
   size: number;
   mtimeMs: number;
+  ctimeMs: number;
 }
 
-function snapshotCodexArtifactFiles(root: string, maxFiles = 10_000): Map<string, CodexArtifactSnapshotItem> {
+interface CodexArtifactSnapshotOptions {
+  skipAiWorkspaceContainer?: boolean;
+}
+
+function snapshotCodexArtifactFiles(
+  root: string,
+  maxFiles = 10_000,
+  options: CodexArtifactSnapshotOptions = {},
+): Map<string, CodexArtifactSnapshotItem> {
   const snapshot = new Map<string, CodexArtifactSnapshotItem>();
   if (!root || !existsSync(root)) return snapshot;
   const visit = (dir: string): void => {
@@ -60,6 +102,13 @@ function snapshotCodexArtifactFiles(root: string, maxFiles = 10_000): Map<string
     for (const entry of entries) {
       if (snapshot.size >= maxFiles) return;
       if (entry.isDirectory() && CODEX_ARTIFACT_SKIP_DIRS.has(entry.name.toLowerCase())) continue;
+      if (
+        entry.isDirectory()
+        && options.skipAiWorkspaceContainer
+        && entry.name.toLowerCase() === CODEX_SAFE_WORKSPACE_DIR_NAME.toLowerCase()
+      ) {
+        continue;
+      }
       const absolutePath = path.join(dir, entry.name);
       if (entry.isDirectory()) {
         visit(absolutePath);
@@ -68,7 +117,11 @@ function snapshotCodexArtifactFiles(root: string, maxFiles = 10_000): Map<string
       if (!entry.isFile()) continue;
       try {
         const stat = statSync(absolutePath);
-        snapshot.set(absolutePath, { size: stat.size, mtimeMs: stat.mtimeMs });
+        snapshot.set(absolutePath, {
+          size: stat.size,
+          mtimeMs: stat.mtimeMs,
+          ctimeMs: stat.ctimeMs,
+        });
       } catch {
         // Files may disappear while the snapshot is being collected.
       }
@@ -81,19 +134,96 @@ function snapshotCodexArtifactFiles(root: string, maxFiles = 10_000): Map<string
 function collectChangedCodexArtifacts(
   root: string,
   before: Map<string, CodexArtifactSnapshotItem>,
-  maxFiles = 12
+  maxFiles = 12,
+  options: CodexArtifactSnapshotOptions = {},
 ): string[] {
   if (!root || !existsSync(root)) return [];
-  const after = snapshotCodexArtifactFiles(root);
-  return Array.from(after.entries())
+  const after = snapshotCodexArtifactFiles(root, 10_000, options);
+  const changedEntries = Array.from(after.entries())
     .filter(([filePath, current]) => {
       if (path.basename(filePath) === CODEX_SAFE_WORKSPACE_README) return false;
       const previous = before.get(filePath);
-      return !previous || previous.size !== current.size || previous.mtimeMs !== current.mtimeMs;
+      return !previous
+        || previous.size !== current.size
+        || previous.mtimeMs !== current.mtimeMs
+        || previous.ctimeMs !== current.ctimeMs;
     })
-    .sort((left, right) => right[1].mtimeMs - left[1].mtimeMs)
+    .sort((left, right) => right[1].mtimeMs - left[1].mtimeMs);
+  const userFacingPaths = new Set(
+    filterUserFacingWorkspaceOutputPaths(changedEntries.map(([filePath]) => filePath))
+      .map(filePath => process.platform === 'win32' ? path.resolve(filePath).toLowerCase() : path.resolve(filePath))
+  );
+  return changedEntries
+    .filter(([filePath]) => userFacingPaths.has(
+      process.platform === 'win32' ? path.resolve(filePath).toLowerCase() : path.resolve(filePath)
+    ))
     .slice(0, maxFiles)
     .map(([filePath]) => filePath);
+}
+
+export function filterChangedCodexSourceArtifacts(
+  filePaths: string[],
+  workspaceRoot: string,
+  evidenceText: string,
+  explicitTarget = '',
+): string[] {
+  if (!workspaceRoot || !filePaths.length) return [];
+  const resolvedRoot = path.resolve(workspaceRoot);
+  const normalizedEvidence = String(evidenceText || '').replace(/\\/g, '/').toLowerCase();
+  const normalizedTarget = path.basename(String(explicitTarget || '').trim()).toLowerCase();
+  const normalizedTargetStem = path.basename(normalizedTarget, path.extname(normalizedTarget));
+  const seen = new Set<string>();
+
+  return filterUserFacingWorkspaceOutputPaths(filePaths).filter(filePath => {
+    const resolvedPath = path.resolve(String(filePath || '').trim());
+    const compareKey = process.platform === 'win32' ? resolvedPath.toLowerCase() : resolvedPath;
+    if (!filePath || seen.has(compareKey) || !isSubPath(resolvedRoot, resolvedPath)) return false;
+    if (!existsSync(resolvedPath)) return false;
+    try {
+      if (!statSync(resolvedPath).isFile()) return false;
+    } catch {
+      return false;
+    }
+
+    const normalizedPath = resolvedPath.replace(/\\/g, '/').toLowerCase();
+    const baseName = path.basename(resolvedPath).toLowerCase();
+    const baseStem = path.basename(baseName, path.extname(baseName));
+    const mentionedByTurn = normalizedEvidence.includes(normalizedPath)
+      || normalizedEvidence.includes(baseName);
+    const matchesExplicitTarget = !!normalizedTarget && (
+      baseName === normalizedTarget
+      || baseStem === normalizedTargetStem
+      || baseName.includes(normalizedTarget)
+      || normalizedTarget.includes(baseName)
+    );
+    if (!mentionedByTurn && !matchesExplicitTarget) return false;
+    seen.add(compareKey);
+    return true;
+  });
+}
+
+async function mirrorCodexWorkspaceArtifacts(
+  filePaths: string[],
+  workspaceRoot: string,
+  aiWorkRoot: string | null,
+): Promise<{ mirroredPaths: string[]; warning: string }> {
+  if (!workspaceRoot || !aiWorkRoot || filePaths.length === 0) {
+    return { mirroredPaths: [], warning: '' };
+  }
+  const results = await mirrorWorkspaceOutputFiles(filePaths, workspaceRoot, aiWorkRoot);
+  const mirroredPaths = results
+    .filter(result => result.mirrored)
+    .map(result => result.targetPath);
+  const failed = results.filter(result => !result.mirrored);
+  failed.forEach(result => logger.warn(
+    `[ChatBridge] Failed to mirror Codex artifact ${result.sourcePath} -> ${result.targetPath}: ${result.error || 'unknown error'}`
+  ));
+  return {
+    mirroredPaths,
+    warning: failed.length
+      ? `⚠️ 有 ${failed.length} 个文件未能同步到用户配置目录，请使用 AI 工作目录中的版本。`
+      : '',
+  };
 }
 
 export function isCodexDraftWordExportRequest(value: string): boolean {
@@ -113,7 +243,7 @@ export function isCodexFileMutationRequest(value: string): boolean {
 
 export function buildCodexVerifiedArtifactBlock(filePaths: string[]): string {
   const verifiedPaths = Array.from(new Set(
-    (filePaths || []).map(filePath => String(filePath || '').trim()).filter(Boolean)
+    filterUserFacingWorkspaceOutputPaths(filePaths)
   ));
   if (verifiedPaths.length === 0) return '';
   return [
@@ -150,6 +280,7 @@ export function sanitizeCodexFinalAnswer(value: string): string {
 
 function clearCodexThreadState(conversationKey: string): void {
   codexSessionByConversation.delete(conversationKey);
+  codexCliRuntimeSignatureByConversation.delete(conversationKey);
   codexLastUsageByConversation.delete(conversationKey);
   codexLastAnswerByConversation.delete(conversationKey);
 }
@@ -174,6 +305,51 @@ function buildCodexConversationKey(options: ChatOptions, workspaceRoot: string):
   return `${userId}:${conversationId}:${workspaceKey}`;
 }
 
+function buildCodexRuntimeSignature(cwd: string, sandbox: string): string {
+  const resolvedCwd = path.resolve(String(cwd || process.cwd()));
+  return JSON.stringify({
+    cwd: process.platform === 'win32' ? resolvedCwd.toLowerCase() : resolvedCwd,
+    sandbox: String(sandbox || ''),
+  });
+}
+
+function buildCodexConversationKeyPrefix(userId: unknown, conversationId: unknown): string {
+  return `${sanitizeCodexSessionKeyPart(userId || 'web-user')}:${sanitizeCodexSessionKeyPart(conversationId || 'default-conversation')}:`;
+}
+
+function throwIfCodexCancelled(options: Pick<ChatOptions, 'isCancelled'>): void {
+  if (options.isCancelled?.()) throw new CodexTurnCancelledError();
+}
+
+async function terminateCodexProcessTree(child: ReturnType<typeof spawn>): Promise<boolean> {
+  if (!child.pid) return child.kill();
+  if (process.platform !== 'win32') return child.kill('SIGTERM');
+  return new Promise<boolean>(resolve => {
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const finish = (value: boolean): void => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      resolve(value);
+    };
+    const killer = spawn('taskkill.exe', ['/PID', String(child.pid), '/T', '/F'], {
+      windowsHide: true,
+      stdio: 'ignore',
+    });
+    timer = setTimeout(() => {
+      child.kill();
+      finish(false);
+    }, 3_000);
+    timer.unref?.();
+    killer.once('error', () => {
+      child.kill();
+      finish(false);
+    });
+    killer.once('close', code => finish(code === 0));
+  });
+}
+
 function createCodexSafeWorkspaceName(): string {
   const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
   return `Codex-${timestamp}-${randomUUID().slice(0, 8)}`;
@@ -191,21 +367,31 @@ async function prepareCodexSafeWorkspace(workspaceRoot: string, conversationKey:
 
   const requestedSafeRoot = String(preferredSafeRoot || '').trim();
   const resolvedRequestedSafeRoot = requestedSafeRoot ? path.resolve(requestedSafeRoot) : '';
+  const resolvedWorkspaceRoot = path.resolve(workspaceRoot);
+  const rootIsSafeWorkspaceContainer = path.basename(resolvedWorkspaceRoot).toLowerCase() === CODEX_SAFE_WORKSPACE_DIR_NAME.toLowerCase();
   const safeRoot = resolvedRequestedSafeRoot
-    && isSubPath(path.resolve(workspaceRoot), resolvedRequestedSafeRoot)
-    && path.relative(path.resolve(workspaceRoot), resolvedRequestedSafeRoot).toLowerCase().split(/[\\/]+/).includes(CODEX_SAFE_WORKSPACE_DIR_NAME.toLowerCase())
+    && isSubPath(resolvedWorkspaceRoot, resolvedRequestedSafeRoot)
+    && (
+      rootIsSafeWorkspaceContainer
+      || path.relative(resolvedWorkspaceRoot, resolvedRequestedSafeRoot).toLowerCase().split(/[\\/]+/).includes(CODEX_SAFE_WORKSPACE_DIR_NAME.toLowerCase())
+    )
     ? resolvedRequestedSafeRoot
-    : join(workspaceRoot, CODEX_SAFE_WORKSPACE_DIR_NAME, createCodexSafeWorkspaceName());
+    : join(
+        rootIsSafeWorkspaceContainer ? resolvedWorkspaceRoot : join(resolvedWorkspaceRoot, CODEX_SAFE_WORKSPACE_DIR_NAME),
+        createCodexSafeWorkspaceName()
+      );
   await mkdir(safeRoot, { recursive: true });
   const readmePath = join(safeRoot, CODEX_SAFE_WORKSPACE_README);
   const readme = [
     '# Scholar Harness Codex Workspace',
     '',
-    'This folder is a copy-on-write workspace for Codex tasks.',
+    'This folder is the conversation-scoped AI workspace for Codex tasks.',
     `Original workspace: ${workspaceRoot}`,
     '',
+    'Authorization for the configured workspace applies recursively to every ordinary descendant directory and file. Codex should search the full configured workspace tree and the complete ScholarHarness_AI_Workspaces container (including other conversation subfolders), not only top-level files or the current AI workspace.',
     'Codex should copy any source files it needs into this folder before editing or running code.',
-    'The original workspace should be treated as read/source material unless the user explicitly asks to overwrite it.',
+    'Generated and updated output files are mirrored to the configured workspace with the same relative path.',
+    CODEX_TRANSIENT_QA_ARTIFACT_RULE,
     '',
   ].join('\n');
   try {
@@ -510,6 +696,41 @@ function buildCodexQueryEnvelopeSummary(options: ChatOptions): string {
   ].filter(Boolean).join('\n');
 }
 
+function buildCodexQueryIntentSummary(options: ChatOptions): string {
+  const rawIntent = options.draftContext?.queryIntent;
+  if (!rawIntent || typeof rawIntent !== 'object') return '';
+  const intent = rawIntent as Record<string, unknown>;
+  const primaryIntent = String(intent.primaryIntent || '').trim();
+  const resolvedQuery = String(intent.resolvedQuery || '').trim().slice(0, 12000);
+  if (!primaryIntent || !resolvedQuery) return '';
+  const referencedFiles = Array.isArray(intent.referencedFiles)
+    ? intent.referencedFiles.map(item => String(item || '').trim()).filter(Boolean).slice(0, 30)
+    : [];
+  const excludedFiles = Array.isArray(intent.excludedFiles)
+    ? intent.excludedFiles.map(item => String(item || '').trim()).filter(Boolean).slice(0, 20)
+    : [];
+  return [
+    '## 统一 AI Query 意图（本轮路由）',
+    `- primaryIntent: ${primaryIntent}`,
+    `- action: ${String(intent.action || 'other')}`,
+    `- needsWorkspaceSearch: ${intent.needsWorkspaceSearch === true}`,
+    `- needsWebSearch: ${intent.needsWebSearch === true}`,
+    `- needsLiteratureRetrieval: ${intent.needsLiteratureRetrieval === true}`,
+    `- resolvedQuery: ${resolvedQuery}`,
+    referencedFiles.length ? `- referencedFiles: ${referencedFiles.join('；')}` : '',
+    excludedFiles.length ? `- excludedFiles: ${excludedFiles.join('；')}` : '',
+    primaryIntent === 'workspace_file'
+      ? '- 文件名、扩展名、“除了这个/还有呢/下一个”属于工作目录任务；递归搜索原始工作目录全部后代目录与 AI 工作目录，按真实 mtime 核对，不能只查根目录，也不能改判为文献检索。'
+      : '',
+    intent.needsLiteratureRetrieval === false
+      ? '- 本轮不得仅因英文、科研术语或文件名触发文献检索。'
+      : '',
+    intent.needsWebSearch === false
+      ? '- 本轮不得仅因 latest/newest/recent、英文或历史消息触发联网搜索。'
+      : '',
+  ].filter(Boolean).join('\n');
+}
+
 function truncateCodexHandoffContent(value: string, maxChars = 20_000): string {
   const text = String(value || '').trim();
   if (text.length <= maxChars) return text;
@@ -596,6 +817,7 @@ function buildCodexDraftWordExportReminder(options: ChatOptions, currentRequest:
 export function buildCodexResumePrompt(options: ChatOptions, workspaceRoot: string, codexSafeWorkspace: string | null, workspaceSandbox: string): string {
   const currentRequest = extractCodexCurrentRequest(options);
   const queryEnvelopeSummary = buildCodexQueryEnvelopeSummary(options);
+  const queryIntentSummary = buildCodexQueryIntentSummary(options);
   const conversationHandoff = buildCodexConversationHandoff(options);
   const explicitFileWriteIntent = extractExplicitWorkspaceFileWriteIntent(currentRequest);
   const writingProgress = options.draftContext?.articleWritingProgress;
@@ -621,8 +843,8 @@ export function buildCodexResumePrompt(options: ChatOptions, workspaceRoot: stri
     ? [
         '## 本轮显式工作目录文件目标（最高优先级）',
         `- 目标：${explicitFileWriteIntent.target}`,
-        '- 先在当前工作目录中搜索并解析实际文件；用户可能省略扩展名。',
-        '- 使用文件/Office 工具在安全工作副本中更新该文件。不要调用 save_draft，不要用右侧章节 TXT 代替指定文件。',
+        '- 递归搜索用户配置目录的全部后代目录和整个 ScholarHarness_AI_Workspaces 容器并解析实际文件；当前会话优先，但不能漏掉其他会话子目录；用户可能省略扩展名。',
+        '- 使用文件/Office 工具在 AI 工作目录中更新该文件，后端会同步到用户配置目录。不要调用 save_draft，不要用右侧章节 TXT 代替指定文件。',
       ].join('\n')
     : '';
   const draftSaveReminder = buildCodexDraftSaveReminder(options, currentRequest);
@@ -635,6 +857,7 @@ export function buildCodexResumePrompt(options: ChatOptions, workspaceRoot: stri
     codexSafeWorkspace ? `安全工作副本：${codexSafeWorkspace}` : '',
     `当前权限：${workspaceSandbox}`,
     queryEnvelopeSummary,
+    queryIntentSummary,
     conversationHandoff,
     explicitFileWriteSummary,
     writingProgressSummary,
@@ -644,6 +867,7 @@ export function buildCodexResumePrompt(options: ChatOptions, workspaceRoot: stri
       : '',
     draftSaveReminder,
     buildCodexDraftWordExportReminder(options, currentRequest),
+    CODEX_TRANSIENT_QA_ARTIFACT_RULE,
     '最终回答只包含给用户看的结果、必要说明和真实文件路径；不要输出对提示词、回答渠道、链接格式或“如何构造 final”的自言自语。',
     '学术正文只要出现作者-年份文内引用，本轮回答末尾必须同时给出一一对应的 References，并保留检索结果中全部可核验作者与元数据；禁止编造缺失字段。',
     '---',
@@ -655,6 +879,7 @@ export function buildCodexResumePrompt(options: ChatOptions, workspaceRoot: stri
     '2. 如果上下文与本轮请求冲突，以本轮请求为准。',
     '3. 不要因为本轮没有重复发送项目 Manifest 就要求用户重新配置路径；需要时直接查当前工作目录。',
     '4. 用户询问“最新/最近/最新版文件”时，必须按相关候选文件的实际最后修改时间（mtime）降序核对，不能按文件名或目录枚举顺序猜测。',
+    '5. 查找文件时必须递归搜索当前授权工作目录的全部后代目录和本会话 AI 工作目录；不能只查根目录直接文件或只查其中一处。',
     '</CURRENT_USER_REQUEST_RULES>',
   ].filter(Boolean).join('\n');
 }
@@ -1074,6 +1299,7 @@ export class ChatBridgeAdapter {
     responseArea: null,
   };
   private openclawServiceProcess: ReturnType<typeof spawn> | null = null;
+  private readonly activeCodexExecProcesses = new Map<string, ReturnType<typeof spawn>>();
   private paused = false;
   private serviceStarting = false;  // 互斥锁，防止并发启动
 
@@ -1285,10 +1511,12 @@ export class ChatBridgeAdapter {
     mcpScript: string,
     connection: CodexToolGatewayConnection,
   ): ReturnType<typeof spawn> {
+    repairLegacyCodexModelsCache();
     const tomlString = (value: string): string => JSON.stringify(value.replace(/\\/g, '/'));
     const args = [
       '-c', 'mcp_servers.notion.enabled=false',
       '-c', 'mcp_servers.node_repl.enabled=false',
+      '-c', 'sandbox_workspace_write.network_access=true',
       '-c', `mcp_servers.scholar_harness.command=${tomlString(process.execPath)}`,
       '-c', `mcp_servers.scholar_harness.args=[${tomlString(mcpScript)}]`,
       '-c', 'mcp_servers.scholar_harness.env_vars=["ELECTRON_RUN_AS_NODE","SCHOLAR_HARNESS_CODEX_GATEWAY_URL","SCHOLAR_HARNESS_CODEX_GATEWAY_TOKEN","SCHOLAR_HARNESS_CODEX_SESSION_KEY"]',
@@ -1467,6 +1695,7 @@ export class ChatBridgeAdapter {
   }
 
   private async runCodexAppServer(options: ChatOptions): Promise<string> {
+    throwIfCodexCancelled(options);
     const codexConfig = this.config?.codex || {};
     const executable = this.resolveCodexNativeExecutable();
     const mcpScript = this.resolveCodexMcpServerScript();
@@ -1483,10 +1712,14 @@ export class ChatBridgeAdapter {
       ? await prepareCodexSafeWorkspace(workspaceRoot, conversationKey, preferredSafeWorkspace)
       : null;
     const codexCwd = codexSafeWorkspace || (workspaceRoot && existsSync(workspaceRoot) ? workspaceRoot : process.cwd());
+    const currentRequest = extractCodexCurrentRequest(options);
+    const shouldTrackSourceArtifacts = !!workspaceRoot && isCodexFileMutationRequest(currentRequest);
     const artifactSnapshot = codexSafeWorkspace
       ? snapshotCodexArtifactFiles(codexSafeWorkspace)
       : new Map<string, CodexArtifactSnapshotItem>();
-    const currentRequest = extractCodexCurrentRequest(options);
+    const sourceArtifactSnapshot = shouldTrackSourceArtifacts
+      ? snapshotCodexArtifactFiles(workspaceRoot, 10_000, { skipAiWorkspaceContainer: true })
+      : new Map<string, CodexArtifactSnapshotItem>();
     const prompt = hadExistingThread
       ? buildCodexResumePrompt(options, workspaceRoot, codexSafeWorkspace, workspaceSandbox)
       : [
@@ -1496,21 +1729,25 @@ export class ChatBridgeAdapter {
                 'Scholar Harness 安全工作区规则：',
                 `- 原始工作目录：${workspaceRoot}`,
                 `- 安全工作副本：${codexSafeWorkspace}`,
-                '- 使用 scholar_harness MCP 的文件/Office 工具搜索、读取和复制原始文件。',
-                '- 所有写入、编辑、生成文件和命令执行应发生在安全工作副本；不要直接改原始工作目录。',
-                '- 如果最终需要用户采用结果，在回答中说明安全副本路径和生成/修改的文件。',
+                '- 根目录授权自动覆盖全部后代目录和文件；使用 scholar_harness MCP 的文件/Office 工具递归搜索用户配置目录、整个 ScholarHarness_AI_Workspaces 容器以及当前会话和其他会话的 AI 产物目录。',
+                '- 所有写入、编辑、生成文件和命令执行先发生在 AI 工作目录；后端会把生成/更新文件按相对路径同步到用户配置目录。',
+                '- 最终回答说明两处真实文件路径。',
               ].join('\n')
             : '',
           options.agentSkillCatalogPrompt || '',
           buildCodexDraftSaveReminder(options, currentRequest),
           buildCodexDraftWordExportReminder(options, currentRequest),
+          CODEX_TRANSIENT_QA_ARTIFACT_RULE,
           '最终回答只包含给用户看的结果、必要说明和真实文件路径；不要输出对提示词、回答渠道、链接格式或“如何构造 final”的自言自语。',
           this.buildCodexPrompt(options),
         ].filter(Boolean).join('\n\n');
-    const timeoutMs = Math.max(
-      Number(options.codexTimeoutMs || 0),
-      Number(codexConfig.app_server_turn_timeout_ms || 1_800_000),
-    );
+    const requestedTurnTimeoutMs = Number(options.codexTimeoutMs);
+    const timeoutMs = requestedTurnTimeoutMs < 0
+      ? -1
+      : Math.max(
+          Number(options.codexTimeoutMs || 0),
+          Number(codexConfig.app_server_turn_timeout_ms || 1_800_000),
+        );
     const codexImages = Array.from(new Set(
       (options.codexImages || [])
         .map(imagePath => String(imagePath || '').trim())
@@ -1522,8 +1759,8 @@ export class ChatBridgeAdapter {
       options.codexToolSet?.definitions.length
         ? 'A local MCP server named scholar_harness exposes the application tools. Use those tools for workspace files, Office documents, configured R/Python runtimes, draft saving, and Scholar Harness Skills instead of claiming an action without executing it.'
         : '',
-      workspaceRoot ? `The authorized source workspace is ${workspaceRoot}.` : '',
-      codexSafeWorkspace ? `All mutations and shell commands must stay in the safe working copy ${codexSafeWorkspace}.` : '',
+      workspaceRoot ? `The authorized source workspace is ${workspaceRoot}. Authorization applies recursively to every ordinary descendant directory and file; do not limit discovery to top-level entries and do not follow links outside this root.` : '',
+      codexSafeWorkspace ? `Run mutations and shell commands in the AI work directory ${codexSafeWorkspace}; Scholar Harness mirrors generated and updated files to ${workspaceRoot}. For discovery, recursively search the full source tree and the complete ScholarHarness_AI_Workspaces container, including other conversation subfolders inside the authorized root.` : '',
       'On Windows, shell commands run in PowerShell. Do not use bash operators such as ||, &&, 2>nul, grep, or ls -la.',
       hasNativeDraftTool
         ? 'When the user asks to save or update the article draft, call scholar_harness.save_draft and only report success after it returns ok=true.'
@@ -1531,6 +1768,7 @@ export class ChatBridgeAdapter {
       isCodexDraftWordExportRequest(currentRequest)
         ? 'For manuscript DOCX output, set all body text, headings, tables, captions, and references to Times New Roman unless the user explicitly requests another font.'
         : '',
+      CODEX_TRANSIENT_QA_ARTIFACT_RULE,
       'Use real tool results and verified paths. Never fabricate file writes, draft saves, command output, references, or artifact links.',
     ].filter(Boolean).join('\n');
 
@@ -1564,6 +1802,7 @@ export class ChatBridgeAdapter {
     }, 5_000);
 
     try {
+      throwIfCodexCancelled(options);
       const result: CodexAppServerTurnResult = await codexAppServerManager.runTurn({
         conversationKey,
         cwd: codexCwd,
@@ -1577,6 +1816,10 @@ export class ChatBridgeAdapter {
         imagePaths: codexImages,
         skillRoots: options.agentSkillRoots || [],
         toolSet: options.codexToolSet,
+        isCancelled: options.isCancelled,
+        takeSteeringMessages: options.piSession?.takeSteeringMessages,
+        markSteeringApplied: options.piSession?.markSteeringApplied,
+        requeueSteeringMessage: options.piSession?.requeueSteeringMessage,
         spawnAppServer: connection => this.spawnCodexAppServer(executable, mcpScript, connection),
         onProgress: emitProgress,
       });
@@ -1628,21 +1871,59 @@ export class ChatBridgeAdapter {
         }
       }
 
-      const changedArtifacts = codexSafeWorkspace
-        ? collectChangedCodexArtifacts(codexSafeWorkspace, artifactSnapshot)
+      const changedSafeArtifacts = codexSafeWorkspace
+        ? collectChangedCodexArtifacts(codexSafeWorkspace, artifactSnapshot, CODEX_MAX_MIRRORED_ARTIFACTS)
         : [];
-      if (deterministicDraftWordPath && !changedArtifacts.includes(deterministicDraftWordPath)) {
-        changedArtifacts.unshift(deterministicDraftWordPath);
+      if (deterministicDraftWordPath && !changedSafeArtifacts.includes(deterministicDraftWordPath)) {
+        changedSafeArtifacts.unshift(deterministicDraftWordPath);
       }
-      const artifactBlock = buildCodexVerifiedArtifactBlock(changedArtifacts);
-      const verificationWarning = changedArtifacts.length === 0 && isCodexFileMutationRequest(currentRequest)
+      const changedSourceCandidates = shouldTrackSourceArtifacts
+        ? collectChangedCodexArtifacts(
+            workspaceRoot,
+            sourceArtifactSnapshot,
+            CODEX_MAX_MIRRORED_ARTIFACTS,
+            { skipAiWorkspaceContainer: true },
+          )
+        : [];
+      const explicitFileTarget = extractExplicitWorkspaceFileWriteIntent(currentRequest)?.target || '';
+      const receiptEvidence = result.receipts.map(receipt => {
+        try {
+          return JSON.stringify(receipt);
+        } catch {
+          return `${receipt.name}:${receipt.ok}`;
+        }
+      }).join('\n');
+      const changedSourceArtifacts = filterChangedCodexSourceArtifacts(
+        changedSourceCandidates,
+        workspaceRoot,
+        [answer, visibleTranscript, currentRequest, receiptEvidence].join('\n'),
+        explicitFileTarget,
+      );
+      if (workspaceSandbox === 'read-only' && changedSourceArtifacts.length > 0) {
+        logger.warn(
+          `[ChatBridge] Detected ${changedSourceArtifacts.length} verified source-workspace change(s) `
+          + `during a read-only Codex turn; preserving the real artifacts for the UI`
+        );
+      }
+      const mirroredArtifacts = await mirrorCodexWorkspaceArtifacts(
+        changedSafeArtifacts,
+        workspaceRoot,
+        codexSafeWorkspace
+      );
+      const verifiedArtifacts = [
+        ...changedSafeArtifacts,
+        ...changedSourceArtifacts,
+        ...mirroredArtifacts.mirroredPaths.slice(0, CODEX_MAX_VERIFIED_ARTIFACT_PATHS / 2),
+      ].slice(0, CODEX_MAX_VERIFIED_ARTIFACT_PATHS);
+      const artifactBlock = buildCodexVerifiedArtifactBlock(verifiedArtifacts);
+      const verificationWarning = verifiedArtifacts.length === 0 && isCodexFileMutationRequest(currentRequest)
         && draftReceipts.length === 0
         ? '⚠️ Scholar Harness 未检测到本轮真实文件变更，因此没有把 Codex 的“已写入/已生成”表述认定为完成。'
         : '';
       const draftWordWarning = deterministicDraftWordError
         ? `⚠️ Word 草稿未导出：${deterministicDraftWordError}。`
         : '';
-      const answerWithArtifacts = [answer, artifactBlock, draftWordWarning, verificationWarning]
+      const answerWithArtifacts = [answer, artifactBlock, mirroredArtifacts.warning, draftWordWarning, verificationWarning]
         .filter(Boolean)
         .join('\n\n')
         .trim();
@@ -1658,11 +1939,15 @@ export class ChatBridgeAdapter {
   }
 
   private async runCodexCli(options: ChatOptions): Promise<string> {
+    throwIfCodexCancelled(options);
     const codexConfig = this.config?.codex || {};
     const executable = this.resolveCodexCliExecutable();
     const outputDir = await createSecureTempDir();
     const outputFile = join(outputDir, 'codex-last-message.txt');
-    const timeoutMs = Number(options.codexTimeoutMs || codexConfig.timeout_ms || 300000);
+    const requestedCliTimeoutMs = Number(options.codexTimeoutMs);
+    const timeoutMs = requestedCliTimeoutMs < 0
+      ? -1
+      : Number(options.codexTimeoutMs || codexConfig.timeout_ms || 300000);
     const workspaceRoot = String(options.workspaceDirectory?.root || options.workspaceDirectory?.path || '').trim();
     const workspaceSandbox = options.workspaceDirectory?.permission || codexConfig.sandbox || 'workspace-write';
     const preferredSafeWorkspace = String(
@@ -1687,8 +1972,27 @@ export class ChatBridgeAdapter {
       ? await prepareCodexSafeWorkspace(workspaceRoot, conversationKey, preferredSafeWorkspace)
       : null;
     const codexCwd = codexSafeWorkspace || (workspaceRoot && existsSync(workspaceRoot) ? workspaceRoot : process.cwd());
+    const runtimeSignature = buildCodexRuntimeSignature(codexCwd, workspaceSandbox);
+    const previousRuntimeSignature = codexCliRuntimeSignatureByConversation.get(conversationKey) || '';
+    const runtimeChanged = !!resumeThreadId
+      && !!previousRuntimeSignature
+      && previousRuntimeSignature !== runtimeSignature;
+    if (runtimeChanged) {
+      logger.info(
+        `[ChatBridge] Codex CLI cwd/sandbox changed; starting a new runtime `
+        + `while preserving visible conversation handoff | conversation=${conversationKey}`
+      );
+      codexSessionByConversation.delete(conversationKey);
+      resumeThreadId = '';
+    }
+    codexCliRuntimeSignatureByConversation.set(conversationKey, runtimeSignature);
+    const currentRequest = extractCodexCurrentRequest(options);
+    const shouldTrackSourceArtifacts = !!workspaceRoot && isCodexFileMutationRequest(currentRequest);
     const artifactSnapshot = codexSafeWorkspace
       ? snapshotCodexArtifactFiles(codexSafeWorkspace)
+      : new Map<string, CodexArtifactSnapshotItem>();
+    const sourceArtifactSnapshot = shouldTrackSourceArtifacts
+      ? snapshotCodexArtifactFiles(workspaceRoot, 10_000, { skipAiWorkspaceContainer: true })
       : new Map<string, CodexArtifactSnapshotItem>();
     const args = resumeThreadId
       ? [
@@ -1728,6 +2032,7 @@ export class ChatBridgeAdapter {
     if (codexConfig.model?.trim()) {
       args.push('-m', codexConfig.model.trim());
     }
+    args.push('-c', 'sandbox_workspace_write.network_access=true');
     if (codexConfig.reasoning_effort) {
       args.push('-c', `model_reasoning_effort="${codexConfig.reasoning_effort}"`);
     }
@@ -1745,7 +2050,6 @@ export class ChatBridgeAdapter {
     }
     args.push('-');
 
-    const currentRequest = extractCodexCurrentRequest(options);
     const prompt = resumeThreadId
       ? buildCodexResumePrompt(options, workspaceRoot, codexSafeWorkspace, workspaceSandbox)
       : [
@@ -1766,15 +2070,16 @@ export class ChatBridgeAdapter {
             'Scholar Harness 安全工作区规则：',
             `- 原始工作目录：${workspaceRoot}`,
             `- 安全工作副本：${codexSafeWorkspace}`,
-            '- 在修改、生成、运行 R/Python/脚本之前，先把需要使用的原始文件复制到安全工作副本中。',
+            '- 根目录授权覆盖全部层级；查找文件时递归搜索用户配置目录的全部后代目录和整个 ScholarHarness_AI_Workspaces 容器（包括其他会话子目录）。在修改、生成、运行 R/Python/脚本之前，把需要使用的原始文件复制到当前会话 AI 工作目录中。',
             '- 如果用户要求处理 .docx/.xlsx/.pptx，优先使用已配置的 OfficeCLI（officecli 命令）读取、校验、渲染或修改 Office 文档。',
-            '- 所有写入、编辑、生成文件和命令执行应发生在安全工作副本；不要直接改原始工作目录。',
-            '- 如果最终需要用户采用结果，在回答中说明安全副本路径和生成/修改的文件。',
+            '- 所有写入、编辑、生成文件和命令执行先发生在 AI 工作目录；后端会把生成/更新文件按相对路径同步到用户配置目录。',
+            '- 最终回答说明两处真实文件路径。',
           ].join('\n')
         : '',
       options.agentSkillCatalogPrompt || '',
       buildCodexDraftSaveReminder(options, currentRequest),
       buildCodexDraftWordExportReminder(options, currentRequest),
+      CODEX_TRANSIENT_QA_ARTIFACT_RULE,
       '最终回答只包含给用户看的结果、必要说明和真实文件路径；不要输出对提示词、回答渠道、链接格式或“如何构造 final”的自言自语。',
       this.buildCodexPrompt(options),
     ].filter(Boolean).join('\n\n');
@@ -1804,10 +2109,11 @@ export class ChatBridgeAdapter {
         shouldAutoCompact && previousUsage
           ? `Codex 自动 compact：上一轮 ${formatCodexUsageSnapshot(previousUsage)} 超过阈值，已切换为新 Codex 会话。`
           : '',
+        runtimeChanged ? '工作目录或权限已变化，已按新权限启动 Codex 运行环境；最近可见对话仍会继续交接。' : '',
         resumeThreadId ? `复用 Codex 会话：${resumeThreadId}；本轮附带最近可见对话交接，不重复发送大块项目上下文。` : '新建 Codex 会话：本轮会记录 thread，后续同一对话继续使用。',
         workspaceRoot ? `工作目录：${workspaceRoot}` : '',
         codexSafeWorkspace ? `安全工作副本：${codexSafeWorkspace}` : '',
-        codexSafeWorkspace ? 'Codex 将在安全副本中工作，原始目录仅作为读取来源。' : '',
+        codexSafeWorkspace ? 'Codex 将同时检索用户目录和整个 ScholarHarness_AI_Workspaces 容器，生成/更新文件会同步保存到用户目录与当前会话 AI 工作目录。' : '',
         `权限：${workspaceSandbox}`,
         'Codex CLI 会实时显示公开工具事件；无新事件时仅刷新顶部运行时间。',
         '',
@@ -1819,7 +2125,9 @@ export class ChatBridgeAdapter {
       }, 5_000);
 
       const content = await new Promise<string>((resolve, reject) => {
+        throwIfCodexCancelled(options);
         const child = this.spawnCodexProcess(executable, args);
+        this.activeCodexExecProcesses.set(conversationKey, child);
 
         let stdout = '';
         let stderr = '';
@@ -1830,6 +2138,15 @@ export class ChatBridgeAdapter {
         let observedThreadId = resumeThreadId || '';
         let fallbackAgentText = '';
         let latestTurnUsage: CodexUsageSnapshot | null = null;
+        const cancellationTimer = setInterval(() => {
+          if (!options.isCancelled?.() || settled) return;
+          settled = true;
+          clearTimeout(timeout);
+          this.activeCodexExecProcesses.delete(conversationKey);
+          void terminateCodexProcessTree(child);
+          reject(new CodexTurnCancelledError());
+        }, 200);
+        cancellationTimer.unref?.();
         const consumeCodexJsonLine = (line: string): void => {
           const usage = parseCodexUsageFromJsonLine(line);
           if (usage) {
@@ -1850,12 +2167,16 @@ export class ChatBridgeAdapter {
             }
           }
         };
-        const timeout = setTimeout(() => {
-          if (settled) return;
-          settled = true;
-          child.kill();
-          reject(new Error(`Codex CLI timed out after ${timeoutMs}ms`));
-        }, timeoutMs);
+        const timeout = timeoutMs > 0
+          ? setTimeout(() => {
+              if (settled) return;
+              settled = true;
+              clearInterval(cancellationTimer);
+              this.activeCodexExecProcesses.delete(conversationKey);
+              void terminateCodexProcessTree(child);
+              reject(new Error(`Codex CLI timed out after ${timeoutMs}ms`));
+            }, timeoutMs)
+          : undefined;
 
         child.stdout?.on('data', (chunk) => {
           const text = chunk.toString();
@@ -1890,12 +2211,20 @@ export class ChatBridgeAdapter {
           }
         });
         child.on('error', (error) => {
+          if (this.activeCodexExecProcesses.get(conversationKey) === child) {
+            this.activeCodexExecProcesses.delete(conversationKey);
+          }
+          clearInterval(cancellationTimer);
           if (settled) return;
           settled = true;
           clearTimeout(timeout);
           reject(error);
         });
         child.on('close', async (code) => {
+          if (this.activeCodexExecProcesses.get(conversationKey) === child) {
+            this.activeCodexExecProcesses.delete(conversationKey);
+          }
+          clearInterval(cancellationTimer);
           if (settled) return;
           settled = true;
           clearTimeout(timeout);
@@ -1950,20 +2279,51 @@ export class ChatBridgeAdapter {
               }
             }
 
-            const changedArtifacts = codexSafeWorkspace
-              ? collectChangedCodexArtifacts(codexSafeWorkspace, artifactSnapshot)
+            const changedSafeArtifacts = codexSafeWorkspace
+              ? collectChangedCodexArtifacts(codexSafeWorkspace, artifactSnapshot, CODEX_MAX_MIRRORED_ARTIFACTS)
               : [];
-            if (deterministicDraftWordPath && !changedArtifacts.includes(deterministicDraftWordPath)) {
-              changedArtifacts.unshift(deterministicDraftWordPath);
+            if (deterministicDraftWordPath && !changedSafeArtifacts.includes(deterministicDraftWordPath)) {
+              changedSafeArtifacts.unshift(deterministicDraftWordPath);
             }
-            const artifactBlock = buildCodexVerifiedArtifactBlock(changedArtifacts);
-            const verificationWarning = changedArtifacts.length === 0 && isCodexFileMutationRequest(currentRequest)
+            const changedSourceCandidates = shouldTrackSourceArtifacts
+              ? collectChangedCodexArtifacts(
+                  workspaceRoot,
+                  sourceArtifactSnapshot,
+                  CODEX_MAX_MIRRORED_ARTIFACTS,
+                  { skipAiWorkspaceContainer: true },
+                )
+              : [];
+            const explicitFileTarget = extractExplicitWorkspaceFileWriteIntent(currentRequest)?.target || '';
+            const changedSourceArtifacts = filterChangedCodexSourceArtifacts(
+              changedSourceCandidates,
+              workspaceRoot,
+              [answer, visibleTranscript, currentRequest, stdout].join('\n'),
+              explicitFileTarget,
+            );
+            if (workspaceSandbox === 'read-only' && changedSourceArtifacts.length > 0) {
+              logger.warn(
+                `[ChatBridge] Detected ${changedSourceArtifacts.length} verified source-workspace change(s) `
+                + `during a read-only Codex CLI turn; preserving the real artifacts for the UI`
+              );
+            }
+            const mirroredArtifacts = await mirrorCodexWorkspaceArtifacts(
+              changedSafeArtifacts,
+              workspaceRoot,
+              codexSafeWorkspace
+            );
+            const verifiedArtifacts = [
+              ...changedSafeArtifacts,
+              ...changedSourceArtifacts,
+              ...mirroredArtifacts.mirroredPaths.slice(0, CODEX_MAX_VERIFIED_ARTIFACT_PATHS / 2),
+            ].slice(0, CODEX_MAX_VERIFIED_ARTIFACT_PATHS);
+            const artifactBlock = buildCodexVerifiedArtifactBlock(verifiedArtifacts);
+            const verificationWarning = verifiedArtifacts.length === 0 && isCodexFileMutationRequest(currentRequest)
               ? '⚠️ Scholar Harness 未检测到本轮真实文件变更，因此没有把 Codex 的“已写入/已生成”表述认定为完成。'
               : '';
             const draftWordWarning = deterministicDraftWordError
               ? `⚠️ Word 草稿未导出：${deterministicDraftWordError}。`
               : '';
-            const answerWithArtifacts = [answer, artifactBlock, draftWordWarning, verificationWarning]
+            const answerWithArtifacts = [answer, artifactBlock, mirroredArtifacts.warning, draftWordWarning, verificationWarning]
               .filter(Boolean)
               .join('\n\n')
               .trim();
@@ -2077,6 +2437,37 @@ export class ChatBridgeAdapter {
     const preferCodex = this.config?.codex?.enabled !== false && !!this.config?.codex?.prefer;
     return options.forceProvider === 'codex'
       || ((!options.forceProvider || options.forceProvider === 'primary') && preferCodex);
+  }
+
+  async interruptCodexConversation(userId: string, conversationId: string): Promise<{
+    appServerMatched: number;
+    appServerInterrupted: number;
+    execMatched: number;
+    execInterrupted: number;
+  }> {
+    const prefix = buildCodexConversationKeyPrefix(userId, conversationId);
+    const appServerResult = await codexAppServerManager.interruptConversationsByPrefix(prefix);
+    const execEntries = Array.from(this.activeCodexExecProcesses.entries())
+      .filter(([conversationKey]) => conversationKey.startsWith(prefix));
+    let execInterrupted = 0;
+    await Promise.all(execEntries.map(async ([conversationKey, child]) => {
+      this.activeCodexExecProcesses.delete(conversationKey);
+      if (await terminateCodexProcessTree(child)) execInterrupted += 1;
+    }));
+    logger.info('[ChatBridge] Codex cancellation requested:', {
+      userId,
+      conversationId,
+      appServerMatched: appServerResult.matched,
+      appServerInterrupted: appServerResult.interrupted,
+      execMatched: execEntries.length,
+      execInterrupted,
+    });
+    return {
+      appServerMatched: appServerResult.matched,
+      appServerInterrupted: appServerResult.interrupted,
+      execMatched: execEntries.length,
+      execInterrupted,
+    };
   }
 
   async chatWithTools(
@@ -2196,17 +2587,23 @@ export class ChatBridgeAdapter {
       const savedSecondaryVisionModel = this.config?.secondary_vision?.model || this.config?.secondary?.vision_model || this.config?.secondary?.model || 'gpt-4o';
       const shouldTryCodex =
         options.forceProvider === 'codex' ||
-        (!options.forceProvider && preferCodex) ||
-        (options.forceProvider === 'primary' && preferCodex);
+        (!options.bypassCodexPreference && (
+          (!options.forceProvider && preferCodex) ||
+          (options.forceProvider === 'primary' && preferCodex)
+        ));
 
       if (shouldTryCodex) {
         try {
+          throwIfCodexCancelled(options);
           let content: string;
           if (this.config?.codex?.app_server_enabled !== false) {
             try {
               content = await this.runCodexAppServer(options);
               logger.info(`[ChatBridge] Codex App Server 模式成功 | 响应长度: ${content.length}`);
             } catch (appServerError) {
+              if (options.isCancelled?.() || isCodexTurnCancelledError(appServerError)) {
+                throw new CodexTurnCancelledError((appServerError as Error).message);
+              }
               const appServerMessage = (appServerError as Error).message || String(appServerError);
               logger.warn(`[ChatBridge] Codex App Server 执行失败: ${appServerMessage}`);
               if (this.config?.codex?.app_server_fallback_exec === false) {
@@ -2226,6 +2623,9 @@ export class ChatBridgeAdapter {
           }
           return content;
         } catch (codexError) {
+          if (options.isCancelled?.() || isCodexTurnCancelledError(codexError)) {
+            throw new CodexTurnCancelledError((codexError as Error).message);
+          }
           const message = (codexError as Error).message || String(codexError);
           logger.warn(`[ChatBridge] Codex CLI 不可用或执行失败: ${message}`);
           if (options.disableFallback) {

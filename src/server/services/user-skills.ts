@@ -6,7 +6,7 @@ import { getDataDir, sanitizeUserId } from '../../utils/paths';
 import { logger } from '../../utils/logger';
 
 const USER_SKILL_TRIGGER_RE = /^[a-zA-Z0-9_\-\u4e00-\u9fa5]{1,32}$/u;
-const USER_SKILL_COMMAND_RE = /(^|[\s\n])\/([a-zA-Z0-9_\-\u4e00-\u9fa5]{1,32})(?=$|[\s\n，。,.!?！？;；:：])/gu;
+const USER_SKILL_COMMAND_RE = /^\s*\/([a-zA-Z0-9_\-\u4e00-\u9fa5]{1,32})(?=$|[\s\n，。,.!?！？;；:：])/u;
 const GITHUB_FETCH_TIMEOUT_MS = 15000;
 const TARGET_VENUE_FETCH_TIMEOUT_MS = 10000;
 const MAX_IMPORTED_SKILL_BYTES = 512 * 1024;
@@ -1630,13 +1630,13 @@ export async function parseUserSkillInvocation(userId: string, message: string):
   const invoked = new Map<string, UserSkill>();
   let cleanMessage = originalMessage.replace(
     USER_SKILL_COMMAND_RE,
-    (fullMatch: string, prefix: string, command: string) => {
+    (fullMatch: string, command: string) => {
       const skill = skillByTrigger.get(triggerKey(command));
       if (!skill) {
         return fullMatch;
       }
       invoked.set(skill.id, skill);
-      return prefix;
+      return '';
     },
   );
 
@@ -1657,7 +1657,7 @@ export async function parseUserSkillInvocation(userId: string, message: string):
 
   const promptBlock = [
     '## 用户显式调用的自定义 Skill',
-    '用户在本轮消息中使用斜杠命令调用了以下自定义 Skill。请把这些 Skill 作为本轮任务的高优先级写作/分析规则，但仍需服从用户当前请求、事实依据和安全约束。',
+    '用户在本轮消息开头使用斜杠命令调用了以下自定义 Skill。请把这些 Skill 作为本轮任务的高优先级写作/分析规则，但仍需服从用户当前请求、事实依据和安全约束。',
     ...invokedSkills.map((skill, index) => [
       '',
       `### ${index + 1}. /${skill.trigger} - ${skill.name}`,

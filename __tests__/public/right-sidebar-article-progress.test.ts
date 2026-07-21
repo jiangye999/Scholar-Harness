@@ -12,11 +12,18 @@ function readFunctionBody(name: string, nextName: string): string {
 }
 
 describe('right article progress sidebar', () => {
-  it('removes the manual discussion framework page and opens article progress instead', () => {
+  it('removes the manual discussion framework page and toggles article progress from the composer', () => {
     expect(html).not.toContain('id="rightSidebarTabDiscussion"');
     expect(html).not.toContain('id="discussionFrameworkPage"');
-    expect(html).toContain('onclick="openArticleWritingProgressPanel()"');
+    expect(html).toContain('id="articleWritingProgressBtn"');
+    expect(html).toContain('onclick="toggleArticleWritingProgressPanel()"');
+    expect(html).toContain('aria-controls="articleProgressPage" aria-expanded="false"');
     expect(html).toContain('id="articleWritingProgressMeta"');
+
+    const body = readFunctionBody('toggleArticleWritingProgressPanel()', 'openPaperFigureLibraryPanel()');
+    expect(body).toContain("getRightSidebarActiveTab() === 'article'");
+    expect(body).toContain('setRightSidebarCollapsed(true);');
+    expect(body).toContain('openArticleWritingProgressPanel();');
   });
 
   it('builds visible chapters only from persisted TXT drafts', () => {
@@ -33,10 +40,12 @@ describe('right article progress sidebar', () => {
     expect(html).not.toContain('context.discussionFramework = await buildDiscussionFrameworkContextForChat()');
   });
 
-  it('uses one quarter of the window as the default sidebar width', () => {
-    expect(html).toContain('width: var(--right-sidebar-width, 25vw);');
-    expect(html).toContain('return Math.round(window.innerWidth * 0.25);');
-    expect(html).toContain("var RIGHT_SIDEBAR_WIDTH_VERSION = '6';");
+  it('uses three eighths of the window as the default sidebar width', () => {
+    expect(html).toContain('width: var(--right-sidebar-width, 37.5vw);');
+    expect(html).toContain('var RIGHT_SIDEBAR_DEFAULT_RATIO = 0.375;');
+    expect(html).toContain('return Math.round(viewportWidth * RIGHT_SIDEBAR_DEFAULT_RATIO);');
+    expect(html).toContain("var RIGHT_SIDEBAR_WIDTH_VERSION = '8';");
+    expect(html).toContain('var RIGHT_SIDEBAR_MAX_WIDTH = 1350;');
     expect(html).toContain('RIGHT_SIDEBAR_CUSTOM_WIDTH_KEY');
   });
 });

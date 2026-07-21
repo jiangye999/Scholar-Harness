@@ -33,8 +33,60 @@ export interface PdfWikiBuildStatus {
   startedAt?: string;
   updatedAt?: string;
   error?: string;
+  stalled?: boolean;
+  warning?: string;
   workerConcurrency?: number;
   codexWorkers?: PdfWikiCodexWorkerStatus[];
+  workProgress?: PdfWikiWorkProgress;
+  queue?: PdfWikiQueueSnapshot;
+}
+
+export type PdfWikiQueueJobStatus = 'queued' | 'running' | 'completed' | 'error';
+
+export interface PdfWikiQueueJob {
+  id: string;
+  status: PdfWikiQueueJobStatus;
+  files: Array<{ originalname: string; path: string; size: number; sha256?: string }>;
+  taskConfig: Partial<PdfWikiLlmConfig>;
+  createdAt: string;
+  updatedAt: string;
+  startedAt?: string;
+  completedAt?: string;
+  error?: string;
+}
+
+export interface PdfWikiQueueSnapshot {
+  queuedJobs: number;
+  runningJobs: number;
+  completedJobs: number;
+  failedJobs: number;
+  queuedPdfs: number;
+  runningPdfs: number;
+  jobs: PdfWikiQueueJob[];
+  addedPdfs?: number;
+  addedJobIds?: string[];
+  skippedDuplicatePdfs?: number;
+}
+
+interface PdfWikiQueueStore {
+  version: 1;
+  userId: string;
+  updatedAt: string;
+  jobs: PdfWikiQueueJob[];
+}
+
+export interface PdfWikiWorkProgress {
+  phase: 'preparing' | 'extracting' | 'codex' | 'finalizing' | 'completed';
+  phaseLabel: string;
+  phaseIndex: number;
+  phaseCount: number;
+  completedUnits: number;
+  totalUnits: number;
+  currentPdfIndex?: number;
+  currentPdfName?: string;
+  attempt?: number;
+  maxAttempts?: number;
+  attemptElapsedMs?: number;
 }
 
 export interface PdfWikiCodexWorkerStatus {
@@ -232,10 +284,11 @@ export interface PdfWikiLlmConfig {
   textInSecretCode?: string;
   textInParseMode?: string;
   dedicated?: boolean;
+  processingProfile?: 'fast' | 'deep' | 'custom' | 'meta';
   textExtractionEngine?: 'auto' | 'codex' | 'liteparse' | 'marker' | 'fast-text' | 'qwen-long' | 'pdf-parse';
   metadataEngine?: 'auto' | 'api' | 'local';
-  claimExtractionEngine?: 'auto' | 'codex' | 'qwen-long' | 'api';
-  sentenceReferenceMatchingEngine?: 'auto' | 'api' | 'local';
+  claimExtractionEngine?: 'auto' | 'codex' | 'qwen-long' | 'api' | 'off';
+  sentenceReferenceMatchingEngine?: 'auto' | 'codex' | 'api' | 'local';
   groupingEngine?: 'auto' | 'codex' | 'api' | 'local';
   deepAnalysisEngine?: 'auto' | 'codex' | 'api';
   metaAnalysisEnabled?: boolean;
@@ -250,11 +303,12 @@ export interface PdfWikiVectorConfig {
   dimensions: number;
 }
 
-interface UploadedPdfFile {
+export interface UploadedPdfFile {
   originalname: string;
   path?: string;
   buffer?: Buffer;
   size?: number;
+  sha256?: string;
 }
 
 interface ExtractedClaim {
@@ -322,7 +376,6 @@ interface PdfWikiCodexConfig {
   model: string;
   reasoningEffort: 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultra';
   sandbox: 'read-only' | 'workspace-write' | 'danger-full-access';
-  timeoutMs: number;
   concurrency: number;
 }
 
@@ -334,6 +387,15 @@ interface PdfWikiCodexBuildResult {
 }
 
 type PdfWikiCodexProgressHandler = (message: string) => Promise<void> | void;
+
+interface PdfWikiCodexJsonProgress {
+  attempt: number;
+  maxAttempts: number;
+  elapsedMs: number;
+  message: string;
+}
+
+type PdfWikiCodexJsonProgressHandler = (progress: PdfWikiCodexJsonProgress) => Promise<void> | void;
 
 interface PdfWikiCodexMetaAnalysisResult {
   parsedContent: PdfWikiParsedContent;
@@ -680,8 +742,16 @@ export class PdfWikiManager {
   private engines = new Map<string, WikiEngineEntry>();
   private buildLocks = new Map<string, Promise<void>>();
   private fileWriteLocks = new Map<string, Promise<void>>();
+  private statusWorkProgress = new Map<string, PdfWikiWorkProgress>();
+  private queueMutationLocks = new Map<string, Promise<void>>();
+  private queueWorkers = new Map<string, Promise<void>>();
+  private queueRuntimeConfigProvider: (() => PdfWikiLlmConfig) | null = null;
 
   constructor(private readonly dataDir: string) {}
+
+  setQueueRuntimeConfigProvider(provider: () => PdfWikiLlmConfig): void {
+    this.queueRuntimeConfigProvider = provider;
+  }
 
   async getMetaAnalysisTemplate(userId: string): Promise<PdfWikiMetaAnalysisTemplateStatus> {
     const template = this.loadMetaAnalysisTemplate(userId);
@@ -1277,6 +1347,313 @@ export class PdfWikiManager {
     });
   }
 
+  async enqueueUploadedPdfs(
+    userId: string,
+    files: UploadedPdfFile[],
+    llmConfig: PdfWikiLlmConfig
+  ): Promise<PdfWikiQueueSnapshot> {
+    const safeUserId = sanitizeUserId(userId);
+    const candidates = files.map(file => ({
+      originalname: String(file.originalname || path.basename(file.path || 'document.pdf')),
+      path: path.resolve(String(file.path || '')),
+      size: Math.max(0, Number(file.size || 0)),
+      sha256: String(file.sha256 || '').toLowerCase(),
+    })).filter(file => file.path && fs.existsSync(file.path));
+    if (candidates.length === 0) {
+      throw new Error('没有可加入 PDF 队列的本地文件');
+    }
+
+    const knownHashes = await this.collectKnownPdfHashPrefixes(safeUserId);
+    const batchHashes = new Set<string>();
+    const persistentFiles: PdfWikiQueueJob['files'] = [];
+    let skippedDuplicatePdfs = 0;
+    for (const file of candidates) {
+      const sha256 = /^[a-f0-9]{64}$/.test(file.sha256)
+        ? file.sha256
+        : await this.calculateFileSha256(file.path);
+      if (this.isKnownPdfHash(sha256, knownHashes) || batchHashes.has(sha256)) {
+        skippedDuplicatePdfs++;
+        continue;
+      }
+      batchHashes.add(sha256);
+      persistentFiles.push({ ...file, sha256 });
+    }
+    if (persistentFiles.length === 0) {
+      return { ...(await this.getQueueSnapshot(safeUserId)), addedPdfs: 0, addedJobIds: [], skippedDuplicatePdfs };
+    }
+
+    const now = new Date().toISOString();
+    const jobId = `pdfq_${Date.now()}_${crypto.randomBytes(5).toString('hex')}`;
+    await this.mutateQueue(safeUserId, queue => {
+      queue.jobs.push({
+        id: jobId,
+        status: 'queued',
+        files: persistentFiles,
+        taskConfig: this.sanitizeQueueTaskConfig(llmConfig),
+        createdAt: now,
+        updatedAt: now,
+      });
+      queue.jobs = this.pruneQueueJobs(queue.jobs);
+    });
+    this.startQueueWorker(safeUserId);
+    return {
+      ...(await this.getQueueSnapshot(safeUserId)),
+      addedPdfs: persistentFiles.length,
+      addedJobIds: [jobId],
+      skippedDuplicatePdfs,
+    };
+  }
+
+  async matchUploadedPdfHashes(
+    userId: string,
+    files: Array<{ name: string; size?: number; sha256: string }>
+  ): Promise<{ duplicates: Array<{ name: string; size: number; sha256: string }>; newFiles: Array<{ name: string; size: number; sha256: string }> }> {
+    const knownHashes = await this.collectKnownPdfHashPrefixes(sanitizeUserId(userId));
+    const seen = new Set<string>();
+    const duplicates: Array<{ name: string; size: number; sha256: string }> = [];
+    const newFiles: Array<{ name: string; size: number; sha256: string }> = [];
+    for (const file of files.slice(0, 50)) {
+      const normalized = {
+        name: String(file.name || 'document.pdf').slice(0, 240),
+        size: Math.max(0, Number(file.size || 0)),
+        sha256: String(file.sha256 || '').trim().toLowerCase(),
+      };
+      if (!/^[a-f0-9]{64}$/.test(normalized.sha256)) continue;
+      if (this.isKnownPdfHash(normalized.sha256, knownHashes) || seen.has(normalized.sha256)) {
+        duplicates.push(normalized);
+      } else {
+        newFiles.push(normalized);
+        seen.add(normalized.sha256);
+      }
+    }
+    return { duplicates, newFiles };
+  }
+
+  private async collectKnownPdfHashPrefixes(userId: string): Promise<Set<string>> {
+    const prefixes = new Set<string>();
+    const [store, queue] = await Promise.all([this.loadStore(userId), this.loadQueue(userId)]);
+    for (const pdf of store.pdfs) {
+      const match = String(pdf.id || '').match(/^pdf_([a-f0-9]{16,64})$/i);
+      if (match) prefixes.add(match[1].toLowerCase());
+    }
+    for (const job of queue.jobs) {
+      if (job.status !== 'queued' && job.status !== 'running') continue;
+      for (const file of job.files) {
+        const hash = String(file.sha256 || '').toLowerCase();
+        if (/^[a-f0-9]{64}$/.test(hash)) prefixes.add(hash);
+      }
+    }
+    try {
+      const sourceNames = await fs.promises.readdir(this.getSourcePdfDir(userId));
+      for (const name of sourceNames) {
+        const match = name.match(/^([a-f0-9]{16})-/i);
+        if (match) prefixes.add(match[1].toLowerCase());
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
+    return prefixes;
+  }
+
+  private isKnownPdfHash(hash: string, prefixes: Set<string>): boolean {
+    const normalized = String(hash || '').toLowerCase();
+    for (const prefix of prefixes) {
+      if (normalized.startsWith(prefix) || prefix.startsWith(normalized)) return true;
+    }
+    return false;
+  }
+
+  private async calculateFileSha256(filePath: string): Promise<string> {
+    return new Promise<string>((resolve, reject) => {
+      const hash = crypto.createHash('sha256');
+      const stream = fs.createReadStream(filePath);
+      stream.on('error', reject);
+      stream.on('data', chunk => hash.update(chunk));
+      stream.on('end', () => resolve(hash.digest('hex')));
+    });
+  }
+
+  async getQueueSnapshot(userId: string): Promise<PdfWikiQueueSnapshot> {
+    const queue = await this.loadQueue(sanitizeUserId(userId));
+    const visibleJobs = queue.jobs.slice(-100).reverse();
+    return {
+      queuedJobs: queue.jobs.filter(job => job.status === 'queued').length,
+      runningJobs: queue.jobs.filter(job => job.status === 'running').length,
+      completedJobs: queue.jobs.filter(job => job.status === 'completed').length,
+      failedJobs: queue.jobs.filter(job => job.status === 'error').length,
+      queuedPdfs: queue.jobs.filter(job => job.status === 'queued').reduce((sum, job) => sum + job.files.length, 0),
+      runningPdfs: queue.jobs.filter(job => job.status === 'running').reduce((sum, job) => sum + job.files.length, 0),
+      jobs: visibleJobs,
+    };
+  }
+
+  async recoverPersistentQueues(): Promise<void> {
+    const uploadsDir = path.join(this.dataDir, 'uploads');
+    let userIds: string[] = [];
+    try {
+      userIds = (await fs.promises.readdir(uploadsDir, { withFileTypes: true }))
+        .filter(entry => entry.isDirectory())
+        .map(entry => sanitizeUserId(entry.name));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      return;
+    }
+
+    for (const userId of userIds) {
+      if (!fs.existsSync(this.getQueuePath(userId))) continue;
+      await this.mutateQueue(userId, queue => {
+        const now = new Date().toISOString();
+        for (const job of queue.jobs) {
+          if (job.status !== 'running') continue;
+          job.status = 'queued';
+          job.updatedAt = now;
+          job.error = '软件上次退出时任务尚未完成，现已自动恢复排队';
+          delete job.startedAt;
+        }
+      });
+      this.startQueueWorker(userId);
+    }
+  }
+
+  private startQueueWorker(userId: string): void {
+    const safeUserId = sanitizeUserId(userId);
+    if (this.queueWorkers.has(safeUserId)) return;
+    const worker = this.runQueueWorker(safeUserId)
+      .catch(error => logger.error(`[PdfWikiQueue] Worker failed for ${safeUserId}:`, error))
+      .finally(() => {
+        if (this.queueWorkers.get(safeUserId) === worker) {
+          this.queueWorkers.delete(safeUserId);
+        }
+      });
+    this.queueWorkers.set(safeUserId, worker);
+  }
+
+  private async runQueueWorker(userId: string): Promise<void> {
+    while (true) {
+      let nextJob: PdfWikiQueueJob | null = null;
+      await this.mutateQueue(userId, queue => {
+        const candidate = queue.jobs.find(job => job.status === 'queued');
+        if (!candidate) return;
+        const now = new Date().toISOString();
+        candidate.status = 'running';
+        candidate.startedAt = now;
+        candidate.updatedAt = now;
+        delete candidate.completedAt;
+        delete candidate.error;
+        nextJob = JSON.parse(JSON.stringify(candidate)) as PdfWikiQueueJob;
+      });
+      if (!nextJob) return;
+
+      const job = nextJob as PdfWikiQueueJob;
+      try {
+        const missingFiles = job.files.filter(file => !fs.existsSync(file.path));
+        if (missingFiles.length > 0) {
+          throw new Error(`队列源文件不存在：${missingFiles.map(file => file.originalname).join('、')}`);
+        }
+        const runtime = this.queueRuntimeConfigProvider?.() || ({ apiUrl: '', apiKey: '', model: '' } as PdfWikiLlmConfig);
+        const llmConfig: PdfWikiLlmConfig = {
+          ...runtime,
+          ...job.taskConfig,
+          apiUrl: runtime.apiUrl,
+          apiKey: runtime.apiKey,
+          jsonApiUrl: runtime.jsonApiUrl,
+          jsonApiKey: runtime.jsonApiKey,
+          textInApiUrl: runtime.textInApiUrl,
+          textInAppId: runtime.textInAppId,
+          textInSecretCode: runtime.textInSecretCode,
+        };
+        await this.processUploadedPdfs(userId, job.files, llmConfig);
+        const status = await this.getStatusWithoutQueue(userId);
+        if (status.status === 'error') {
+          throw new Error(status.error || status.message || 'PDF Wiki 处理失败');
+        }
+        await this.finishQueueJob(userId, job.id, 'completed');
+      } catch (error) {
+        const message = (error as Error).message || String(error);
+        logger.error(`[PdfWikiQueue] Job ${job.id} failed:`, error);
+        await this.finishQueueJob(userId, job.id, 'error', message);
+      }
+    }
+  }
+
+  private async finishQueueJob(userId: string, jobId: string, status: 'completed' | 'error', error?: string): Promise<void> {
+    await this.mutateQueue(userId, queue => {
+      const job = queue.jobs.find(item => item.id === jobId);
+      if (!job) return;
+      const now = new Date().toISOString();
+      job.status = status;
+      job.updatedAt = now;
+      job.completedAt = now;
+      job.error = error;
+      queue.jobs = this.pruneQueueJobs(queue.jobs);
+    });
+  }
+
+  private sanitizeQueueTaskConfig(config: PdfWikiLlmConfig): Partial<PdfWikiLlmConfig> {
+    return {
+      processingProfile: config.processingProfile,
+      textExtractionEngine: config.textExtractionEngine,
+      metadataEngine: config.metadataEngine,
+      claimExtractionEngine: config.claimExtractionEngine,
+      sentenceReferenceMatchingEngine: config.sentenceReferenceMatchingEngine,
+      groupingEngine: config.groupingEngine,
+      deepAnalysisEngine: config.deepAnalysisEngine,
+      metaAnalysisEnabled: config.metaAnalysisEnabled,
+      metaAnalysisEngine: config.metaAnalysisEngine,
+      metaAnalysisUserRequirements: config.metaAnalysisUserRequirements,
+      model: config.model,
+      jsonModel: config.jsonModel,
+      ocrModel: config.ocrModel,
+      visionModel: config.visionModel,
+      textInParseMode: config.textInParseMode,
+      dedicated: config.dedicated,
+    };
+  }
+
+  private pruneQueueJobs(jobs: PdfWikiQueueJob[]): PdfWikiQueueJob[] {
+    const active = jobs.filter(job => job.status === 'queued' || job.status === 'running');
+    const history = jobs.filter(job => job.status === 'completed' || job.status === 'error').slice(-100);
+    return [...history, ...active].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  }
+
+  private async loadQueue(userId: string): Promise<PdfWikiQueueStore> {
+    const safeUserId = sanitizeUserId(userId);
+    const queuePath = this.getQueuePath(safeUserId);
+    try {
+      const parsed = JSON.parse(await fs.promises.readFile(queuePath, 'utf-8')) as Partial<PdfWikiQueueStore>;
+      return {
+        version: 1,
+        userId: safeUserId,
+        updatedAt: String(parsed.updatedAt || new Date().toISOString()),
+        jobs: Array.isArray(parsed.jobs) ? parsed.jobs : [],
+      };
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+        logger.warn(`[PdfWikiQueue] Failed to read queue for ${safeUserId}:`, error);
+      }
+      return { version: 1, userId: safeUserId, updatedAt: new Date().toISOString(), jobs: [] };
+    }
+  }
+
+  private async mutateQueue(userId: string, mutation: (queue: PdfWikiQueueStore) => void): Promise<void> {
+    const safeUserId = sanitizeUserId(userId);
+    const previous = this.queueMutationLocks.get(safeUserId) || Promise.resolve();
+    const current = previous.catch(() => undefined).then(async () => {
+      const queue = await this.loadQueue(safeUserId);
+      mutation(queue);
+      queue.updatedAt = new Date().toISOString();
+      await this.writeJsonAtomic(this.getQueuePath(safeUserId), queue);
+    });
+    this.queueMutationLocks.set(safeUserId, current);
+    try {
+      await current;
+    } finally {
+      if (this.queueMutationLocks.get(safeUserId) === current) {
+        this.queueMutationLocks.delete(safeUserId);
+      }
+    }
+  }
+
   async registerUploadedPdfsWithLiteParse(
     userId: string,
     files: UploadedPdfFile[]
@@ -1801,6 +2178,23 @@ export class PdfWikiManager {
   }
 
   async getStatus(userId: string): Promise<PdfWikiBuildStatus> {
+    const safeUserId = sanitizeUserId(userId);
+    const [status, queue] = await Promise.all([
+      this.getStatusWithoutQueue(safeUserId),
+      this.getQueueSnapshot(safeUserId),
+    ]);
+    const hasActiveQueue = queue.runningJobs > 0 || queue.queuedJobs > 0;
+    return {
+      ...status,
+      status: hasActiveQueue && status.status !== 'processing' ? 'processing' : status.status,
+      message: hasActiveQueue && status.status !== 'processing'
+        ? `PDF 队列处理中：运行 ${queue.runningPdfs} 篇，等待 ${queue.queuedPdfs} 篇。${status.message}`
+        : status.message,
+      queue,
+    };
+  }
+
+  private async getStatusWithoutQueue(userId: string): Promise<PdfWikiBuildStatus> {
     const statusPath = this.getStatusPath(userId);
     if (fs.existsSync(statusPath)) {
       try {
@@ -1848,12 +2242,15 @@ export class PdfWikiManager {
 
   private withStaleProcessingGuard(status: PdfWikiBuildStatus): PdfWikiBuildStatus {
     if (status.status !== 'processing') return status;
+    // PDF Wiki tasks publish a heartbeat while Codex is running and are allowed
+    // to take as long as needed. Only Meta tasks retain stale-worker detection.
+    if (status.taskKind !== 'meta-analysis') return status;
 
     const updatedAt = status.updatedAt ? Date.parse(status.updatedAt) : NaN;
     if (!Number.isFinite(updatedAt)) return status;
 
     const configuredStaleMs = Number(process.env.PDF_WIKI_STALE_STATUS_MS);
-    const defaultStaleMs = status.taskKind === 'meta-analysis' ? 3 * 60_000 : 15 * 60_000;
+    const defaultStaleMs = 3 * 60_000;
     const staleMs = Math.max(
       60_000,
       Number.isFinite(configuredStaleMs) && configuredStaleMs > 0 ? configuredStaleMs : defaultStaleMs
@@ -1862,15 +2259,12 @@ export class PdfWikiManager {
     if (elapsedMs <= staleMs) return status;
 
     const elapsedMinutes = Math.max(1, Math.round(elapsedMs / 60_000));
-    const isMetaTask = status.taskKind === 'meta-analysis';
     const lastMessage = status.message ? `最后状态：${status.message}` : '没有可用的最后状态。';
     return {
       ...status,
       status: 'error',
-      message: isMetaTask
-        ? `Meta 数据提取已超过 ${elapsedMinutes} 分钟没有进度更新，可能是 Codex CLI 子进程卡住或没有写出最终文件。${lastMessage}`
-        : `PDF Wiki 任务已超过 ${elapsedMinutes} 分钟没有进度更新。${lastMessage}`,
-      error: isMetaTask ? 'STALE_META_ANALYSIS_TASK' : 'STALE_PDF_WIKI_TASK',
+      message: `Meta 数据提取已超过 ${elapsedMinutes} 分钟没有进度更新，可能是 Codex CLI 子进程卡住或没有写出最终文件。${lastMessage}`,
+      error: 'STALE_META_ANALYSIS_TASK',
       codexWorkers: (status.codexWorkers || []).map(worker => {
         if (worker.status !== 'running') return worker;
         return {
@@ -2626,6 +3020,37 @@ export class PdfWikiManager {
     return { deletedCount, entryCount: store.entries.length };
   }
 
+  async deleteSentencePoints(userId: string, pointIds: string[]): Promise<{
+    deletedCount: number;
+    missingCount: number;
+    sentencePointCount: number;
+    topicCount: number;
+  }> {
+    const ids = this.unique(pointIds);
+    if (ids.length === 0) {
+      throw new Error('请选择要删除的句子级论点');
+    }
+
+    const store = await this.loadStore(userId);
+    const idSet = new Set(ids);
+    const existingPoints = store.sentenceCloud?.points || [];
+    const retainedPoints = existingPoints.filter(point => !idSet.has(point.id));
+    const deletedCount = existingPoints.length - retainedPoints.length;
+
+    if (deletedCount === 0) {
+      throw new Error('未找到要删除的句子级论点');
+    }
+
+    store.sentenceCloud = this.buildSentenceCloudStore(retainedPoints);
+    await this.persistManualStoreUpdate(userId, store, `已删除 ${deletedCount} 个 PDF Wiki 句子级论点`);
+    return {
+      deletedCount,
+      missingCount: ids.length - deletedCount,
+      sentencePointCount: store.sentenceCloud.points.length,
+      topicCount: store.sentenceCloud.clouds.length,
+    };
+  }
+
   async deletePdfs(userId: string, pdfIds: string[]): Promise<{
     deletedCount: number;
     missingCount: number;
@@ -2879,15 +3304,51 @@ export class PdfWikiManager {
     llmConfig: PdfWikiLlmConfig,
     replaceExisting: boolean
   ): Promise<void> {
-    const codexAvailable = this.canUseCodexCli();
-    const codexConfig = codexAvailable ? this.loadPdfWikiCodexConfig() : null;
-    const codexConcurrency = codexConfig?.concurrency || 1;
     const textExtractionEngine = this.getTextExtractionEngine(llmConfig);
     const claimExtractionEngine = this.getClaimExtractionEngine(llmConfig);
     const sentenceReferenceMatchingEngine = this.getSentenceReferenceMatchingEngine(llmConfig);
+    const localSentenceBuild = this.isLocalSentenceWikiBuild(llmConfig);
+    const fastCodexSentenceBuild = this.isFastCodexSentenceWikiBuild(llmConfig);
+    const codexAvailable = this.canUseCodexCli(fastCodexSentenceBuild || sentenceReferenceMatchingEngine === 'codex');
+    const codexConfig = codexAvailable ? this.loadPdfWikiCodexConfig() : null;
+    const codexConcurrency = codexConfig?.concurrency || 1;
     const canUseCodexFullBuild = !!codexAvailable && !!codexConfig && this.shouldUseCodexFullBuild(llmConfig);
     const canUseQwenDirectBuild = this.shouldUseQwenLongDirectBuild(llmConfig);
-    if ((!llmConfig.apiUrl || !llmConfig.apiKey) && !codexAvailable) {
+    const fastWorkTotalUnits = fastCodexSentenceBuild ? Math.max(1, pdfs.length * 2 + 1) : 0;
+    const fastWorkProgress = (
+      phase: PdfWikiWorkProgress['phase'],
+      phaseLabel: string,
+      completedUnits: number,
+      currentPdfIndex?: number,
+      currentPdfName?: string,
+      attempt?: number,
+      maxAttempts?: number,
+      attemptElapsedMs?: number
+    ): PdfWikiWorkProgress | undefined => fastCodexSentenceBuild ? {
+      phase,
+      phaseLabel,
+      phaseIndex: phase === 'extracting' ? 1 : (phase === 'codex' ? 2 : (phase === 'completed' ? 3 : 3)),
+      phaseCount: 3,
+      completedUnits: Math.max(0, Math.min(fastWorkTotalUnits, completedUnits)),
+      totalUnits: fastWorkTotalUnits,
+      currentPdfIndex,
+      currentPdfName,
+      attempt,
+      maxAttempts,
+      attemptElapsedMs,
+    } : undefined;
+    if (fastCodexSentenceBuild && (!codexAvailable || !codexConfig)) {
+      await this.saveStatus(userId, {
+        ...DEFAULT_STATUS,
+        status: 'error',
+        totalPdfs: pdfs.length,
+        message: 'PDF Wiki 快速生成失败：快速模式需要可用的 Codex CLI 来核对句中/句末引用，并归纳绑定来源论文引用的主要结论',
+        error: 'CODEX_NOT_AVAILABLE',
+        updatedAt: new Date().toISOString(),
+      });
+      return;
+    }
+    if ((!llmConfig.apiUrl || !llmConfig.apiKey) && !codexAvailable && !localSentenceBuild) {
       await this.saveStatus(userId, {
         ...DEFAULT_STATUS,
         status: 'error',
@@ -2902,14 +3363,20 @@ export class PdfWikiManager {
     const startedAt = new Date().toISOString();
     await this.saveStatus(userId, {
       status: 'processing',
+      taskKind: 'pdf-wiki',
       totalPdfs: pdfs.length,
       processedPdfs: 0,
       totalChunks: 0,
       processedChunks: 0,
       entryCount: 0,
-      message: codexAvailable
-        ? `正在生成 PDF Wiki：文本提取=${textExtractionEngine}，句子引用匹配=${sentenceReferenceMatchingEngine}，论点抽取=${claimExtractionEngine}，Codex 并发 ${codexConcurrency}`
-        : `正在生成 PDF Wiki：文本提取=${textExtractionEngine}，句子引用匹配=${sentenceReferenceMatchingEngine}，论点抽取=${claimExtractionEngine}`,
+      workProgress: fastWorkProgress('preparing', '准备任务', 0),
+      message: fastCodexSentenceBuild
+        ? `正在快速生成 PDF 句子级 Wiki：LiteParse 提取引言/讨论/结论/References，Codex 只整理显式引用句和本文主要结论，已关闭兼容论点和 Meta 提取`
+        : localSentenceBuild
+        ? `正在快速生成 PDF 句子级 Wiki：文本提取=${textExtractionEngine}，元信息/引用/分组均使用本地规则，已关闭兼容论点和 Meta 提取`
+        : (codexAvailable
+          ? `正在生成 PDF Wiki：处理方案=${llmConfig.processingProfile || 'custom'}，文本提取=${textExtractionEngine}，句子引用匹配=${sentenceReferenceMatchingEngine}，论点抽取=${claimExtractionEngine}，Codex 并发 ${codexConcurrency}`
+          : `正在生成 PDF Wiki：处理方案=${llmConfig.processingProfile || 'custom'}，文本提取=${textExtractionEngine}，句子引用匹配=${sentenceReferenceMatchingEngine}，论点抽取=${claimExtractionEngine}`),
       startedAt,
       updatedAt: startedAt,
     });
@@ -2977,11 +3444,14 @@ export class PdfWikiManager {
         const pdf = pdfs[pdfIndex];
         await this.saveStatus(userId, {
           status: 'processing',
+          taskKind: 'pdf-wiki',
           totalPdfs: pdfs.length,
-          processedPdfs: pdfIndex,
+          processedPdfs: fastCodexSentenceBuild ? processedPdfs.length : pdfIndex,
           totalChunks,
           processedChunks,
           entryCount: newEntries.length,
+          failedPdfs: failedPdfs.length,
+          workProgress: fastWorkProgress('extracting', '提取章节与参考文献', pdfIndex * 2, pdfIndex + 1, pdf.originalName),
           message: `正在解析 PDF：${pdf.originalName}`,
           startedAt,
           updatedAt: new Date().toISOString(),
@@ -2993,11 +3463,14 @@ export class PdfWikiManager {
           const hasFastText = isPdfFastTextAvailable() && this.shouldUseFastTextForTextExtraction(llmConfig);
           await this.saveStatus(userId, {
             status: 'processing',
+            taskKind: 'pdf-wiki',
             totalPdfs: pdfs.length,
-            processedPdfs: pdfIndex,
+            processedPdfs: fastCodexSentenceBuild ? processedPdfs.length : pdfIndex,
             totalChunks,
             processedChunks,
             entryCount: newEntries.length,
+            failedPdfs: failedPdfs.length,
+            workProgress: fastWorkProgress('extracting', '提取章节与参考文献', pdfIndex * 2, pdfIndex + 1, pdf.originalName),
             message: canUseCodexFullBuild
               ? `阶段 1/3：正在优先使用 Codex CLI 直读 ${pdf.originalName}`
               : (hasLiteParse
@@ -3116,7 +3589,7 @@ export class PdfWikiManager {
           await this.saveStatus(userId, {
             status: 'processing',
             totalPdfs: pdfs.length,
-            processedPdfs: pdfIndex,
+            processedPdfs: fastCodexSentenceBuild ? processedPdfs.length : pdfIndex,
             totalChunks,
             processedChunks,
             entryCount: newEntries.length,
@@ -3135,12 +3608,13 @@ export class PdfWikiManager {
             updatedAt: new Date().toISOString(),
           });
 
-          parsedContent = parsedContent || (this.shouldUseLiteParseForTextExtraction(llmConfig) ? await this.tryExtractPdfWithLiteParse(userId, pdf) : null);
+          const allowExternalMetadata = this.getMetadataEngine(llmConfig) !== 'local';
+          parsedContent = parsedContent || (hasLiteParse ? await this.tryExtractPdfWithLiteParse(userId, pdf, allowExternalMetadata) : null);
           if (!parsedContent && hasLiteParse) {
             await this.saveStatus(userId, {
               status: 'processing',
               totalPdfs: pdfs.length,
-              processedPdfs: pdfIndex,
+              processedPdfs: processedPdfs.length,
               totalChunks,
               processedChunks,
               entryCount: newEntries.length,
@@ -3154,7 +3628,7 @@ export class PdfWikiManager {
             });
           }
 
-          parsedContent = parsedContent || (this.shouldUseMarkerForTextExtraction(llmConfig) ? await this.tryExtractPdfWithMarker(userId, pdf) : null);
+          parsedContent = parsedContent || (hasMarker ? await this.tryExtractPdfWithMarker(userId, pdf, allowExternalMetadata) : null);
           if (!parsedContent && hasMarker) {
             await this.saveStatus(userId, {
               status: 'processing',
@@ -3171,7 +3645,7 @@ export class PdfWikiManager {
             });
           }
 
-          parsedContent = parsedContent || (this.shouldUseFastTextForTextExtraction(llmConfig) ? await this.tryExtractPdfWithFastText(userId, pdf) : null);
+          parsedContent = parsedContent || (hasFastText ? await this.tryExtractPdfWithFastText(userId, pdf, allowExternalMetadata) : null);
           if (!parsedContent && hasFastText) {
             await this.saveStatus(userId, {
               status: 'processing',
@@ -3208,7 +3682,11 @@ export class PdfWikiManager {
               totalChunks,
               processedChunks,
               entryCount: newEntries.length,
-              message: `阶段 1/3：${this.getParsedContentParserLabel(parsedContent.parser)} 已解析 ${pdf.originalName}，正在使用 ${llmConfig.model || 'LLM'} 抽取论点`,
+              message: claimExtractionEngine === 'off'
+                ? (fastCodexSentenceBuild
+                  ? `阶段 1/3：${this.getParsedContentParserLabel(parsedContent.parser)} 已解析 ${pdf.originalName}，正在提取引言、讨论、结论与参考文献`
+                  : `阶段 1/3：${this.getParsedContentParserLabel(parsedContent.parser)} 已解析 ${pdf.originalName}，正在本地建立句子级证据索引`)
+                : `阶段 1/3：${this.getParsedContentParserLabel(parsedContent.parser)} 已解析 ${pdf.originalName}，正在使用 ${llmConfig.model || 'LLM'} 抽取兼容论点`,
               startedAt,
               updatedAt: new Date().toISOString(),
             });
@@ -3218,7 +3696,7 @@ export class PdfWikiManager {
           await this.saveStatus(userId, {
             status: 'processing',
             totalPdfs: pdfs.length,
-            processedPdfs: pdfIndex,
+            processedPdfs: fastCodexSentenceBuild ? processedPdfs.length : pdfIndex,
             totalChunks,
             processedChunks,
             entryCount: newEntries.length,
@@ -3243,8 +3721,10 @@ export class PdfWikiManager {
           pdf.referenceIndex = referenceIndex.references;
           pdf.extractionParser = parsedContent.parser;
 
-          const claimSections = this.buildClaimSections(text, pdf, referenceIndex.references);
-          totalChunks += claimSections.length;
+          const claimSections = claimExtractionEngine === 'off'
+            ? []
+            : this.buildClaimSections(text, pdf, referenceIndex.references);
+          totalChunks += claimSections.length + (fastCodexSentenceBuild ? 1 : 0);
           pdf.textLength = text.length;
           pdf.processedAt = new Date().toISOString();
           const parsedRawMetaData = this.getMetaAnalysisEngine(llmConfig) === 'api'
@@ -3255,7 +3735,63 @@ export class PdfWikiManager {
             llmConfig
           );
           pdf.metaDataCachedAt = pdf.processedAt;
-          newSentencePoints.push(...this.buildSentenceCloudPointsFromText(text, pdf, referenceIndex.references));
+          const draftSentencePoints = fastCodexSentenceBuild || this.shouldUseApiForSentenceReferenceMatching(llmConfig)
+            ? this.buildSentenceCloudDraftPointsForAi(text, pdf)
+            : this.buildSentenceCloudPointsFromText(text, pdf, referenceIndex.references);
+          let pdfSentencePoints = draftSentencePoints;
+          if (fastCodexSentenceBuild && codexConfig) {
+            await this.saveStatus(userId, {
+              status: 'processing',
+              taskKind: 'pdf-wiki',
+              totalPdfs: pdfs.length,
+              processedPdfs: processedPdfs.length,
+              totalChunks,
+              processedChunks,
+              entryCount: newEntries.length,
+              sentencePointCount: newSentencePoints.length,
+              failedPdfs: failedPdfs.length,
+              workProgress: fastWorkProgress('codex', '核对引用并归纳结论', pdfIndex * 2 + 1, pdfIndex + 1, pdf.originalName, 1, this.getCodexJsonRetryCount(), 0),
+              message: `阶段 2/3：Codex 正在逐句核对 ${pdf.originalName} 引言/讨论中的句中与句末引用，并归纳本文主要结论`,
+              startedAt,
+              updatedAt: new Date().toISOString(),
+            });
+            pdfSentencePoints = await this.buildFastSentenceWikiWithCodex(
+              userId,
+              pdf,
+              text,
+              referenceIndex.references,
+              draftSentencePoints,
+              codexConfig,
+              async (codexProgress) => {
+                await this.saveStatus(userId, {
+                  status: 'processing',
+                  taskKind: 'pdf-wiki',
+                  totalPdfs: pdfs.length,
+                  processedPdfs: processedPdfs.length,
+                  failedPdfs: failedPdfs.length,
+                  totalChunks,
+                  processedChunks,
+                  entryCount: newEntries.length,
+                  sentencePointCount: newSentencePoints.length,
+                  workProgress: fastWorkProgress(
+                    'codex',
+                    '核对引用并归纳结论',
+                    pdfIndex * 2 + 1,
+                    pdfIndex + 1,
+                    pdf.originalName,
+                    codexProgress.attempt,
+                    codexProgress.maxAttempts,
+                    codexProgress.elapsedMs
+                  ),
+                  message: `阶段 2/3：${codexProgress.message}`,
+                  startedAt,
+                  updatedAt: new Date().toISOString(),
+                });
+              }
+            );
+            processedChunks++;
+          }
+          newSentencePoints.push(...pdfSentencePoints);
 
           for (let sectionIndex = 0; sectionIndex < claimSections.length; sectionIndex++) {
             const claimSection = claimSections[sectionIndex];
@@ -3295,9 +3831,43 @@ export class PdfWikiManager {
           }
 
           processedPdfs.push(pdf);
+          await this.saveStatus(userId, {
+            status: 'processing',
+            taskKind: 'pdf-wiki',
+            totalPdfs: pdfs.length,
+            processedPdfs: processedPdfs.length,
+            totalChunks,
+            processedChunks,
+            entryCount: newEntries.length,
+            sentencePointCount: newSentencePoints.length,
+            failedPdfs: failedPdfs.length,
+            workProgress: fastWorkProgress('extracting', '准备下一篇 PDF', (pdfIndex + 1) * 2, pdfIndex + 1, pdf.originalName),
+            message: claimExtractionEngine === 'off'
+              ? (fastCodexSentenceBuild
+                ? `快速模式已完成 ${pdf.originalName}（${pdfIndex + 1}/${pdfs.length}）：Codex 确认 ${pdfSentencePoints.filter(point => point.section !== 'Conclusion').length} 条有明确引用的论点，并归纳 ${pdfSentencePoints.filter(point => point.section === 'Conclusion').length} 条绑定本文引用的主要结论`
+                : `快速模式已完成 ${pdf.originalName}（${pdfIndex + 1}/${pdfs.length}）：发现 ${pdfSentencePoints.length} 个候选证据句，已跳过旧兼容论点、全表格、全图片和 Meta 提取`)
+              : `已完成 ${pdf.originalName}（${pdfIndex + 1}/${pdfs.length}）：候选证据句 ${pdfSentencePoints.length} 个，兼容论点累计 ${newEntries.length} 个`,
+            startedAt,
+            updatedAt: new Date().toISOString(),
+          });
         } catch (error) {
           failedPdfs.push(pdf);
           logger.error(`[PdfWiki] Failed to process ${pdf.originalName}:`, error);
+          await this.saveStatus(userId, {
+            status: 'processing',
+            taskKind: 'pdf-wiki',
+            totalPdfs: pdfs.length,
+            processedPdfs: processedPdfs.length,
+            failedPdfs: failedPdfs.length,
+            totalChunks,
+            processedChunks,
+            entryCount: newEntries.length,
+            sentencePointCount: newSentencePoints.length,
+            workProgress: fastWorkProgress('extracting', '当前 PDF 已处理，准备继续', (pdfIndex + 1) * 2, pdfIndex + 1, pdf.originalName),
+            message: `处理 ${pdf.originalName} 失败，已记录并继续下一篇：${(error as Error).message}`,
+            startedAt,
+            updatedAt: new Date().toISOString(),
+          });
         }
       }
 
@@ -3322,15 +3892,20 @@ export class PdfWikiManager {
 
       await this.saveStatus(userId, {
         status: 'processing',
+        taskKind: 'pdf-wiki',
         totalPdfs: pdfs.length,
         processedPdfs: processedPdfs.length,
         totalChunks,
         processedChunks,
         entryCount: allEntries.length,
         sentencePointCount: sentencePointDrafts.length,
-        message: this.shouldUseApiForSentenceReferenceMatching(llmConfig) && llmConfig.apiUrl && llmConfig.apiKey
-          ? '阶段 3/3：正在使用 AI 校准引言/讨论/结论句子、文末参考文献与可作论点判断'
-          : '阶段 3/3：正在建立引言/讨论/结论句子级Wiki论点库与本地参考文献匹配',
+        failedPdfs: failedPdfs.length,
+        workProgress: fastWorkProgress('finalizing', '全局校验与保存', pdfs.length * 2),
+        message: fastCodexSentenceBuild
+          ? '阶段 3/3：正在严格校验 Codex 结果；无明确引用的引言/讨论句不会进入论点库，本文结论将绑定来源论文引用'
+          : (this.shouldUseApiForSentenceReferenceMatching(llmConfig) && llmConfig.apiUrl && llmConfig.apiKey
+            ? '阶段 3/3：正在使用 AI 校准引言/讨论/结论句子、文末参考文献与可作论点判断'
+            : '阶段 3/3：正在建立引言/讨论/结论句子级Wiki论点库与本地参考文献匹配'),
         startedAt,
         updatedAt: new Date().toISOString(),
       });
@@ -3433,12 +4008,15 @@ export class PdfWikiManager {
 
       await this.saveStatus(userId, {
         status: 'completed',
-        totalPdfs: store.pdfs.length,
-        processedPdfs: store.pdfs.length,
+        taskKind: 'pdf-wiki',
+        totalPdfs: pdfs.length,
+        processedPdfs: processedPdfs.length,
+        failedPdfs: failedPdfs.length,
         totalChunks,
         processedChunks,
         entryCount: store.entries.length,
         sentencePointCount: store.sentenceCloud?.points?.length || 0,
+        workProgress: fastWorkProgress('completed', '已完成', fastWorkTotalUnits),
         message: failedPdfs.length > 0
           ? `PDF句子级Wiki论点库已生成，共 ${store.sentenceCloud?.points?.length || 0} 个可作论点句子，兼容论点组 ${store.entries.length} 个；${failedPdfs.length} 个 PDF 解析失败，可稍后重建`
           : `PDF句子级Wiki论点库已生成，共 ${store.sentenceCloud?.points?.length || 0} 个可作论点句子，兼容论点组 ${store.entries.length} 个`,
@@ -3896,11 +4474,11 @@ export class PdfWikiManager {
   }
 
   private getClaimExtractionEngine(llmConfig: PdfWikiLlmConfig): NonNullable<PdfWikiLlmConfig['claimExtractionEngine']> {
-    return this.normalizePdfWikiChoice(llmConfig.claimExtractionEngine, ['auto', 'codex', 'qwen-long', 'api'] as const, 'auto');
+    return this.normalizePdfWikiChoice(llmConfig.claimExtractionEngine, ['auto', 'codex', 'qwen-long', 'api', 'off'] as const, 'auto');
   }
 
   private getSentenceReferenceMatchingEngine(llmConfig: PdfWikiLlmConfig): NonNullable<PdfWikiLlmConfig['sentenceReferenceMatchingEngine']> {
-    return this.normalizePdfWikiChoice(llmConfig.sentenceReferenceMatchingEngine, ['auto', 'api', 'local'] as const, 'auto');
+    return this.normalizePdfWikiChoice(llmConfig.sentenceReferenceMatchingEngine, ['auto', 'codex', 'api', 'local'] as const, 'auto');
   }
 
   private getGroupingEngine(llmConfig: PdfWikiLlmConfig): NonNullable<PdfWikiLlmConfig['groupingEngine']> {
@@ -3913,6 +4491,24 @@ export class PdfWikiManager {
 
   private getDeepAnalysisEngine(llmConfig: PdfWikiLlmConfig): NonNullable<PdfWikiLlmConfig['deepAnalysisEngine']> {
     return this.normalizePdfWikiChoice(llmConfig.deepAnalysisEngine, ['auto', 'codex', 'api'] as const, 'auto');
+  }
+
+  private isLocalSentenceWikiBuild(llmConfig: PdfWikiLlmConfig): boolean {
+    const textEngine = this.getTextExtractionEngine(llmConfig);
+    return this.getClaimExtractionEngine(llmConfig) === 'off'
+      && this.getMetadataEngine(llmConfig) === 'local'
+      && this.getSentenceReferenceMatchingEngine(llmConfig) === 'local'
+      && this.getGroupingEngine(llmConfig) === 'local'
+      && !this.shouldGenerateMetaAnalysis(llmConfig)
+      && ['liteparse', 'marker', 'fast-text', 'pdf-parse'].includes(textEngine);
+  }
+
+  private isFastCodexSentenceWikiBuild(llmConfig: PdfWikiLlmConfig): boolean {
+    return llmConfig.processingProfile === 'fast'
+      && this.getClaimExtractionEngine(llmConfig) === 'off'
+      && this.getSentenceReferenceMatchingEngine(llmConfig) === 'codex'
+      && this.getGroupingEngine(llmConfig) === 'local'
+      && !this.shouldGenerateMetaAnalysis(llmConfig);
   }
 
   private shouldUseCodexFullBuild(llmConfig: PdfWikiLlmConfig): boolean {
@@ -4047,6 +4643,37 @@ export class PdfWikiManager {
     return false;
   }
 
+  private async linkOrCopyFile(sourcePath: string, targetPath: string): Promise<'hardlink' | 'copy'> {
+    const source = path.resolve(sourcePath);
+    const target = path.resolve(targetPath);
+    if (source === target) return 'hardlink';
+
+    await fs.promises.mkdir(path.dirname(target), { recursive: true });
+    if (fs.existsSync(target)) {
+      try {
+        const [sourceStat, targetStat] = await Promise.all([
+          fs.promises.stat(source),
+          fs.promises.stat(target),
+        ]);
+        if (sourceStat.dev === targetStat.dev && sourceStat.ino === targetStat.ino) {
+          return 'hardlink';
+        }
+      } catch {
+        // The replacement below will surface a meaningful error if the source is unreadable.
+      }
+      await fs.promises.rm(target, { force: true });
+    }
+
+    try {
+      await fs.promises.link(source, target);
+      return 'hardlink';
+    } catch (error) {
+      logger.debug(`[PdfWiki] Hard link unavailable for ${path.basename(target)}; falling back to a physical copy: ${this.getErrorMessage(error)}`);
+      await fs.promises.copyFile(source, target);
+      return 'copy';
+    }
+  }
+
   private async registerPdfFiles(userId: string, files: UploadedPdfFile[]): Promise<PdfWikiSourcePdf[]> {
     const sourceDir = this.getSourcePdfDir(userId);
     await fs.promises.mkdir(sourceDir, { recursive: true });
@@ -4062,7 +4689,11 @@ export class PdfWikiManager {
       const filePath = path.join(sourceDir, fileName);
 
       if (!fs.existsSync(filePath)) {
-        await fs.promises.writeFile(filePath, buffer);
+        if (file.path && fs.existsSync(file.path)) {
+          await this.linkOrCopyFile(file.path, filePath);
+        } else {
+          await fs.promises.writeFile(filePath, buffer);
+        }
       }
 
       pdfs.push({
@@ -4092,7 +4723,8 @@ export class PdfWikiManager {
 
   private async tryExtractPdfWithFastText(
     userId: string,
-    pdf: PdfWikiSourcePdf
+    pdf: PdfWikiSourcePdf,
+    allowExternalMetadata = true
   ): Promise<PdfWikiParsedContent | null> {
     try {
       const result = await extractPdfTextWithFastText(pdf.filePath, {
@@ -4105,7 +4737,10 @@ export class PdfWikiManager {
       }
 
       const references = this.parseReferences(text, pdf.id, pdf.originalName);
-      const metadata = await this.enrichSourceMetadataWithDoi(this.cleanSourceMetadata(this.inferSourceMetadata(pdf.originalName, text)), text, pdf.originalName);
+      const inferredMetadata = this.cleanSourceMetadata(this.inferSourceMetadata(pdf.originalName, text));
+      const metadata = allowExternalMetadata
+        ? await this.enrichSourceMetadataWithDoi(inferredMetadata, text, pdf.originalName)
+        : inferredMetadata;
       await this.saveParsedTextCache(userId, pdf, {
         parser: 'fast-text',
         markdown: result.markdown,
@@ -4128,7 +4763,8 @@ export class PdfWikiManager {
 
   private async tryExtractPdfWithMarker(
     userId: string,
-    pdf: PdfWikiSourcePdf
+    pdf: PdfWikiSourcePdf,
+    allowExternalMetadata = true
   ): Promise<PdfWikiParsedContent | null> {
     try {
       const result = await extractPdfTextWithMarker(pdf.filePath, {
@@ -4141,7 +4777,10 @@ export class PdfWikiManager {
       }
 
       const references = this.parseReferences(text, pdf.id, pdf.originalName);
-      const metadata = await this.enrichSourceMetadataWithDoi(this.cleanSourceMetadata(this.inferSourceMetadata(pdf.originalName, text)), text, pdf.originalName);
+      const inferredMetadata = this.cleanSourceMetadata(this.inferSourceMetadata(pdf.originalName, text));
+      const metadata = allowExternalMetadata
+        ? await this.enrichSourceMetadataWithDoi(inferredMetadata, text, pdf.originalName)
+        : inferredMetadata;
       await this.saveParsedTextCache(userId, pdf, {
         parser: 'marker',
         markdown: result.markdown,
@@ -4164,7 +4803,8 @@ export class PdfWikiManager {
 
   private async tryExtractPdfWithLiteParse(
     userId: string,
-    pdf: PdfWikiSourcePdf
+    pdf: PdfWikiSourcePdf,
+    allowExternalMetadata = true
   ): Promise<PdfWikiParsedContent | null> {
     try {
       const result = await extractPdfTextWithLiteParse(pdf.filePath, {
@@ -4177,7 +4817,10 @@ export class PdfWikiManager {
       }
 
       const references = this.parseReferences(text, pdf.id, pdf.originalName);
-      const metadata = await this.enrichSourceMetadataWithDoi(this.cleanSourceMetadata(this.inferSourceMetadata(pdf.originalName, text)), text, pdf.originalName);
+      const inferredMetadata = this.cleanSourceMetadata(this.inferSourceMetadata(pdf.originalName, text));
+      const metadata = allowExternalMetadata
+        ? await this.enrichSourceMetadataWithDoi(inferredMetadata, text, pdf.originalName)
+        : inferredMetadata;
       await this.saveParsedTextCache(userId, pdf, {
         parser: 'liteparse',
         markdown: result.markdown,
@@ -4429,11 +5072,15 @@ export class PdfWikiManager {
           if (!fs.existsSync(textPath)) continue;
           const text = this.normalizeExtractedText(await fs.promises.readFile(textPath, 'utf-8'));
           if (!text) continue;
+          const cachedReferences = Array.isArray(meta.references) ? meta.references : [];
+          const references = cachedReferences.length > 0
+            ? cachedReferences
+            : this.parseReferences(text, pdf.id, pdf.originalName);
           logger.info(`[PdfWiki] Reusing parsed text cache for ${pdf.originalName}: ${textPath}`);
           return {
             text,
             metadata: this.cleanSourceMetadata(meta.metadata || this.inferSourceMetadata(pdf.originalName, text)),
-            references: Array.isArray(meta.references) ? meta.references : this.parseReferences(text, pdf.id, pdf.originalName),
+            references,
             parser: meta.parser || this.inferParserFromCachePath(textPath),
             metaData: this.asRecord(meta.metaData),
           };
@@ -4477,7 +5124,7 @@ export class PdfWikiManager {
 
     try {
       await this.prepareCodexPdfWikiTaskDir(taskDir);
-      await fs.promises.copyFile(pdf.filePath, sourcePdfPath);
+      await this.linkOrCopyFile(pdf.filePath, sourcePdfPath);
 
       const paperId = this.getSafePdfCacheId(pdf);
       const sourceInfo = {
@@ -4589,7 +5236,7 @@ export class PdfWikiManager {
 
     try {
       await this.prepareCodexPdfWikiTaskDir(taskDir);
-      await fs.promises.copyFile(pdf.filePath, sourcePdfPath);
+      await this.linkOrCopyFile(pdf.filePath, sourcePdfPath);
 
       const paperId = this.getSafePdfCacheId(pdf);
       const sourceInfo = {
@@ -4685,9 +5332,9 @@ export class PdfWikiManager {
     }
   }
 
-  private canUseCodexCli(): boolean {
+  private canUseCodexCli(explicitlyRequested = false): boolean {
     const config = this.loadPdfWikiCodexConfig();
-    if (!this.isPdfWikiCodexEnabled(config)) {
+    if (!explicitlyRequested && !this.isPdfWikiCodexEnabled(config)) {
       return false;
     }
     return !!this.findCodexCliExecutable(config.command);
@@ -4728,12 +5375,6 @@ export class PdfWikiManager {
     ).trim();
     const sandbox = requestedSandbox === 'danger-full-access' ? 'danger-full-access' : 'workspace-write';
 
-    const configuredTimeout = Number(
-      process.env.PDF_WIKI_CODEX_TIMEOUT_MS
-      || savedCodex.timeout_ms
-      || 900000
-    );
-    const timeoutMs = Math.max(900000, Math.min(3600000, Math.floor(Number.isFinite(configuredTimeout) ? configuredTimeout : 900000)));
     const configuredConcurrency = Number(
       process.env.PDF_WIKI_CODEX_CONCURRENCY
       || savedCodex.pdf_wiki_concurrency
@@ -4757,7 +5398,6 @@ export class PdfWikiManager {
       model: String(process.env.PDF_WIKI_CODEX_MODEL || savedCodex.model || 'gpt-5.5').trim() || 'gpt-5.5',
       reasoningEffort,
       sandbox,
-      timeoutMs,
       concurrency,
     };
   }
@@ -4850,6 +5490,49 @@ export class PdfWikiManager {
       windowsHide: true,
       env,
     });
+  }
+
+  private async terminateCodexProcessTree(child: ReturnType<typeof spawn>): Promise<void> {
+    const pid = child.pid;
+    if (!pid) {
+      if (child.exitCode === null) child.kill('SIGKILL');
+      return;
+    }
+
+    if (process.platform === 'win32') {
+      await new Promise<void>((resolve) => {
+        let settled = false;
+        const finish = (): void => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          resolve();
+        };
+        const killer = spawn('taskkill.exe', ['/PID', String(pid), '/T', '/F'], {
+          windowsHide: true,
+          shell: false,
+          stdio: 'ignore',
+        });
+        const timer = setTimeout(() => {
+          try {
+            killer.kill('SIGKILL');
+          } catch {
+            // Ignore cleanup failures; the direct child fallback below still runs.
+          }
+          finish();
+        }, 5000);
+        killer.once('error', finish);
+        killer.once('close', finish);
+      });
+    }
+
+    if (child.exitCode === null) {
+      try {
+        child.kill('SIGKILL');
+      } catch {
+        // Process may already have exited after taskkill.
+      }
+    }
   }
 
   private async prepareCodexPdfWikiTaskDir(taskDir: string): Promise<void> {
@@ -4973,6 +5656,8 @@ export class PdfWikiManager {
       taskDir,
       '--sandbox',
       config.sandbox,
+      '-c',
+      'sandbox_workspace_write.network_access=true',
       '--skip-git-repo-check',
       '--output-last-message',
       lastMessagePath,
@@ -5004,8 +5689,6 @@ export class PdfWikiManager {
       let stderr = '';
       let settled = false;
       let progressTimer: ReturnType<typeof setInterval> | null = null;
-      let completionTimer: ReturnType<typeof setInterval> | null = null;
-      let outputCompleteSince = 0;
       const emitProgress = async (): Promise<void> => {
         if (!onProgress) return;
         const summary = await this.summarizeCodexPdfWikiTask(taskDir);
@@ -5017,58 +5700,13 @@ export class PdfWikiManager {
           clearInterval(progressTimer);
           progressTimer = null;
         }
-        if (completionTimer) {
-          clearInterval(completionTimer);
-          completionTimer = null;
-        }
       };
-      const completeFromOutputFiles = async (): Promise<void> => {
-        if (settled) return;
-        const outputComplete = await this.isCodexPdfWikiOutputComplete(taskDir);
-        if (!outputComplete) {
-          outputCompleteSince = 0;
-          return;
-        }
-        const now = Date.now();
-        if (!outputCompleteSince) {
-          outputCompleteSince = now;
-          return;
-        }
-        if (now - outputCompleteSince < 15_000) return;
-        settled = true;
-        clearTaskTimers();
-        clearTimeout(timeout);
-        try {
-          await fs.promises.writeFile(stdoutPath, stdout || '', 'utf-8');
-          await fs.promises.writeFile(stderrPath, stderr || '', 'utf-8');
-          await fs.promises.appendFile(logsPath, `[${new Date().toISOString()}] Codex 输出文件已齐全并稳定，提前进入后续汇总。\n`, 'utf-8');
-          try {
-            await emitProgress();
-          } catch (progressError) {
-            logger.warn('[PdfWiki] Failed to report file-complete Codex progress:', progressError);
-          }
-          child.kill();
-          resolve();
-        } catch (error) {
-          reject(error);
-        }
-      };
-      const timeout = setTimeout(() => {
-        if (settled) return;
-        settled = true;
-        clearTaskTimers();
-        child.kill();
-        reject(new Error(`Codex CLI timed out after ${config.timeoutMs}ms`));
-      }, config.timeoutMs);
       if (onProgress) {
         void emitProgress().catch(error => logger.warn('[PdfWiki] Failed to report Codex progress:', error));
         progressTimer = setInterval(() => {
             void emitProgress().catch(error => logger.warn('[PdfWiki] Failed to report Codex progress:', error));
           }, 10000);
       }
-      completionTimer = setInterval(() => {
-        void completeFromOutputFiles().catch(error => logger.warn('[PdfWiki] Failed to check Codex output completion:', error));
-      }, 5000);
 
       child.stdout?.on('data', chunk => {
         stdout += chunk.toString();
@@ -5080,14 +5718,12 @@ export class PdfWikiManager {
         if (settled) return;
         settled = true;
         clearTaskTimers();
-        clearTimeout(timeout);
         reject(error);
       });
       child.on('close', async code => {
         if (settled) return;
         settled = true;
         clearTaskTimers();
-        clearTimeout(timeout);
         try {
           await fs.promises.writeFile(stdoutPath, stdout || '', 'utf-8');
           await fs.promises.writeFile(stderrPath, stderr || '', 'utf-8');
@@ -5118,7 +5754,8 @@ export class PdfWikiManager {
     config: PdfWikiCodexConfig,
     taskDir: string,
     prompt: string,
-    contextLabel: string
+    contextLabel: string,
+    onHeartbeat?: (elapsedMs: number) => Promise<void> | void
   ): Promise<string> {
     await fs.promises.mkdir(taskDir, { recursive: true });
     const executable = this.resolveCodexCliExecutable(config.command);
@@ -5133,6 +5770,8 @@ export class PdfWikiManager {
       taskDir,
       '--sandbox',
       config.sandbox,
+      '-c',
+      'sandbox_workspace_write.network_access=true',
       '--skip-git-repo-check',
       '--output-last-message',
       lastMessagePath,
@@ -5153,12 +5792,23 @@ export class PdfWikiManager {
       let stdout = '';
       let stderr = '';
       let settled = false;
-      const timeout = setTimeout(() => {
-        if (settled) return;
-        settled = true;
-        child.kill();
-        reject(new Error(`Codex CLI ${contextLabel} timed out after ${config.timeoutMs}ms`));
-      }, config.timeoutMs);
+      const taskStartedAt = Date.now();
+      let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+      const clearRuntimeTimers = (): void => {
+        if (heartbeatTimer) {
+          clearInterval(heartbeatTimer);
+          heartbeatTimer = null;
+        }
+      };
+      if (onHeartbeat) {
+        const emitHeartbeat = (): void => {
+          void Promise.resolve(onHeartbeat(Date.now() - taskStartedAt)).catch(error => {
+            logger.warn(`[PdfWiki] Failed to report ${contextLabel} heartbeat:`, error);
+          });
+        };
+        emitHeartbeat();
+        heartbeatTimer = setInterval(emitHeartbeat, 10000);
+      }
 
       child.stdout?.on('data', chunk => {
         stdout += chunk.toString();
@@ -5169,13 +5819,13 @@ export class PdfWikiManager {
       child.on('error', error => {
         if (settled) return;
         settled = true;
-        clearTimeout(timeout);
+        clearRuntimeTimers();
         reject(error);
       });
       child.on('close', async code => {
         if (settled) return;
         settled = true;
-        clearTimeout(timeout);
+        clearRuntimeTimers();
         try {
           await fs.promises.writeFile(stdoutPath, stdout || '', 'utf-8');
           await fs.promises.writeFile(stderrPath, stderr || '', 'utf-8');
@@ -5206,13 +5856,22 @@ export class PdfWikiManager {
     config: PdfWikiCodexConfig,
     taskDir: string,
     prompt: string,
-    contextLabel: string
+    contextLabel: string,
+    onProgress?: PdfWikiCodexJsonProgressHandler
   ): Promise<Record<string, unknown>> {
     const maxAttempts = this.getCodexJsonRetryCount();
     let lastError: unknown = null;
 
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       const attemptDir = path.join(taskDir, `attempt_${attempt}`);
+      const emitProgress = async (elapsedMs: number, message: string): Promise<void> => {
+        if (!onProgress) return;
+        try {
+          await onProgress({ attempt, maxAttempts, elapsedMs, message });
+        } catch (error) {
+          logger.warn(`[PdfWiki] Failed to report ${contextLabel} attempt progress:`, error);
+        }
+      };
       const attemptPrompt = attempt === 1
         ? prompt
         : `${prompt}
@@ -5225,9 +5884,12 @@ export class PdfWikiManager {
 4. 如果没有可抽取内容，按任务类型返回空数组结构，例如 {"claims":[]} 或 {"claimTranslations":[],"groups":[],"similarPairs":[]}.`;
 
       try {
+        await emitProgress(0, `Codex 正在处理第 ${attempt}/${maxAttempts} 次尝试`);
         const content = await this.runCodexTextTask(config, attemptDir, `${attemptPrompt}
 
-最终只输出一个合法 JSON 对象，不要 Markdown 代码块，不要解释。`, contextLabel);
+最终只输出一个合法 JSON 对象，不要 Markdown 代码块，不要解释。`, contextLabel, async (elapsedMs) => {
+          await emitProgress(elapsedMs, `Codex 正在处理第 ${attempt}/${maxAttempts} 次尝试，已等待 ${Math.max(1, Math.round(elapsedMs / 1000))} 秒`);
+        });
         const parsed = this.parseJsonContent(content);
         if (parsed) return parsed;
 
@@ -5240,12 +5902,18 @@ export class PdfWikiManager {
 
 原始内容：
 ${content.slice(0, 20000)}`;
-        const repaired = await this.runCodexTextTask(config, path.join(attemptDir, 'repair'), repairPrompt, `${contextLabel}-repair`);
+        await emitProgress(0, `Codex 第 ${attempt}/${maxAttempts} 次返回格式不完整，正在修复 JSON`);
+        const repaired = await this.runCodexTextTask(config, path.join(attemptDir, 'repair'), repairPrompt, `${contextLabel}-repair`, async (elapsedMs) => {
+          await emitProgress(elapsedMs, `Codex 正在修复第 ${attempt}/${maxAttempts} 次结果，已等待 ${Math.max(1, Math.round(elapsedMs / 1000))} 秒`);
+        });
         const repairedParsed = this.parseJsonContent(repaired);
         if (repairedParsed) return repairedParsed;
         lastError = new Error(`Codex CLI ${contextLabel} returned invalid JSON on attempt ${attempt}`);
       } catch (error) {
         lastError = error;
+        await emitProgress(0, attempt < maxAttempts
+          ? `Codex 第 ${attempt}/${maxAttempts} 次失败，正在准备下一次尝试`
+          : `Codex 第 ${attempt}/${maxAttempts} 次失败，已停止重试`);
         logger.warn(`[PdfWiki] Codex CLI ${contextLabel} attempt ${attempt}/${maxAttempts} failed: ${(error as Error).message}`);
       }
     }
@@ -5588,7 +6256,7 @@ ${content.slice(0, 20000)}`;
     await fs.promises.rm(workDir, { recursive: true, force: true });
     await fs.promises.mkdir(sourceDir, { recursive: true });
     await fs.promises.mkdir(targetFigureDir, { recursive: true });
-    await fs.promises.copyFile(pdf.filePath, path.join(sourceDir, this.sanitizeFileName(pdf.originalName || pdf.fileName || 'source.pdf')));
+    await this.linkOrCopyFile(pdf.filePath, path.join(sourceDir, this.sanitizeFileName(pdf.originalName || pdf.fileName || 'source.pdf')));
 
     const maxAssets = Math.max(1, Math.min(200, Number(process.env.PDF_WIKI_REIDENTIFY_MAX_FIGURES || 80) || 80));
     const run = await this.runSimpleProcess(python.command, [...python.argsPrefix, script, workDir, '--max-assets', String(maxAssets)], process.cwd(), 180000);
@@ -8781,25 +9449,21 @@ ${metaUserRequirements || '未填写额外要求，按模板和默认 Meta 分�
 
   private async extractPdfContent(userId: string, pdf: PdfWikiSourcePdf, llmConfig?: PdfWikiLlmConfig): Promise<PdfWikiParsedContent> {
     const engine = llmConfig ? this.getTextExtractionEngine(llmConfig) : 'auto';
-    if (engine === 'liteparse') {
-      const liteParse = await this.tryExtractPdfWithLiteParse(userId, pdf);
+    const allowExternalMetadata = !llmConfig || this.getMetadataEngine(llmConfig) !== 'local';
+    if (engine === 'liteparse' && isLiteParseAvailable()) {
+      const liteParse = await this.tryExtractPdfWithLiteParse(userId, pdf, allowExternalMetadata);
       if (liteParse) return liteParse;
     }
-    if (engine === 'marker') {
-      const marker = await this.tryExtractPdfWithMarker(userId, pdf);
+    if (engine === 'marker' && isPdfMarkerAvailable()) {
+      const marker = await this.tryExtractPdfWithMarker(userId, pdf, allowExternalMetadata);
       if (marker) return marker;
     }
-    if (engine === 'fast-text') {
-      const fastText = await this.tryExtractPdfWithFastText(userId, pdf);
+    if (engine === 'fast-text' && isPdfFastTextAvailable()) {
+      const fastText = await this.tryExtractPdfWithFastText(userId, pdf, allowExternalMetadata);
       if (fastText) return fastText;
     }
-    if (engine === 'pdf-parse') {
-      return {
-        text: await this.extractPdfTextWithPdfParse(pdf.filePath),
-        metadata: {},
-        references: [],
-        parser: 'pdf-parse',
-      };
+    if (['liteparse', 'marker', 'fast-text', 'pdf-parse'].includes(engine)) {
+      return this.extractPdfWithPdfParse(userId, pdf, allowExternalMetadata);
     }
 
     const textIn = llmConfig ? await this.tryExtractPdfWithTextIn(userId, pdf, llmConfig) : null;
@@ -8812,6 +9476,32 @@ ${metaUserRequirements || '未填写额外要求，按模板和默认 Meta 分�
       text: await this.extractPdfTextWithPdfParse(pdf.filePath),
       metadata: {},
       references: [],
+      parser: 'pdf-parse',
+    };
+  }
+
+  private async extractPdfWithPdfParse(
+    userId: string,
+    pdf: PdfWikiSourcePdf,
+    allowExternalMetadata = true
+  ): Promise<PdfWikiParsedContent> {
+    const text = this.normalizeExtractedText(await this.extractPdfTextWithPdfParse(pdf.filePath));
+    const references = this.parseReferences(text, pdf.id, pdf.originalName);
+    const inferredMetadata = this.cleanSourceMetadata(this.inferSourceMetadata(pdf.originalName, text));
+    const metadata = allowExternalMetadata
+      ? await this.enrichSourceMetadataWithDoi(inferredMetadata, text, pdf.originalName)
+      : inferredMetadata;
+    await this.saveParsedTextCache(userId, pdf, {
+      parser: 'pdf-parse',
+      markdown: text,
+      text,
+      references,
+      metadata,
+    });
+    return {
+      text,
+      metadata,
+      references,
       parser: 'pdf-parse',
     };
   }
@@ -9546,10 +10236,14 @@ ${metaUserRequirements || '未填写额外要求，按模板和默认 Meta 分�
     llmConfig: PdfWikiLlmConfig;
     parsedContent?: PdfWikiParsedContent;
   }): Promise<PdfWikiReferenceIndexResult> {
-    const localMetadata = await this.enrichSourceMetadataWithDoi(this.cleanSourceMetadata({
+    const metadataEngine = this.getMetadataEngine(input.llmConfig);
+    const inferredMetadata = this.cleanSourceMetadata({
       ...this.inferSourceMetadata(input.pdf.originalName, input.text),
       ...this.removeEmptyMetadata(input.parsedContent?.metadata || {}),
-    }), input.text, input.pdf.originalName);
+    });
+    const localMetadata = metadataEngine === 'local'
+      ? inferredMetadata
+      : await this.enrichSourceMetadataWithDoi(inferredMetadata, input.text, input.pdf.originalName);
     const localReferences = this.mergeReferenceIndexes(
       input.parsedContent?.references || [],
       this.parseReferences(input.text, input.pdf.id, input.pdf.originalName),
@@ -9557,7 +10251,6 @@ ${metaUserRequirements || '未填写额外要求，按模板和默认 Meta 分�
     let llmMetadata: Partial<PdfWikiSourcePdf> = {};
     let enrichedReferences: PdfWikiReference[] = [];
 
-    const metadataEngine = this.getMetadataEngine(input.llmConfig);
     if (metadataEngine !== 'local') {
       try {
         const llmResult = await this.extractMetadataAndReferencesWithLlm(input.pdf, input.text, input.llmConfig);
@@ -10229,67 +10922,77 @@ ${rawText.slice(0, 70000)}
     ];
   }
 
+  private extractSentenceWikiSection(text: string, section: PdfWikiSentenceSection): string {
+    const bodyText = this.stripReferenceTail(text);
+    if (section === 'Introduction') {
+      return this.extractSectionByHeading(bodyText, [
+        'introduction',
+        'background',
+      ], [
+        'materials and methods',
+        'material and methods',
+        'methods',
+        'methodology',
+        'experimental procedures',
+        'results',
+        'results and discussion',
+        'discussion',
+        'conclusion',
+        'conclusions',
+        'references',
+        'acknowledgements',
+        'acknowledgments',
+      ]) || this.fallbackIntroductionText(bodyText);
+    }
+    if (section === 'Discussion') {
+      return this.extractSectionByHeading(bodyText, [
+        'discussion',
+        'results and discussion',
+        'discussion and conclusions',
+        'discussion and conclusion',
+      ], [
+        'conclusion',
+        'conclusions',
+        'summary and conclusions',
+        'concluding remarks',
+        'references',
+        'acknowledgements',
+        'acknowledgments',
+        'supplementary',
+      ]);
+    }
+    return this.extractSectionByHeading(bodyText, [
+      'conclusion',
+      'conclusions',
+      'summary and conclusions',
+      'concluding remarks',
+    ], [
+      'references',
+      'bibliography',
+      'literature cited',
+      'acknowledgements',
+      'acknowledgments',
+      'supplementary',
+    ]);
+  }
+
   private buildSentenceCloudPointsFromText(
     text: string,
     pdf: PdfWikiSourcePdf,
     referenceIndex: PdfWikiReference[]
   ): PdfWikiSentencePoint[] {
-    const bodyText = this.stripReferenceTail(text);
     const sectionInputs: Array<{ section: PdfWikiSentenceSection; text: string }> = [
       {
         section: 'Introduction',
-        text: this.extractSectionByHeading(bodyText, [
-          'introduction',
-          'background',
-        ], [
-          'materials and methods',
-          'material and methods',
-          'methods',
-          'methodology',
-          'experimental procedures',
-          'results',
-          'results and discussion',
-          'discussion',
-          'conclusion',
-          'conclusions',
-          'references',
-          'acknowledgements',
-          'acknowledgments',
-        ]) || this.fallbackIntroductionText(bodyText),
+        text: this.extractSentenceWikiSection(text, 'Introduction'),
       },
       {
         section: 'Discussion',
-        text: this.extractSectionByHeading(bodyText, [
-          'discussion',
-          'results and discussion',
-          'discussion and conclusions',
-          'discussion and conclusion',
-        ], [
-          'conclusion',
-          'conclusions',
-          'summary and conclusions',
-          'concluding remarks',
-          'references',
-          'acknowledgements',
-          'acknowledgments',
-          'supplementary',
-        ]),
+        text: this.extractSentenceWikiSection(text, 'Discussion'),
       },
       {
         section: 'Conclusion',
-        text: this.extractSectionByHeading(bodyText, [
-          'conclusion',
-          'conclusions',
-          'summary and conclusions',
-          'concluding remarks',
-        ], [
-          'references',
-          'bibliography',
-          'literature cited',
-          'acknowledgements',
-          'acknowledgments',
-          'supplementary',
-        ]),
+        text: this.extractSentenceWikiSection(text, 'Conclusion'),
       },
     ];
 
@@ -10297,7 +11000,7 @@ ${rawText.slice(0, 70000)}
     for (const input of sectionInputs) {
       const matches = this.matchSectionSentencesToReferences(input.section, input.text, referenceIndex, pdf.id, 220, {
         includeSemanticCandidates: false,
-        terminalCitationsOnly: true,
+        terminalCitationsOnly: false,
       });
       for (const match of matches) {
         const sentence = this.cleanSentencePointText(match.sentence);
@@ -10335,6 +11038,558 @@ ${rawText.slice(0, 70000)}
       }
     }
     return points;
+  }
+
+  /**
+   * Fast AI matching mode deliberately stops at section extraction and sentence
+   * splitting. Citation detection and References alignment belong to the AI
+   * request that receives these raw sentences plus the complete tail-note list.
+   */
+  private buildSentenceCloudDraftPointsForAi(
+    text: string,
+    pdf: PdfWikiSourcePdf
+  ): PdfWikiSentencePoint[] {
+    const sectionInputs: Array<{ section: PdfWikiSentenceSection; text: string }> = [
+      { section: 'Introduction', text: this.extractSentenceWikiSection(text, 'Introduction') },
+      { section: 'Discussion', text: this.extractSentenceWikiSection(text, 'Discussion') },
+    ];
+    const points: PdfWikiSentencePoint[] = [];
+    for (const input of sectionInputs) {
+      const sentences = this.splitSectionIntoSentences(input.text, 220);
+      sentences.forEach((rawSentence, sentenceIndex) => {
+        const sentence = this.cleanSentencePointText(rawSentence);
+        if (!this.isUsefulSentencePoint(sentence)) return;
+        const topic = this.inferSentencePointTopic(sentence);
+        const id = `sent_${crypto.createHash('md5').update(`${pdf.id}:${input.section}:${sentenceIndex}:${sentence}`).digest('hex').slice(0, 18)}`;
+        const positionSeed = this.seededPointPosition(id, topic.key);
+        points.push({
+          id,
+          sourcePdfId: pdf.id,
+          sourcePdfName: pdf.originalName,
+          sourcePdfTitle: pdf.title,
+          section: input.section,
+          sentenceIndex,
+          sentence,
+          citations: [],
+          references: [],
+          referenceCount: 0,
+          claimCandidate: false,
+          claimText: '',
+          claimType: 'non_claim',
+          claimReason: '等待 AI 根据原句中的显式引用与文末 References 对齐。',
+          topicKey: topic.key,
+          topicLabel: topic.label,
+          keywords: topic.keywords,
+          x: positionSeed.x,
+          y: positionSeed.y,
+          radius: 8,
+          matchMethod: 'none',
+          confidence: 0,
+        });
+      });
+    }
+    return points;
+  }
+
+  private async buildFastSentenceWikiWithCodex(
+    userId: string,
+    pdf: PdfWikiSourcePdf,
+    text: string,
+    referenceIndex: PdfWikiReference[],
+    draftPoints: PdfWikiSentencePoint[],
+    codexConfig: PdfWikiCodexConfig,
+    onProgress?: PdfWikiCodexJsonProgressHandler
+  ): Promise<PdfWikiSentencePoint[]> {
+    const sectionSentencePoints = draftPoints.filter(point =>
+      point.section === 'Introduction' || point.section === 'Discussion'
+    );
+    const conclusionSentences = this.splitSectionIntoSentences(
+      this.extractSentenceWikiSection(text, 'Conclusion'),
+      120
+    ).filter(sentence => this.isUsefulSentencePoint(sentence));
+
+    if (sectionSentencePoints.length === 0 && conclusionSentences.length === 0) {
+      return [];
+    }
+
+    const batchSize = Math.max(6, Math.min(40, Number(process.env.PDF_WIKI_AI_CITATION_BATCH_SIZE || 18)));
+    const configuredConcurrency = Number(process.env.PDF_WIKI_AI_CITATION_CONCURRENCY || codexConfig.concurrency || 2);
+    const concurrency = Math.max(2, Math.min(6, Math.floor(Number.isFinite(configuredConcurrency) ? configuredConcurrency : 2)));
+    const taskRoot = path.join(this.getCodexPdfWikiTaskDir(userId, pdf), 'fast-sentence-wiki');
+    const batches: PdfWikiSentencePoint[][] = [];
+    for (let start = 0; start < sectionSentencePoints.length; start += batchSize) {
+      batches.push(sectionSentencePoints.slice(start, start + batchSize));
+    }
+
+    const detectedBatches: PdfWikiSentencePoint[][] = new Array(batches.length);
+    await this.mapWithConcurrency(batches, concurrency, async (batch, batchIndex) => {
+      const prompt = this.composeFastCitationDetectionPrompt(batch);
+      const parsed = await this.callCodexJsonTask(
+        codexConfig,
+        path.join(taskRoot, 'citation-detection', `batch_${batchIndex + 1}`),
+        prompt,
+        `fast-citation-detection-${batchIndex + 1}`,
+        async progress => {
+          if (onProgress) await onProgress({
+            ...progress,
+            message: `并发识别引用 ${batchIndex + 1}/${batches.length}：${progress.message}`,
+          });
+        }
+      );
+      detectedBatches[batchIndex] = this.applyFastCitationDetection(batch, parsed);
+    });
+
+    const matchedBatches: PdfWikiSentencePoint[][] = new Array(detectedBatches.length);
+    const conclusionPromise: Promise<Record<string, unknown>> = conclusionSentences.length > 0
+      ? this.callCodexJsonTask(
+        codexConfig,
+        path.join(taskRoot, 'conclusions'),
+        this.composeFastCodexSentenceWikiPrompt(pdf, [], conclusionSentences, []),
+        'fast-conclusions',
+        onProgress
+      )
+      : Promise.resolve({ conclusions: [] });
+    const matchingJobs = detectedBatches.map((batch, batchIndex) => ({ batch, batchIndex }));
+    await this.mapWithConcurrency(matchingJobs, concurrency, async job => {
+      const relevantReferences = this.selectReferencesForAiDetectedCitations(job.batch, referenceIndex);
+      if (relevantReferences.length === 0) {
+        matchedBatches[job.batchIndex] = [];
+        return;
+      }
+      const prompt = this.composeFastCodexSentenceWikiPrompt(pdf, job.batch, [], relevantReferences);
+      const parsed = await this.callCodexJsonTask(
+        codexConfig,
+        path.join(taskRoot, 'reference-matching', `batch_${job.batchIndex + 1}`),
+        prompt,
+        `fast-reference-matching-${job.batchIndex + 1}`,
+        async progress => {
+          if (onProgress) await onProgress({
+            ...progress,
+            message: `并发匹配尾注 ${job.batchIndex + 1}/${matchingJobs.length}（候选 ${relevantReferences.length}/${referenceIndex.length}）：${progress.message}`,
+          });
+        }
+      );
+      matchedBatches[job.batchIndex] = this.applyFastCodexSentenceMatches(job.batch, relevantReferences, parsed);
+    });
+
+    const conclusionParsed = await conclusionPromise;
+    const citedClaims = matchedBatches.flatMap(batch => batch || []);
+    const conclusionClaims = this.buildFastCodexConclusionPoints(pdf, conclusionSentences, conclusionParsed);
+    logger.info(
+      `[PdfWiki] Fast Codex sentence wiki completed for ${pdf.originalName}: cited=${citedClaims.length}/${sectionSentencePoints.length}, conclusions=${conclusionClaims.length}`
+    );
+    return [...citedClaims, ...conclusionClaims];
+  }
+
+  private composeFastCitationDetectionPrompt(points: PdfWikiSentencePoint[]): string {
+    const sentences = points.map(point => [
+      `pointId: ${point.id}`,
+      `section: ${point.section}`,
+      `sentenceIndex: ${point.sentenceIndex}`,
+      `sentence: ${this.compactPromptText(point.sentence, 1400)}`,
+    ].join('\n')).join('\n\n');
+    return `你是学术论文显式引用识别器。本阶段只识别原句句中或句末实际出现的引用，不提供 References，也不匹配文末条目。
+
+要求：
+1. 每个 pointId 必须返回一条 matches 记录。
+2. citations 必须逐字来自 sentence，例如 [12]、[3, 5, 8]、(Smith et al., 2020)、Smith et al. (2020)。
+3. 没有显式引用时返回 citations=[]。
+4. 不要根据句子主题猜引用，不要改写引用。
+5. 只输出 JSON：{"matches":[{"pointId":"sent_xxx","citations":["[12]"]}]}。
+
+SENTENCES
+${sentences}`;
+  }
+
+  private applyFastCitationDetection(
+    points: PdfWikiSentencePoint[],
+    parsed: Record<string, unknown>
+  ): PdfWikiSentencePoint[] {
+    const matches = this.firstArray(parsed.matches, parsed.results, parsed.items);
+    const byId = new Map<string, Record<string, unknown>>();
+    for (const item of matches) {
+      if (!item || typeof item !== 'object') continue;
+      const record = item as Record<string, unknown>;
+      const pointId = this.firstString(record.pointId, record.point_id, record.id);
+      if (pointId) byId.set(pointId, record);
+    }
+    return points.map(point => {
+      const record = byId.get(point.id);
+      const citations = record ? this.resolveFastCodexSentenceCitations(point, record) : [];
+      return { ...point, citations };
+    });
+  }
+
+  private selectReferencesForAiDetectedCitations(
+    points: PdfWikiSentencePoint[],
+    references: PdfWikiReference[]
+  ): PdfWikiReference[] {
+    const selected: PdfWikiReference[] = [];
+    const citations = this.unique(points.flatMap(point => point.citations || []));
+    for (const citation of citations) {
+      const numericIndexes = this.extractNumericReferenceIndexes(citation);
+      for (const index of numericIndexes) {
+        const reference = references.find((item, position) => (item.index || position + 1) === index);
+        if (reference) selected.push(reference);
+      }
+      for (const pair of this.extractAuthorYearPairs(citation)) {
+        const normalizedAuthor = this.normalizeCitationToken(pair.author);
+        const authorYearCandidates = references.filter(reference => {
+          const referenceText = this.normalizeCitationToken(`${reference.authors || ''} ${reference.raw || ''}`);
+          return String(reference.year || reference.raw || '').includes(pair.year)
+            && !!normalizedAuthor
+            && ` ${referenceText} `.includes(` ${normalizedAuthor} `);
+        });
+        selected.push(...authorYearCandidates);
+      }
+    }
+    const narrowed = this.uniqueReferences(selected);
+    // AI detection found a citation but metadata was too incomplete to narrow it
+    // safely. Preserve correctness by giving that batch the full tail-note list.
+    return citations.length > 0 && narrowed.length === 0 ? references : narrowed;
+  }
+
+  private composeFastCodexSentenceWikiPrompt(
+    pdf: PdfWikiSourcePdf,
+    sectionSentencePoints: PdfWikiSentencePoint[],
+    conclusionSentences: string[],
+    references: PdfWikiReference[]
+  ): string {
+    const sentenceLines = sectionSentencePoints.map(point => [
+      `pointId: ${point.id}`,
+      `section: ${point.section}`,
+      `sentenceIndex: ${point.sentenceIndex}`,
+      `sentence: ${this.compactPromptText(point.sentence, 1200)}`,
+      `aiDetectedCitations: ${point.citations.join('; ') || 'none'}`,
+    ].join('\n')).join('\n\n');
+    const conclusionLines = conclusionSentences
+      .map((sentence, index) => `[C${index + 1}] ${this.compactPromptText(sentence, 1400)}`)
+      .join('\n');
+    const referenceLines = references
+      .map((ref, index) => `[${ref.index || index + 1}] ${this.compactPromptText(this.formatReferenceForSentenceMatching(ref), 620)}`)
+      .join('\n');
+
+    return `你是 PDF 句子级 Wiki 的严格引用整理器。本任务是快速模式，只处理给定材料，不分析整篇论文，也不生成表格、图片或 Meta 数据。
+
+必须执行两项任务：
+
+A. 引言/讨论逐句引用整理
+1. SECTION_SENTENCES 包含 Introduction 与 Discussion 中的可读句子。逐句判断，不得遗漏输入 pointId。
+2. 每个输入 pointId 必须返回一条 matches 记录，pointId 原样返回。
+3. aiDetectedCitations 来自上一阶段 AI 对原句的并发识别，不是本地匹配结果。你必须结合 sentence 复核这些引用，并把原句中实际出现的引用片段原样写入 citations。
+4. 只能依据 citations 中的显式引用对齐 REFERENCES。禁止根据语义相似度猜参考文献；referenceIndexes 只能填写 REFERENCES 中真实存在且被该句明确引用的编号。
+5. 句中和句末都没有明确参考文献时，必须返回 citations=[]、referenceIndexes=[]、claimCandidate=false、claimText=""，该句不能单独作为论点。
+6. 有引用但无法可靠对齐文末条目时，同样返回 referenceIndexes=[]、claimCandidate=false、claimText=""。
+7. 有明确引用且包含实质性背景事实、前人发现、研究空白、机制解释、限制条件或结果判断的完整句，应当作为论点；只有纯方法步骤、目录标题、残缺句或没有实质信息的过渡句才返回 claimCandidate=false。
+8. claimCandidate=true 时，claimText 只概括该句表达的独立论点，不新增原文没有的信息。背景事实可以使用 claimType=background，不要因为它不是作者自己的结果而丢弃。
+
+B. 本文主要结论整理
+1. 只能依据 CONCLUSION_SENTENCES 归纳这篇来源论文自己的主要结论，输出 1-8 条 conclusions；没有可用结论则返回空数组。
+2. 每条必须列出真实 sourceSentenceIndexes，对应 [C1]、[C2]；不得使用引言/讨论或 REFERENCES 代替本文结论。
+3. conclusionText 不要自行添加引用。系统会在结论后追加 SOURCE_PAPER_METADATA 对应的本文引用，并保存完整文献信息。
+4. 不得把文末 REFERENCES 中的其他论文当成本论文主要结论的来源。
+
+统一要求：
+- 只输出一个 JSON 对象，不要 Markdown，不要解释。
+- confidence 为 0-1。
+- claimType 只能是 argument、background、mechanism、result、limitation、method、non_claim。
+- topicLabel 使用 2-10 个中文词，topicKey 使用稳定的英文或拼音短横线键。
+
+返回格式：
+{
+  "matches": [
+    {
+      "pointId": "sent_xxx",
+      "citations": ["Smith et al. (2020)", "[3]"],
+      "referenceIndexes": [1, 3],
+      "confidence": 0.95,
+      "claimCandidate": true,
+      "claimText": "该引用句表达的论点",
+      "claimType": "mechanism",
+      "claimReason": "句中/句末显式引用已与文末条目对齐",
+      "topicLabel": "主题名称",
+      "topicKey": "topic-key",
+      "keywords": ["keyword"]
+    }
+  ],
+  "conclusions": [
+    {
+      "sourceSentenceIndexes": [1, 2],
+      "conclusionText": "本文的主要结论",
+      "confidence": 0.96,
+      "claimType": "result",
+      "topicLabel": "主要结论",
+      "topicKey": "main-conclusion",
+      "keywords": ["keyword"]
+    }
+  ]
+}
+
+SOURCE_PAPER_METADATA
+${this.formatPdfMetadataForPrompt(pdf)}
+
+SECTION_SENTENCES
+${sentenceLines || 'none'}
+
+CONCLUSION_SENTENCES
+${conclusionLines || 'none'}
+
+REFERENCES
+${referenceLines || 'none'}`;
+  }
+
+  private applyFastCodexSentenceMatches(
+    points: PdfWikiSentencePoint[],
+    references: PdfWikiReference[],
+    parsed: Record<string, unknown>
+  ): PdfWikiSentencePoint[] {
+    const rawMatches = this.firstArray(
+      parsed.matches,
+      parsed.sentenceMatches,
+      parsed.sentence_matches,
+      parsed.citedSentenceClaims,
+      parsed.cited_sentence_claims
+    );
+    const matchByPointId = new Map<string, Record<string, unknown>>();
+    for (const item of rawMatches) {
+      if (!item || typeof item !== 'object') continue;
+      const record = item as Record<string, unknown>;
+      const pointId = this.firstString(record.pointId, record.point_id, record.id);
+      if (pointId) matchByPointId.set(pointId, record);
+    }
+
+    const accepted: PdfWikiSentencePoint[] = [];
+    for (const point of points) {
+      const record = matchByPointId.get(point.id);
+      if (!record) continue;
+      const verifiedCitations = this.resolveFastCodexSentenceCitations(point, record);
+      const codexReferences = this.resolveSentencePointAiReferences(record, references);
+      const verifiedReferenceCandidates = this.deduplicateSentencePointReferences([
+        ...codexReferences.map(ref => ({
+          ...ref,
+          matchType: 'citation' as const,
+          matchScore: 1,
+          aiReason: 'AI 根据原句句中/句末显式引用与文末 References 对齐；系统仅验证返回编号真实存在。',
+        })),
+      ], 8);
+      if (verifiedCitations.length === 0 || verifiedReferenceCandidates.length === 0) continue;
+
+      const localClaim = this.inferSentenceClaimCandidate(
+        point.sentence,
+        point.section,
+        verifiedReferenceCandidates.length,
+        verifiedCitations
+      );
+      const aiClaimCandidate = this.toBoolean(
+        record.claimCandidate ?? record.claim_candidate ?? record.isClaim ?? record.is_claim
+      );
+      const aiClaimReason = this.firstString(
+        record.claimReason,
+        record.claim_reason,
+        record.reason,
+        record.rationale
+      );
+      const alignmentOnlyFailure = aiClaimCandidate === false
+        && /引用.*(?:未|无法).*(?:对齐|匹配)|(?:reference|citation).*(?:unmatched|not aligned|cannot align|failed to match)/i.test(aiClaimReason);
+      const effectiveRecord = alignmentOnlyFailure && localClaim.claimCandidate
+        ? {
+            ...record,
+            claimCandidate: true,
+            claimText: this.firstString(record.claimText, record.claim_text, localClaim.claimText),
+            claimType: localClaim.claimType,
+            claimReason: '原 Codex 结果因参考文献目录缺失而未对齐；系统已从原文 References 恢复详细条目并按显式引用重新核验。',
+          }
+        : record;
+      const refined = this.applyAiSentencePointMatch({
+        ...point,
+        citations: verifiedCitations,
+        references: verifiedReferenceCandidates,
+        referenceCount: verifiedReferenceCandidates.length,
+      }, effectiveRecord, references);
+      const verifiedReferences = this.deduplicateSentencePointReferences(
+        (refined.references || []).filter(ref => !ref.fallbackSourcePdf),
+        8
+      );
+      const claimType = this.normalizeSentenceClaimType(refined.claimType);
+      if (
+        refined.citations.length === 0
+        || verifiedReferences.length === 0
+        || refined.claimCandidate !== true
+        || claimType === 'method'
+        || claimType === 'non_claim'
+      ) {
+        continue;
+      }
+      accepted.push({
+        ...refined,
+        references: verifiedReferences,
+        referenceCount: verifiedReferences.length,
+        matchMethod: this.getSentencePointMatchMethod(verifiedReferences),
+        claimReason: this.unique([
+          refined.claimReason || '',
+          '快速模式：已核对句中/句末显式引用，并绑定文末参考文献的作者、年份、题名、期刊、DOI 和原始条目。',
+        ].filter(Boolean)).join(' '),
+      });
+    }
+    return accepted;
+  }
+
+  private resolveFastCodexSentenceCitations(
+    point: PdfWikiSentencePoint,
+    record: Record<string, unknown>
+  ): string[] {
+    const localCitations = this.unique(point.citations || []);
+    const codexCitations = this.toStringArray(
+      record.citations
+      || record.inTextCitations
+      || record.in_text_citations
+      || record.citation
+    );
+    const normalizedSentence = this.normalizeSuperscriptCitationDigits(point.sentence)
+      .normalize('NFKC')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .toLowerCase();
+
+    return this.unique([...localCitations, ...codexCitations]).filter(citation => {
+      if (localCitations.includes(citation)) return true;
+      const normalizedCitation = this.normalizeSuperscriptCitationDigits(citation)
+        .normalize('NFKC')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .toLowerCase();
+      if (normalizedCitation.length < 2 || !normalizedSentence.includes(normalizedCitation)) return false;
+      return this.extractInTextCitations(citation).length > 0;
+    });
+  }
+
+  private buildFastCodexConclusionPoints(
+    pdf: PdfWikiSourcePdf,
+    conclusionSentences: string[],
+    parsed: Record<string, unknown>
+  ): PdfWikiSentencePoint[] {
+    if (conclusionSentences.length === 0) return [];
+    const rawConclusions = this.firstArray(
+      parsed.conclusions,
+      parsed.mainConclusions,
+      parsed.main_conclusions,
+      parsed.paperConclusions,
+      parsed.paper_conclusions
+    );
+    const sourceReference = this.createSourcePaperReference(pdf);
+    const sourceCitation = this.formatSourcePaperInTextCitation(pdf);
+    const points: PdfWikiSentencePoint[] = [];
+    const seen = new Set<string>();
+
+    for (const item of rawConclusions.slice(0, 12)) {
+      if (!item || typeof item !== 'object') continue;
+      const record = item as Record<string, unknown>;
+      const sourceIndexes = this.toNumberArray(
+        record.sourceSentenceIndexes
+        || record.source_sentence_indexes
+        || record.sentenceIndexes
+        || record.sentence_indexes
+        || record.sourceSentenceIndex
+      ).filter(index => index >= 1 && index <= conclusionSentences.length);
+      if (sourceIndexes.length === 0) continue;
+      const conclusionText = this.cleanSentencePointText(
+        this.firstString(record.conclusionText, record.conclusion_text, record.claimText, record.claim, record.summary)
+      );
+      if (!this.isUsefulSentencePoint(conclusionText) || seen.has(conclusionText.toLowerCase())) continue;
+      seen.add(conclusionText.toLowerCase());
+      const evidenceSentences = this.unique(sourceIndexes.map(index => conclusionSentences[index - 1]).filter(Boolean));
+      if (evidenceSentences.length === 0) continue;
+      const topicLabel = this.firstString(record.topicLabel, record.topic_label, record.topic) || '本文主要结论';
+      const inferredTopic = this.inferSentencePointTopic(`${topicLabel} ${conclusionText}`);
+      const topicKey = this.normalizeSentenceTopicKey(
+        this.firstString(record.topicKey, record.topic_key, topicLabel, inferredTopic.key)
+      );
+      const normalizedClaimType = this.normalizeSentenceClaimType(
+        this.firstString(record.claimType, record.claim_type, 'result')
+      );
+      const claimType = normalizedClaimType === 'method' || normalizedClaimType === 'non_claim'
+        ? 'result'
+        : normalizedClaimType;
+      const claimText = this.appendSourcePaperCitation(conclusionText, sourceCitation);
+      const sentenceIndex = Math.min(...sourceIndexes);
+      const id = `sent_conclusion_${crypto.createHash('md5').update(`${pdf.id}:${sourceIndexes.join(',')}:${conclusionText}`).digest('hex').slice(0, 18)}`;
+      const positionSeed = this.seededPointPosition(id, topicKey);
+      const confidenceValue = this.clamp01(Number(record.confidence ?? record.score ?? 0.95));
+      points.push({
+        id,
+        sourcePdfId: pdf.id,
+        sourcePdfName: pdf.originalName,
+        sourcePdfTitle: pdf.title,
+        section: 'Conclusion',
+        sentenceIndex,
+        sentence: evidenceSentences.join(' '),
+        citations: [sourceCitation],
+        references: [sourceReference],
+        referenceCount: 1,
+        claimCandidate: true,
+        claimText,
+        claimType,
+        claimReason: `Codex 根据 Conclusion 的 ${sourceIndexes.map(index => `C${index}`).join('、')} 归纳本文主要结论；引用绑定到来源论文本身。`,
+        topicKey,
+        topicLabel,
+        keywords: this.unique([
+          ...this.toStringArray(record.keywords || record.keyword),
+          ...inferredTopic.keywords,
+        ]).slice(0, 8),
+        x: positionSeed.x,
+        y: positionSeed.y,
+        radius: 13,
+        matchMethod: 'ai',
+        confidence: Math.round((confidenceValue || 0.95) * 1000) / 1000,
+      });
+    }
+    return points;
+  }
+
+  private createSourcePaperReference(pdf: PdfWikiSourcePdf): PdfWikiSentencePointReference {
+    const title = pdf.title || pdf.originalName || '来源论文';
+    const raw = [pdf.authors, pdf.year, title, pdf.journal, pdf.doi ? `DOI: ${pdf.doi}` : '']
+      .filter(Boolean)
+      .join('. ');
+    const id = crypto.createHash('md5').update(`${pdf.id}:${raw}:source-paper`).digest('hex').slice(0, 16);
+    return {
+      id: `ref_source_${id}`,
+      raw: raw || `来源论文：${title}`,
+      sourcePdfId: pdf.id,
+      sourcePdfName: pdf.originalName,
+      fallbackSourcePdf: true,
+      title,
+      authors: pdf.authors,
+      year: pdf.year,
+      journal: pdf.journal,
+      doi: pdf.doi,
+      matchType: 'ai',
+      matchScore: 1,
+      aiReason: '本文主要结论必须引用来源论文本身。',
+    };
+  }
+
+  private formatSourcePaperInTextCitation(pdf: PdfWikiSourcePdf): string {
+    const rawAuthors = String(pdf.authors || '').trim();
+    const firstAuthor = rawAuthors
+      .split(/\s*(?:;|；|，|\band\b|&)\s*/i)
+      .map(value => value.trim())
+      .filter(Boolean)[0] || '';
+    const authorLabel = firstAuthor.includes(',')
+      ? firstAuthor.split(',')[0].trim()
+      : firstAuthor;
+    const year = String(pdf.year || '').trim();
+    if (authorLabel && year) return `(${authorLabel} et al., ${year})`;
+    if (authorLabel) return `(${authorLabel} et al.)`;
+    const title = String(pdf.title || pdf.originalName || '来源论文').trim();
+    return year ? `(${title}, ${year})` : `(来源论文：${title})`;
+  }
+
+  private appendSourcePaperCitation(text: string, citation: string): string {
+    const cleaned = this.cleanSentencePointText(text).replace(/[。.!?！？]+$/g, '');
+    if (!cleaned) return citation;
+    if (cleaned.endsWith(citation)) return cleaned;
+    return `${cleaned} ${citation}`;
   }
 
   private async refineSentenceCloudPointsWithAi(
@@ -10405,30 +11660,24 @@ ${rawText.slice(0, 70000)}
 
     return points.map(point => {
       const record = matchByPointId.get(point.id);
-      return record ? this.applyAiSentencePointMatch(point, record, references) : point;
+      if (!record) return point;
+      const verifiedCitations = this.resolveFastCodexSentenceCitations(point, record);
+      return this.applyAiSentencePointMatch({ ...point, citations: verifiedCitations }, record, references);
     });
   }
 
   private composeSentenceReferenceMatchingPrompt(points: PdfWikiSentencePoint[], references: PdfWikiReference[]): string {
     const sentenceLines = points.map((point, index) => {
-      const localRefs = (point.references || [])
-        .map(ref => ref.index ? `[${ref.index}]` : (ref.title || ref.raw || ref.id || ''))
-        .filter(Boolean)
-        .slice(0, 6)
-        .join(', ');
       return [
         `SENTENCE ${index + 1}`,
         `pointId: ${point.id}`,
         `section: ${point.section}`,
         `sentenceIndex: ${point.sentenceIndex}`,
         `sentence: ${this.compactPromptText(point.sentence, 900)}`,
-        `detectedCitations: ${point.citations.length > 0 ? point.citations.join('; ') : 'none'}`,
-        `localCandidates: ${localRefs || 'none'}`,
       ].join('\n');
     }).join('\n\n');
 
     const referenceLines = references
-      .slice(0, 220)
       .map((ref, index) => {
         const displayIndex = ref.index || index + 1;
         return `[${displayIndex}] ${this.compactPromptText(this.formatReferenceForSentenceMatching(ref), 520)}`;
@@ -10439,8 +11688,8 @@ ${rawText.slice(0, 70000)}
 
 任务要求：
 1. 每个输入句子都必须返回一条 matches 记录，pointId 必须原样返回。
-2. 只能依据 detectedCitations 中列出的显式文中引用匹配文末参考文献，例如 [1,2]、(Author, 2020)、Author et al. (2021)。
-3. 如果 detectedCitations 为 none 或空，referenceIndexes 必须返回空数组；不要根据句子语义、主题相似或参考文献标题猜测匹配。
+2. 本地没有预先提取引用，也没有提供参考文献候选。请逐字检查 sentence 的句中和句末显式引用，例如 [1,2]、(Author, 2020)、Author et al. (2021)，并将原句中真实存在的引用片段原样返回到 citations。
+3. 如果 sentence 中没有显式引用，必须返回 citations=[]、referenceIndexes=[]；不要根据句子语义、主题相似或参考文献标题猜测匹配。
 4. 不要编造文末不存在的参考文献；referenceIndexes 只能来自下面 REFERENCES 的编号。
 5. topicLabel 用 2-10 个中文词概括该句主题；同一主题尽量用相同标签。
 6. confidence 为 0-1；成功对齐显式引用通常 0.85 以上；没有显式引用时 confidence 不超过 0.2。
@@ -10453,6 +11702,7 @@ ${rawText.slice(0, 70000)}
   "matches": [
     {
       "pointId": "sent_xxx",
+      "citations": ["[1,3]"],
       "referenceIndexes": [1, 3],
       "matchMethod": "citation",
       "confidence": 0.92,
@@ -10492,9 +11742,10 @@ ${referenceLines || '未解析到文末参考文献。'}`;
       matchScore: confidence > 0 ? Math.round(confidence * 1000) / 1000 : undefined,
       aiReason: reason || undefined,
     }));
-    const nextReferences = matchedAiRefs.length > 0
-      ? this.deduplicateSentencePointReferences(matchedAiRefs, 8)
-      : this.deduplicateSentencePointReferences(protectedCitationRefs, 8);
+    const nextReferences = this.deduplicateSentencePointReferences([
+      ...protectedCitationRefs,
+      ...matchedAiRefs,
+    ], 8);
     const referenceCount = nextReferences.length;
     const topicLabel = this.firstString(record.topicLabel, record.topic_label, record.topic, point.topicLabel) || point.topicLabel;
     const topicKey = this.normalizeSentenceTopicKey(this.firstString(record.topicKey, record.topic_key, topicLabel, point.topicKey));
@@ -12214,7 +13465,8 @@ ${rawText.slice(0, 50000)}
         ref.title,
       ].filter(Boolean).join(' '));
       const refYear = String(ref.year || ref.raw || '');
-      return refYear.includes(year) && refText.includes(normalizedAuthor);
+      const authorMatches = ` ${refText} `.includes(` ${normalizedAuthor} `);
+      return refYear.includes(year) && authorMatches;
     });
   }
 
@@ -12679,9 +13931,11 @@ ${promptEntries}
   }
 
   private getSentencePointCitationReferences(point: PdfWikiSentencePoint): PdfWikiReference[] {
-    const citationRefs = this.deduplicateSentencePointReferences(point.references || [], 8)
-      .filter(ref => !ref.fallbackSourcePdf);
+    const allReferences = this.deduplicateSentencePointReferences(point.references || [], 8);
+    const citationRefs = allReferences.filter(ref => !ref.fallbackSourcePdf);
     if (citationRefs.length > 0) return citationRefs;
+    const sourcePaperReferences = allReferences.filter(ref => ref.fallbackSourcePdf);
+    if (sourcePaperReferences.length > 0) return sourcePaperReferences;
     return [
       this.createSourcePdfFallbackReference(
         point.sourcePdfId,
@@ -12695,30 +13949,155 @@ ${promptEntries}
     const tail = this.extractReferenceTail(text);
     if (!tail) return [];
 
-    const normalized = tail.replace(/\r/g, '\n').replace(/[ \t]+/g, ' ');
-    const lines = normalized.split('\n').map(line => line.trim()).filter(line => line.length > 0);
-    const refs: string[] = [];
-    let current = '';
+    const streams = this.splitReferenceTailIntoReadingStreams(tail);
+    const rawReferences = streams.flatMap(stream => this.parseReferenceStream(stream));
+    const seen = new Set<string>();
+    const uniqueRawReferences = rawReferences.filter(raw => {
+      const key = raw.replace(/\s+/g, ' ').trim().toLowerCase();
+      if (!key || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
 
-    for (const line of lines) {
-      const startsNew = /^(\[\d+\]|\d+\.|\d+\s+|[A-Z][A-Za-z'`-]+,\s+[A-Z])/.test(line);
-      if (startsNew && current.length > 40) {
-        refs.push(current.trim());
-        current = line;
-      } else {
-        current = current ? `${current} ${line}` : line;
+    return uniqueRawReferences
+      .slice(0, 300)
+      .map((raw, index) => this.parseReferenceDetails(raw, sourcePdfId, sourcePdfName, index));
+  }
+
+  /**
+   * PDF layout extractors frequently interleave the left and right reference
+   * columns on the same physical line. Preserve the large horizontal gap long
+   * enough to rebuild two independent reading streams before normalizing
+   * whitespace; otherwise authors from one column are merged into a different
+   * reference in the other column.
+   */
+  private splitReferenceTailIntoReadingStreams(tail: string): string[] {
+    const lines = String(tail || '').replace(/\r/g, '\n').split('\n');
+    const headingNames = String.raw`references?|bibliography|literature cited|works cited|参考文献|参考资料`;
+    const headingPattern = new RegExp(`(?:^|[ \\t]{3,})(${headingNames})(?=[ \\t]{2,}|$)`, 'i');
+    let splitColumn = 0;
+    let headingColumn: 'left' | 'right' | undefined;
+
+    // The heading line is the most reliable column ruler. A heading at the
+    // right edge marks the start of the right column; a heading at the left
+    // edge is followed by the gap before the already-active right column.
+    for (const line of lines.slice(0, 20)) {
+      const headingMatch = headingPattern.exec(line);
+      if (!headingMatch || headingMatch.index === undefined) continue;
+      const headingStart = line.indexOf(headingMatch[1], headingMatch.index);
+      const headingEnd = headingStart + headingMatch[1].length;
+      if (headingStart >= 24) {
+        splitColumn = headingStart;
+        headingColumn = 'right';
+        break;
+      }
+      const trailingGap = /[ \t]{8,}/g;
+      trailingGap.lastIndex = headingEnd;
+      const gap = trailingGap.exec(line);
+      if (gap && line.slice(gap.index + gap[0].length).trim()) {
+        splitColumn = gap.index + gap[0].length;
+        headingColumn = 'left';
+        break;
       }
     }
 
-    if (current.trim().length > 20) refs.push(current.trim());
+    if (splitColumn <= 0) {
+      return [lines.join('\n')];
+    }
 
-    return refs.slice(0, 300).map((raw, index) => this.parseReferenceDetails(raw, sourcePdfId, sourcePdfName, index));
+    const left: string[] = [];
+    const right: string[] = [];
+
+    for (const rawLine of lines) {
+      if (!rawLine.trim()) {
+        left.push('');
+        right.push('');
+        continue;
+      }
+
+      const windowStart = Math.max(0, splitColumn - 8);
+      const windowEnd = Math.min(rawLine.length, splitColumn + 8);
+      const boundaryWindow = rawLine.slice(windowStart, windowEnd);
+      const hasColumnGap = /[ \t]{5,}/.test(boundaryWindow);
+      const firstContentIndex = rawLine.search(/\S/);
+      if (firstContentIndex >= splitColumn - 6) {
+        right.push(rawLine.trim());
+        continue;
+      }
+      if (rawLine.length > splitColumn && hasColumnGap) {
+        left.push(rawLine.slice(0, splitColumn).trim());
+        right.push(rawLine.slice(splitColumn).trim());
+        continue;
+      }
+      left.push(rawLine.trim());
+    }
+
+    const streams = [left.join('\n'), right.join('\n')];
+    // When References starts in the right column, the left column is still
+    // Discussion/Conclusion text on that page and must never be interpreted as
+    // bibliography entries. A left-column heading means both columns belong
+    // to the reference section and both streams are retained.
+    const selectedStreams = headingColumn === 'right' ? [streams[1]] : streams;
+    return selectedStreams.filter(stream => stream.trim().length > 0);
+  }
+
+  private parseReferenceStream(stream: string): string[] {
+    const lines = String(stream || '')
+      .split('\n')
+      .map(line => line.replace(/[ \t]+/g, ' ').trim())
+      .filter(Boolean);
+    const references: string[] = [];
+    let current = '';
+
+    for (const line of lines) {
+      if (this.isReferenceLayoutNoiseLine(line)) continue;
+      const cleanedLine = line
+        .replace(/^\s*(?:#{1,6}\s*|\*\*)?(?:references?|bibliography|literature cited|works cited|参考文献|参考资料)(?:\*\*)?\s*[:：]?\s*/i, '')
+        .trim();
+      if (!cleanedLine) continue;
+      const startsNew = this.looksLikeReferenceStart(cleanedLine);
+      if (startsNew) {
+        if (current.length > 20) references.push(current.trim());
+        current = cleanedLine;
+      } else if (current) {
+        current = `${current} ${cleanedLine}`;
+      }
+    }
+
+    if (current.length > 20) references.push(current.trim());
+    return references;
+  }
+
+  private isReferenceLayoutNoiseLine(line: string): boolean {
+    const value = String(line || '').replace(/\s+/g, ' ').trim();
+    if (!value) return true;
+    return /downloaded from https?:\/\/|terms and conditions|creative commons license|online library on \[|^\d{6,},\s*\d{4},\s*\d+\b|^ecosphere\s+\d+\s+of\s+\d+$/i.test(value);
+  }
+
+  private looksLikeReferenceStart(line: string): boolean {
+    const value = String(line || '').trim();
+    const bracketedIndex = Number(value.match(/^\[(\d{1,4})\]\s*/)?.[1] || 0);
+    if (bracketedIndex > 0) return true;
+    const numberedIndex = Number(value.match(/^(\d{1,4})[.)]\s+/)?.[1] || 0);
+    if (numberedIndex > 0 && (numberedIndex < 1900 || numberedIndex > 2099)) return true;
+    const authorLead = String.raw`(?:[A-ZÀ-ÖØ-Þ][A-Za-zÀ-ÖØ-öø-ÿ'’\x60-]{1,50}|(?:de|del|van|von|da|dos)\s+[A-ZÀ-ÖØ-Þ][A-Za-zÀ-ÖØ-öø-ÿ'’\x60-]{1,50})`;
+    if (new RegExp(`^${authorLead},\\s*[^]{0,220}?\\b(?:19|20)\\d{2}[a-z]?\\b`, 'i').test(value)) return true;
+    if (new RegExp(`^${authorLead}\\s+[A-Z](?:[.\\s-]*[A-Z])?[.]?[,\\s]+[^]{0,180}?\\b(?:19|20)\\d{2}[a-z]?\\b`, 'i').test(value)) return true;
+    if (new RegExp(`^${authorLead},\\s*(?:[A-Z](?:[.\\s-]*[A-Z])?[.]?[,\\s]+){1,6}`, 'i').test(value)) return true;
+    return /^[A-Z][A-Z0-9&.-]{2,}(?:\s+[A-Z][A-Za-z&.-]+){0,4}\s+(?:19|20)\d{2}\b/.test(value);
   }
 
   private parseReferenceDetails(raw: string, sourcePdfId: string, sourcePdfName: string, index: number): PdfWikiReference {
     const year = raw.match(/\b(19|20)\d{2}\b/)?.[0];
-    const doi = this.normalizeDoi(raw.match(/\b10\.\d{4,9}\/[^\s,;]+/i)?.[0] || '');
-    const cleaned = raw.replace(/^\[\d+\]\s*/, '').replace(/^\d+\.\s*/, '').trim();
+    const doi = this.extractDoiFromReferenceRaw(raw);
+    const explicitIndexMatch = raw.match(/^\s*(?:\[(\d+)\]\s*|(\d+)[.)]\s+)/);
+    const explicitIndexCandidate = Number(explicitIndexMatch?.slice(1).find(Boolean) || 0);
+    const explicitIndex = explicitIndexCandidate >= 1900 && explicitIndexCandidate <= 2099
+      ? 0
+      : explicitIndexCandidate;
+    const cleaned = explicitIndex > 0
+      ? raw.replace(/^\s*(?:\[\d+\]\s*|\d+[.)]\s+)/, '').trim()
+      : raw.trim();
     const yearIndex = year ? cleaned.indexOf(year) : -1;
     const authors = yearIndex > 0 ? cleaned.slice(0, yearIndex).replace(/[()., ]+$/, '').trim() : undefined;
     const afterYear = yearIndex >= 0 ? cleaned.slice(yearIndex + 4).replace(/^[).,\s]+/, '') : cleaned;
@@ -12730,13 +14109,39 @@ ${promptEntries}
       raw,
       sourcePdfId,
       sourcePdfName,
-      index: index + 1,
+      index: explicitIndex > 0 ? explicitIndex : index + 1,
       title: title || undefined,
       authors,
       year,
       journal: undefined,
       doi: doi || undefined,
     };
+  }
+
+  private extractDoiFromReferenceRaw(raw: string): string {
+    const value = String(raw || '');
+    const match = /\b10\.\d{4,9}\/[^\s,;]+/i.exec(value);
+    if (!match || match.index === undefined) return '';
+
+    let candidate = match[0];
+    let remaining = value.slice(match.index + match[0].length);
+    // Layout extraction can insert whitespace inside a DOI at a wrapped line,
+    // for example "10.1111/j.1365- 2486.2008.01617.x". Join only strongly
+    // signalled continuation tokens so normal words after a DOI are untouched.
+    for (let index = 0; index < 3; index++) {
+      const continuation = remaining.match(/^\s+([A-Za-z0-9][A-Za-z0-9._()/:+-]*)/);
+      if (!continuation) break;
+      const token = continuation[1];
+      if (!/[-./]$/.test(candidate) && !/^\d/.test(token)) break;
+      const needsDot = /^\d/.test(token)
+        && /(?:j\.\d{4}-\d{4}(?:\.(?:19|20)\d{2})?|\.(?:19|20)\d{2})$/i.test(candidate);
+      candidate += `${needsDot ? '.' : ''}${token}`;
+      remaining = remaining.slice(continuation[0].length);
+    }
+
+    const normalized = this.normalizeDoi(candidate);
+    if (!/^10\.\d{4,9}\/\S{3,}$/i.test(normalized) || /[-./]$/.test(normalized)) return '';
+    return normalized;
   }
 
   private resolveReferences(claim: ExtractedClaim, referencePool: PdfWikiReference[], sourcePdfId: string): PdfWikiReference[] {
@@ -12856,6 +14261,32 @@ ${promptEntries}
     for (const pattern of patterns) {
       const match = pattern.exec(normalized);
       if (match) return match;
+    }
+
+    // Layout-aware fallback: in two-column PDF text, the References heading is
+    // often followed by the first entry from the other column on the same line,
+    // or appears after a large gap at the right edge of a body-text line.
+    const columnHeadingPattern = /(^|\n)(?:[ \t]{0,20}|[^\n]*?[ \t]{6,})(references|reference|bibliography|literature cited|works cited|参考文献|参考资料)[ \t]*[:：]?[ \t]*(?=[ \t]{2,}|\n|$)/ig;
+    const candidates: RegExpExecArray[] = [];
+    let candidate: RegExpExecArray | null;
+    while ((candidate = columnHeadingPattern.exec(normalized)) !== null) {
+      candidates.push(candidate);
+      if (candidate[0].length === 0) columnHeadingPattern.lastIndex++;
+    }
+    if (candidates.length > 0) {
+      const likelyStart = Math.floor(normalized.length * 0.25);
+      return candidates.filter(item => (item.index || 0) >= likelyStart).at(-1) || candidates.at(-1) || null;
+    }
+
+    const trailingColumnHeadingPattern = /(^|\n)[^\n]*[ \t]{3,}(references|reference|bibliography|literature cited|works cited|参考文献|参考资料)[ \t]*[:：]?[ \t]*(?=\n|$)/ig;
+    const trailingCandidates: RegExpExecArray[] = [];
+    while ((candidate = trailingColumnHeadingPattern.exec(normalized)) !== null) {
+      trailingCandidates.push(candidate);
+      if (candidate[0].length === 0) trailingColumnHeadingPattern.lastIndex++;
+    }
+    if (trailingCandidates.length > 0) {
+      const likelyStart = Math.floor(normalized.length * 0.25);
+      return trailingCandidates.filter(item => (item.index || 0) >= likelyStart).at(-1) || trailingCandidates.at(-1) || null;
     }
     return null;
   }
@@ -13014,7 +14445,7 @@ ${text}`,
     const safePdfId = this.getSafePdfCacheId(pdf);
     const taskDir = this.getCodexPdfWikiAuxTaskDir(userId, `deep_analysis_${safePdfId}`);
     await fs.promises.mkdir(taskDir, { recursive: true });
-    await fs.promises.copyFile(pdf.filePath, path.join(taskDir, 'source.pdf'));
+    await this.linkOrCopyFile(pdf.filePath, path.join(taskDir, 'source.pdf'));
 
     const metadata = {
       title: pdf.title || parsed?.metadata.title || pdf.originalName,
@@ -14219,8 +15650,21 @@ ${content.slice(0, 12000)}`;
   }
 
   private async saveStatus(userId: string, status: PdfWikiBuildStatus): Promise<void> {
-    await fs.promises.mkdir(this.getWikiDir(userId), { recursive: true });
-    await this.writeJsonAtomic(this.getStatusPath(userId), status);
+    const safeUserId = sanitizeUserId(userId);
+    if (status.workProgress) {
+      this.statusWorkProgress.set(safeUserId, status.workProgress);
+    }
+    const cachedWorkProgress = status.taskKind === 'meta-analysis'
+      ? undefined
+      : this.statusWorkProgress.get(safeUserId);
+    const statusToSave = !status.workProgress && cachedWorkProgress
+      ? { ...status, workProgress: cachedWorkProgress }
+      : status;
+    await fs.promises.mkdir(this.getWikiDir(safeUserId), { recursive: true });
+    await this.writeJsonAtomic(this.getStatusPath(safeUserId), statusToSave);
+    if (status.status === 'completed' || status.status === 'error') {
+      this.statusWorkProgress.delete(safeUserId);
+    }
   }
 
   private normalizeReaderChatSessions(value: unknown): Record<string, PdfWikiReaderChatSession> {
@@ -14453,6 +15897,10 @@ ${content.slice(0, 12000)}`;
 
   private getStatusPath(userId: string): string {
     return path.join(this.getWikiDir(userId), 'status.json');
+  }
+
+  private getQueuePath(userId: string): string {
+    return path.join(this.getWikiDir(userId), 'queue.json');
   }
 
   private getMetaAnalysisTemplatePath(userId: string): string {

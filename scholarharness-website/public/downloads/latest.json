@@ -1,6 +1,6 @@
 {
-  "version": "1.0.6",
-  "downloadUrl": "https://scholarharness.com/downloads/scholar-harness-setup-1.0.6.exe",
-  "publishedAt": "2026-07-13",
-  "releaseNotes": "1.0.6 更新：完善工作目录文件读取、编辑、安全副本和 Codex 连续会话；统一分章节智能草稿保存、写作进度与论文图片管理；新增 R、Python、OfficeCLI 全局工具配置及 Skill 自动识别调用；改进附件拖入、文件多选、图片预览和本地文件打开；修复引用格式、草稿同步、输入框与侧边栏交互等问题。"
+  "version": "1.0.7",
+  "downloadUrl": "https://scholarharness.com/downloads/scholar-harness-setup-1.0.7.exe",
+  "publishedAt": "2026-07-21",
+  "releaseNotes": "1.0.7 更新：重构配置、技能与插件中心，新增系统/用户 Skill 清单自动同步和章节核心论点引导；新增学术 MCP 在线市场、后台部署队列与 AI 辅助接入；PDF Wiki 升级持久化去重队列、边上传边处理和纯代码引用—尾注匹配；知识图谱支持完整论点句、三级关系、主题多选、持续动态布局及左右键交互；修复进度回退、长内容异常换行、Embedding 提示遮挡和插件安装状态问题。"
 }

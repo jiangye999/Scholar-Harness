@@ -34,4 +34,14 @@ describe('right sidebar paper figure library', () => {
     expect(html).toContain('previewOutputAttachment(this)');
     expect(html).toContain("method: 'PATCH'");
   });
+
+  it('supports multi-select deletion and merged figure creation', () => {
+    expect(html).toContain('id="paperFigureSelectAll"');
+    expect(html).toContain('function togglePaperFigureSelection(');
+    expect(html).toContain('function deleteSelectedPaperFigures(');
+    expect(html).toContain("method: 'DELETE'");
+    expect(html).toContain('function showPaperFigureMergeDialog(');
+    expect(html).toContain('function composePaperFigureCanvas(');
+    expect(html).toContain('/api/draft-assets/figures/merge');
+  });
 });

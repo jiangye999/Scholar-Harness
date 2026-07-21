@@ -2,7 +2,7 @@ import type { ChildProcess } from 'child_process';
 import { randomUUID } from 'crypto';
 import * as http from 'http';
 
-import type { CodexBridgeToolSet } from '../../types';
+import type { CodexBridgeToolSet, PiSteeringMessage } from '../../types';
 import { logger } from '../../utils/logger';
 
 export interface CodexToolGatewayConnection {
@@ -39,6 +39,10 @@ export interface CodexAppServerTurnOptions {
   imagePaths?: string[];
   skillRoots?: string[];
   toolSet?: CodexBridgeToolSet;
+  isCancelled?: () => boolean;
+  takeSteeringMessages?: (options?: { allowAttachments?: boolean }) => Promise<PiSteeringMessage[]>;
+  markSteeringApplied?: (messageId: string) => Promise<void>;
+  requeueSteeringMessage?: (messageId: string) => Promise<void>;
   spawnAppServer: (connection: CodexToolGatewayConnection) => ChildProcess;
   onProgress?: (chunk: string) => void;
 }
@@ -51,6 +55,21 @@ export interface CodexAppServerTurnResult {
   receipts: CodexToolReceipt[];
   resumed: boolean;
   compacted: boolean;
+}
+
+export class CodexTurnCancelledError extends Error {
+  constructor(message = 'Codex turn was cancelled by the user') {
+    super(message);
+    this.name = 'CodexTurnCancelledError';
+  }
+}
+
+export function isCodexTurnCancelledError(error: unknown): boolean {
+  return error instanceof CodexTurnCancelledError
+    || (error instanceof Error && (
+      error.name === 'CodexTurnCancelledError'
+      || /\b(?:cancelled|canceled|interrupted|user aborted|用户.*(?:取消|停止|中断))\b/i.test(error.message)
+    ));
 }
 
 interface GatewaySession {
@@ -89,6 +108,8 @@ interface CodexAppServerSession {
   key: string;
   process: ChildProcess;
   connection: CodexToolGatewayConnection;
+  toolCatalogSignature: string;
+  runtimeSignature: string;
   pending: Map<string, PendingRequest>;
   nextRequestId: number;
   stdoutBuffer: string;
@@ -100,6 +121,7 @@ interface CodexAppServerSession {
   lastUsedAt: number;
   onProgress?: (chunk: string) => void;
   stderrWarnings: Set<string>;
+  interruptionPromise?: Promise<boolean>;
 }
 
 function readRequestBody(request: http.IncomingMessage, maxBytes = 8 * 1024 * 1024): Promise<string> {
@@ -300,6 +322,22 @@ function getItemLabel(item: any): string {
   return '';
 }
 
+function buildToolCatalogSignature(toolSet?: CodexBridgeToolSet): string {
+  if (!toolSet?.definitions.length) return '';
+  return JSON.stringify(toolSet.definitions.map(definition => definition.function));
+}
+
+function buildRuntimeSignature(options: Pick<CodexAppServerTurnOptions, 'cwd' | 'sandbox'>): string {
+  const cwd = String(options.cwd || '')
+    .trim()
+    .replace(/[\\/]+$/, '')
+    .replace(/\\/g, '/');
+  return JSON.stringify({
+    cwd: process.platform === 'win32' ? cwd.toLowerCase() : cwd,
+    sandbox: options.sandbox,
+  });
+}
+
 class CodexAppServerManager {
   private readonly gateway = new CodexToolGateway();
   private readonly sessions = new Map<string, CodexAppServerSession>();
@@ -312,6 +350,22 @@ class CodexAppServerManager {
 
   getThreadId(conversationKey: string): string {
     return this.sessions.get(conversationKey)?.threadId || this.knownThreadIds.get(conversationKey) || '';
+  }
+
+  async interruptConversationsByPrefix(conversationKeyPrefix: string): Promise<{
+    matched: number;
+    interrupted: number;
+    conversationKeys: string[];
+  }> {
+    const sessions = Array.from(this.sessions.entries())
+      .filter(([key, session]) => key.startsWith(conversationKeyPrefix) && !session.closed);
+    let interrupted = 0;
+    const conversationKeys: string[] = [];
+    for (const [key, session] of sessions) {
+      conversationKeys.push(key);
+      if (await this.interruptSession(session)) interrupted += 1;
+    }
+    return { matched: sessions.length, interrupted, conversationKeys };
   }
 
   clearThread(conversationKey: string): void {
@@ -349,12 +403,47 @@ class CodexAppServerManager {
   }
 
   private async runTurnUnlocked(options: CodexAppServerTurnOptions): Promise<CodexAppServerTurnResult> {
+    if (options.isCancelled?.()) throw new CodexTurnCancelledError();
     const connection = await this.gateway.register(options.conversationKey, options.toolSet);
     this.gateway.update(options.conversationKey, options.toolSet);
     this.gateway.clearReceipts(options.conversationKey);
     let session = this.sessions.get(options.conversationKey);
+    const toolCatalogSignature = buildToolCatalogSignature(options.toolSet);
+    const runtimeSignature = buildRuntimeSignature(options);
+    const toolCatalogChanged = !!session
+      && !session.closed
+      && session.toolCatalogSignature !== toolCatalogSignature;
+    const runtimeChanged = !!session
+      && !session.closed
+      && session.runtimeSignature !== runtimeSignature;
+    if (session && !session.closed && (toolCatalogChanged || runtimeChanged)) {
+      const reasons: string[] = [];
+      if (toolCatalogChanged) {
+        const previousToolCount = session.toolCatalogSignature ? JSON.parse(session.toolCatalogSignature).length : 0;
+        const nextToolCount = options.toolSet?.definitions.length || 0;
+        reasons.push(`tools ${previousToolCount} -> ${nextToolCount}`);
+      }
+      if (runtimeChanged) reasons.push(`cwd/sandbox -> ${options.sandbox}`);
+      const error = new Error(`Codex App Server runtime changed between turns: ${reasons.join(', ')}`);
+      logger.info(
+        `[CodexAppServer] Reloading runtime for ${options.conversationKey} `
+        + `(${reasons.join('; ')}) while preserving the Codex thread`
+      );
+      options.onProgress?.(
+        runtimeChanged
+          ? '\n→ 工作目录或权限已变化，正在按新权限重启 Codex 运行环境并续接当前会话\n'
+          : '\n→ 本轮可用文件/应用工具发生变化，正在刷新 Codex 工具目录并续接当前会话\n'
+      );
+      session.process.kill();
+      this.closeSession(session, error);
+      session = undefined;
+    }
     if (!session || session.closed) {
       session = await this.startSession(options, connection);
+    }
+    if (options.isCancelled?.()) {
+      await this.interruptSession(session);
+      throw new CodexTurnCancelledError();
     }
     session.onProgress = options.onProgress;
     session.lastUsedAt = Date.now();
@@ -408,8 +497,13 @@ class CodexAppServerManager {
       const availableTools = scholarServer?.tools && typeof scholarServer.tools === 'object'
         ? Object.keys(scholarServer.tools)
         : [];
-      if (!scholarServer || availableTools.length === 0) {
-        const error = new Error('Scholar Harness MCP tools were not loaded by Codex App Server');
+      const expectedTools = options.toolSet.definitions.map(tool => tool.function.name);
+      const missingTools = expectedTools.filter(name => !availableTools.includes(name));
+      if (!scholarServer || availableTools.length === 0 || missingTools.length > 0) {
+        const detail = missingTools.length > 0
+          ? `; missing tools: ${missingTools.join(', ')}`
+          : '';
+        const error = new Error(`Scholar Harness MCP tools were not loaded by Codex App Server${detail}`);
         session.process.kill();
         this.closeSession(session, error);
         throw error;
@@ -443,6 +537,7 @@ class CodexAppServerManager {
 
     let turnResponse: any;
     try {
+      if (options.isCancelled?.()) throw new CodexTurnCancelledError();
       turnResponse = await this.request(session, 'turn/start', {
         threadId: session.threadId,
         input,
@@ -454,6 +549,8 @@ class CodexAppServerManager {
       collector.turnId = collector.turnId || String(turnResponse?.turn?.id || '');
       if (!collector.turnId) throw new Error('Codex App Server did not return a turn id');
       let completion: { status: string; error?: string };
+      const stopSteeringPump = this.startSteeringPump(session, collector, options);
+      const stopCancellationPump = this.startCancellationPump(session, collector, options);
       try {
         completion = await this.waitForTurn(session, collector, options.timeoutMs);
       } catch (error) {
@@ -462,8 +559,14 @@ class CodexAppServerManager {
           this.closeSession(session, error as Error);
         }
         throw error;
+      } finally {
+        stopSteeringPump();
+        stopCancellationPump();
       }
       if (completion.status !== 'completed') {
+        if (options.isCancelled?.() || /cancel|interrupt|abort/i.test(completion.status)) {
+          throw new CodexTurnCancelledError(completion.error || `Codex turn ended with status ${completion.status}`);
+        }
         throw new Error(completion.error || `Codex turn ended with status ${completion.status}`);
       }
       const answer = (collector.finalAnswer || collector.lastAgentAnswer).trim();
@@ -495,6 +598,8 @@ class CodexAppServerManager {
       key: options.conversationKey,
       process: child,
       connection,
+      toolCatalogSignature: buildToolCatalogSignature(options.toolSet),
+      runtimeSignature: buildRuntimeSignature(options),
       pending: new Map(),
       nextRequestId: 1,
       stdoutBuffer: '',
@@ -725,6 +830,9 @@ class CodexAppServerManager {
     collector: TurnCollector,
     timeoutMs: number,
   ): Promise<{ status: string; error?: string }> {
+    if (timeoutMs <= 0) {
+      return collector.completion;
+    }
     let timeout: ReturnType<typeof setTimeout> | undefined;
     const timedOut = new Promise<never>((_, reject) => {
       timeout = setTimeout(() => {
@@ -740,6 +848,116 @@ class CodexAppServerManager {
     } finally {
       if (timeout) clearTimeout(timeout);
     }
+  }
+
+  private startCancellationPump(
+    session: CodexAppServerSession,
+    collector: TurnCollector,
+    options: CodexAppServerTurnOptions,
+  ): () => void {
+    if (!options.isCancelled) return () => undefined;
+    let stopped = false;
+    let interrupting = false;
+    const pump = async (): Promise<void> => {
+      if (stopped || interrupting || session.closed || !collector.turnId || !options.isCancelled?.()) return;
+      interrupting = true;
+      try {
+        await this.request(session, 'turn/interrupt', {
+          threadId: session.threadId,
+          turnId: collector.turnId,
+        }, 10_000);
+      } catch (error) {
+        if (!session.closed) {
+          const cancellationError = new CodexTurnCancelledError((error as Error).message);
+          this.closeSession(session, cancellationError);
+          session.process.kill();
+        }
+      }
+    };
+    const timer = setInterval(() => {
+      void pump();
+    }, 200);
+    timer.unref?.();
+    void pump();
+    return () => {
+      stopped = true;
+      clearInterval(timer);
+    };
+  }
+
+  private startSteeringPump(
+    session: CodexAppServerSession,
+    collector: TurnCollector,
+    options: CodexAppServerTurnOptions,
+  ): () => void {
+    if (!options.takeSteeringMessages) return () => undefined;
+    let stopped = false;
+    let running = false;
+    let supported = true;
+
+    const pump = async (): Promise<void> => {
+      if (stopped || running || !supported || session.closed || !collector.turnId) return;
+      running = true;
+      try {
+        const messages = await options.takeSteeringMessages?.({ allowAttachments: true }) || [];
+        for (const item of messages) {
+          const selectedFiles = Array.isArray(item.workspaceFileMentions)
+            ? item.workspaceFileMentions
+                .map(file => String(file?.path || file?.name || '').trim())
+                .filter(Boolean)
+                .slice(0, 30)
+            : [];
+          const text = [
+            '用户在你运行过程中发来了 Pi 转向消息。请在保留已完成且仍有效的工具结果基础上，立即按这条最新指令调整后续行动。',
+            selectedFiles.length ? `用户同时选择的工作目录文件：\n${selectedFiles.map(file => `- ${file}`).join('\n')}` : '',
+            '<CURRENT_STEERING_REQUEST>',
+            String(item.message || '').slice(0, 20000),
+            '</CURRENT_STEERING_REQUEST>',
+          ].filter(Boolean).join('\n');
+          const input: any[] = [{ type: 'text', text, text_elements: [] }];
+          for (const attachment of item.chatAttachments || []) {
+            const imagePath = String(attachment?.path || '').trim();
+            const type = String(attachment?.type || '').toLowerCase();
+            if (imagePath && (type === 'image' || /\.(png|jpe?g|gif|bmp|webp|tiff?|svg)$/i.test(imagePath))) {
+              input.push({ type: 'localImage', path: imagePath });
+            }
+          }
+          try {
+            await this.request(session, 'turn/steer', {
+              threadId: session.threadId,
+              expectedTurnId: collector.turnId,
+              input,
+            }, 30_000);
+            await options.markSteeringApplied?.(item.id);
+            session.onProgress?.(`\n↪ 已将转向消息注入当前 Codex turn：${truncate(item.message, 160)}\n`);
+          } catch (error) {
+            try {
+              await options.requeueSteeringMessage?.(item.id);
+            } catch {
+              // Session settlement performs a second recovery pass.
+            }
+            supported = false;
+            logger.warn(`[CodexAppServer] turn/steer unavailable; message kept for prioritized continuation: ${(error as Error).message}`);
+            session.onProgress?.('\n! 当前 Codex App Server 不支持本轮 steer，消息已保留，将在本轮结束后优先继续。\n');
+            break;
+          }
+        }
+      } catch (error) {
+        logger.warn(`[CodexAppServer] Steering pump failed: ${(error as Error).message}`);
+      } finally {
+        running = false;
+      }
+    };
+
+    const timer = setInterval(() => {
+      void pump();
+    }, 500);
+    timer.unref?.();
+    void pump();
+    return () => {
+      stopped = true;
+      clearInterval(timer);
+    };
   }
 
   private request(session: CodexAppServerSession, method: string, params: unknown, timeoutMs: number): Promise<any> {
@@ -763,6 +981,57 @@ class CodexAppServerManager {
 
   private notify(session: CodexAppServerSession, method: string, params: unknown): void {
     this.write(session, { jsonrpc: '2.0', method, params });
+  }
+
+  private async interruptSession(session: CodexAppServerSession): Promise<boolean> {
+    if (session.interruptionPromise) return session.interruptionPromise;
+    const promise = this.interruptSessionUnlocked(session);
+    session.interruptionPromise = promise;
+    try {
+      return await promise;
+    } finally {
+      if (session.interruptionPromise === promise) session.interruptionPromise = undefined;
+    }
+  }
+
+  private async interruptSessionUnlocked(session: CodexAppServerSession): Promise<boolean> {
+    if (session.closed) return false;
+    const collector = session.collector;
+    const cancellationError = new CodexTurnCancelledError();
+    if (!collector?.turnId || !session.threadId) {
+      this.closeSession(session, cancellationError);
+      session.process.kill();
+      return true;
+    }
+    try {
+      await this.request(session, 'turn/interrupt', {
+        threadId: session.threadId,
+        turnId: collector.turnId,
+      }, 10_000);
+      const completed = await Promise.race([
+        collector.completion.then(() => true, () => true),
+        new Promise<boolean>(resolve => {
+          const timer = setTimeout(() => resolve(false), 1_500);
+          timer.unref?.();
+        }),
+      ]);
+      if (!completed && !session.closed) {
+        this.closeSession(session, cancellationError);
+        session.process.kill();
+      }
+      return true;
+    } catch (error) {
+      if (!session.closed) {
+        this.closeSession(
+          session,
+          isCodexTurnCancelledError(error)
+            ? error as Error
+            : new CodexTurnCancelledError((error as Error).message),
+        );
+        session.process.kill();
+      }
+      return true;
+    }
   }
 
   private write(session: CodexAppServerSession, message: JsonRpcMessage): void {

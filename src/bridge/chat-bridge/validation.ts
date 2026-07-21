@@ -179,6 +179,7 @@ export const chatRequestSchema = z.object({
     userSkillPrompt: z.string().optional(),
     invokedUserSkills: z.array(z.any()).optional(),
     discussionFramework: z.any().optional(),
+    autonomousRetrieval: z.any().optional(),
     relevantLiterature: z.string().nullable().optional(),
     webSearchContext: z.string().nullable().optional(),
     isFirstMessage: z.any().optional(),
@@ -188,6 +189,8 @@ export const chatRequestSchema = z.object({
   newPage: coerceBoolean,
   userId: z.string().nullable().optional(),
   conversationId: z.string().nullable().optional(),
+  piQueueMessageId: z.string().max(160).optional(),
+  piQueueOriginalMessage: z.string().max(20000).optional(),
   history: z.array(z.object({
     role: z.enum(['user', 'assistant', 'system']),
     content: z.string(),
@@ -205,6 +208,7 @@ export const chatRequestSchema = z.object({
     enabled: coerceBoolean,
     path: z.string().optional(),
     root: z.string().optional(),
+    conversationId: z.string().max(200).optional(),
     permission: z.enum(['read-only', 'workspace-write', 'danger-full-access']).optional(),
   }).passthrough().optional(),
   queryEnvelope: z.any().optional(),
@@ -237,6 +241,119 @@ export const chatRequestSchema = z.object({
     size: z.number().optional(),
     previewUrl: z.string().optional(),
   }).passthrough()).optional(),
+});
+
+/**
+ * 主聊天第一阶段统一 Query 意图识别。
+ * 该接口只决定后续路由，不执行文件、检索、写作或分析任务。
+ */
+export const queryIntentRequestSchema = z.object({
+  message: z.string().min(1, '消息不能为空').max(20000, '消息过长'),
+  userId: z.string().nullable().optional(),
+  conversationId: z.string().nullable().optional(),
+  forceProvider: z.enum(['browser', 'api', 'primary', 'secondary', 'codex']).optional(),
+  history: z.array(z.object({
+    role: z.enum(['user', 'assistant', 'system']),
+    content: z.string().max(20000),
+  })).max(20).optional(),
+  workspaceDirectory: z.object({
+    enabled: coerceBoolean,
+    path: z.string().max(2400).optional(),
+    root: z.string().max(2400).optional(),
+    aiWorkRoot: z.string().max(2400).optional(),
+    safeWorkRoot: z.string().max(2400).optional(),
+    conversationId: z.string().max(200).optional(),
+    permission: z.enum(['read-only', 'workspace-write', 'danger-full-access']).optional(),
+  }).passthrough().optional(),
+  workspaceFileMentions: z.array(z.object({
+    name: z.string().max(300).optional(),
+    path: z.string().max(2400).optional(),
+    type: z.string().max(80).optional(),
+  }).passthrough()).max(30).optional(),
+  chatAttachments: z.array(z.object({
+    name: z.string().max(300).optional(),
+    path: z.string().max(2400).optional(),
+    type: z.string().max(80).optional(),
+  }).passthrough()).max(12).optional(),
+  explicitParts: z.array(z.record(z.any())).max(30).optional(),
+  apiUrl: z.string().optional(),
+  apiKey: z.string().optional(),
+  model: z.string().optional(),
+});
+
+/**
+ * 图片附件的第一阶段 AI 意图识别请求。
+ * 该接口只返回结构化视觉意图；真正的任务仍由后续 /chat 请求执行。
+ */
+export const multimodalIntentRequestSchema = z.object({
+  message: z.string().min(1, '消息不能为空').max(20000, '消息过长'),
+  userId: z.string().nullable().optional(),
+  conversationId: z.string().nullable().optional(),
+  forceProvider: z.enum(['browser', 'api', 'primary', 'secondary', 'codex']).optional(),
+  workspaceDirectory: z.object({
+    enabled: coerceBoolean,
+    path: z.string().optional(),
+    root: z.string().optional(),
+    conversationId: z.string().max(200).optional(),
+    permission: z.enum(['read-only', 'workspace-write', 'danger-full-access']).optional(),
+  }).passthrough().optional(),
+  apiUrl: z.string().optional(),
+  apiKey: z.string().optional(),
+  model: z.string().optional(),
+  visionApiUrl: z.string().optional(),
+  visionApiKey: z.string().optional(),
+  visionModel: z.string().optional(),
+  codexImages: z.array(z.string()).optional(),
+  visionImages: z.array(z.string()).optional(),
+  chatAttachments: z.array(z.object({
+    name: z.string().optional(),
+    path: z.string().optional(),
+    type: z.string().optional(),
+    size: z.number().optional(),
+    previewUrl: z.string().optional(),
+  }).passthrough()).min(1, '至少需要一个图片附件').max(12),
+});
+
+const piQueueBehaviorSchema = z.enum(['steer', 'follow_up']);
+
+const piQueueAttachmentSchema = z.object({
+  name: z.string().max(300).optional(),
+  path: z.string().max(2400).optional(),
+  type: z.string().max(80).optional(),
+  size: z.number().nonnegative().optional(),
+  previewUrl: z.string().max(3000).optional(),
+  originalName: z.string().max(300).optional(),
+  originalPath: z.string().max(2400).optional(),
+  lastModified: z.number().nonnegative().optional(),
+  inputSource: z.string().max(80).optional(),
+}).passthrough();
+
+const piQueueWorkspaceFileSchema = z.object({
+  name: z.string().max(300).optional(),
+  path: z.string().max(2400).optional(),
+  kind: z.string().max(80).optional(),
+  size: z.number().nonnegative().optional(),
+}).passthrough();
+
+export const piQueueMessageRequestSchema = z.object({
+  userId: z.string().nullable().optional(),
+  message: z.string().min(1, '排队消息不能为空').max(20000, '排队消息过长'),
+  behavior: piQueueBehaviorSchema.default('follow_up'),
+  clientMessageId: z.string().max(160).optional(),
+  chatAttachments: z.array(piQueueAttachmentSchema).max(12).optional(),
+  workspaceFileMentions: z.array(piQueueWorkspaceFileSchema).max(30).optional(),
+});
+
+export const piQueueMessageUpdateSchema = z.object({
+  userId: z.string().nullable().optional(),
+  message: z.string().min(1, '排队消息不能为空').max(20000, '排队消息过长').optional(),
+  behavior: piQueueBehaviorSchema.optional(),
+}).refine(value => value.message !== undefined || value.behavior !== undefined, {
+  message: '至少需要修改消息内容或队列类型',
+});
+
+export const piQueueSessionActionSchema = z.object({
+  userId: z.string().nullable().optional(),
 });
 
 /**

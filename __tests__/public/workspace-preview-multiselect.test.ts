@@ -10,7 +10,7 @@ describe('workspace preview multi-select', () => {
   it('places the AI work folder on its own left-aligned status line', () => {
     expect(html).toContain('text-align: left;');
     expect(html).toContain('white-space: pre-line;');
-    expect(html).toContain("'\\nAI 工作文件夹：' + setting.aiWorkRoot");
+    expect(html).toContain("'\\n当前会话 AI 工作文件夹：' + scopedAiWorkRoot");
   });
 
   it('renders selectable image and file cards with persistent selection state', () => {

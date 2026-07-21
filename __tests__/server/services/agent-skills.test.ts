@@ -22,6 +22,8 @@ vi.mock('../../../src/server/services/user-skills', () => ({
 import {
   clearAgentSkillRegistryCache,
   createAgentSkillRuntime,
+  deleteBundledAgentSkill,
+  selectDiscussionAutoSkillIds,
 } from '../../../src/server/services/agent-skills';
 import { clearPathCache } from '../../../src/utils/paths';
 
@@ -69,6 +71,10 @@ describe('Agent Skill runtime', () => {
         source: 'bundled',
       }),
       expect.objectContaining({
+        id: 'scholar-harness-core:establish-paper-core-argument',
+        source: 'bundled',
+      }),
+      expect.objectContaining({
         id: 'orchestra-ai-research:ai-research-skills',
         source: 'bundled',
       }),
@@ -83,6 +89,85 @@ describe('Agent Skill runtime', () => {
       'read_skill_resource',
       'list_available_skills',
     ]);
+  });
+
+  it('rebuilds the catalog from newly extracted journal writing styles', async () => {
+    tempDataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'agent-skills-journal-style-'));
+    process.env.DATA_DIR = tempDataDir;
+    clearPathCache();
+    const styleDir = path.join(tempDataDir, 'uploads', 'style-user', 'journal-styles', 'global_change_biology');
+    await fs.mkdir(styleDir, { recursive: true });
+    await fs.writeFile(path.join(styleDir, 'style.json'), JSON.stringify([{
+      journal: 'Global Change Biology',
+      argument_pattern: { discussion_emphasis: ['mechanism', 'comparison', 'limitation'] },
+      overall_style: 'Mechanism-first discussion with calibrated claims.',
+    }]), 'utf-8');
+
+    const runtime = await createAgentSkillRuntime('style-user');
+    const styleSkill = runtime.getCatalog().find(skill =>
+      skill.id === 'journal-style:global_change_biology:discussion'
+    );
+    expect(styleSkill).toMatchObject({
+      name: 'Global Change Biology 讨论写作风格',
+      category: 'writing-style',
+      source: 'user',
+    });
+
+    const loaded = await runtime.executeToolCall(toolCall('load_skill', {
+      skill_id: 'journal-style:global_change_biology:discussion',
+      reason: '用户正在撰写讨论章节',
+    }));
+    expect(loaded.ok).toBe(true);
+    expect(loaded.content).toContain('Global Change Biology');
+    expect(loaded.content).toContain('mechanism');
+  });
+
+  it('loads the paper core argument skill as a staged pre-writing dialogue', async () => {
+    const runtime = await createAgentSkillRuntime('skill-test-user');
+    const result = await runtime.executeToolCall(toolCall('load_skill', {
+      skill_id: 'scholar-harness-core:establish-paper-core-argument',
+      reason: '用户准备开始写一篇小论文',
+    }));
+
+    expect(result.ok).toBe(true);
+    expect(result.content).toContain('论文核心论点奠基');
+    expect(result.content).toContain('一次只推进一个阶段');
+    expect(result.content).toContain('核心论点—论据基调卡');
+    expect(result.content).toContain('禁止写出的过度结论');
+  });
+
+  it('selects relevant downloaded skills automatically for Discussion writing', async () => {
+    const runtime = await createAgentSkillRuntime('skill-test-user');
+    const selected = selectDiscussionAutoSkillIds(runtime.getCatalog());
+
+    expect(selected).toEqual(expect.arrayContaining([
+      'user:custom-discussion',
+      'open-science-academic:scientific-writing',
+      'open-science-academic:scientific-critical-thinking',
+      'open-science-academic:citation-management',
+      'open-science-academic:literature-review',
+    ]));
+    expect(selected).not.toContain('open-science-academic:scientific-visualization');
+  });
+
+  it('deletes a bundled skill for one user without removing its packaged files', async () => {
+    tempDataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'agent-skills-disabled-'));
+    process.env.DATA_DIR = tempDataDir;
+    clearPathCache();
+
+    const skillId = 'open-science-academic:scientific-writing';
+    const deleted = await deleteBundledAgentSkill('delete-bundled-user', skillId);
+    const deletedUserCatalog = (await createAgentSkillRuntime('delete-bundled-user')).getCatalog();
+    const otherUserCatalog = (await createAgentSkillRuntime('other-user')).getCatalog();
+    const persisted = JSON.parse(await fs.readFile(
+      path.join(tempDataDir, 'agent-skills', 'delete-bundled-user', 'disabled-bundled-skills.json'),
+      'utf-8',
+    )) as { skillIds: string[] };
+
+    expect(deleted).toMatchObject({ id: skillId, name: 'Scientific Writing' });
+    expect(deletedUserCatalog.some(skill => skill.id === skillId)).toBe(false);
+    expect(otherUserCatalog.some(skill => skill.id === skillId)).toBe(true);
+    expect(persisted.skillIds).toContain(skillId);
   });
 
   it('loads the target-venue review skill with venue evidence and severity rules', async () => {

@@ -34,6 +34,11 @@ import {
 import {
   validate,
   chatRequestSchema,
+  queryIntentRequestSchema,
+  multimodalIntentRequestSchema,
+  piQueueMessageRequestSchema,
+  piQueueMessageUpdateSchema,
+  piQueueSessionActionSchema,
   controlRequestSchema,
   openPageRequestSchema,
   saveConfigSchema,
@@ -70,15 +75,37 @@ import { resolveUserId, getUserIdFromSession } from '../auth-guard-singleton';
 import { getBibliometricWritingContextForUser } from './bibliometrics';
 import { getMetaAnalysisWritingContextForUser } from './meta-analysis';
 import { parseUserSkillInvocation } from '../services/user-skills';
+import { recordSkillOptimizationTrajectories } from '../services/skill-optimization';
 import {
   createAgentSkillRuntime,
+  selectDiscussionAutoSkillIds,
   formatAgentSkillToolResult,
   type AgentSkillToolResult,
   type AgentSkillRuntime,
 } from '../services/agent-skills';
 import { buildChatSystemPrompt } from '../services/chat-system-prompt';
+import {
+  buildMultimodalIntentClassifierPrompt,
+  buildMultimodalIntentPromptBlock,
+  normalizeMultimodalIntent,
+  parseMultimodalIntentResponse,
+} from '../services/multimodal-intent';
+import {
+  buildQueryIntentClassifierPrompt,
+  buildQueryIntentPromptBlock,
+  classifyQueryIntentFallback,
+  parseQueryIntentResponse,
+  type QueryIntentClassifierInput,
+} from '../../orchestrator/query-intent';
 import { omitTrailingCurrentUserRequest } from '../services/chat-prompt-dedup';
+import { piAgentSessionManager } from '../services/pi-agent-session';
 import { authorizeLocalPreviewRoot } from '../services/local-preview-roots';
+import {
+  executeMcpPluginToolCall,
+  getEnabledMcpPluginCatalogPrompt,
+  getEnabledMcpToolDefinitions,
+  isMcpPluginToolName,
+} from '../services/mcp-plugin-manager';
 import {
   buildWorkspaceAgentPrelude,
   buildWorkspaceDirectoryContext,
@@ -100,6 +127,7 @@ import {
   restoreWorkspaceEditBackup,
   type WorkspaceNativeToolResult,
 } from '../services/workspace-tools';
+import { researchSessionManager } from '../../research/research-session-manager';
 import type { CodexBridgeToolSet } from '../../types';
 import type { LLMToolCall, LLMToolChatResult, LLMToolDefinition, LLMToolMessage } from '../../utils/llm-client';
 
@@ -668,6 +696,9 @@ function buildQueryEnvelope(input: {
     userSkillPrompt: Boolean(context.userSkillPrompt),
     ordinaryDraft: Boolean(context.ordinaryDraft),
     frontendState: Boolean(context.frontendState),
+    multimodalIntent: Boolean(context.multimodalIntent),
+    queryIntent: Boolean(context.queryIntent),
+    piSession: Boolean(context.piSession),
   };
   const contextParts: QueryPart[] = Object.entries(contextFlags)
     .filter(([, active]) => active)
@@ -770,6 +801,7 @@ function buildQueryEnvelopePromptBlock(envelope: UserQueryEnvelope | undefined):
     'Query 处理规则：',
     '- 本轮任务正文只读取末尾 CURRENT_USER_REQUEST 锚点；不要把长期记忆、Skill 内容、目录摘要误当成用户的新请求。',
     '- workspace_file、slash、workspace、reference_format、context 等显式 part 优先级高于自然语言猜测。',
+    '- @ 文件和 / 命令只有位于用户消息开头并被解析为显式 part/Skill 调用时才生效；正文中间出现的 @ 或 /命令 只是普通文本，不得按手动调用处理。',
     '- workspace_file 是用户通过 @ 或工作目录多选选择的精确路径；涉及其内容时必须调用 read_file/office_view 等工具读取，不能只根据文件名猜测。',
     '- 如果问题涉及文件、路径、代码、图表脚本或目录内容，必须通过工作目录工具确认后再回答。',
     '- 用户说“最新/最近/最新版文件”时，必须在相关文件类型或名称候选中比较实际最后修改时间（mtime），按时间降序确认；禁止按文件名、目录顺序或搜索返回顺序猜测。',
@@ -986,6 +1018,7 @@ function deduplicateReferences(referencesText: string): string {
 router.use('/config', csrfProtectionLite);
 router.use('/control', csrfProtectionLite);
 router.use('/open-page', csrfProtectionLite);
+router.use('/pi', csrfProtectionLite);
 
 let chatBridgeAdapter: ChatBridgeAdapter | null = null;
 type DraftSaveRequestOptions = {
@@ -1006,6 +1039,16 @@ interface OrdinaryDraftContext {
 }
 
 let getDraftContextForUser: ((userId: string, request: string) => Promise<OrdinaryDraftContext | null>) | null = null;
+export type ResearchEnhancementExternalToolName =
+  | 'research_sync_obsidian'
+  | 'research_search_obsidian'
+  | 'research_prepare_submission';
+type ResearchEnhancementExternalToolExecutor = (input: {
+  name: ResearchEnhancementExternalToolName;
+  userId: string;
+  arguments: Record<string, unknown>;
+}) => Promise<Record<string, unknown>>;
+let executeResearchEnhancementExternalTool: ResearchEnhancementExternalToolExecutor | null = null;
 let compatibleBridgeState = {
   serviceRunning: false,
   paused: false,
@@ -1317,11 +1360,13 @@ export function initializeChatBridgeRoutes(
   options?: {
     saveDraft?: (userId: string, section: string, content: string, options?: DraftSaveRequestOptions) => Promise<void>;
     getDraftContext?: (userId: string, request: string) => Promise<OrdinaryDraftContext | null>;
+    executeResearchEnhancementTool?: ResearchEnhancementExternalToolExecutor;
   }
 ): void {
   chatBridgeAdapter = adapter;
   saveDraftForUser = options?.saveDraft || null;
   getDraftContextForUser = options?.getDraftContext || null;
+  executeResearchEnhancementExternalTool = options?.executeResearchEnhancementTool || null;
 }
 
 function shouldAttachOrdinaryDraftContext(message: string): boolean {
@@ -1388,7 +1433,9 @@ router.post('/workspace/inspect', async (req, res) => {
     const safeWorkInfo = await runtime.prepareSafeWorkspace();
     authorizeLocalPreviewRoot(context.root);
     if (safeWorkInfo.root) authorizeLocalPreviewRoot(safeWorkInfo.root);
-    const preview = await buildWorkspacePreview(context.root);
+    const preview = await buildWorkspacePreview(context.root, {
+      additionalRoots: [safeWorkInfo.root || ''].filter(Boolean),
+    });
     res.json({
       success: true,
       workspace: {
@@ -1478,7 +1525,8 @@ router.post('/workspace/list', async (req, res) => {
     const result = await listWorkspaceFiles(
       context.root,
       String(req.body.path || req.body.dir || ''),
-      Number(req.body.maxResults || 500)
+      Number(req.body.maxResults || 500),
+      [context.aiWorkRoot || context.safeWorkRoot || ''].filter(Boolean)
     );
     res.json({ success: true, result });
   } catch (error) {
@@ -1498,7 +1546,8 @@ router.post('/workspace/search', async (req, res) => {
     const result = await searchWorkspaceFiles(
       context.root,
       String(req.body.query || ''),
-      Number(req.body.maxResults || 80)
+      Number(req.body.maxResults || 80),
+      [context.aiWorkRoot || context.safeWorkRoot || ''].filter(Boolean)
     );
     res.json({ success: true, result });
   } catch (error) {
@@ -1514,14 +1563,18 @@ router.post('/workspace/mentions', async (req, res) => {
       res.status(400).json({ success: false, error: '请先配置并启用工作目录' });
       return;
     }
-    const root = await resolveWorkspaceDirectoryRoot(input);
-    authorizeLocalPreviewRoot(root);
+    const context = await buildWorkspaceDirectoryContext(input);
+    authorizeLocalPreviewRoot(context.root);
+    if (context.aiWorkRoot || context.safeWorkRoot) {
+      authorizeLocalPreviewRoot(context.aiWorkRoot || context.safeWorkRoot || '');
+    }
     const result = await searchWorkspaceFileMentions(
-      root,
+      context.root,
       String(req.body.query || ''),
-      Number(req.body.maxResults || 40)
+      Number(req.body.maxResults || 40),
+      [context.aiWorkRoot || context.safeWorkRoot || ''].filter(Boolean)
     );
-    res.json({ success: true, root, result });
+    res.json({ success: true, root: context.root, result });
   } catch (error) {
     logger.warn('[ChatBridge Workspace] Mention lookup failed:', error);
     res.status(400).json({ success: false, error: (error as Error).message });
@@ -1865,6 +1918,224 @@ export async function executeAgentDraftSaveTool(
   }
 }
 
+export const RESEARCH_ENHANCEMENT_AGENT_GUIDANCE = [
+  '科研增强 MCP 使用规则：',
+  '- 这些工具用于写作完成后的质量检查和归档，结果会自动保存并显示在“科研增强工具”界面。',
+  '- 当主要章节已有实质草稿时，可以建议用户运行 research_build_evidence_ledger 和 research_run_reviewer，但必须先询问并得到用户同意。',
+  '- 当数据分析、图表或代码产物基本完成时，可以建议运行 research_export_reproducibility_bundle，但必须先询问用户。',
+  '- 当 PDF Wiki 新增或更新大量句子级论点时，可以建议运行 research_sync_obsidian；检索知识库时可直接按用户明确请求调用 research_search_obsidian。',
+  '- 当用户明确进入投稿、定稿或准备 Cover Letter 阶段，并已提供目标期刊信息时，可以建议运行 research_prepare_submission。',
+  '- 用户明确要求执行某项科研增强分析时可直接调用；否则只能建议，不得自行启动耗时分析。',
+  '- 只有工具返回 ok=true 后，才能告诉用户已经生成、审查、同步或导出完成。',
+].join('\n');
+
+export function getResearchEnhancementToolDefinitions(): LLMToolDefinition[] {
+  return [
+    {
+      type: 'function',
+      function: {
+        name: 'research_build_evidence_ledger',
+        description: '生成当前项目科研证据账本，汇总正文论断、引用、PDF Wiki 证据、图表数据、代码、来源记录和产物。结果保存后会显示在科研增强工具的“科研证据账本”气泡中。除非用户明确要求，否则应先询问是否执行。',
+        parameters: { type: 'object', additionalProperties: false, properties: {} },
+      },
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'research_run_reviewer',
+        description: '对当前科研 session 运行审稿与可追溯性检查，定位引用无依据、图表无来源、代码或产物缺失 provenance 等问题。结果保存并显示在“审稿人 Agent”气泡中。除非用户明确要求，否则应先询问是否执行。',
+        parameters: { type: 'object', additionalProperties: false, properties: {} },
+      },
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'research_export_reproducibility_bundle',
+        description: '导出当前科研 session 的可复现实验包，包含产物、来源记录、审稿报告和复现索引。结果保存并显示在“可复现实验包”气泡中。除非用户明确要求，否则应先询问是否执行。',
+        parameters: { type: 'object', additionalProperties: false, properties: {} },
+      },
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'research_sync_obsidian',
+        description: '把当前 PDF Wiki 的句子级论点、主题和来源同步到内置 Obsidian 知识库。结果会显示在“内置 Obsidian 知识库”气泡中。除非用户明确要求，否则应先询问是否执行。',
+        parameters: { type: 'object', additionalProperties: false, properties: {} },
+      },
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'research_search_obsidian',
+        description: '检索已同步的内置 Obsidian 句子级论点知识库。用户明确要求检索知识库时调用。',
+        parameters: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            query: { type: 'string', description: '检索关键词或论点。' },
+            limit: { type: 'number', minimum: 1, maximum: 80, description: '返回结果数量，默认 20。' },
+          },
+          required: ['query'],
+        },
+      },
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'research_prepare_submission',
+        description: '生成期刊投稿准备包，包括投稿检查清单、Cover Letter、Highlights、审稿问题和期刊要求核查。结果保存并显示在“期刊投稿准备”气泡中。目标期刊或稿件信息不足时应先向用户询问。',
+        parameters: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            targetJournal: { type: 'string', description: '目标期刊名称。' },
+            manuscriptTitle: { type: 'string', description: '稿件标题。' },
+            manuscriptType: { type: 'string', description: '稿件类型，默认 Research Article。' },
+            abstractText: { type: 'string', description: '稿件摘要。' },
+            keywords: { type: 'string', description: '关键词。' },
+            authorGuidelines: { type: 'string', description: '目标期刊 Author Guidelines 或格式要求。' },
+            coverLetterRequirements: { type: 'string', description: 'Cover Letter 特殊要求。' },
+            reviewerFocus: { type: 'string', description: '希望审稿人重点关注的内容。' },
+          },
+          required: ['targetJournal'],
+        },
+      },
+    },
+  ];
+}
+
+export interface ResearchEnhancementToolResult {
+  ok: boolean;
+  toolName: string;
+  summary: string;
+  error?: string;
+  [key: string]: unknown;
+}
+
+function formatResearchEnhancementToolResult(result: ResearchEnhancementToolResult): string {
+  return JSON.stringify(result);
+}
+
+function parseResearchEnhancementToolArguments(call: LLMToolCall): Record<string, unknown> {
+  try {
+    const parsed = JSON.parse(call.function.arguments || '{}');
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+export async function executeResearchEnhancementToolCall(
+  call: LLMToolCall,
+  userId: string,
+): Promise<ResearchEnhancementToolResult> {
+  const name = call.function.name;
+  const args = parseResearchEnhancementToolArguments(call);
+  try {
+    const session = await researchSessionManager.getOrCreateSession(userId, {
+      title: '科研增强工具会话',
+      goal: '记录证据账本、审稿检查、可复现实验包、内置 Obsidian 和投稿准备产物',
+    });
+
+    if (name === 'research_build_evidence_ledger') {
+      const result = await researchSessionManager.writeEvidenceLedger(userId, session.projectId);
+      const artifact = await researchSessionManager.appendArtifact({
+        userId,
+        projectId: session.projectId,
+        sessionId: session.id,
+        kind: 'other',
+        name: '科研证据账本',
+        filePath: result.filePath,
+        content: JSON.stringify(result.ledger),
+        contentType: 'application/json',
+        metadata: {
+          enhancementType: 'evidence-ledger',
+          generatedAt: result.ledger.generatedAt,
+          recordCount: result.ledger.recordCount,
+          artifactCount: result.ledger.artifactCount,
+          reviewerReportCount: result.ledger.reviewerReportCount,
+        },
+      });
+      return {
+        ok: true,
+        toolName: name,
+        summary: `科研证据账本已生成：记录 ${result.ledger.recordCount} 条，产物 ${result.ledger.artifactCount} 个，审稿报告 ${result.ledger.reviewerReportCount} 份。`,
+        filePath: result.filePath,
+        ledger: result.ledger,
+        artifact: artifact.artifact,
+      };
+    }
+
+    if (name === 'research_run_reviewer') {
+      const result = await researchSessionManager.runReviewer(userId, session.id, undefined, session.projectId);
+      return {
+        ok: true,
+        toolName: name,
+        summary: `审稿检查已完成：${result.report.status}，${result.report.score}/100，发现 ${result.report.findings.length} 项。`,
+        report: result.report,
+      };
+    }
+
+    if (name === 'research_export_reproducibility_bundle') {
+      const result = await researchSessionManager.writeBundle(userId, session.id, session.projectId);
+      return {
+        ok: true,
+        toolName: name,
+        summary: `可复现实验包已导出：产物 ${result.bundle.session.artifacts.length} 个，来源记录 ${result.bundle.session.provenance.length} 条。`,
+        filePath: result.filePath,
+        bundle: result.bundle,
+      };
+    }
+
+    if (name === 'research_sync_obsidian' || name === 'research_search_obsidian' || name === 'research_prepare_submission') {
+      if (!executeResearchEnhancementExternalTool) {
+        return { ok: false, toolName: name, summary: '科研增强工具未执行', error: '本地科研增强服务尚未初始化。' };
+      }
+      const external = await executeResearchEnhancementExternalTool({
+        name,
+        userId,
+        arguments: { ...args, sessionId: session.id, projectId: session.projectId },
+      });
+      if (name === 'research_sync_obsidian' && external.ok !== false) {
+        await researchSessionManager.appendArtifact({
+          userId,
+          projectId: session.projectId,
+          sessionId: session.id,
+          kind: 'pdf-wiki',
+          name: '内置 Obsidian 知识库同步',
+          filePath: String(external.vaultDir || external.exportDir || ''),
+          metadata: {
+            enhancementType: 'obsidian-sync',
+            syncedAt: new Date().toISOString(),
+            sentencePointCount: external.sentencePointCount,
+            topicCount: external.topicCount,
+            pdfCount: external.pdfCount,
+            fileCount: external.fileCount,
+          },
+        });
+      }
+      const ok = external.ok !== false;
+      return {
+        ok,
+        toolName: name,
+        summary: String(external.summary || (ok ? `${name} 已完成` : `${name} 执行失败`)),
+        ...external,
+      };
+    }
+
+    return { ok: false, toolName: name, summary: '未知科研增强工具', error: `不支持的工具：${name}` };
+  } catch (error) {
+    return {
+      ok: false,
+      toolName: name,
+      summary: `${name} 执行失败`,
+      error: (error as Error).message,
+    };
+  }
+}
+
 async function buildCodexBridgeToolSet(
   options: any,
   skillRuntime: AgentSkillRuntime,
@@ -1889,15 +2160,18 @@ async function buildCodexBridgeToolSet(
 
   const skillTools = skillRuntime.getToolDefinitions();
   const workspaceTools = workspaceRuntime?.getToolDefinitions() || [];
+  const researchEnhancementTools = getResearchEnhancementToolDefinitions();
+  const userMcpTools = await getEnabledMcpToolDefinitions();
   // Keep the MCP tool catalogue stable for the lifetime of a Codex App Server.
   // executeAgentDraftSaveTool still blocks save_draft whenever this turn targets
   // an explicit workspace file, so exposing the definition does not loosen safety.
   const draftTools = getAgentDraftSaveToolDefinitions();
-  const definitions = [...skillTools, ...draftTools, ...workspaceTools];
+  const definitions = [...skillTools, ...draftTools, ...researchEnhancementTools, ...workspaceTools, ...userMcpTools];
   if (!definitions.length) return undefined;
 
   const skillToolNames = new Set(skillTools.map(tool => tool.function.name));
   const draftToolNames = new Set(draftTools.map(tool => tool.function.name));
+  const researchEnhancementToolNames = new Set(researchEnhancementTools.map(tool => tool.function.name));
   return {
     definitions,
     execute: async (call) => {
@@ -1911,6 +2185,12 @@ async function buildCodexBridgeToolSet(
           userMessage || '',
           options.draftContext || {},
         );
+      }
+      if (researchEnhancementToolNames.has(call.function.name)) {
+        return executeResearchEnhancementToolCall(call as LLMToolCall, String(options.userId || 'web-user'));
+      }
+      if (isMcpPluginToolName(call.function.name)) {
+        return executeMcpPluginToolCall(call as LLMToolCall);
       }
       if (workspaceRuntime) {
         return workspaceRuntime.executeToolCall(call as LLMToolCall);
@@ -1939,11 +2219,14 @@ async function chatWithAgentToolsLoop(
   const workspaceRuntime = workspace ? createWorkspaceToolRuntime(workspace) : null;
   const workspaceTools = workspaceRuntime?.getToolDefinitions() || [];
   const skillTools = skillRuntime.getToolDefinitions();
+  const researchEnhancementTools = getResearchEnhancementToolDefinitions();
+  const userMcpTools = await getEnabledMcpToolDefinitions();
   const explicitFileIntent = extractExplicitWorkspaceFileWriteIntent(userMessage);
   const draftTools = explicitFileIntent ? [] : getAgentDraftSaveToolDefinitions();
   const skillToolNames = new Set(skillTools.map(tool => tool.function.name));
   const draftToolNames = new Set(draftTools.map(tool => tool.function.name));
-  const tools = [...skillTools, ...draftTools, ...workspaceTools];
+  const researchEnhancementToolNames = new Set(researchEnhancementTools.map(tool => tool.function.name));
+  const tools = [...skillTools, ...draftTools, ...researchEnhancementTools, ...workspaceTools, ...userMcpTools];
   if (!tools.length) {
     return chatBridgeAdapter.chat(options);
   }
@@ -1959,16 +2242,19 @@ async function chatWithAgentToolsLoop(
   const toolSystemPrompt = [
     '你现在具备原生 Agent 工具能力。必须先理解用户意图，再按需调用工具，不能声称调用了实际未调用的 Skill 或文件工具。',
     skillRuntime.getCatalogPrompt(),
-    workspaceRuntime ? '你同时具备原生工作目录工具能力，处理目录或文件任务时必须像 coding agent 一样调用工具，而不是让用户手动粘贴文件。' : '',
+    workspaceRuntime ? '你同时具备原生工作目录工具能力，处理目录或文件任务时必须像 coding agent 一样调用工具，而不是让用户手动粘贴文件。根目录授权自动覆盖它下面全部层级的普通子目录和文件；检索必须递归覆盖用户配置目录、整个 ScholarHarness_AI_Workspaces 容器以及当前会话和其他会话的 AI 产物目录。' : '',
     draftTools.length ? '你具备原生 save_draft 工具。用户要求保存、写回、更新或覆盖草稿时必须调用该工具；禁止只在回答文本中声称已经保存。' : '',
+    userMcpTools.length ? '你具备用户在插件市场中启用并检测成功的 MCP 工具。根据工具描述自主选择；只有工具真实返回结果后才能声称插件调用成功。' : '',
+    RESEARCH_ENHANCEMENT_AGENT_GUIDANCE,
     explicitFileIntent ? `本轮用户明确指定工作目录文件“${explicitFileIntent.target}”。必须先搜索并更新该文件；右侧正在写章节不能改变文件目标，本轮不得调用 save_draft。` : '',
     workspaceRuntime ? `Workspace root: ${workspaceRuntime.getRoot()}` : '',
     workspaceRuntime ? `Permission: ${workspaceRuntime.getPermission()}` : '',
     safeWorkInfo.enabled ? `AI work folder / Safe copy workspace: ${safeWorkInfo.root}` : '',
     workspaceRuntime ? `exec_shell 当前运行环境: ${shellName}` : '',
     '行为规则：',
-    safeWorkInfo.enabled ? '- 进入工作目录后第一步已经创建 AI 工作文件夹；后续所有 AI 产生的工作内容、临时数据、复制的数据文件、脚本、图表和修改后的文件都必须放在这个文件夹内。' : '',
-    safeWorkInfo.enabled ? '- 重要安全规则：原始工作目录只作为搜索/读取来源；所有修改、生成、R/Python/OfficeCLI 脚本运行都必须发生在 Safe copy workspace。read_file/office_view/office_get/office_query/copy_file_to_workspace 会自动把目标文件复制到该目录，write_file/edit_file/office_apply/exec_shell 会自动落到该安全副本。' : '',
+    workspaceRuntime ? '- 工作目录权限对根目录本身及全部后代目录和文件生效；file_search、grep_files 默认递归，不要只检查根目录直接文件。符号链接或目录联接不得用于越出授权根目录。' : '',
+    safeWorkInfo.enabled ? '- 进入工作目录后已经创建当前会话 AI 工作文件夹；文件检索必须同时检查用户配置目录和整个 ScholarHarness_AI_Workspaces 容器，当前会话目录优先，但不能因为根目录摘要未列出其他会话子目录就漏检历史 AI 产物。' : '',
+    safeWorkInfo.enabled ? '- 所有修改、生成、R/Python/OfficeCLI 脚本运行先发生在 AI 工作目录；write_file/edit_file/office_apply/exec_shell 检测到的生成或更新文件会由后端按相对路径同步到用户配置目录，确保两处都有文件。' : '',
     safeWorkInfo.enabled ? '- 如果要运行脚本或修改 Office 文件，先读取脚本、复制数据文件或读取 Office 文档结构；Excel/图片/PDF/二进制数据等不能 read_file 的依赖必须先用 copy_file_to_workspace 放入 AI 工作文件夹。' : '',
     workspaceRuntime ? '- 用户问“找文件/找代码/查看目录/分析项目/修改文件”时，先调用 file_search、grep_files、list_dir 或 read_file，不要直接猜。' : '',
     workspaceRuntime ? '- 用户要求读取、检查、修改或生成 .docx/.xlsx/.pptx 时，优先使用 office_view、office_get、office_query、office_apply；不确定 OfficeCLI 属性名时先调用 office_help。' : '',
@@ -1979,7 +2265,7 @@ async function chatWithAgentToolsLoop(
     workspaceRuntime ? '- edit_file 前必须先 read_file 读取目标文件；search 片段必须唯一。' : '',
     workspaceRuntime ? '- exec_shell 优先用于只读检查，例如 rg、dir/Get-ChildItem、git status/diff；不要执行高风险命令。' : '',
     workspaceRuntime ? '- 在 Windows PowerShell 中不要使用 bash 语法，例如 ||、&&、2>nul、grep、ls -la；检查文件存在用 Test-Path，递归找文件用 Get-ChildItem -Recurse -Filter "*.ext"。' : '',
-    workspaceRuntime ? '- 如果 file_search 没命中，不要立刻下结论；继续用 list_dir、grep_files 或 PowerShell 的 Get-ChildItem 递归确认。' : '',
+    workspaceRuntime ? '- 如果 file_search 没命中，不要立刻下结论；检查 scanTruncated，并继续用递归 list_dir、grep_files 或 PowerShell 的 Get-ChildItem -Recurse 确认。' : '',
     workspaceRuntime ? '- 不要输出 ```workspace_tool 代码块；旧格式仅用于历史兼容，当前会话使用原生工具调用。' : '',
   ].filter(Boolean).join('\n');
   const optionMessages: LLMToolMessage[] = Array.isArray(options.messages)
@@ -1996,6 +2282,44 @@ async function chatWithAgentToolsLoop(
     { role: 'system', content: [...existingSystemContent, toolSystemPrompt].join('\n\n') },
     ...optionMessages.filter(message => message.role !== 'system'),
   ];
+  let prefetchedPiSteering: Array<{
+    id: string;
+    message: string;
+    workspaceFileMentions?: Array<{ name?: string; path?: string; kind?: string; [key: string]: unknown }>;
+  }> = [];
+
+  const takePiSteeringMessages = async () => {
+    if (prefetchedPiSteering.length > 0) {
+      const prefetched = prefetchedPiSteering;
+      prefetchedPiSteering = [];
+      return prefetched;
+    }
+    return options.piSession?.takeSteeringMessages
+      ? await options.piSession.takeSteeringMessages({ allowAttachments: false })
+      : [];
+  };
+
+  const formatPiSteeringMessage = (item: {
+    id: string;
+    message: string;
+    workspaceFileMentions?: Array<{ name?: string; path?: string; kind?: string; [key: string]: unknown }>;
+  }): string => {
+    const selectedFiles = Array.isArray(item.workspaceFileMentions)
+      ? item.workspaceFileMentions
+          .map(file => String(file?.path || file?.name || '').trim())
+          .filter(Boolean)
+          .slice(0, 30)
+      : [];
+    return [
+      `<PI_STEERING_MESSAGE id="${String(item.id || '').replace(/["<>]/g, '')}">`,
+      '用户在 Agent 运行过程中发来了转向消息。这是最新用户指令：应在当前已完成工具结果的基础上调整后续行动，并在下一次模型调用中优先处理。',
+      selectedFiles.length ? `用户同时选择的工作目录文件：\n${selectedFiles.map(file => `- ${file}`).join('\n')}` : '',
+      '<CURRENT_STEERING_REQUEST>',
+      String(item.message || '').slice(0, 20000),
+      '</CURRENT_STEERING_REQUEST>',
+      '</PI_STEERING_MESSAGE>',
+    ].filter(Boolean).join('\n');
+  };
   let lastContent = '';
   const draftSaveReceipts: AgentDraftSaveToolResult['data'][] = [];
   if (workspace) {
@@ -2005,7 +2329,7 @@ async function chatWithAgentToolsLoop(
       `- 权限：\`${workspace.permission}\``,
       safeWorkInfo.enabled ? `- 安全工作副本：\`${safeWorkInfo.root}\`` : '',
       safeWorkInfo.enabled ? `- AI 工作文件夹：\`${safeWorkInfo.root}\`` : '',
-      safeWorkInfo.enabled ? '- 原始目录不会被 write/edit/shell 直接改动，AI 将在副本中工作。' : '',
+      safeWorkInfo.enabled ? '- 检索同时覆盖用户目录和整个 ScholarHarness_AI_Workspaces 容器；生成/更新文件会同步到用户目录与当前会话 AI 工作目录。' : '',
       `- 已索引文件：${workspace.fileCount}`,
       '',
       '',
@@ -2013,6 +2337,11 @@ async function chatWithAgentToolsLoop(
   }
 
   for (let turn = 0; turn < maxTurns; turn += 1) {
+    const claimedPiSteering = await takePiSteeringMessages();
+    for (const item of claimedPiSteering) {
+      messages.push({ role: 'user', content: formatPiSteeringMessage(item) });
+      onWorkspaceProgress?.(`↪ 已接收转向消息：${String(item.message || '').replace(/\s+/g, ' ').slice(0, 120)}\n`);
+    }
     let result: LLMToolChatResult;
     try {
       result = await chatBridgeAdapter.chatWithTools({
@@ -2021,6 +2350,13 @@ async function chatWithAgentToolsLoop(
         onProgress: undefined,
       }, tools);
     } catch (error) {
+      for (const item of claimedPiSteering) {
+        try {
+          await options.piSession?.requeueSteeringMessage?.(item.id);
+        } catch {
+          // The queue will also recover processing messages when the run settles.
+        }
+      }
       if (turn === 0 && !workspaceRuntime && isToolCallingUnsupportedError(error)) {
         logger.warn('[AgentSkills] Provider does not support tool_calls; using AI selection fallback.');
         onWorkspaceProgress?.('! 当前模型接口不支持原生 tool_calls，切换到兼容的 Skill 意图路由。\n');
@@ -2028,9 +2364,23 @@ async function chatWithAgentToolsLoop(
       }
       throw error;
     }
+    for (const item of claimedPiSteering) {
+      await options.piSession?.markSteeringApplied?.(item.id);
+    }
     lastContent = result.content || lastContent;
 
     if (!result.toolCalls.length) {
+      const nextSteering = options.piSession?.takeSteeringMessages
+        ? await options.piSession.takeSteeringMessages({ allowAttachments: false })
+        : [];
+      if (nextSteering.length > 0) {
+        prefetchedPiSteering = nextSteering;
+        if (result.content) {
+          onWorkspaceProgress?.(`${result.content}\n\n---\n\n`);
+        }
+        onWorkspaceProgress?.('↪ 当前回答完成，正在按最新转向消息继续同一 Agent 任务。\n');
+        continue;
+      }
       onWorkspaceProgress?.(`✓ 本轮没有新的工具调用，开始输出最终回答。\n\n---\n\n`);
       let finalAnswer = result.content || lastContent || '已完成工具调用，但模型没有返回文本回答。';
       for (const receipt of draftSaveReceipts) {
@@ -2061,20 +2411,31 @@ async function chatWithAgentToolsLoop(
       onWorkspaceProgress?.(`→ ${summary}\n`);
       const isSkillTool = skillToolNames.has(call.function.name);
       const isDraftTool = draftToolNames.has(call.function.name);
-      const toolResult: AgentSkillToolResult | AgentDraftSaveToolResult | WorkspaceNativeToolResult = isSkillTool
+      const isResearchEnhancementTool = researchEnhancementToolNames.has(call.function.name);
+      const isUserMcpTool = isMcpPluginToolName(call.function.name);
+      const toolResult: any = isSkillTool
         ? await skillRuntime.executeToolCall(call as LLMToolCall)
         : (isDraftTool
             ? await executeAgentDraftSaveTool(call, String(options.userId || 'web-user'), userMessage || '', options.draftContext || {})
-            : (workspaceRuntime
-                ? await workspaceRuntime.executeToolCall(call)
-                : {
-                    ok: false,
-                    toolName: call.function.name,
-                    summary: `${call.function.name} 执行失败`,
-                    error: '当前请求没有配置工作目录，不能调用该文件工具。',
-                  }));
-      const icon = toolResult.ok ? '✓' : '!';
-      onWorkspaceProgress?.(`${icon} ${toolResult.summary}${toolResult.error ? `：${toolResult.error}` : ''}\n`);
+            : (isResearchEnhancementTool
+                ? await executeResearchEnhancementToolCall(call, String(options.userId || 'web-user'))
+                : (isUserMcpTool
+                    ? await executeMcpPluginToolCall(call)
+                : (workspaceRuntime
+                    ? await workspaceRuntime.executeToolCall(call)
+                    : {
+                        ok: false,
+                        toolName: call.function.name,
+                        summary: `${call.function.name} 执行失败`,
+                        error: '当前请求没有配置工作目录，不能调用该文件工具。',
+                      }))));
+      const mcpFailed = isUserMcpTool && toolResult && toolResult.isError === true;
+      const toolSucceeded = isUserMcpTool ? !mcpFailed : toolResult.ok;
+      const resultSummary = isUserMcpTool
+        ? `${call.function.name} ${mcpFailed ? '调用失败' : '调用完成'}`
+        : toolResult.summary;
+      const icon = toolSucceeded ? '✓' : '!';
+      onWorkspaceProgress?.(`${icon} ${resultSummary}${toolResult.error ? `：${toolResult.error}` : ''}\n`);
       if (isDraftTool && toolResult.ok && 'data' in toolResult && toolResult.data) {
         draftSaveReceipts.push(toolResult.data as NonNullable<AgentDraftSaveToolResult['data']>);
       }
@@ -2099,7 +2460,11 @@ async function chatWithAgentToolsLoop(
           ? formatAgentSkillToolResult(toolResult as AgentSkillToolResult)
           : (isDraftTool
               ? formatAgentDraftSaveToolResult(toolResult as AgentDraftSaveToolResult)
-              : formatWorkspaceToolResult(toolResult as WorkspaceNativeToolResult)),
+              : (isResearchEnhancementTool
+                  ? formatResearchEnhancementToolResult(toolResult as ResearchEnhancementToolResult)
+                  : (isUserMcpTool
+                      ? JSON.stringify(toolResult)
+                      : formatWorkspaceToolResult(toolResult as WorkspaceNativeToolResult)))),
       });
     }
 
@@ -2116,6 +2481,198 @@ async function chatWithAgentToolsLoop(
   }
   return exhaustedAnswer;
 }
+
+function normalizePiConversationId(value: unknown): string {
+  const conversationId = String(value || '').trim();
+  if (!conversationId || conversationId.length > 200 || /[\x00-\x1F]/.test(conversationId)) {
+    throw new Error('无效的 Pi 会话 ID');
+  }
+  return conversationId;
+}
+
+router.get('/pi/sessions/:conversationId', async (req, res) => {
+  try {
+    const conversationId = normalizePiConversationId(req.params.conversationId);
+    const userId = await resolveUserId(typeof req.query.userId === 'string' ? req.query.userId : undefined);
+    res.json({
+      success: true,
+      state: piAgentSessionManager.getState(userId, conversationId),
+    });
+  } catch (error) {
+    res.status(400).json({ success: false, error: (error as Error).message || '读取 Pi 会话失败' });
+  }
+});
+
+router.post('/pi/sessions/:conversationId/interrupt', async (req, res) => {
+  try {
+    const validation = validate(piQueueSessionActionSchema, req.body || {});
+    if (!validation.success) {
+      res.status(400).json({ success: false, error: validation.error });
+      return;
+    }
+    const conversationId = normalizePiConversationId(req.params.conversationId);
+    const userId = await resolveUserId(validation.data.userId || undefined);
+    const before = piAgentSessionManager.getState(userId, conversationId);
+    const cancellation = piAgentSessionManager.requestRunCancellation(
+      userId,
+      conversationId,
+      before.runId,
+    );
+    const codex = before.running && chatBridgeAdapter
+      ? await chatBridgeAdapter.interruptCodexConversation(userId, conversationId)
+      : {
+          appServerMatched: 0,
+          appServerInterrupted: 0,
+          execMatched: 0,
+          execInterrupted: 0,
+        };
+
+    if (before.runId) {
+      const deadline = Date.now() + 3_000;
+      while (Date.now() < deadline) {
+        const current = piAgentSessionManager.getState(userId, conversationId);
+        if (!current.running || current.runId !== before.runId) break;
+        await new Promise(resolve => setTimeout(resolve, 50));
+      }
+    }
+
+    const state = piAgentSessionManager.getState(userId, conversationId);
+    res.json({
+      success: true,
+      cancellationRequested: cancellation.requested,
+      interrupted: !before.running || !state.running,
+      runId: cancellation.runId || before.runId,
+      codex,
+      state,
+    });
+  } catch (error) {
+    logger.warn('[PiSession] Agent interruption failed:', error);
+    res.status(500).json({
+      success: false,
+      error: (error as Error).message || '停止 Agent 任务失败',
+    });
+  }
+});
+
+router.post('/pi/sessions/:conversationId/messages', async (req, res) => {
+  try {
+    const validation = validate(piQueueMessageRequestSchema, req.body);
+    if (!validation.success) {
+      res.status(400).json({ success: false, error: validation.error });
+      return;
+    }
+    const conversationId = normalizePiConversationId(req.params.conversationId);
+    const userId = await resolveUserId(validation.data.userId || undefined);
+    const item = piAgentSessionManager.enqueue({
+      userId,
+      conversationId,
+      message: validation.data.message,
+      behavior: validation.data.behavior === 'steer' ? 'steer' : 'follow_up',
+      clientMessageId: validation.data.clientMessageId,
+      chatAttachments: validation.data.chatAttachments,
+      workspaceFileMentions: validation.data.workspaceFileMentions,
+    });
+    res.status(202).json({
+      success: true,
+      item,
+      state: piAgentSessionManager.getState(userId, conversationId),
+    });
+  } catch (error) {
+    res.status(400).json({ success: false, error: (error as Error).message || 'Pi 消息排队失败' });
+  }
+});
+
+router.patch('/pi/sessions/:conversationId/messages/:messageId', async (req, res) => {
+  try {
+    const validation = validate(piQueueMessageUpdateSchema, req.body);
+    if (!validation.success) {
+      res.status(400).json({ success: false, error: validation.error });
+      return;
+    }
+    const conversationId = normalizePiConversationId(req.params.conversationId);
+    const messageId = String(req.params.messageId || '').trim();
+    const userId = await resolveUserId(validation.data.userId || undefined);
+    const item = piAgentSessionManager.updateMessage(userId, conversationId, messageId, {
+      message: validation.data.message,
+      behavior: validation.data.behavior,
+    });
+    if (!item) {
+      res.status(409).json({ success: false, error: '该消息已进入执行阶段，不能再编辑' });
+      return;
+    }
+    res.json({ success: true, item, state: piAgentSessionManager.getState(userId, conversationId) });
+  } catch (error) {
+    res.status(400).json({ success: false, error: (error as Error).message || 'Pi 排队消息编辑失败' });
+  }
+});
+
+router.delete('/pi/sessions/:conversationId/messages/:messageId', async (req, res) => {
+  try {
+    const conversationId = normalizePiConversationId(req.params.conversationId);
+    const messageId = String(req.params.messageId || '').trim();
+    const userId = await resolveUserId(typeof req.query.userId === 'string' ? req.query.userId : undefined);
+    const item = piAgentSessionManager.cancelMessage(userId, conversationId, messageId);
+    if (!item) {
+      res.status(409).json({ success: false, error: '该消息已进入执行阶段，不能撤回' });
+      return;
+    }
+    res.json({ success: true, item, state: piAgentSessionManager.getState(userId, conversationId) });
+  } catch (error) {
+    res.status(400).json({ success: false, error: (error as Error).message || 'Pi 排队消息撤回失败' });
+  }
+});
+
+router.post('/pi/sessions/:conversationId/claim', async (req, res) => {
+  try {
+    const validation = validate(piQueueSessionActionSchema, req.body || {});
+    if (!validation.success) {
+      res.status(400).json({ success: false, error: validation.error });
+      return;
+    }
+    const conversationId = normalizePiConversationId(req.params.conversationId);
+    const userId = await resolveUserId(validation.data.userId || undefined);
+    const item = piAgentSessionManager.claimNextForContinuation(userId, conversationId);
+    res.json({
+      success: true,
+      item,
+      state: piAgentSessionManager.getState(userId, conversationId),
+    });
+  } catch (error) {
+    res.status(400).json({ success: false, error: (error as Error).message || '领取 Pi 后续消息失败' });
+  }
+});
+
+router.post('/pi/sessions/:conversationId/messages/:messageId/requeue', async (req, res) => {
+  try {
+    const validation = validate(piQueueSessionActionSchema, req.body || {});
+    if (!validation.success) {
+      res.status(400).json({ success: false, error: validation.error });
+      return;
+    }
+    const conversationId = normalizePiConversationId(req.params.conversationId);
+    const messageId = String(req.params.messageId || '').trim();
+    const userId = await resolveUserId(validation.data.userId || undefined);
+    const item = piAgentSessionManager.requeueMessage(userId, conversationId, messageId);
+    res.json({
+      success: true,
+      item,
+      state: piAgentSessionManager.getState(userId, conversationId),
+    });
+  } catch (error) {
+    res.status(400).json({ success: false, error: (error as Error).message || 'Pi 消息重新排队失败' });
+  }
+});
+
+router.delete('/pi/sessions/:conversationId', async (req, res) => {
+  try {
+    const conversationId = normalizePiConversationId(req.params.conversationId);
+    const userId = await resolveUserId(typeof req.query.userId === 'string' ? req.query.userId : undefined);
+    piAgentSessionManager.clear(userId, conversationId);
+    res.json({ success: true });
+  } catch (error) {
+    res.status(400).json({ success: false, error: (error as Error).message || '清理 Pi 会话失败' });
+  }
+});
 
 router.post('/attachments', chatAttachmentUpload.array('files', 12), async (req, res) => {
   try {
@@ -2160,7 +2717,309 @@ router.post('/attachments', chatAttachmentUpload.array('files', 12), async (req,
   }
 });
 
+router.post('/query-intent', async (req, res) => {
+  try {
+    const validation = validate(queryIntentRequestSchema, req.body);
+    if (!validation.success) {
+      res.status(400).json({
+        success: false,
+        code: 'INVALID_QUERY_INTENT_REQUEST',
+        error: validation.error,
+        recoverable: true,
+      });
+      return;
+    }
+
+    const {
+      message,
+      history = [],
+      userId: rawUserId,
+      conversationId,
+      forceProvider,
+      workspaceDirectory,
+      workspaceFileMentions = [],
+      chatAttachments = [],
+      explicitParts = [],
+      apiUrl,
+      apiKey,
+      model,
+    } = validation.data;
+    const classifierInput: QueryIntentClassifierInput = {
+      message,
+      history,
+      workspaceRoot: String(workspaceDirectory?.path || workspaceDirectory?.root || '').trim(),
+      aiWorkRoot: String(workspaceDirectory?.aiWorkRoot || workspaceDirectory?.safeWorkRoot || '').trim(),
+      workspaceFileMentions,
+      attachments: chatAttachments,
+      explicitParts,
+    };
+    const fallbackIntent = classifyQueryIntentFallback(classifierInput);
+    const userId = await resolveUserId(rawUserId || undefined);
+
+    // 意图识别不能成为主聊天的单点故障。没有可用 AI 时仍返回经过
+    // 硬约束保护的本地结构化结果，主任务继续执行。
+    if (!chatBridgeAdapter) {
+      res.json({
+        success: true,
+        intent: fallbackIntent,
+        provider: 'fallback',
+        fallbackUsed: true,
+        warning: 'ChatBridge not initialized',
+      });
+      return;
+    }
+
+    const classifierPrompt = buildQueryIntentClassifierPrompt(classifierInput);
+    const classifierMessages = [
+      {
+        role: 'system' as const,
+        content: '你是统一 Query 意图路由器。结合最近对话消解指代，只输出严格 JSON。你不执行任务、不回答用户，也不生成文献检索结果。',
+      },
+      { role: 'user' as const, content: classifierPrompt },
+    ];
+    const providerCandidates: Array<typeof forceProvider | undefined> = [];
+    if (forceProvider === 'api' || forceProvider === 'primary' || forceProvider === 'secondary') {
+      providerCandidates.push(forceProvider);
+    }
+    providerCandidates.push(undefined);
+
+    const failures: string[] = [];
+    for (const candidate of providerCandidates) {
+      try {
+        const rawIntentResponse = await chatBridgeAdapter.chat({
+          messages: classifierMessages,
+          userId,
+          conversationId: `query-intent:${conversationId || userId}:${Date.now()}`,
+          forceProvider: candidate,
+          // Codex 主任务仍可由用户选择；轻量路由优先使用文本 API，
+          // 避免每轮先启动一次 Codex CLI 再启动正式任务。
+          bypassCodexPreference: true,
+          disableFallback: false,
+          apiUrl,
+          apiKey,
+          model,
+          temperature: 0.05,
+          maxTokens: 1800,
+        });
+        if (!String(rawIntentResponse || '').trim()) {
+          failures.push(`${candidate || 'auto-api'}: empty response`);
+          continue;
+        }
+        const intent = parseQueryIntentResponse(rawIntentResponse, classifierInput);
+        logger.info('[QueryIntent] Classified main chat query:', {
+          userId,
+          provider: candidate || 'auto-api',
+          primaryIntent: intent.primaryIntent,
+          action: intent.action,
+          contextualFollowUp: intent.isContextualFollowUp,
+          needsWorkspaceSearch: intent.needsWorkspaceSearch,
+          needsWebSearch: intent.needsWebSearch,
+          needsLiteratureRetrieval: intent.needsLiteratureRetrieval,
+          confidence: intent.confidence,
+        });
+        res.json({
+          success: true,
+          intent,
+          provider: candidate || 'auto-api',
+          fallbackUsed: intent.source === 'fallback',
+        });
+        return;
+      } catch (error) {
+        failures.push(`${candidate || 'auto-api'}: ${(error as Error).message || String(error)}`);
+      }
+    }
+
+    logger.warn('[QueryIntent] AI classifier unavailable; using deterministic fallback:', failures.join(' | '));
+    res.json({
+      success: true,
+      intent: fallbackIntent,
+      provider: 'fallback',
+      fallbackUsed: true,
+      warning: 'AI 意图分类暂时不可用，已使用本地安全路由',
+    });
+  } catch (error) {
+    logger.warn('[QueryIntent] Classification failed; returning recoverable error:', error);
+    res.status(500).json({
+      success: false,
+      code: 'QUERY_INTENT_CLASSIFICATION_FAILED',
+      error: (error as Error).message || 'Query 意图识别失败',
+      recoverable: true,
+    });
+  }
+});
+
+router.post('/multimodal-intent', async (req, res) => {
+  try {
+    if (!chatBridgeAdapter) {
+      res.status(503).json({ success: false, error: 'ChatBridge not initialized' });
+      return;
+    }
+
+    const validation = validate(multimodalIntentRequestSchema, req.body);
+    if (!validation.success) {
+      res.status(400).json({ success: false, error: validation.error });
+      return;
+    }
+
+    const {
+      message,
+      userId: rawUserId,
+      conversationId,
+      forceProvider,
+      workspaceDirectory,
+      apiUrl,
+      apiKey,
+      model,
+      visionApiUrl,
+      visionApiKey,
+      visionModel,
+      codexImages = [],
+      visionImages = [],
+      chatAttachments = [],
+    } = validation.data;
+    const userId = await resolveUserId(rawUserId || undefined);
+    const normalizedAttachments = normalizeChatAttachments(chatAttachments);
+    const attachmentImagePaths = normalizedAttachments
+      .filter(attachment => attachment.type === 'image' || isChatAttachmentImage(attachment.path || attachment.name))
+      .map(attachment => attachment.path)
+      .filter(filePath => filePath && fs.existsSync(filePath));
+    const imagePaths = Array.from(new Set([
+      ...attachmentImagePaths,
+      ...codexImages,
+      ...visionImages,
+    ].map(item => String(item || '').trim()).filter(filePath => filePath && fs.existsSync(filePath))));
+    if (!imagePaths.length) {
+      res.status(400).json({ success: false, error: '没有可供 AI 识别的本地图片附件' });
+      return;
+    }
+
+    const workspaceRoot = String(workspaceDirectory?.path || workspaceDirectory?.root || '').trim();
+    const classifierPrompt = buildMultimodalIntentClassifierPrompt({
+      message,
+      attachments: normalizedAttachments,
+      workspaceRoot,
+    });
+    const classifierMessages = [
+      {
+        role: 'system' as const,
+        content: '你是多模态任务编排器的第一阶段。只识别视觉信息与用户真实意图并输出严格 JSON；不得把看图描述当作最终任务，也不得声称已经执行第二阶段动作。',
+      },
+      { role: 'user' as const, content: classifierPrompt },
+    ];
+    const providerCandidates: Array<typeof forceProvider | undefined> = [undefined];
+    if (forceProvider && !providerCandidates.includes(forceProvider)) {
+      providerCandidates.push(forceProvider);
+    }
+    const failures: string[] = [];
+    let rawIntentResponse = '';
+    let classifierProvider = 'auto-vision';
+    for (const candidate of providerCandidates) {
+      try {
+        rawIntentResponse = await chatBridgeAdapter.chat({
+          messages: classifierMessages,
+          userId,
+          conversationId: `multimodal-intent:${conversationId || userId}:${Date.now()}`,
+          forceProvider: candidate,
+          bypassCodexPreference: candidate !== 'codex',
+          disableFallback: candidate === 'codex',
+          apiUrl,
+          apiKey,
+          model: visionModel || model,
+          requiresVision: true,
+          visionApiUrl,
+          visionApiKey,
+          visionModel,
+          codexImages: imagePaths,
+          visionImages: imagePaths,
+          temperature: 0.1,
+          maxTokens: 2400,
+        });
+        classifierProvider = candidate || 'auto-vision';
+        if (rawIntentResponse.trim()) break;
+      } catch (error) {
+        failures.push(`${candidate || 'auto-vision'}: ${(error as Error).message || String(error)}`);
+      }
+    }
+    if (!rawIntentResponse.trim()) {
+      logger.warn('[MultimodalIntent] All AI classifier providers failed:', failures.join(' | '));
+      res.status(502).json({
+        success: false,
+        error: '图片意图识别模型暂时不可用，主任务将回退为直接多模态处理',
+      });
+      return;
+    }
+
+    const intent = parseMultimodalIntentResponse(rawIntentResponse);
+    logger.info('[MultimodalIntent] Classified image task:', {
+      userId,
+      provider: classifierProvider,
+      imageCount: imagePaths.length,
+      primaryIntent: intent.primaryIntent,
+      imageRole: intent.imageRole,
+      requiresFollowupAction: intent.requiresFollowupAction,
+      requestedActions: intent.requestedActions,
+    });
+    res.json({
+      success: true,
+      intent,
+      provider: classifierProvider,
+      imageCount: imagePaths.length,
+    });
+  } catch (error) {
+    logger.warn('[MultimodalIntent] Classification failed:', error);
+    res.status(500).json({
+      success: false,
+      error: (error as Error).message || '图片意图识别失败',
+    });
+  }
+});
+
 router.post('/chat', async (req, res) => {
+  let piRunIdentity: { userId: string; conversationId: string; runId: string } | null = null;
+  let piContinuedMessageId = '';
+  let clientDisconnected = false;
+  let cancellationDispatched = false;
+  const isPiRunCancelled = (): boolean => Boolean(
+    piRunIdentity
+    && piAgentSessionManager.isRunCancellationRequested(
+      piRunIdentity.userId,
+      piRunIdentity.conversationId,
+      piRunIdentity.runId,
+    )
+  );
+  const assertPiRunActive = (): void => {
+    if (!isPiRunCancelled()) return;
+    const error = new Error('Chat request was cancelled by the user');
+    error.name = 'ChatRequestCancelledError';
+    throw error;
+  };
+  const cancelActiveRun = async (reason: string): Promise<void> => {
+    if (!piRunIdentity || cancellationDispatched) return;
+    cancellationDispatched = true;
+    piAgentSessionManager.requestRunCancellation(
+      piRunIdentity.userId,
+      piRunIdentity.conversationId,
+      piRunIdentity.runId,
+    );
+    logger.info('[PiSession] Active Agent cancellation requested:', {
+      conversationId: piRunIdentity.conversationId,
+      runId: piRunIdentity.runId,
+      reason,
+    });
+    if (chatBridgeAdapter) {
+      await chatBridgeAdapter.interruptCodexConversation(
+        piRunIdentity.userId,
+        piRunIdentity.conversationId,
+      ).catch(error => {
+        logger.warn('[PiSession] Codex interruption after client cancellation failed:', error);
+      });
+    }
+  };
+  res.once('close', () => {
+    if (res.writableEnded) return;
+    clientDisconnected = true;
+    void cancelActiveRun('client-disconnected');
+  });
   try {
     logger.info('[ChatBridge Route] POST /chat received');
     
@@ -2186,6 +3045,8 @@ router.post('/chat', async (req, res) => {
       stream: rawStream = false,
       newPage: rawNewPage = false,
       conversationId,
+      piQueueMessageId,
+      piQueueOriginalMessage,
       history = [],
       forceProvider,
       apiUrl,
@@ -2236,11 +3097,99 @@ router.post('/chat', async (req, res) => {
     const userId = await resolveUserId(req.body.userId);
     logger.info(`[ChatBridge Route] User ID: ${userId} (source: session-priority)`);
 
+    if (conversationId) {
+      const piConversationId = normalizePiConversationId(conversationId);
+      if (piQueueMessageId) {
+        const continuationClaim = piAgentSessionManager.validateContinuationClaim(
+          userId,
+          piConversationId,
+          piQueueMessageId,
+          piQueueOriginalMessage || message,
+        );
+        if (!continuationClaim) {
+          res.status(409).json({
+            success: false,
+            code: 'PI_QUEUE_CLAIM_INVALID',
+            error: '该排队消息的领取状态已经失效，请刷新队列后重试。',
+            state: piAgentSessionManager.getState(userId, piConversationId),
+          });
+          return;
+        }
+        piContinuedMessageId = continuationClaim.id;
+      }
+      const piRun = piAgentSessionManager.beginRun(userId, piConversationId, forceProvider || 'auto');
+      if (!piRun.accepted) {
+        res.status(409).json({
+          success: false,
+          code: 'PI_SESSION_RUNNING',
+          error: '当前会话仍有 Agent 任务在运行，请将新消息加入“转向当前任务”或“后续执行”队列。',
+          state: piRun.state,
+        });
+        return;
+      }
+      piRunIdentity = { userId, conversationId: piConversationId, runId: piRun.runId };
+      logger.info('[PiSession] Agent run started:', {
+        userId,
+        conversationId: piConversationId,
+        runId: piRun.runId,
+        provider: forceProvider || 'auto',
+        continuedMessageId: piContinuedMessageId,
+      });
+      if (clientDisconnected) {
+        await cancelActiveRun('client-disconnected-before-run-start');
+        const cancellationError = new Error('Chat request was cancelled by the user');
+        cancellationError.name = 'ChatRequestCancelledError';
+        throw cancellationError;
+      }
+    }
+
     const explicitWorkspaceInput = normalizeWorkspaceDirectoryInput(workspaceDirectory);
     const messageWorkspaceInput = explicitWorkspaceInput
       ? null
       : extractWorkspaceDirectoryInputFromText(message, 'read-only');
     const workspaceInput = explicitWorkspaceInput || messageWorkspaceInput;
+    const rawEnvelopeRecord = rawQueryEnvelope && typeof rawQueryEnvelope === 'object'
+      ? rawQueryEnvelope as Record<string, unknown>
+      : {};
+    if (workspaceInput && !workspaceInput.conversationId) {
+      workspaceInput.conversationId = String(conversationId || rawEnvelopeRecord.sessionId || '').trim() || undefined;
+    }
+    const queryIntentMessage = String(rawEnvelopeRecord.originalText || message).trim() || message;
+    const queryIntentHistory = omitTrailingCurrentUserRequest(history, [queryIntentMessage, message])
+      .slice(-10)
+      .map(item => ({
+        role: (item.role === 'assistant' || item.role === 'system' ? item.role : 'user') as 'user' | 'assistant' | 'system',
+        content: String(item.content || ''),
+      }));
+    const queryIntentInput: QueryIntentClassifierInput = {
+      message: queryIntentMessage,
+      history: queryIntentHistory,
+      workspaceRoot: String(workspaceInput?.path || '').trim(),
+      aiWorkRoot: String(workspaceInput?.aiWorkRoot || workspaceInput?.safeWorkRoot || '').trim(),
+      workspaceFileMentions: Array.isArray((context as Record<string, unknown>).workspaceFileMentions)
+        ? (context as Record<string, unknown>).workspaceFileMentions as QueryIntentClassifierInput['workspaceFileMentions']
+        : [],
+      attachments: chatAttachments,
+      explicitParts: Array.isArray(rawEnvelopeRecord.parts)
+        ? rawEnvelopeRecord.parts.filter((part): part is Record<string, unknown> =>
+            Boolean(part) && typeof part === 'object' && !Array.isArray(part)
+          )
+        : [],
+    };
+    const submittedQueryIntent = (context as Record<string, unknown>).queryIntent;
+    const queryIntent = submittedQueryIntent && typeof submittedQueryIntent === 'object'
+      ? parseQueryIntentResponse(JSON.stringify(submittedQueryIntent), queryIntentInput)
+      : classifyQueryIntentFallback(queryIntentInput);
+    (context as Record<string, unknown>).queryIntent = queryIntent;
+    logger.info('[QueryIntent] Verified routing context on main chat endpoint:', {
+      primaryIntent: queryIntent.primaryIntent,
+      action: queryIntent.action,
+      contextualFollowUp: queryIntent.isContextualFollowUp,
+      needsWorkspaceSearch: queryIntent.needsWorkspaceSearch,
+      needsWebSearch: queryIntent.needsWebSearch,
+      needsLiteratureRetrieval: queryIntent.needsLiteratureRetrieval,
+      source: queryIntent.source,
+    });
     if (workspaceInput?.enabled) {
       try {
         const workspaceStartedAt = Date.now();
@@ -2250,7 +3199,12 @@ router.post('/chat', async (req, res) => {
         if (workspaceContext.aiWorkRoot || workspaceContext.safeWorkRoot) {
           authorizeLocalPreviewRoot(workspaceContext.aiWorkRoot || workspaceContext.safeWorkRoot || '');
         }
-        const workspacePrelude = await buildWorkspaceAgentPrelude(workspaceContext.root, message);
+        const workspacePrelude = await buildWorkspaceAgentPrelude(
+          workspaceContext.root,
+          queryIntent.resolvedQuery || queryIntentMessage,
+          undefined,
+          [workspaceContext.aiWorkRoot || workspaceContext.safeWorkRoot || ''].filter(Boolean)
+        );
         workspaceContext.queryHintsMarkdown = workspacePrelude || '';
         context.workspaceDirectory = workspaceContext;
         logger.info(`[ChatBridge Route] Attached workspace directory: ${workspaceContext.root}, files=${workspaceContext.fileCount}, permission=${workspaceContext.permission}, source=${workspaceInput.source || 'ui'}, elapsed=${Date.now() - workspaceStartedAt}ms`);
@@ -2326,6 +3280,73 @@ router.post('/chat', async (req, res) => {
         : []),
     ];
     const agentSkillRuntime = await createAgentSkillRuntime(userId, preloadedAgentSkillIds);
+    const contextQueryIntent = context.queryIntent as { primaryIntent?: string } | undefined;
+    const shouldEstablishPaperCoreArgument = contextQueryIntent?.primaryIntent === 'academic_writing'
+      && /写(?:一篇|这篇|个)?(?:小)?论文|撰写(?:一篇|这篇|个)?(?:小)?论文|一键论文写作|开始(?:写|撰写|正文)|整篇(?:论文|文章|提纲)|论文(?:整体)?提纲|核心论点|核心论据|论文主线|scientific story|central argument/i.test(messageForTask);
+    if (shouldEstablishPaperCoreArgument) {
+      const coreArgumentSkillId = 'scholar-harness-core:establish-paper-core-argument';
+      const coreArgumentAvailable = agentSkillRuntime.getCatalog().some(skill => skill.id === coreArgumentSkillId);
+      if (coreArgumentAvailable) {
+        const loadedSkill = await agentSkillRuntime.executeToolCall({
+          id: `auto-paper-core-argument-${Date.now()}`,
+          type: 'function',
+          function: {
+            name: 'load_skill',
+            arguments: JSON.stringify({
+              skill_id: coreArgumentSkillId,
+              reason: '用户即将开始整篇论文写作，需要先锁定核心论点、论据链和全文基调',
+            }),
+          },
+        });
+        if (loadedSkill.ok && loadedSkill.content) {
+          context.autoAgentSkillPrompt = [
+            String(context.autoAgentSkillPrompt || ''),
+            `## 写作前自动加载的核心论点奠基 Skill\n${loadedSkill.content}`,
+          ].filter(Boolean).join('\n\n');
+          logger.info(`[AgentSkills] Auto-loaded paper core argument Skill: ${coreArgumentSkillId}`);
+        } else {
+          logger.warn(`[AgentSkills] Failed to auto-load paper core argument Skill: ${loadedSkill.error || coreArgumentSkillId}`);
+        }
+      }
+    }
+    const isDiscussionWritingTask = /(?:讨论)|\bdiscussion\b/i.test(messageForTask)
+      && (
+        contextQueryIntent?.primaryIntent === 'academic_writing'
+        || context.writingSkill?.chapter === 'discussion'
+        || /写作任务|写\s*Discussion|写.*讨论/i.test(String(context.taskType || ''))
+      );
+    if (isDiscussionWritingTask) {
+      const autoSkillIds = selectDiscussionAutoSkillIds(agentSkillRuntime.getCatalog());
+      const autoSkillBlocks: string[] = [];
+      for (const skillId of autoSkillIds) {
+        const loadedSkill = await agentSkillRuntime.executeToolCall({
+          id: `auto-discussion-${skillId}-${Date.now()}`,
+          type: 'function',
+          function: {
+            name: 'load_skill',
+            arguments: JSON.stringify({
+              skill_id: skillId,
+              reason: '已确认当前任务为 Discussion 章节写作，自动加载相关科研写作 Skill',
+            }),
+          },
+        });
+        if (loadedSkill.ok && loadedSkill.content) {
+          autoSkillBlocks.push([
+            `## 自动加载的 Discussion 相关 Skill：${skillId}`,
+            loadedSkill.content,
+          ].join('\n'));
+          logger.info(`[AgentSkills] Auto-loaded Discussion Skill: ${skillId}`);
+        } else {
+          logger.warn(`[AgentSkills] Failed to auto-load Discussion Skill: ${loadedSkill.error || skillId}`);
+        }
+      }
+      if (autoSkillBlocks.length > 0) {
+        context.autoAgentSkillPrompt = [
+          String(context.autoAgentSkillPrompt || ''),
+          ...autoSkillBlocks,
+        ].filter(Boolean).join('\n\n');
+      }
+    }
     const targetVenueReviewContext = (context as Record<string, unknown>).targetVenuePeerReview as {
       enabled?: boolean;
       skillId?: string;
@@ -2346,13 +3367,17 @@ router.post('/chat', async (req, res) => {
         },
       });
       if (autoLoadedReviewSkill.ok) {
-        context.autoAgentSkillPrompt = autoLoadedReviewSkill.content;
+        context.autoAgentSkillPrompt = [
+          String(context.autoAgentSkillPrompt || ''),
+          autoLoadedReviewSkill.content,
+        ].filter(Boolean).join('\n\n');
         logger.info(`[AgentSkills] Auto-loaded target venue review Skill: ${targetVenueSkillId}`);
       } else {
         logger.warn(`[AgentSkills] Failed to auto-load target venue review Skill: ${autoLoadedReviewSkill.error || targetVenueSkillId}`);
       }
     }
     const codexAgentSkillContext = await agentSkillRuntime.prepareCodexContext();
+    const enabledMcpPluginCatalogPrompt = await getEnabledMcpPluginCatalogPrompt();
     logger.info('[AgentSkills] Runtime prepared:', {
       available: agentSkillRuntime.getCatalog().length,
       explicitlyActive: agentSkillRuntime.getCatalog().filter(skill => skill.explicitlyActive).length,
@@ -2432,6 +3457,13 @@ router.post('/chat', async (req, res) => {
     };
 
     const contextForPrompt: any = { ...mergedContext };
+    const multimodalIntent = normalizeMultimodalIntent(contextForPrompt.multimodalIntent);
+    if (multimodalIntent) {
+      contextForPrompt.multimodalIntent = multimodalIntent;
+    } else if (contextForPrompt.multimodalIntent) {
+      delete contextForPrompt.multimodalIntent;
+      logger.warn('[MultimodalIntent] Ignored malformed frontend intent context.');
+    }
     if (userSkillInvocation.promptBlock) {
       const existingUserSkillPrompt = typeof contextForPrompt.userSkillPrompt === 'string'
         ? contextForPrompt.userSkillPrompt.trim()
@@ -2462,7 +3494,12 @@ router.post('/chat', async (req, res) => {
       .filter(filePath => filePath && fs.existsSync(filePath));
     const codexImagePaths = Array.from(new Set([...(codexImages || []), ...attachmentImagePaths].map(item => String(item || '').trim()).filter(Boolean)));
     const visionImagePaths = Array.from(new Set([...(visionImages || []), ...attachmentImagePaths].map(item => String(item || '').trim()).filter(Boolean)));
-    const requiresVisionRequest = Boolean(requiresVision) || visionImagePaths.length > 0;
+    // 图片已经由第一阶段视觉 AI 转成结构化意图时，第二阶段改用文本/工具模型执行。
+    // 这能避免视觉模型在“描述完图片”后停止，也避免不支持 tool_calls 的视觉模型承担文件操作。
+    const visionAlreadyAnalyzed = multimodalIntent?.visionAnalyzed === true;
+    const requiresVisionRequest = !visionAlreadyAnalyzed && (Boolean(requiresVision) || visionImagePaths.length > 0);
+    const executionCodexImagePaths = visionAlreadyAnalyzed ? [] : codexImagePaths;
+    const executionVisionImagePaths = visionAlreadyAnalyzed ? [] : visionImagePaths;
     const bibliometricsSelectedOnComposer = isMainContextSourceSelected(contextForPrompt, 'bibliometrics');
     if (!contextForPrompt.bibliometrics && (bibliometricsSelectedOnComposer || shouldAutoAttachBibliometricsContext(messageForTask))) {
       try {
@@ -2627,6 +3664,11 @@ router.post('/chat', async (req, res) => {
       metaAnalysisPinned: !!contextForPrompt.metaAnalysisPinned,
       hasDiscussionFramework: !!contextForPrompt.discussionFramework,
       hasRPlot: !!contextForPrompt.rPlot,
+      hasMultimodalIntent: !!contextForPrompt.multimodalIntent,
+      multimodalFollowupRequired: !!contextForPrompt.multimodalIntent?.requiresFollowupAction,
+      queryPrimaryIntent: contextForPrompt.queryIntent?.primaryIntent,
+      queryNeedsWorkspaceSearch: !!contextForPrompt.queryIntent?.needsWorkspaceSearch,
+      queryNeedsLiteratureRetrieval: !!contextForPrompt.queryIntent?.needsLiteratureRetrieval,
       hasTargetVenuePeerReview: !!contextForPrompt.targetVenuePeerReview,
       hasAutoResearch: !!contextForPrompt.autoResearch,
       autoResearchPinned: !!contextForPrompt.autoResearchPinned,
@@ -2667,6 +3709,57 @@ router.post('/chat', async (req, res) => {
       { role: 'user', content: enrichedMessage }
     ];
     const shouldUseCodexProvider = await chatBridgeAdapter.shouldUseCodex({ forceProvider });
+    const piSessionRuntime = piRunIdentity
+      ? {
+          sessionId: piRunIdentity.conversationId,
+          takeSteeringMessages: async (takeOptions?: { allowAttachments?: boolean }) => {
+            return piAgentSessionManager
+              .takeSteeringMessages(piRunIdentity!.userId, piRunIdentity!.conversationId, takeOptions)
+              .map(item => ({
+                id: item.id,
+                message: item.message,
+                chatAttachments: item.chatAttachments,
+                workspaceFileMentions: item.workspaceFileMentions,
+              }));
+          },
+          markSteeringApplied: async (messageId: string) => {
+            piAgentSessionManager.markApplied(
+              piRunIdentity!.userId,
+              piRunIdentity!.conversationId,
+              messageId,
+              'steered',
+            );
+          },
+          requeueSteeringMessage: async (messageId: string) => {
+            piAgentSessionManager.requeueMessage(
+              piRunIdentity!.userId,
+              piRunIdentity!.conversationId,
+              messageId,
+            );
+          },
+        }
+      : undefined;
+    const optimizationSkillIds = Array.from(new Set<string>(
+      (Array.isArray(contextForPrompt.invokedUserSkills) ? contextForPrompt.invokedUserSkills : [])
+        .map((skill: any) => String(skill?.id || '').replace(/^user:/i, '').trim())
+        .filter(Boolean)
+    ));
+    const optimizationProvider = shouldUseCodexProvider
+      ? 'codex'
+      : (forceProvider === 'primary' ? 'primary' : 'secondary');
+    const recordOptimizationTrajectory = (response: string) => {
+      if (!optimizationSkillIds.length || !response) return;
+      void recordSkillOptimizationTrajectories({
+        userId,
+        skillIds: optimizationSkillIds,
+        query: messageForTask,
+        response,
+        provider: optimizationProvider,
+        conversationId,
+      }).catch(error => {
+        logger.warn('[SkillOptimization] Failed to record chat trajectory:', error);
+      });
+    };
     
     logger.info(`[ChatBridge Route] System policy + dynamic user context (${enrichedMessage.length} chars, history=${promptHistory.length} msgs embedded)`);
 
@@ -2685,8 +3778,12 @@ router.post('/chat', async (req, res) => {
       };
       
       try {
-        const workspaceContext = contextForPrompt.workspaceDirectory as WorkspaceDirectoryContext | undefined;
-        const shouldUseAgentToolLoop = !shouldUseCodexProvider && agentSkillRuntime.getToolDefinitions().length > 0;
+        const configuredWorkspaceContext = contextForPrompt.workspaceDirectory as WorkspaceDirectoryContext | undefined;
+        const workspaceContext = contextForPrompt.queryIntent?.needsWorkspaceSearch === true
+          ? configuredWorkspaceContext
+          : undefined;
+        const shouldUseAgentToolLoop = !shouldUseCodexProvider
+          && (Boolean(workspaceContext) || agentSkillRuntime.getToolDefinitions().length > 0 || getResearchEnhancementToolDefinitions().length > 0);
         const chatOptions = {
           model: model || 'unknown',
           messages: messagesForChat,
@@ -2704,26 +3801,29 @@ router.post('/chat', async (req, res) => {
           visionApiKey,
           visionModel,
           queryEnvelope,
-          agentSkillCatalogPrompt: codexAgentSkillContext.catalogPrompt,
+          agentSkillCatalogPrompt: [codexAgentSkillContext.catalogPrompt, enabledMcpPluginCatalogPrompt, RESEARCH_ENHANCEMENT_AGENT_GUIDANCE].filter(Boolean).join('\n\n'),
           agentSkillRoots: codexAgentSkillContext.allowedRoots,
           explicitAgentSkillPrompt: String(contextForPrompt.userSkillPrompt || ''),
-          codexImages: codexImagePaths,
-          visionImages: visionImagePaths,
-          workspaceDirectory: contextForPrompt.workspaceDirectory
+          codexImages: executionCodexImagePaths,
+          visionImages: executionVisionImagePaths,
+          workspaceDirectory: configuredWorkspaceContext
             ? {
-                root: contextForPrompt.workspaceDirectory.root,
-                permission: contextForPrompt.workspaceDirectory.permission,
-                aiWorkRoot: contextForPrompt.workspaceDirectory.aiWorkRoot || contextForPrompt.workspaceDirectory.safeWorkRoot,
-                safeWorkRoot: contextForPrompt.workspaceDirectory.safeWorkRoot || contextForPrompt.workspaceDirectory.aiWorkRoot,
+                root: configuredWorkspaceContext.root,
+                permission: configuredWorkspaceContext.permission,
+                aiWorkRoot: configuredWorkspaceContext.aiWorkRoot || configuredWorkspaceContext.safeWorkRoot,
+                safeWorkRoot: configuredWorkspaceContext.safeWorkRoot || configuredWorkspaceContext.aiWorkRoot,
               }
             : undefined,
           draftContext: contextForPrompt,
+          piSession: piSessionRuntime,
+          isCancelled: isPiRunCancelled,
           codexToolSet: undefined as CodexBridgeToolSet | undefined,
           conversationHandoff: promptHistory.slice(-20).map(item => ({
             role: (item.role === 'assistant' || item.role === 'system' ? item.role : 'user') as 'user' | 'assistant' | 'system',
             content: String(item.content || ''),
           })),
         };
+        assertPiRunActive();
         if (shouldUseCodexProvider) {
           chatOptions.codexToolSet = await buildCodexBridgeToolSet(
             chatOptions,
@@ -2735,8 +3835,19 @@ router.post('/chat', async (req, res) => {
         let response = shouldUseAgentToolLoop
           ? await chatWithAgentToolsLoop(chatOptions, agentSkillRuntime, workspaceContext, undefined, onProgress, messageForTask)
           : await chatBridgeAdapter.chat(chatOptions);
-        
+        assertPiRunActive();
         response = await postProcessResponse(response, userId, messageForTask, contextForPrompt, apiUrl, apiKey, model, secondaryModel, promptHistory);
+        recordOptimizationTrajectory(response);
+
+        if (piContinuedMessageId && piRunIdentity) {
+          piAgentSessionManager.markApplied(
+            piRunIdentity.userId,
+            piRunIdentity.conversationId,
+            piContinuedMessageId,
+            'continued',
+          );
+          piContinuedMessageId = '';
+        }
 
         if (shouldUseAgentToolLoop) {
           onProgress(response);
@@ -2746,14 +3857,22 @@ router.post('/chat', async (req, res) => {
         }
         res.end();
       } catch (error) {
-        logger.error('[ChatBridge Route] Stream error:', error);
+        const cancelled = isPiRunCancelled()
+          || (error instanceof Error && /cancel|abort|interrupt/i.test(`${error.name} ${error.message}`));
+        if (cancelled) logger.info('[ChatBridge Route] Stream cancelled by user');
+        else logger.error('[ChatBridge Route] Stream error:', error);
+        if (res.destroyed || res.writableEnded) return;
         const errorMsg = (error as Error)?.message || 'Unknown error';
         res.write(`data: ${JSON.stringify({ type: 'error', error: errorMsg })}\n\n`);
         res.end();
       }
     } else {
-      const workspaceContext = contextForPrompt.workspaceDirectory as WorkspaceDirectoryContext | undefined;
-      const shouldUseAgentToolLoop = !shouldUseCodexProvider && agentSkillRuntime.getToolDefinitions().length > 0;
+      const configuredWorkspaceContext = contextForPrompt.workspaceDirectory as WorkspaceDirectoryContext | undefined;
+      const workspaceContext = contextForPrompt.queryIntent?.needsWorkspaceSearch === true
+        ? configuredWorkspaceContext
+        : undefined;
+      const shouldUseAgentToolLoop = !shouldUseCodexProvider
+        && (Boolean(workspaceContext) || agentSkillRuntime.getToolDefinitions().length > 0 || getResearchEnhancementToolDefinitions().length > 0);
       const chatOptions = {
         model: model || 'unknown',
         messages: messagesForChat,
@@ -2770,26 +3889,29 @@ router.post('/chat', async (req, res) => {
         visionApiKey,
         visionModel,
         queryEnvelope,
-        agentSkillCatalogPrompt: codexAgentSkillContext.catalogPrompt,
+        agentSkillCatalogPrompt: [codexAgentSkillContext.catalogPrompt, enabledMcpPluginCatalogPrompt, RESEARCH_ENHANCEMENT_AGENT_GUIDANCE].filter(Boolean).join('\n\n'),
         agentSkillRoots: codexAgentSkillContext.allowedRoots,
         explicitAgentSkillPrompt: String(contextForPrompt.userSkillPrompt || ''),
-        codexImages: codexImagePaths,
-        visionImages: visionImagePaths,
-        workspaceDirectory: contextForPrompt.workspaceDirectory
+        codexImages: executionCodexImagePaths,
+        visionImages: executionVisionImagePaths,
+        workspaceDirectory: configuredWorkspaceContext
           ? {
-              root: contextForPrompt.workspaceDirectory.root,
-              permission: contextForPrompt.workspaceDirectory.permission,
-              aiWorkRoot: contextForPrompt.workspaceDirectory.aiWorkRoot || contextForPrompt.workspaceDirectory.safeWorkRoot,
-              safeWorkRoot: contextForPrompt.workspaceDirectory.safeWorkRoot || contextForPrompt.workspaceDirectory.aiWorkRoot,
+              root: configuredWorkspaceContext.root,
+              permission: configuredWorkspaceContext.permission,
+              aiWorkRoot: configuredWorkspaceContext.aiWorkRoot || configuredWorkspaceContext.safeWorkRoot,
+              safeWorkRoot: configuredWorkspaceContext.safeWorkRoot || configuredWorkspaceContext.aiWorkRoot,
             }
           : undefined,
         draftContext: contextForPrompt,
+        piSession: piSessionRuntime,
+        isCancelled: isPiRunCancelled,
         codexToolSet: undefined as CodexBridgeToolSet | undefined,
         conversationHandoff: promptHistory.slice(-20).map(item => ({
           role: (item.role === 'assistant' || item.role === 'system' ? item.role : 'user') as 'user' | 'assistant' | 'system',
           content: String(item.content || ''),
-        })),
+          })),
       };
+      assertPiRunActive();
       if (shouldUseCodexProvider) {
         chatOptions.codexToolSet = await buildCodexBridgeToolSet(
           chatOptions,
@@ -2801,8 +3923,19 @@ router.post('/chat', async (req, res) => {
       let response = shouldUseAgentToolLoop
         ? await chatWithAgentToolsLoop(chatOptions, agentSkillRuntime, workspaceContext, undefined, undefined, messageForTask)
         : await chatBridgeAdapter.chat(chatOptions);
-      
+      assertPiRunActive();
       response = await postProcessResponse(response, userId, messageForTask, contextForPrompt, apiUrl, apiKey, model, secondaryModel, promptHistory);
+      recordOptimizationTrajectory(response);
+
+      if (piContinuedMessageId && piRunIdentity) {
+        piAgentSessionManager.markApplied(
+          piRunIdentity.userId,
+          piRunIdentity.conversationId,
+          piContinuedMessageId,
+          'continued',
+        );
+        piContinuedMessageId = '';
+      }
 
       res.json({
         success: true,
@@ -2811,11 +3944,28 @@ router.post('/chat', async (req, res) => {
       });
     }
   } catch (error) {
-    logger.error('[ChatBridge Route] Chat error:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Chat request failed',
-    });
+    const cancelled = isPiRunCancelled()
+      || (error instanceof Error && /cancel|abort|interrupt/i.test(`${error.name} ${error.message}`));
+    if (cancelled) logger.info('[ChatBridge Route] Chat request cancelled by user');
+    else logger.error('[ChatBridge Route] Chat error:', error);
+    if (!res.headersSent && !res.destroyed) {
+      res.status(500).json({
+        success: false,
+        error: cancelled ? 'Chat request cancelled' : 'Chat request failed',
+      });
+    }
+  } finally {
+    if (piRunIdentity) {
+      const state = piAgentSessionManager.settleRun(
+        piRunIdentity.userId,
+        piRunIdentity.conversationId,
+        piRunIdentity.runId,
+      );
+      logger.info('[PiSession] Agent run settled:', {
+        conversationId: piRunIdentity.conversationId,
+        pending: state.pendingMessageCount,
+      });
+    }
   }
 });
 
@@ -2854,7 +4004,7 @@ function buildExplicitWorkspaceFileWritePromptBlock(context: any, sourceQuery: s
     `- 用户明确要求更新的文件：${intent.target}`,
     '- 这是工作目录文件操作，不是应用内部“分章节草稿”保存。右侧“正在写”章节仅作为内容参考，不能把写入目标改成对应章节 TXT。',
     '- 如果用户省略扩展名，必须先使用工作目录搜索解析实际文件；不要根据页面状态猜文件。',
-    '- 必须使用工作目录/Office 工具读取并更新命中的文件；二进制 Office 文件优先使用 OfficeCLI。所有修改仍遵守安全工作副本规则。',
+    '- 必须使用工作目录/Office 工具读取并更新命中的文件；二进制 Office 文件优先使用 OfficeCLI。检索同时覆盖用户配置目录和整个 ScholarHarness_AI_Workspaces 容器（当前会话优先，也检查其他会话子目录），结果同步保存到用户目录与当前会话 AI 工作目录。',
     '- 除非用户同时明确要求写入右侧章节草稿，否则本轮禁止调用 save_draft，也不得只保存 discussion.txt、results.txt 等章节文件来代替用户指定文件。',
   ].join('\n');
 }
@@ -3031,6 +4181,18 @@ export function hasVerifiedDraftSaveReceipt(value: string): boolean {
   );
 }
 
+function isLiteratureRetrievalAuthorized(context: any): boolean {
+  if (context?.queryIntent?.needsLiteratureRetrieval === true) return true;
+  const invokedSkills = Array.isArray(context?.invokedUserSkills)
+    ? context.invokedUserSkills
+    : [];
+  return invokedSkills.some((skill: any) =>
+    /(?:sentence[-_ ]?search|literature[-_ ]?(?:search|retrieval)|文献检索|逐句检索)/i.test(
+      String(skill?.trigger || skill?.name || skill?.token || '')
+    )
+  );
+}
+
 async function postProcessResponse(
   aiResponse: string,
   userId: string,
@@ -3153,8 +4315,15 @@ async function postProcessResponse(
     aiResponse += '\n\n⚠️ 未保存草稿：检测到无法解析的 save_draft 保存块。';
   }
 
-  const sentenceSearchMatch = aiResponse.match(/```[\s\S]*?🔧 调用工具：sentence_search[\s\S]*?```/);
-  if (sentenceSearchMatch) {
+  const literatureRetrievalAuthorized = isLiteratureRetrievalAuthorized(context);
+  const sentenceSearchMatch = aiResponse.match(/```[\s\S]*?🔧 调用工具：sentence_search(?!_single)\b[\s\S]*?```/);
+  if (sentenceSearchMatch && !literatureRetrievalAuthorized) {
+    logger.warn('[ChatBridge] Blocked sentence_search because verified Query Intent did not authorize literature retrieval');
+    aiResponse = aiResponse.replace(
+      sentenceSearchMatch[0],
+      '\n[系统未执行文献检索：本轮经过校验的 Query Intent 未授权文献检索。]\n'
+    );
+  } else if (sentenceSearchMatch) {
     const searchBlock = sentenceSearchMatch[0];
     const sentencesMatch = searchBlock.match(/sentences:\s*([\s\S]*?)(?=```|$)/);
     
@@ -3204,7 +4373,13 @@ async function postProcessResponse(
   }
   
   const singleSentenceMatch = aiResponse.match(/```[\s\S]*?🔧 调用工具：sentence_search_single[\s\S]*?```/);
-  if (singleSentenceMatch) {
+  if (singleSentenceMatch && !literatureRetrievalAuthorized) {
+    logger.warn('[ChatBridge] Blocked sentence_search_single because verified Query Intent did not authorize literature retrieval');
+    aiResponse = aiResponse.replace(
+      singleSentenceMatch[0],
+      '\n[系统未执行单句文献检索：本轮经过校验的 Query Intent 未授权文献检索。]\n'
+    );
+  } else if (singleSentenceMatch) {
     const searchBlock = singleSentenceMatch[0];
     const sentenceIdMatch = searchBlock.match(/sentence_id:\s*(S\d+)/);
     const queryMatch = searchBlock.match(/search_query:\s*([^\n]+)/);
@@ -3245,7 +4420,20 @@ async function postProcessResponse(
     }
   }
 
-  aiResponse = await executeWorkspaceToolBlocks(aiResponse, context.workspaceDirectory);
+  const workspaceToolBlocks = aiResponse.match(/```workspace_tool\s*[\s\S]*?```/gi) || [];
+  if (context?.queryIntent?.needsWorkspaceSearch === true) {
+    aiResponse = await executeWorkspaceToolBlocks(aiResponse, context.workspaceDirectory);
+  } else if (workspaceToolBlocks.length > 0) {
+    logger.warn(
+      `[ChatBridge] Blocked ${workspaceToolBlocks.length} workspace tool block(s) because verified Query Intent did not authorize workspace access`
+    );
+    for (const block of workspaceToolBlocks) {
+      aiResponse = aiResponse.replace(
+        block,
+        '\n[系统未执行工作目录工具：本轮经过校验的 Query Intent 未授权工作目录访问。]\n'
+      );
+    }
+  }
   aiResponse = await saveSelectedArticleChapterDraftBlocks(aiResponse, userId, userMessage, context);
   aiResponse = await syncWorkspaceDraftFilesToSessionDraft(aiResponse, userId, userMessage, context);
   aiResponse = normalizeAuthorYearCitationText(aiResponse);
@@ -3253,6 +4441,9 @@ async function postProcessResponse(
     userMessage,
     ...promptHistory.map(item => String(item?.content || '')),
     typeof context?.relevantLiterature === 'string' ? context.relevantLiterature : '',
+    typeof context?.autonomousRetrieval?.contextMarkdown === 'string'
+      ? context.autonomousRetrieval.contextMarkdown
+      : '',
   ].filter(Boolean);
   const responseWithTailnotes = appendVerifiedReferenceTailnotes(aiResponse, referenceSourceTexts);
   if (responseWithTailnotes !== aiResponse) {
@@ -4135,10 +5326,13 @@ function buildChatAttachmentsPromptBlock(context: any): string {
   const attachments = Array.isArray(context?.chatAttachments) ? context.chatAttachments : [];
   if (!attachments.length) return '';
   const imageCount = attachments.filter((attachment: any) => attachment?.type === 'image' || isChatAttachmentImage(attachment?.path || attachment?.name)).length;
+  const visionAlreadyAnalyzed = context?.multimodalIntent?.visionAnalyzed === true;
   let block = `## 本轮用户上传附件\n`;
   block += `用户本轮上传了 ${attachments.length} 个附件，其中图片/截图 ${imageCount} 个。这些附件是当前 query 的上下文，可能只是让 AI 看图、看截图、定位 UI 问题、修改代码或解释现象；不要默认把截图当成实验 Figure 分组材料。\n`;
   block += `必须针对用户本轮 query 直接作答；不得用固定的“文件结构化提取总结”替代答案。用户询问附件是否为最新版本时，要把附件修改时间与工作目录同类型候选文件的实际 mtime 比较后再下结论。\n`;
-  block += `如果用户要求基于截图做事，必须结合附件内容回答；如果当前 provider 支持视觉输入，系统已经把图片随请求发送。\n`;
+  block += visionAlreadyAnalyzed
+    ? `第一阶段视觉 AI 已经分析图片，后面提供了结构化意图。当前阶段必须使用该中间结果继续执行用户 query，不能停留在看图总结。\n`
+    : `如果用户要求基于截图做事，必须结合附件内容回答；如果当前 provider 支持视觉输入，系统已经把图片随请求发送。\n`;
   attachments.forEach((attachment: any, index: number) => {
     const name = String(attachment?.name || `attachment-${index + 1}`);
     const filePath = String(attachment?.path || '');
@@ -4321,6 +5515,12 @@ function buildEnrichedMessage(message: string, context: any, history?: Array<{ r
     enrichedPrompt += `${context.userSkillPrompt}\n\n`;
   }
 
+  if (context.writingSkill?.content) {
+    const chapter = compactPromptLine(context.writingSkill.chapter || 'writing').slice(0, 80);
+    enrichedPrompt += `## 自动识别的章节写作 Skill：${chapter}\n`;
+    enrichedPrompt += `${String(context.writingSkill.content).slice(0, 120000)}\n\n`;
+  }
+
   if (context.autoAgentSkillPrompt) {
     enrichedPrompt += `${String(context.autoAgentSkillPrompt).slice(0, 120000)}\n\n`;
   }
@@ -4333,6 +5533,23 @@ function buildEnrichedMessage(message: string, context: any, history?: Array<{ r
   const queryEnvelopePromptBlock = buildQueryEnvelopePromptBlock(context.queryEnvelope);
   if (queryEnvelopePromptBlock) {
     enrichedPrompt += `${queryEnvelopePromptBlock}\n`;
+  }
+
+  const queryIntentPromptBlock = buildQueryIntentPromptBlock(context.queryIntent);
+  if (queryIntentPromptBlock) {
+    enrichedPrompt += `${queryIntentPromptBlock}\n`;
+  }
+
+  if (context.piSession?.enabled) {
+    const delivery = context.piSession.delivery === 'follow_up' ? 'follow_up' : 'steer';
+    enrichedPrompt += `## Pi 会话执行状态\n`;
+    enrichedPrompt += `- sessionId: ${compactPromptLine(context.piSession.sessionId || context.queryEnvelope?.sessionId || '').slice(0, 180)}\n`;
+    enrichedPrompt += `- delivery: ${delivery}\n`;
+    enrichedPrompt += `- steeringMode: one-at-a-time\n`;
+    enrichedPrompt += `- followUpMode: one-at-a-time\n`;
+    enrichedPrompt += delivery === 'follow_up'
+      ? `- 本轮是上一 Agent 完全结束后的后续消息。页面已重新读取讨论式写作进度、章节 TXT、勾选章节和当前工作目录；必须以本轮动态上下文为准。\n\n`
+      : `- 本轮是当前会话的新任务或优先转向。运行期间如收到 PI_STEERING_MESSAGE，下一轮模型调用优先采用最新转向。\n\n`;
   }
 
   const explicitFileWriteIntent = getExplicitWorkspaceFileWriteIntent(context, message);
@@ -4349,6 +5566,13 @@ function buildEnrichedMessage(message: string, context: any, history?: Array<{ r
   const chatAttachmentsPromptBlock = buildChatAttachmentsPromptBlock(context);
   if (chatAttachmentsPromptBlock) {
     enrichedPrompt += chatAttachmentsPromptBlock;
+  }
+
+  const multimodalIntentPromptBlock = buildMultimodalIntentPromptBlock(
+    normalizeMultimodalIntent(context.multimodalIntent)
+  );
+  if (multimodalIntentPromptBlock) {
+    enrichedPrompt += `${multimodalIntentPromptBlock}\n`;
   }
 
   if (context.targetVenuePeerReview?.enabled) {
@@ -4462,9 +5686,10 @@ function buildEnrichedMessage(message: string, context: any, history?: Array<{ r
       enrichedPrompt += `${context.workspaceDirectory.queryHintsMarkdown}\n\n`;
     }
     enrichedPrompt += `工作目录上下文说明：\n`;
-    enrichedPrompt += `- 上面只提供 Manifest 和本轮预检命中，不代表完整目录；文件结论必须通过当前 provider 已注册的目录工具确认。\n`;
+    enrichedPrompt += `- 上面只提供轻量 Manifest 和本轮预检命中，不代表完整目录树；根目录授权覆盖全部层级，文件结论必须通过当前 provider 的递归目录工具确认，不能只检查根目录直接文件。\n`;
     if (context.workspaceDirectory.aiWorkRoot || context.workspaceDirectory.safeWorkRoot) {
       enrichedPrompt += `- AI 安全工作文件夹：${context.workspaceDirectory.aiWorkRoot || context.workspaceDirectory.safeWorkRoot}。\n`;
+      enrichedPrompt += `- file_search、grep_files 和递归 list_dir 必须覆盖用户配置目录、其全部后代目录及整个 ScholarHarness_AI_Workspaces 容器；当前会话 AI 工作目录优先，但不能漏掉其他会话子目录；生成/更新文件由后端同步保存到用户目录与当前会话 AI 工作目录。\n`;
     }
     enrichedPrompt += `- 当前权限：${context.workspaceDirectory.permission}；工作目录文件和应用内部章节草稿是两个独立存储。\n\n`;
   }
@@ -4588,6 +5813,25 @@ function buildEnrichedMessage(message: string, context: any, history?: Array<{ r
       enrichedPrompt += `${JSON.stringify(context.autoResearch, null, 2)}\n`;
       enrichedPrompt += '```\n\n';
     }
+  }
+
+  // 11.5 AI 自主检索结果
+  if (context.autonomousRetrieval?.available && context.autonomousRetrieval.contextMarkdown) {
+    const autonomousRetrievalText = String(context.autonomousRetrieval.contextMarkdown).slice(0, 100000);
+    enrichedPrompt += `## AI 自主检索证据（本轮自动生成检索词并执行）\n`;
+    enrichedPrompt += `检索库：${Array.isArray(context.autonomousRetrieval.librarySources) ? context.autonomousRetrieval.librarySources.join(' + ') : '本地证据库'}\n`;
+    enrichedPrompt += `检索点：${Array.isArray(context.autonomousRetrieval.points) ? context.autonomousRetrieval.points.length : 0}；去重结果：${Number(context.autonomousRetrieval.uniqueCount || 0)}\n\n`;
+    if (Array.isArray(context.autonomousRetrieval.sourceErrors) && context.autonomousRetrieval.sourceErrors.length > 0) {
+      enrichedPrompt += `未完成的检索库：${context.autonomousRetrieval.sourceErrors.map((item: any) => `${item.source}: ${item.error}`).join('；')}\n\n`;
+    }
+    enrichedPrompt += `${autonomousRetrievalText}\n\n`;
+    enrichedPrompt += `使用规则：这些是系统已实际检索到的本轮证据。优先用它们回答；只引用其中明确给出的作者、年份、题名和来源，不得补猜缺失字段。无需再让用户点击齿轮或确认检索。\n\n`;
+    if (context.autonomousRetrieval.citationRequiredWriting === true) {
+      enrichedPrompt += `本轮属于引用密集章节写作。必须先把每个关键论断与上述检索结果逐项匹配，只保留确实支持该论断的文献；无法匹配的论断应改写、弱化或明确证据不足。禁止使用本轮检索结果之外的虚构引用。\n\n`;
+    }
+  } else if (context.autonomousRetrieval?.status === 'no-library') {
+    enrichedPrompt += `## AI 自主检索状态\n`;
+    enrichedPrompt += `AI 已判断本轮需要文献检索并生成检索词，但当前没有可用的本地 Embedding 文献库或 PDF Wiki。不得假装已经检索到文献；可以继续处理不依赖文献的部分，并明确证据缺口。\n\n`;
   }
 
   // 12. 联网搜索结果

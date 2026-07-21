@@ -33,6 +33,7 @@
 
   function closeBibliometricsDialog() {
     stopPaperDraftProgress();
+    closeBibliometricsJournalStyleDialog();
     var modal = document.getElementById('bibliometricsModal');
     if (modal) modal.remove();
   }
@@ -43,17 +44,17 @@
       window.updateAcademicWorkflowOverviewReturn(options);
     }
     var existing = document.getElementById('bibliometricsModal');
-    if (existing) existing.remove();
+    if (existing) closeBibliometricsDialog();
+    if (typeof prepareStandaloneWorkspaceSurface === 'function') {
+      prepareStandaloneWorkspaceSurface('bibliometricsModal');
+    }
 
     var modal = document.createElement('div');
     modal.id = 'bibliometricsModal';
-    modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.62);display:flex;align-items:center;justify-content:center;z-index:10030;padding:20px;';
-    modal.classList.add('custom-fullscreen-overlay');
-    modal.onclick = function(event) {
-      if (event.target === modal) closeBibliometricsDialog();
-    };
+    modal.className = 'app-secondary-overlay custom-fullscreen-overlay';
+    modal.style.cssText = 'position:fixed;top:var(--app-chrome-height);left:var(--left-sidebar-width);right:0;bottom:0;background:var(--bg-primary);display:flex;align-items:stretch;justify-content:stretch;z-index:20000;padding:0;';
     modal.innerHTML =
-      '<div id="bibliometricsPanel" class="custom-fullscreen-panel" style="width:min(1480px,98vw);height:min(900px,92vh);background:var(--bg-primary);border:1px solid var(--border-color);border-radius:12px;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 24px 70px rgba(0,0,0,0.35);" onclick="event.stopPropagation()">' +
+      '<div id="bibliometricsPanel" class="custom-fullscreen-panel" style="width:100%;height:100%;background:var(--bg-primary);border:0;border-radius:0;display:flex;flex-direction:column;overflow:hidden;box-shadow:none;">' +
         '<div style="display:flex;align-items:center;justify-content:space-between;gap:14px;padding:16px 18px;border-bottom:1px solid var(--border-color);">' +
           '<div style="min-width:0;">' +
             '<div style="font-size:18px;font-weight:700;color:var(--text-primary);">文献计量分析</div>' +
@@ -1664,6 +1665,7 @@
     if (existing) existing.remove();
     var modal = document.createElement('div');
     modal.id = 'bibliometricsJournalStyleModal';
+    modal.className = 'app-secondary-overlay app-tertiary-overlay';
     modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.66);display:flex;align-items:center;justify-content:center;z-index:10050;padding:20px;';
     modal.onclick = function(event) {
       if (event.target === modal) closeBibliometricsJournalStyleDialog();

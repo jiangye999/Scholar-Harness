@@ -1,0 +1,28 @@
+{
+  "name": "scholar-harness-meta-analysis",
+  "version": "1.1.0",
+  "description": "Scholar Harness Meta-analysis and sentence-level PDF Wiki to Obsidian workflows.",
+  "author": {
+    "name": "Scholar Harness",
+    "email": "sjs@cau.edu.cn"
+  },
+  "homepage": "https://scholarharness.com/",
+  "keywords": ["meta-analysis", "systematic-review", "pdf-wiki", "obsidian", "research"],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "Scholar Harness Meta + PDF Wiki",
+    "shortDescription": "Meta 分析全流程，以及 PDF Wiki 到 Obsidian Vault 的一键同步。",
+    "longDescription": "连接本机 Scholar Harness，完成 PDF 导入与提取、Meta 编码和分析、R/metafor 出图与结果导出；同时把同一份句子级 PDF Wiki 证据库生成并同步为 Obsidian 兼容 Markdown Vault，支持状态检查、检索和独立导出。",
+    "developerName": "Scholar Harness",
+    "category": "Productivity",
+    "capabilities": ["Interactive", "Read", "Write"],
+    "websiteURL": "https://scholarharness.com/",
+    "defaultPrompt": [
+      "检查我的 Meta 数据库并告诉我下一步。",
+      "为选中的文献制定并运行 Meta 分析方案。",
+      "把当前 PDF Wiki 一键同步为 Obsidian Vault。"
+    ],
+    "brandColor": "#0F766E"
+  }
+}

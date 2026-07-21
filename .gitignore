@@ -127,3 +127,7 @@ agents/*.js
 agents/*.js.map
 agents/*.d.ts
 agents/*.d.ts.map
+
+# Codex plugin runtime must ship with the repository; keep other dist folders ignored.
+!plugins/scholar-harness-meta-analysis/dist/
+!plugins/scholar-harness-meta-analysis/dist/server.js

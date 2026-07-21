@@ -7,6 +7,8 @@ import * as os from 'os';
 import * as crypto from 'crypto';
 import { spawn, ChildProcess } from 'child_process';
 
+import { RendererRecoveryPolicy } from './renderer-recovery-policy';
+
 let mainWindow: BrowserWindow | null = null;
 let loginWindow: BrowserWindow | null = null;
 let activationWindow: BrowserWindow | null = null;
@@ -14,11 +16,23 @@ let userInfoWindow: BrowserWindow | null = null;
 let serverProcess: ChildProcess | null = null;
 let serverStartPromise: Promise<void> | null = null;
 let windowTransitionInProgress = false;
+let appIsQuitting = false;
 const PORT = 18789;
+const MAIN_WINDOW_URL = `http://127.0.0.1:${PORT}`;
 const AUTH_VALIDATION_TIMEOUT_MS = 15000;
 const AUTH_VALIDATION_RETRIES = 3;
 const UPDATE_MANIFEST_URL = process.env.SCHOLAR_HARNESS_UPDATE_MANIFEST_URL || 'https://scholarharness.com/downloads/latest.json';
 const UPDATE_CHECK_TIMEOUT_MS = 10000;
+const RENDERER_UNRESPONSIVE_GRACE_MS = 15_000;
+const RENDERER_RECOVERY_RETRY_DELAY_MS = 1_500;
+const RENDERER_RECOVERY_STABLE_MS = 30_000;
+const rendererRecoveryPolicy = new RendererRecoveryPolicy(3, 120_000);
+
+let rendererRecoveryInProgress = false;
+let rendererRecoveryPromptOpen = false;
+let rendererRecoveryTimer: NodeJS.Timeout | null = null;
+let rendererUnresponsiveTimer: NodeJS.Timeout | null = null;
+let rendererStableTimer: NodeJS.Timeout | null = null;
 
 interface AppUpdateManifest {
   version?: string;
@@ -486,10 +500,17 @@ async function checkServerHealth(expectedDataDir?: string): Promise<boolean> {
           return;
         }
         try {
-          const parsed = JSON.parse(body) as { dataDir?: unknown };
+          const parsed = JSON.parse(body) as {
+            dataDir?: unknown;
+            capabilities?: { mcpPluginMarketplace?: unknown; mcpPluginMarketplaceVersion?: unknown };
+          };
           const actualDataDir = path.resolve(String(parsed.dataDir || ''));
           const expected = path.resolve(expectedDataDir);
-          resolve(actualDataDir.toLowerCase() === expected.toLowerCase());
+          resolve(
+            actualDataDir.toLowerCase() === expected.toLowerCase()
+            && parsed.capabilities?.mcpPluginMarketplace === true
+            && parsed.capabilities?.mcpPluginMarketplaceVersion === 3
+          );
         } catch {
           resolve(false);
         }
@@ -786,6 +807,236 @@ async function ensureServerRunning(): Promise<void> {
   await serverStartPromise;
 }
 
+function clearRendererRecoveryTimer(): void {
+  if (!rendererRecoveryTimer) return;
+  clearTimeout(rendererRecoveryTimer);
+  rendererRecoveryTimer = null;
+}
+
+function clearRendererUnresponsiveTimer(): void {
+  if (!rendererUnresponsiveTimer) return;
+  clearTimeout(rendererUnresponsiveTimer);
+  rendererUnresponsiveTimer = null;
+}
+
+function clearRendererStableTimer(): void {
+  if (!rendererStableTimer) return;
+  clearTimeout(rendererStableTimer);
+  rendererStableTimer = null;
+}
+
+function clearRendererRecoveryTimers(): void {
+  clearRendererRecoveryTimer();
+  clearRendererUnresponsiveTimer();
+  clearRendererStableTimer();
+}
+
+function formatRecoveryContext(context: Record<string, unknown>): string {
+  return Object.entries(context)
+    .map(([key, value]) => {
+      const normalized = String(value ?? '')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .slice(0, 240);
+      return `${key}=${normalized || '-'}`;
+    })
+    .join(' ');
+}
+
+function captureElectronProcessMetrics(): string {
+  try {
+    const metrics = app.getAppMetrics()
+      .filter(metric => metric.type === 'Browser' || metric.type === 'Tab' || metric.type === 'GPU')
+      .map(metric => {
+        const privateMb = typeof metric.memory.privateBytes === 'number'
+          ? Math.round(metric.memory.privateBytes / 1024)
+          : -1;
+        const workingSetMb = Math.round(metric.memory.workingSetSize / 1024);
+        return `${metric.type}(pid=${metric.pid},privateMB=${privateMb},workingSetMB=${workingSetMb})`;
+      });
+    return metrics.length ? metrics.join(';') : 'unavailable';
+  } catch (error) {
+    return `unavailable:${(error as Error).message}`;
+  }
+}
+
+function markMainRendererStable(window: BrowserWindow): void {
+  clearRendererStableTimer();
+  rendererStableTimer = setTimeout(() => {
+    rendererStableTimer = null;
+    if (appIsQuitting || mainWindow !== window || window.isDestroyed()) return;
+
+    const previousAttempts = rendererRecoveryPolicy.getAttemptCount();
+    rendererRecoveryPolicy.reset();
+    if (previousAttempts > 0) {
+      startupLog(`[RendererRecovery] Renderer stable for ${RENDERER_RECOVERY_STABLE_MS}ms; recovery counter reset`);
+    }
+  }, RENDERER_RECOVERY_STABLE_MS);
+}
+
+async function promptRendererRecoveryExhausted(
+  trigger: string,
+  context: Record<string, unknown>,
+  retryAfterMs: number,
+): Promise<void> {
+  if (rendererRecoveryPromptOpen || appIsQuitting) return;
+  rendererRecoveryPromptOpen = true;
+
+  const diagnostic = formatRecoveryContext(context);
+  const logPath = path.join(getDataDir(), 'startup.log');
+  startupLog(
+    `[RendererRecovery] Automatic recovery circuit opened trigger=${trigger} `
+    + `retryAfterMs=${retryAfterMs} ${diagnostic}`,
+  );
+
+  try {
+    const options: Electron.MessageBoxOptions = {
+      type: 'error',
+      title: '界面连续恢复失败',
+      message: 'Scholar Harness 的界面进程连续发生异常，已停止自动重载以避免循环。',
+      detail: `后台服务和任务可能仍在运行。建议重新启动软件。\n\n诊断日志：${logPath}`,
+      buttons: ['重新启动软件', '退出软件'],
+      defaultId: 0,
+      cancelId: 1,
+      noLink: true,
+    };
+    const activeWindow = mainWindow && !mainWindow.isDestroyed() ? mainWindow : null;
+    const result = activeWindow
+      ? await dialog.showMessageBox(activeWindow, options)
+      : await dialog.showMessageBox(options);
+
+    if (result.response === 0) {
+      startupLog('[RendererRecovery] User requested application relaunch after recovery circuit opened');
+      app.relaunch();
+    }
+    app.quit();
+  } finally {
+    rendererRecoveryPromptOpen = false;
+  }
+}
+
+async function recoverMainWindowRenderer(
+  window: BrowserWindow,
+  trigger: string,
+  context: Record<string, unknown>,
+): Promise<void> {
+  if (
+    appIsQuitting
+    || rendererRecoveryInProgress
+    || mainWindow !== window
+    || window.isDestroyed()
+  ) {
+    return;
+  }
+
+  const decision = rendererRecoveryPolicy.tryAcquire();
+  if (!decision.allowed) {
+    await promptRendererRecoveryExhausted(trigger, context, decision.retryAfterMs);
+    return;
+  }
+
+  rendererRecoveryInProgress = true;
+  clearRendererRecoveryTimer();
+  clearRendererUnresponsiveTimer();
+  clearRendererStableTimer();
+
+  const diagnostic = formatRecoveryContext(context);
+  startupLog(
+    `[RendererRecovery] Starting automatic recovery attempt=${decision.attempt}/${decision.maxAttempts} `
+    + `trigger=${trigger} ${diagnostic} metrics=${captureElectronProcessMetrics()}`,
+  );
+
+  let recoveryError: Error | null = null;
+  try {
+    await ensureServerRunning();
+    if (appIsQuitting || mainWindow !== window || window.isDestroyed()) return;
+
+    await window.loadURL(MAIN_WINDOW_URL);
+    if (window.isMinimized()) window.restore();
+    window.show();
+    window.focus();
+    startupLog(
+      `[RendererRecovery] Automatic recovery loaded main page `
+      + `attempt=${decision.attempt}/${decision.maxAttempts}`,
+    );
+  } catch (error) {
+    recoveryError = error as Error;
+    startupLog(
+      `[RendererRecovery] Automatic recovery failed attempt=${decision.attempt}/${decision.maxAttempts} `
+      + `error=${recoveryError.message}`,
+    );
+  } finally {
+    rendererRecoveryInProgress = false;
+  }
+
+  if (
+    recoveryError
+    && !appIsQuitting
+    && mainWindow === window
+    && !window.isDestroyed()
+  ) {
+    scheduleMainWindowRendererRecovery(
+      'recovery-retry',
+      { previousTrigger: trigger, error: recoveryError.message },
+      RENDERER_RECOVERY_RETRY_DELAY_MS,
+    );
+  }
+}
+
+function scheduleMainWindowRendererRecovery(
+  trigger: string,
+  context: Record<string, unknown>,
+  delayMs: number,
+): void {
+  if (appIsQuitting || rendererRecoveryInProgress) return;
+  const expectedWindow = mainWindow;
+  if (!expectedWindow || expectedWindow.isDestroyed()) return;
+
+  clearRendererRecoveryTimer();
+  rendererRecoveryTimer = setTimeout(() => {
+    rendererRecoveryTimer = null;
+    if (
+      appIsQuitting
+      || mainWindow !== expectedWindow
+      || expectedWindow.isDestroyed()
+    ) {
+      return;
+    }
+    void recoverMainWindowRenderer(expectedWindow, trigger, context);
+  }, Math.max(0, delayMs));
+}
+
+function installMainWindowResilience(window: BrowserWindow): void {
+  window.on('unresponsive', () => {
+    if (appIsQuitting || mainWindow !== window || rendererRecoveryInProgress) return;
+    startupLog(
+      `[RendererRecovery] Main window became unresponsive; waiting ${RENDERER_UNRESPONSIVE_GRACE_MS}ms `
+      + `before recovery metrics=${captureElectronProcessMetrics()}`,
+    );
+    clearRendererUnresponsiveTimer();
+    rendererUnresponsiveTimer = setTimeout(() => {
+      rendererUnresponsiveTimer = null;
+      if (appIsQuitting || mainWindow !== window || window.isDestroyed()) return;
+      scheduleMainWindowRendererRecovery(
+        'unresponsive-timeout',
+        { graceMs: RENDERER_UNRESPONSIVE_GRACE_MS, url: window.webContents.getURL() || MAIN_WINDOW_URL },
+        0,
+      );
+    }, RENDERER_UNRESPONSIVE_GRACE_MS);
+  });
+
+  window.on('responsive', () => {
+    if (!rendererUnresponsiveTimer) return;
+    clearRendererUnresponsiveTimer();
+    startupLog('[RendererRecovery] Main window became responsive before the recovery timeout');
+  });
+
+  window.webContents.on('did-finish-load', () => {
+    if (mainWindow !== window || window.isDestroyed()) return;
+    markMainRendererStable(window);
+  });
+}
+
 function createWindow(): void {
   if (mainWindow && !mainWindow.isDestroyed()) {
     startupLog('Main window already exists, focusing existing window');
@@ -820,6 +1071,8 @@ function createWindow(): void {
     },
     show: false,
   });
+  const createdMainWindow = mainWindow;
+  installMainWindowResilience(createdMainWindow);
 
   mainWindow.setAutoHideMenuBar(true);
   mainWindow.setMenuBarVisibility(false);
@@ -841,7 +1094,7 @@ function createWindow(): void {
     console.warn('[Electron] Failed to clear cache:', err);
   });
   
-  mainWindow.loadURL(`http://127.0.0.1:${PORT}`).catch((err) => {
+  mainWindow.loadURL(MAIN_WINDOW_URL).catch((err) => {
     console.error('[Electron] Failed to load page:', err);
     dialog.showErrorBox('加载失败', `无法加载应用页面：${err.message}\n\n请检查服务器是否正常运行。`);
     app.quit();
@@ -860,9 +1113,26 @@ function createWindow(): void {
   }, 5000);
   
   // 页面加载失败时的处理
-  mainWindow.webContents.on('did-fail-load', (event, errorCode, errorDescription) => {
-    console.error('[Electron] Page load failed:', errorCode, errorDescription);
-    if (errorCode !== -3) { // 忽略中断错误
+  mainWindow.webContents.on('did-fail-load', (
+    event,
+    errorCode,
+    errorDescription,
+    validatedURL,
+    isMainFrame,
+  ) => {
+    console.error('[Electron] Page load failed:', errorCode, errorDescription, validatedURL, isMainFrame);
+    if (!isMainFrame) {
+      startupLog(
+        `[RendererRecovery] Subframe load failed code=${errorCode} `
+        + `description=${errorDescription} url=${validatedURL}`,
+      );
+      return;
+    }
+    startupLog(
+      `[RendererRecovery] Main frame load failed code=${errorCode} `
+      + `description=${errorDescription} url=${validatedURL}`,
+    );
+    if (errorCode !== -3 && !rendererRecoveryInProgress) { // 忽略中断错误和自动恢复中的失败
       dialog.showErrorBox('加载失败', `页面加载失败 (${errorCode}): ${errorDescription}`);
     }
   });
@@ -958,9 +1228,69 @@ function createWindow(): void {
   Menu.setApplicationMenu(null);
   
   mainWindow.on('closed', () => {
-    mainWindow = null;
+    if (mainWindow === createdMainWindow) {
+      mainWindow = null;
+      clearRendererRecoveryTimers();
+      rendererRecoveryInProgress = false;
+    }
   });
 }
+
+app.on('render-process-gone', (_event, webContents, details) => {
+  const isMainRenderer = Boolean(
+    mainWindow
+    && !mainWindow.isDestroyed()
+    && mainWindow.webContents === webContents,
+  );
+  const context = {
+    reason: details.reason,
+    exitCode: details.exitCode,
+    rendererPid: (() => {
+      try {
+        return webContents.getOSProcessId();
+      } catch {
+        return -1;
+      }
+    })(),
+    url: (() => {
+      try {
+        return webContents.getURL() || MAIN_WINDOW_URL;
+      } catch {
+        return MAIN_WINDOW_URL;
+      }
+    })(),
+  };
+  startupLog(
+    `[RendererRecovery] Renderer process gone main=${isMainRenderer} `
+    + `${formatRecoveryContext(context)} metrics=${captureElectronProcessMetrics()}`,
+  );
+
+  if (
+    isMainRenderer
+    && details.reason !== 'clean-exit'
+    && !appIsQuitting
+  ) {
+    scheduleMainWindowRendererRecovery('render-process-gone', context, 350);
+  }
+});
+
+app.on('child-process-gone', (_event, details) => {
+  if (details.reason === 'clean-exit' || appIsQuitting) return;
+  const context = {
+    type: details.type,
+    reason: details.reason,
+    exitCode: details.exitCode,
+    serviceName: details.serviceName || details.name || '',
+  };
+  startupLog(
+    `[RendererRecovery] Electron child process gone `
+    + `${formatRecoveryContext(context)} metrics=${captureElectronProcessMetrics()}`,
+  );
+
+  if (details.type === 'GPU') {
+    scheduleMainWindowRendererRecovery('gpu-process-gone', context, 750);
+  }
+});
 
 app.whenReady().then(async () => {
   startupLog('Application ready, starting validation...');
@@ -1178,6 +1508,8 @@ app.on('window-all-closed', () => {
 });
 
 app.on('before-quit', () => {
+  appIsQuitting = true;
+  clearRendererRecoveryTimers();
   console.log('[Electron] before-quit: killing child processes...');
   if (serverProcess) {
     try {

@@ -29,6 +29,13 @@ import { REFERENCE_RELEVANCE_WRITING_RULES } from '../config/reference-relevance
 import { SessionStore, sanitizeDraftChapterName } from '../storage/session-store';
 import type { HybridRetrievalEngine } from '../literature/retrieval';
 import {
+  buildQueryIntentPromptBlock,
+  classifyQueryIntentFallback,
+  parseQueryIntentResponse,
+  type QueryIntent,
+  type QueryIntentHistoryMessage,
+} from '../orchestrator/query-intent';
+import {
   buildBilingualRetrievalQueries,
   formatRetrievalQueryVariants,
 } from '../literature/retrieval/semantic-query';
@@ -413,12 +420,28 @@ export async function processUnifiedChatMessage(
     history?: ConversationHistoryItem[];
     conversationId?: string;
     skills?: string[];
+    requestContext?: string;
+    queryIntent?: QueryIntent;
   }
 ): Promise<ChatProcessorResult> {
   const { apiUrl, apiKey, model, secondaryModel, webSearchKey, uploadDir, memoryDir, skillDir } = config;
   const skills = options?.skills || [];
   const conversationId = options?.conversationId || '';
   const history = options?.history || [];
+  const queryIntentHistory = history
+    .filter(item => item && typeof item.content === 'string')
+    .map((item): QueryIntentHistoryMessage => ({
+      role: item.role === 'assistant' || item.role === 'system' ? item.role : 'user',
+      content: item.content,
+    }))
+    .slice(-20);
+  const queryIntentInput = {
+    message: userMessage,
+    history: queryIntentHistory,
+  };
+  const queryIntent = options?.queryIntent
+    ? parseQueryIntentResponse(JSON.stringify(options.queryIntent), queryIntentInput)
+    : classifyQueryIntentFallback(queryIntentInput);
   
   // 小牛马：每次都发送完整提示词（保持上下文）
   // 判断是否为新对话仅用于日志
@@ -468,6 +491,11 @@ export async function processUnifiedChatMessage(
       }
     }
   }
+  memoryContext = [
+    buildQueryIntentPromptBlock(queryIntent),
+    String(options?.requestContext || '').trim(),
+    memoryContext,
+  ].filter(Boolean).join('\n\n');
   
   // 1.1 加载对话摘要（conversations 数组）
   if (userMemory.conversations && userMemory.conversations.length > 0) {
@@ -557,68 +585,28 @@ export async function processUnifiedChatMessage(
     }
   }
   
-  // 4. AI 决策：判断任务类型
-  const decisionPrompt = `你是一个任务分析助手。
-
-## 用户问题
-"${userMessage}"
-
-## 你的任务
-分析用户的问题，做出决策：
-1. 是否需要联网搜索最新信息？
-2. 用户想要做什么？（回答问题/写讨论/写引言/逐句检索/其他）
-
-## 决策规则
-- 如果问题涉及最新研究成果（2024-2026）、实时数据，**必须联网搜索**
-- 如果用户要求"逐句检索"、"为这句话找文献"、"检索支撑文献"等，**task_type = "逐句检索"**
-- 如果用户要求写某个章节（引言/讨论/方法等），**task_type = "写XX"**
-- 普通问答，**task_type = "回答问题"**
-
-## 输出格式
-返回以下 JSON 格式：
-{
-  "need_web_search": true/false,
-  "web_search_query": "联网搜索关键词",
-  "task_type": "回答问题/写讨论/写引言/逐句检索/其他",
-  "reason": "判断理由"
-}
-
-只返回 JSON，不要有其他文字。`;
-
-  let needWebSearch = false;
-  let webSearchQuery = '';
+  // 4. 使用统一、已校验的 Query Intent 决定联网与任务类型。
+  // 路由层只读取当前用户 query；历史、草稿和 Skill 作为独立上下文，
+  // 不再交给另一个宽松的 AI 分类器二次猜测。
+  const needWebSearch = queryIntent.needsWebSearch;
+  const webSearchQuery = queryIntent.resolvedQuery || userMessage;
   let taskType = '回答问题';
-  
-  try {
-    const decisionText = await callChatCompletion(
-      {
-        apiUrl,
-        apiKey,
-        label: 'UnifiedChatDecision',
-        defaultModel: model,
-      },
-      {
-        model,
-        messages: [
-          { role: 'system', content: decisionPrompt },
-          { role: 'user', content: buildAnchoredUserMessage(userMessage, { source: 'unified-chat-decision' }) }
-        ],
-        temperature: 0.3,
-        maxTokens: 32000,
-      }
-    );
-
-    const jsonMatch = decisionText.match(/\{[\s\S]*\}/);
-    if (jsonMatch) {
-      const decision = JSON.parse(jsonMatch[0]);
-      needWebSearch = decision.need_web_search === true;
-      webSearchQuery = decision.web_search_query || userMessage;
-      taskType = decision.task_type || '回答问题';
-      logger.info(`[UnifiedChat] Decision: web=${needWebSearch}, task=${taskType}`);
+  if (queryIntent.primaryIntent === 'literature_retrieval') {
+    taskType = '逐句检索';
+  } else if (queryIntent.primaryIntent === 'academic_writing') {
+    if (/(?:讨论)|\bdiscussion\b/i.test(userMessage)) {
+      taskType = '写讨论';
+    } else if (/(?:引言|绪论)|\b(?:introduction|intro)\b/i.test(userMessage)) {
+      taskType = '写引言';
+    } else {
+      taskType = '写作';
     }
-  } catch (e) {
-    logger.warn('[UnifiedChat] Decision API failed:', e);
+  } else if (queryIntent.needsToolExecution) {
+    taskType = '其他';
   }
+  logger.info(
+    `[UnifiedChat] Verified decision: primary=${queryIntent.primaryIntent}, web=${needWebSearch}, literature=${queryIntent.needsLiteratureRetrieval}, task=${taskType}`
+  );
   
   // 5. 检测章节类型已移除
   
@@ -657,7 +645,7 @@ export async function processUnifiedChatMessage(
       logger.error('[UnifiedChat] Web search error:', e);
     }
   } else if (needWebSearch && !webSearchKey) {
-    logger.warn('[UnifiedChat] AI wanted to search but no API key configured');
+    logger.warn('[UnifiedChat] Explicit web search requested but no API key configured');
   }
   
   // 8. 任务提示
@@ -806,6 +794,7 @@ sentences:
       apiUrl,
       apiKey,
       model: secondaryModel || model,
+      allowLiteratureRetrieval: queryIntent.needsLiteratureRetrieval,
     });
     
     // 15. 更新对话历史
@@ -1291,7 +1280,12 @@ async function processToolCalls(
   response: string,
   userId: string,
   literaturePapers: LitPaper[],
-  llmConfig: { apiUrl: string; apiKey: string; model: string }
+  llmConfig: {
+    apiUrl: string;
+    apiKey: string;
+    model: string;
+    allowLiteratureRetrieval: boolean;
+  }
 ): Promise<string> {
   // 处理记忆保存（新增）
   const memorySaveMatch = response.match(/```[\s\S]*?🔧 调用工具：save_memory[\s\S]*?```/);
@@ -1395,8 +1389,14 @@ async function processToolCalls(
   }
   
   // 处理句子检索
-  const sentenceSearchMatch = response.match(/```[\s\S]*?🔧 调用工具：sentence_search[\s\S]*?```/);
-  if (sentenceSearchMatch && retrievalEngine) {
+  const sentenceSearchMatch = response.match(/```[\s\S]*?🔧 调用工具：sentence_search(?!_single)\b[\s\S]*?```/);
+  if (sentenceSearchMatch && !llmConfig.allowLiteratureRetrieval) {
+    logger.warn('[UnifiedChat] Blocked sentence_search because verified Query Intent did not authorize literature retrieval');
+    response = response.replace(
+      sentenceSearchMatch[0],
+      '\n[系统未执行文献检索：本轮经过校验的 Query Intent 未授权文献检索。]\n'
+    );
+  } else if (sentenceSearchMatch && retrievalEngine) {
     const searchBlock = sentenceSearchMatch[0];
     const sentencesMatch = searchBlock.match(/sentences:\s*([\s\S]*?)(?=```|$)/);
     

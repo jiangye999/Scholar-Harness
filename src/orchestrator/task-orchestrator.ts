@@ -6,6 +6,11 @@
 import { logger } from '../utils/logger';
 import { anchorPromptWithCurrentRequest, getPromptAnchorDiagnostics } from '../utils/prompt-request-anchor';
 import { ChatBridgeAdapter } from '../bridge/chat-bridge/chat-bridge';
+import {
+  classifyQueryIntentFallback,
+  type QueryIntent,
+  type QueryIntentHistoryMessage,
+} from './query-intent';
 
 export enum ProcessingMode {
   CHATBRIDGE_ONLY = 'chatbridge_only',      // 仅使用 ChatBridge
@@ -23,6 +28,12 @@ export interface TaskAnalysis {
   complexity: number;                   // 0-1
   estimatedTime: number;                // 预估秒数
   reason: string;
+  queryIntent: QueryIntent;
+}
+
+interface TaskHistoryItem {
+  role?: string;
+  content?: string;
 }
 
 export interface HybridContext {
@@ -48,78 +59,84 @@ export class ScholarClawOrchestrator {
   /**
    * 分析用户消息，决定处理模式
    */
-  async analyzeTask(message: string, history: any[]): Promise<TaskAnalysis> {
-    const lowerMsg = message.toLowerCase();
-    
-    // 关键词匹配快速决策
-    const hasSearchKeywords = /搜索|查一下|最新|新闻|查询|search|find/i.test(message);
-    const hasWritingKeywords = /写|撰写|写作|write|draft|compose/i.test(message);
-    const hasAnalysisKeywords = /分析|深度|推理|复杂|analyze|deep|complex/i.test(message);
-    const hasQuickKeywords = /你好|谢谢|bye|简单|quick|hello/i.test(message);
-    
-    // 基于历史对话长度判断复杂度
-    const conversationDepth = history.length;
-    const avgMsgLength = history.reduce((sum, h) => sum + (h.content?.length || 0), 0) / Math.max(history.length, 1);
-    
-    // 计算复杂度分数
-    let complexity = 0.5;
-    if (hasAnalysisKeywords) complexity += 0.3;
-    if (hasWritingKeywords) complexity += 0.2;
-    if (conversationDepth > 10) complexity += 0.1;
-    if (avgMsgLength > 200) complexity += 0.1;
-    
-    complexity = Math.min(complexity, 1.0);
-    
-    // 决策逻辑
-    if (complexity > 0.8 || hasSearchKeywords) {
-      return {
-        mode: ProcessingMode.HYBRID,
-        requiresWebSearch: hasSearchKeywords,
-        requiresLiterature: hasWritingKeywords,
-        requiresMemory: true,
-        requiresCreativity: hasWritingKeywords,
-        complexity,
-        estimatedTime: 30,
-        reason: '复杂任务，需要 API 准备上下文 + ChatBridge 深度处理'
-      };
-    }
-    
-    if (hasQuickKeywords && complexity < 0.4) {
-      return {
-        mode: ProcessingMode.API_ONLY,
-        requiresWebSearch: false,
-        requiresLiterature: false,
-        requiresMemory: false,
-        requiresCreativity: false,
-        complexity,
-        estimatedTime: 3,
-        reason: '简单问候，API 快速响应'
-      };
-    }
-    
-    if (hasWritingKeywords && complexity > 0.6) {
-      return {
-        mode: ProcessingMode.CHATBRIDGE_ONLY,
-        requiresWebSearch: false,
-        requiresLiterature: true,
-        requiresMemory: true,
-        requiresCreativity: true,
-        complexity,
-        estimatedTime: 25,
-        reason: '创意写作任务，使用 ChatBridge 高质量模型'
-      };
-    }
-    
-    // 默认使用 HYBRID
-    return {
-      mode: ProcessingMode.HYBRID,
-      requiresWebSearch: hasSearchKeywords,
-      requiresLiterature: hasWritingKeywords,
-      requiresMemory: true,
-      requiresCreativity: hasWritingKeywords,
+  async analyzeTask(message: string, history: TaskHistoryItem[]): Promise<TaskAnalysis> {
+    const safeHistory = (Array.isArray(history) ? history : [])
+      .filter(item => item && typeof item.content === 'string')
+      .map((item): QueryIntentHistoryMessage => ({
+        role: item.role === 'assistant' || item.role === 'system' ? item.role : 'user',
+        content: String(item.content || ''),
+      }))
+      .slice(-20);
+    const queryIntent = classifyQueryIntentFallback({
+      message,
+      history: safeHistory,
+    });
+
+    const specializedIntents = new Set<QueryIntent['primaryIntent']>([
+      'academic_writing',
+      'data_analysis',
+      'r_plot',
+      'meta_analysis',
+      'bibliometrics',
+      'pdf_wiki',
+      'multimodal_task',
+      'skill_or_tool',
+      'project_management',
+    ]);
+    const creativeIntents = new Set<QueryIntent['primaryIntent']>([
+      'academic_writing',
+      'multimodal_task',
+    ]);
+    const conversationDepth = safeHistory.length;
+    const averageMessageLength = safeHistory.reduce(
+      (sum, item) => sum + item.content.length,
+      0
+    ) / Math.max(conversationDepth, 1);
+
+    let complexity = 0.35;
+    if (specializedIntents.has(queryIntent.primaryIntent)) complexity += 0.25;
+    if (queryIntent.needsToolExecution) complexity += 0.15;
+    if (queryIntent.needsWorkspaceSearch) complexity += 0.1;
+    if (queryIntent.needsLiteratureRetrieval || queryIntent.needsWebSearch) complexity += 0.15;
+    if (conversationDepth > 10 || averageMessageLength > 400 || message.length > 800) complexity += 0.1;
+    complexity = Math.min(complexity, 1);
+
+    const common = {
+      requiresWebSearch: queryIntent.needsWebSearch,
+      requiresLiterature: queryIntent.needsLiteratureRetrieval,
+      requiresMemory: queryIntent.isContextualFollowUp || conversationDepth > 0,
+      requiresCreativity: creativeIntents.has(queryIntent.primaryIntent),
       complexity,
-      estimatedTime: 20,
-      reason: '默认混合模式，确保质量'
+      queryIntent,
+    };
+
+    const isShortGeneralChat = queryIntent.primaryIntent === 'general_chat'
+      && message.trim().length <= 80
+      && !queryIntent.needsToolExecution;
+    if (isShortGeneralChat) {
+      return {
+        ...common,
+        mode: ProcessingMode.API_ONLY,
+        estimatedTime: 3,
+        reason: '结构化意图为短普通对话，不需要检索或工具执行。',
+      };
+    }
+
+    if (queryIntent.primaryIntent === 'academic_writing' && complexity >= 0.6
+        && !queryIntent.needsWorkspaceSearch && !queryIntent.needsWebSearch) {
+      return {
+        ...common,
+        mode: ProcessingMode.CHATBRIDGE_ONLY,
+        estimatedTime: 25,
+        reason: '结构化意图为学术写作，交由 ChatBridge 高质量生成。',
+      };
+    }
+
+    return {
+      ...common,
+      mode: ProcessingMode.HYBRID,
+      estimatedTime: complexity >= 0.8 ? 30 : 20,
+      reason: '结构化意图需要上下文或工具协作，使用混合模式。',
     };
   }
   

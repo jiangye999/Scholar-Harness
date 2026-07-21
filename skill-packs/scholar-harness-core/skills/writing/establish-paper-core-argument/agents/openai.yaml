@@ -1,0 +1,4 @@
+interface:
+  display_name: "论文核心论点奠基"
+  short_description: "写作前逐步确认核心论点、关键论据、证据边界与整篇论文基调"
+  default_prompt: "Use -paper-core-argument to help me establish the central claim and evidence foundation before drafting my paper."
