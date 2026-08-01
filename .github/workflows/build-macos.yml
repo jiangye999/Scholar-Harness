@@ -78,7 +78,26 @@ jobs:
         run: |
           set -euo pipefail
           version="$(node -p \"require('./package.json').version\")"
-          test -s "dist-electron/scholar-harness-${version}-${{ matrix.arch }}.dmg"
+          expected="dist-electron/scholar-harness-${version}-${{ matrix.arch }}.dmg"
+
+          if [[ ! -s "$expected" ]]; then
+            shopt -s nullglob
+            dmg_files=(dist-electron/*.dmg)
+            if [[ "${#dmg_files[@]}" -ne 1 ]]; then
+              echo "Expected exactly one DMG, found ${#dmg_files[@]}" >&2
+              printf '  %s\n' "${dmg_files[@]:-<none>}" >&2
+              exit 1
+            fi
+
+            source_dmg="${dmg_files[0]}"
+            source_blockmap="${source_dmg}.blockmap"
+            mv "$source_dmg" "$expected"
+            if [[ -s "$source_blockmap" ]]; then
+              mv "$source_blockmap" "${expected}.blockmap"
+            fi
+          fi
+
+          test -s "$expected"
           ls -lh dist-electron
 
       - name: Upload macOS ${{ matrix.arch }} installer
