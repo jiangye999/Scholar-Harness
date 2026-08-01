@@ -5,6 +5,7 @@ import {
   buildQueryIntentPromptBlock,
   classifyQueryIntentFallback,
   parseQueryIntentResponse,
+  shouldUseAiQueryIntentClassifier,
 } from '../../../src/orchestrator/query-intent';
 
 const fileFollowUpInput = {
@@ -24,6 +25,38 @@ const fileFollowUpInput = {
 };
 
 describe('unified query intent classifier', () => {
+  it.each([
+    '检索 N2O 排放与降水关系的论文，并给我可核验的参考文献。',
+    '读取工作目录的 CSV，用 R 做 PCA 图并沿用各处理组配色。',
+    '帮我采集极端降雨对农田土壤 N2O 排放影响的文献。',
+    '你好，介绍一下这个软件。',
+  ])('sends every meaningful query to the semantic classifier first: %s', (message) => {
+    const input = { message, workspaceRoot: 'E:\\research\\configured' };
+    expect(shouldUseAiQueryIntentClassifier(input)).toBe(true);
+  });
+
+  it('uses the semantic classifier only for an unresolved contextual reference', () => {
+    const input = {
+      message: '这个还是不太对，换成刚才那个。',
+      history: [
+        { role: 'user' as const, content: '给我两个不同的分析方案。' },
+        { role: 'assistant' as const, content: '方案 A 使用分层模型，方案 B 使用稳健回归。' },
+      ],
+    };
+    expect(classifyQueryIntentFallback(input).primaryIntent).toBe('general_chat');
+    expect(shouldUseAiQueryIntentClassifier(input)).toBe(true);
+  });
+
+  it('keeps semantic review for a correction that refers to prior retrieved evidence', () => {
+    const input = {
+      message: '我的意思是把对应段落的这句话替换一下，再把你检索到的三篇文献插进去。',
+      history: [
+        { role: 'assistant' as const, content: '已检索并提供三篇相关文献。' },
+      ],
+    };
+    expect(shouldUseAiQueryIntentClassifier(input)).toBe(true);
+  });
+
   it('authorizes workspace search when the user explicitly pastes a local path', () => {
     const intent = classifyQueryIntentFallback({
       message: '看看这里面的内容',
@@ -109,7 +142,7 @@ describe('unified query intent classifier', () => {
     expect(intent.resolvedQuery).toContain('按实际修改时间降序');
   });
 
-  it('hard-protects contextual file operations from an AI literature misclassification', () => {
+  it('keeps the AI semantic decision instead of replacing it with a local file rule', () => {
     const intent = parseQueryIntentResponse(JSON.stringify({
       primaryIntent: 'literature_retrieval',
       action: 'search',
@@ -129,11 +162,10 @@ describe('unified query intent classifier', () => {
       reason: 'Contains an English academic phrase.',
     }), fileFollowUpInput);
 
-    expect(intent.primaryIntent).toBe('workspace_file');
-    expect(intent.needsWorkspaceSearch).toBe(true);
+    expect(intent.primaryIntent).toBe('literature_retrieval');
+    expect(intent.needsWorkspaceSearch).toBe(false);
     expect(intent.needsWebSearch).toBe(false);
-    expect(intent.needsLiteratureRetrieval).toBe(false);
-    expect(intent.excludedFiles).toContain('supporting information.docx');
+    expect(intent.needsLiteratureRetrieval).toBe(true);
   });
 
   it('routes an explicit evidence request to literature retrieval', () => {
@@ -145,6 +177,68 @@ describe('unified query intent classifier', () => {
     expect(intent.action).toBe('search');
     expect(intent.needsLiteratureRetrieval).toBe(true);
     expect(intent.needsWorkspaceSearch).toBe(false);
+  });
+
+  it('routes new-literature collection to WoS/CNKI instead of the local evidence libraries', () => {
+    const intent = classifyQueryIntentFallback({
+      message: '帮我采集极端降雨对农田土壤 N2O 排放及氮循环微生物影响的文献',
+    });
+
+    expect(intent.primaryIntent).toBe('literature_collection');
+    expect(intent.action).toBe('collect');
+    expect(intent.dataSource).toBe('external_literature');
+    expect(intent.needsLiteratureRetrieval).toBe(false);
+    expect(intent.needsToolExecution).toBe(true);
+  });
+
+  it.each([
+    '从 WoS 检索极端降雨与农田 N2O 排放相关文献',
+    '给我去 Web of Science 导出3000篇关于华北平原玉米N2O排放相关的文献',
+    '从知网下载500篇农田氮循环相关论文',
+    '使用 CNKI 收集农田氮循环微生物研究',
+    '批量下载这个主题的论文并加入文献库',
+  ])('recognizes an explicit external literature source or collection action: %s', (message) => {
+    const intent = classifyQueryIntentFallback({ message });
+
+    expect(intent.primaryIntent).toBe('literature_collection');
+    expect(intent.needsLiteratureRetrieval).toBe(false);
+  });
+
+  it('does not treat exporting a WoS search expression as a literature collection job', () => {
+    const intent = classifyQueryIntentFallback({
+      message: '帮我导出 WoS 检索式，不要下载文献',
+    });
+
+    expect(intent.primaryIntent).not.toBe('literature_collection');
+  });
+
+  it('keeps the AI semantic decision instead of replacing it with a local collection rule', () => {
+    const message = '帮我采集极端降雨对农田土壤 N2O 排放及氮循环微生物影响的文献';
+    const intent = parseQueryIntentResponse(JSON.stringify({
+      primaryIntent: 'literature_retrieval',
+      action: 'search',
+      dataSource: 'literature',
+      needsWorkspaceSearch: false,
+      needsWebSearch: false,
+      needsLiteratureRetrieval: true,
+      needsToolExecution: true,
+      resolvedQuery: message,
+      confidence: 0.99,
+      reason: '需要检索文献。',
+    }), { message });
+
+    expect(intent.primaryIntent).toBe('literature_retrieval');
+    expect(intent.action).toBe('search');
+    expect(intent.needsLiteratureRetrieval).toBe(true);
+  });
+
+  it('keeps evidence verification in the local Embedding/PDF Wiki route', () => {
+    const intent = classifyQueryIntentFallback({
+      message: '在我已有的文献库里找支持“极端降雨促进 N2O 排放”的证据并给出引用',
+    });
+
+    expect(intent.primaryIntent).toBe('literature_retrieval');
+    expect(intent.needsLiteratureRetrieval).toBe(true);
   });
 
   it('routes data plotting to the R workflow without inventing a literature task', () => {
@@ -239,6 +333,47 @@ describe('unified query intent classifier', () => {
     expect(aiIntent.dataSource).toBe('conversation');
   });
 
+  it('reuses the preceding result when the user accepts suggestions and asks to insert citations', () => {
+    const message = '接受你的结果和建议，给我把参考文献补充进对应句子后面，以及尾注。';
+    const intent = parseQueryIntentResponse(JSON.stringify({
+      primaryIntent: 'literature_retrieval',
+      action: 'edit',
+      dataSource: 'conversation',
+      isContextualFollowUp: true,
+      literatureEvidenceMode: 'reuse_existing',
+      needsLiteratureRetrieval: true,
+      needsToolExecution: true,
+      resolvedQuery: message,
+      confidence: 0.98,
+    }), {
+      message,
+      history: [
+        { role: 'assistant', content: '已给出参考文献补充方案和对应句子的修改建议。' },
+      ],
+    });
+
+    expect(intent.literatureEvidenceMode).toBe('reuse_existing');
+    expect(intent.needsLiteratureRetrieval).toBe(false);
+    expect(intent.dataSource).toBe('conversation');
+  });
+
+  it('does not turn a literature label into search authorization when AI says reuse', () => {
+    const intent = parseQueryIntentResponse(JSON.stringify({
+      primaryIntent: 'literature_retrieval',
+      action: 'edit',
+      dataSource: 'conversation',
+      needsLiteratureRetrieval: false,
+      needsToolExecution: true,
+      resolvedQuery: '把刚才找到的文献写入尾注。',
+      confidence: 0.95,
+    }), {
+      message: '把刚才找到的文献写入尾注。',
+    });
+
+    expect(intent.needsLiteratureRetrieval).toBe(false);
+    expect(intent.literatureEvidenceMode).toBe('reuse_existing');
+  });
+
   it('keeps a fresh retrieval decision made by the contextual AI classifier', () => {
     const message = '先改回原段落，再重新检索三篇文献并插入对应句子。';
     const intent = parseQueryIntentResponse(JSON.stringify({
@@ -263,6 +398,21 @@ describe('unified query intent classifier', () => {
 
     expect(intent.primaryIntent).toBe('workspace_file');
     expect(intent.needsWorkspaceSearch).toBe(true);
+    expect(intent.needsWebSearch).toBe(false);
+    expect(intent.needsLiteratureRetrieval).toBe(false);
+  });
+
+  it.each([
+    '去掉 code、data、images 子目录，三类文件直接放在 figureX 下',
+    '把 code、data、images 里的文件移动到 figure1 到 figure6 根目录，并删除空子目录',
+    '不要套子目录，直接放 figureX 下',
+    'Flatten the code, data, and images folders into each figure directory.',
+  ])('routes directory reorganization requests through workspace tools: %s', (message) => {
+    const intent = classifyQueryIntentFallback({ message });
+
+    expect(intent.primaryIntent).toBe('workspace_file');
+    expect(intent.needsWorkspaceSearch).toBe(true);
+    expect(intent.needsToolExecution).toBe(true);
     expect(intent.needsWebSearch).toBe(false);
     expect(intent.needsLiteratureRetrieval).toBe(false);
   });
@@ -322,7 +472,7 @@ describe('unified query intent classifier', () => {
     expect(intent.needsLiteratureRetrieval).toBe(true);
   });
 
-  it('vetoes an AI-promoted tool workflow without action-object evidence', () => {
+  it('does not locally veto an AI-selected tool workflow', () => {
     const intent = parseQueryIntentResponse(JSON.stringify({
       primaryIntent: 'r_plot',
       action: 'plot',
@@ -337,12 +487,12 @@ describe('unified query intent classifier', () => {
       message: 'Explain what Figure 1 shows.',
     });
 
-    expect(intent.primaryIntent).toBe('general_chat');
-    expect(intent.needsWorkspaceSearch).toBe(false);
-    expect(intent.needsToolExecution).toBe(false);
+    expect(intent.primaryIntent).toBe('r_plot');
+    expect(intent.needsWorkspaceSearch).toBe(true);
+    expect(intent.needsToolExecution).toBe(true);
   });
 
-  it('vetoes an AI-promoted workspace scan without a file or workspace request', () => {
+  it('preserves an AI workspace decision for downstream capability checks', () => {
     const intent = parseQueryIntentResponse(JSON.stringify({
       primaryIntent: 'general_chat',
       action: 'explain',
@@ -357,7 +507,7 @@ describe('unified query intent classifier', () => {
       message: 'Preview profile settings.',
     });
 
-    expect(intent.needsWorkspaceSearch).toBe(false);
+    expect(intent.needsWorkspaceSearch).toBe(true);
   });
 
   it('gives the AI recent conversation, both roots, and the critical file example', () => {
@@ -376,7 +526,7 @@ describe('unified query intent classifier', () => {
     expect(block).toContain('"primaryIntent": "workspace_file"');
     expect(block).toContain('"needsWebSearch": false');
     expect(block).toContain('"needsLiteratureRetrieval": false');
-    expect(block).toContain('同时搜索用户配置目录与整个 ScholarHarness_AI_Workspaces 容器');
+    expect(block).toContain('只有正式 Agent 判断当前任务确实需要核对文件时才调用目录工具');
     expect(block).toContain('不得仅因英文术语、论文文件名或历史学术内容而擅自触发文献检索');
   });
 });

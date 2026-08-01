@@ -3,26 +3,23 @@ import path from 'path';
 
 import { describe, expect, it } from 'vitest';
 
-const html = readFileSync(path.resolve(__dirname, '../../src/public/index.html'), 'utf-8');
+import { readPublicAppSource } from '../helpers/public-app-source';
+
+const html = readPublicAppSource();
 const server = readFileSync(path.resolve(__dirname, '../../src/server/local-server.ts'), 'utf-8');
 
 describe('PDF Wiki Obsidian Vault controls', () => {
-  it('renders export, sync, Galaxy View, and search actions in the active sentence-level library', () => {
+  it('keeps retired Obsidian maintenance actions out of the active sentence-level library', () => {
     const start = html.indexOf('function renderPdfWikiSentenceArgumentLibrary');
     const end = html.indexOf('function renderPdfWikiSentenceArgumentStat', start);
     const source = html.slice(start, end);
 
     expect(start).toBeGreaterThan(-1);
     expect(end).toBeGreaterThan(start);
-    expect(source).toContain('id="pdfWikiObsidianExportBtn"');
-    expect(source).toContain('onclick="exportPdfWikiObsidian()"');
-    expect(source).toContain('id="pdfWikiObsidianDeployBtn"');
-    expect(source).toContain('onclick="deployPdfWikiObsidian()"');
-    expect(source).toContain('id="pdfWikiObsidianSearchBtn"');
-    expect(source).toContain('onclick="searchPdfWikiObsidianVault()"');
-    expect(source).toContain('id="pdfWikiGalaxyViewBtn"');
-    expect(source).toContain('onclick="installAndOpenPdfWikiGalaxyView()"');
-    expect(source).toContain('Galaxy View 查看 3D 知识星系');
+    expect(source).not.toContain('id="pdfWikiObsidianExportBtn"');
+    expect(source).not.toContain('id="pdfWikiObsidianDeployBtn"');
+    expect(source).not.toContain('id="pdfWikiObsidianSearchBtn"');
+    expect(source).not.toContain('id="pdfWikiGalaxyViewBtn"');
   });
 
   it('maps every visible action to its matching local API', () => {

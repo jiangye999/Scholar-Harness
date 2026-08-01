@@ -139,6 +139,7 @@ describe('Pi agent session queue', () => {
   it('marks the active run as cancelling until the backend settles it', () => {
     const manager = new PiAgentSessionManager();
     const run = manager.beginRun('user-7', 'conversation-7', 'codex');
+    const signal = manager.getRunAbortSignal('user-7', 'conversation-7', run.runId);
 
     const cancellation = manager.requestRunCancellation(
       'user-7',
@@ -152,7 +153,84 @@ describe('Pi agent session queue', () => {
       runId: run.runId,
       cancellationRequested: true,
     });
+    expect(signal?.aborted).toBe(true);
     expect(manager.isRunCancellationRequested('user-7', 'conversation-7', run.runId)).toBe(true);
     expect(manager.settleRun('user-7', 'conversation-7', run.runId).running).toBe(false);
+  });
+
+  it('does not let a late cancelled run requeue work claimed by a newer run', () => {
+    const manager = new PiAgentSessionManager();
+    const firstRun = manager.beginRun('user-8', 'conversation-8', 'secondary');
+    const item = manager.enqueue({
+      userId: 'user-8',
+      conversationId: 'conversation-8',
+      message: '切换到新的执行要求。',
+      behavior: 'steer',
+    });
+    expect(manager.takeSteeringMessages('user-8', 'conversation-8')[0]?.id).toBe(item.id);
+
+    manager.requestRunCancellation('user-8', 'conversation-8', firstRun.runId);
+    manager.settleRun('user-8', 'conversation-8', firstRun.runId);
+    const secondRun = manager.beginRun('user-8', 'conversation-8', 'secondary');
+    expect(manager.takeSteeringMessages('user-8', 'conversation-8')[0]?.id).toBe(item.id);
+
+    manager.settleRun('user-8', 'conversation-8', firstRun.runId);
+    expect(manager.getState('user-8', 'conversation-8')).toMatchObject({
+      running: true,
+      runId: secondRun.runId,
+      pending: [expect.objectContaining({ id: item.id, status: 'processing' })],
+    });
+  });
+
+  it('persists run progress and the canonical final response for renderer reattachment', () => {
+    const manager = new PiAgentSessionManager();
+    const run = manager.beginRun('user-9', 'conversation-9', 'secondary');
+
+    manager.appendRunEvent('user-9', 'conversation-9', run.runId, 'status', {
+      message: '正在检索文献',
+      elapsedMs: 1200,
+    });
+    manager.appendRunEvent('user-9', 'conversation-9', run.runId, 'chunk', {
+      content: '阶段性输出',
+    });
+    manager.appendRunEvent('user-9', 'conversation-9', run.runId, 'complete', {
+      content: '最终回答',
+      provider: 'chat-bridge',
+    });
+    manager.completeRun('user-9', 'conversation-9', run.runId, { status: 'completed' });
+    manager.settleRun('user-9', 'conversation-9', run.runId);
+
+    const state = manager.getState('user-9', 'conversation-9');
+    expect(state).toMatchObject({
+      running: false,
+      runId: run.runId,
+      runStatus: 'completed',
+      lastEventSequence: 3,
+    });
+    expect(state.runEvents).toEqual([
+      expect.objectContaining({ sequence: 1, type: 'status' }),
+      expect.objectContaining({ sequence: 2, type: 'chunk' }),
+      expect.objectContaining({
+        sequence: 3,
+        type: 'complete',
+        payload: expect.objectContaining({ content: '最终回答' }),
+      }),
+    ]);
+  });
+
+  it('marks a disk-restored in-flight run as interrupted instead of advertising a ghost task', () => {
+    const first = new PiAgentSessionManager();
+    const run = first.beginRun('user-10', 'conversation-10', 'codex');
+    first.appendRunEvent('user-10', 'conversation-10', run.runId, 'status', {
+      message: '正在运行',
+    });
+
+    const restored = new PiAgentSessionManager();
+    expect(restored.getState('user-10', 'conversation-10')).toMatchObject({
+      running: false,
+      runId: run.runId,
+      runStatus: 'interrupted',
+      runError: 'Local service restarted before the Agent run settled',
+    });
   });
 });

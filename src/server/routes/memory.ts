@@ -3277,7 +3277,7 @@ function formatBytes(bytes: number): string {
 router.post('/regenerate-structured/:userId', async (req: Request, res: Response) => {
   try {
     const userId = req.params.userId;
-    const { apiUrl, apiKey, model, type } = req.body;
+    const { type } = req.body;
     
     // type: 'experiment' | 'data' | 'both'
     const targetType = type || 'both';
@@ -3291,33 +3291,31 @@ router.post('/regenerate-structured/:userId', async (req: Request, res: Response
     const dataRaw = memory.entries.find(e => e.key === 'data_summary');
     
     if (targetType === 'experiment' && !experimentRaw?.value) {
-      return res.json({
+      return res.status(422).json({
         success: false,
-        error: '没有实验资料原始内容，无法生成结构化总结'
+        code: 'SOURCE_CONTENT_MISSING',
+        message: '没有实验资料原始内容，无法生成结构化总结',
+        error: '没有实验资料原始内容，无法生成结构化总结',
+        recoverable: true
       });
     }
     
     if (targetType === 'data' && !dataRaw?.value) {
-      return res.json({
+      return res.status(422).json({
         success: false,
-        error: '没有数据资料原始内容，无法生成结构化总结'
+        code: 'SOURCE_CONTENT_MISSING',
+        message: '没有数据资料原始内容，无法生成结构化总结',
+        error: '没有数据资料原始内容，无法生成结构化总结',
+        recoverable: true
       });
     }
-    
-    // 如果没有配置API，返回错误
-    if (!apiUrl || !apiKey) {
-      return res.json({
-        success: false,
-        error: '请先配置API设置'
-      });
-    }
-    
-    // 调用生成函数（这里需要从 local-server 导入，暂时返回需要手动操作的提示）
-    // 实际实现：返回一个 SSE 流，前端监听进度
-    
-    res.json({
-      success: true,
-      message: '请在聊天中发送消息，系统会自动更新结构化总结',
+
+    return res.status(501).json({
+      success: false,
+      code: 'STRUCTURED_REGENERATION_NOT_IMPLEMENTED',
+      message: '结构化总结重新生成尚未接入后台任务，请在聊天中更新资料总结',
+      error: '结构化总结重新生成尚未接入后台任务',
+      recoverable: true,
       hasExperimentContent: !!experimentRaw?.value,
       hasDataContent: !!dataRaw?.value,
       experimentContentLength: experimentRaw?.value?.length || 0,
@@ -3328,7 +3326,10 @@ router.post('/regenerate-structured/:userId', async (req: Request, res: Response
     logger.error('[Memory] Regenerate structured error:', error);
     res.status(500).json({
       success: false,
-      error: (error as Error).message
+      code: 'STRUCTURED_REGENERATION_FAILED',
+      message: '重新生成结构化总结失败',
+      error: (error as Error).message,
+      recoverable: true
     });
   }
 });

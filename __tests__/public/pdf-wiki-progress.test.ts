@@ -3,8 +3,10 @@ import path from 'path';
 
 import { describe, expect, it } from 'vitest';
 
+import { readPublicAppSource } from '../helpers/public-app-source';
+
 const repoRoot = path.resolve(__dirname, '..', '..');
-const html = readFileSync(path.join(repoRoot, 'src/public/index.html'), 'utf-8');
+const html = readPublicAppSource();
 const manager = readFileSync(path.join(repoRoot, 'src/utils/pdf-wiki-manager.ts'), 'utf-8');
 
 describe('PDF Wiki truthful progress reporting', () => {

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Scholar Harness 配置与使用向导"
+  short_description: "配置模型、Codex、Embedding、Skill、插件与文献导入"
+  default_prompt: "使用 $scholar-harness-configuration 检查本机 Scholar Harness 配置，逐步帮我完成所需能力并说明如何开始使用。"

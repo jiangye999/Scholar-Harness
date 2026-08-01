@@ -54,6 +54,53 @@ CREATE INDEX idx_users_referred_by ON users(referred_by);
 CREATE INDEX idx_users_created_at ON users(created_at);
 
 -- ============================================================
+-- 1A. 分销商邀请码与注册归因
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS distributors (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    name VARCHAR(160) NOT NULL,
+    invite_code VARCHAR(20) NOT NULL UNIQUE,
+    contact_name VARCHAR(120),
+    contact_phone VARCHAR(80),
+    commission_rate DECIMAL(5,2) NOT NULL DEFAULT 0
+        CHECK (commission_rate >= 0 AND commission_rate <= 100),
+    status VARCHAR(20) NOT NULL DEFAULT 'active'
+        CHECK (status IN ('active', 'disabled')),
+    notes TEXT,
+    created_by UUID REFERENCES users(id) ON DELETE SET NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    metadata JSONB DEFAULT '{}'::jsonb
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_distributors_invite_code_upper
+    ON distributors (UPPER(invite_code));
+CREATE INDEX IF NOT EXISTS idx_distributors_status ON distributors(status);
+
+CREATE TABLE IF NOT EXISTS distributor_accounts (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    distributor_id UUID NOT NULL UNIQUE REFERENCES distributors(id) ON DELETE CASCADE,
+    email VARCHAR(255) NOT NULL,
+    password_hash VARCHAR(255) NOT NULL,
+    display_name VARCHAR(120),
+    status VARCHAR(20) NOT NULL DEFAULT 'active'
+        CHECK (status IN ('active', 'disabled')),
+    last_login_at TIMESTAMP WITH TIME ZONE,
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_distributor_accounts_email_lower
+    ON distributor_accounts (LOWER(email));
+CREATE INDEX IF NOT EXISTS idx_distributor_accounts_status
+    ON distributor_accounts (status);
+
+ALTER TABLE users
+    ADD COLUMN IF NOT EXISTS distributor_id UUID REFERENCES distributors(id) ON DELETE SET NULL;
+CREATE INDEX IF NOT EXISTS idx_users_distributor_created
+    ON users(distributor_id, created_at DESC);
+
+-- ============================================================
 -- 2. 邮箱验证码表 (verification_codes) - 注册/找回密码等邮箱验证
 -- ============================================================
 
@@ -508,6 +555,12 @@ CREATE INDEX idx_payments_risk_status ON payments(risk_status);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_payments_external_payment_success
     ON payments(payment_method, external_payment_id)
     WHERE external_payment_id IS NOT NULL AND status = 'success';
+
+ALTER TABLE payments
+    ADD COLUMN IF NOT EXISTS distributor_id UUID REFERENCES distributors(id) ON DELETE SET NULL;
+CREATE INDEX IF NOT EXISTS idx_payments_distributor_paid
+    ON payments(distributor_id, paid_at DESC)
+    WHERE status IN ('success', 'refunded');
 
 -- ============================================================
 -- 13. 提现请求表 (withdraw_requests) - 返利提现

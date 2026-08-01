@@ -20,7 +20,15 @@ scholarharness-website/.next/
 scholarharness-website/out/
 scholarharness-website/public/downloads/*.exe
 scholarharness-website/public/downloads/*.exe.blockmap
+scholarharness-website/public/downloads/*.dmg
+scholarharness-website/public/downloads/*.dmg.blockmap
 scholarharness-website/*.tar.gz
+
+# 本地构建、诊断和交付产物（不进入产品源码）
+artifacts/
+output/
+.Rhistory
+/软著/
 
 # 运行时数据（用户数据、上传文件、记忆等）
 data/
@@ -127,6 +135,8 @@ agents/*.js
 agents/*.js.map
 agents/*.d.ts
 agents/*.d.ts.map
+cloud/exe/*.js
+cloud/exe/*.js.map
 
 # Codex plugin runtime must ship with the repository; keep other dist folders ignored.
 !plugins/scholar-harness-meta-analysis/dist/

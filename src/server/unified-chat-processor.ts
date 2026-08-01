@@ -591,7 +591,9 @@ export async function processUnifiedChatMessage(
   const needWebSearch = queryIntent.needsWebSearch;
   const webSearchQuery = queryIntent.resolvedQuery || userMessage;
   let taskType = '回答问题';
-  if (queryIntent.primaryIntent === 'literature_retrieval') {
+  if (queryIntent.primaryIntent === 'literature_collection') {
+    taskType = '外部文献采集';
+  } else if (queryIntent.primaryIntent === 'literature_retrieval') {
     taskType = '逐句检索';
   } else if (queryIntent.primaryIntent === 'academic_writing') {
     if (/(?:讨论)|\bdiscussion\b/i.test(userMessage)) {

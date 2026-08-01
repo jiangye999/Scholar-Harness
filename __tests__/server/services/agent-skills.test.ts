@@ -20,6 +20,7 @@ vi.mock('../../../src/server/services/user-skills', () => ({
 }));
 
 import {
+  AgentSkillRuntime,
   clearAgentSkillRegistryCache,
   createAgentSkillRuntime,
   deleteBundledAgentSkill,
@@ -247,6 +248,24 @@ describe('Agent Skill runtime', () => {
     expect(traversal.error).toContain('超出 Skill 目录');
   });
 
+  it('auto-loads a bundled skill when the model requests a resource first', async () => {
+    const runtime = await createAgentSkillRuntime('skill-test-user');
+    const resource = await runtime.executeToolCall(toolCall('read_skill_resource', {
+      skill_id: 'open-science-academic:scientific-writing',
+      resource_path: 'references/writing_principles.md',
+      max_lines: 20,
+    }));
+
+    expect(resource.ok).toBe(true);
+    expect(resource.summary).toContain('已自动加载 Skill 并读取资源');
+    expect(resource.content).toContain('--- Skill 指令开始（已应用 Scholar Harness 兼容层）---');
+    expect(resource.content).toContain('Skill resource:');
+    expect(resource.data).toMatchObject({
+      skillId: 'open-science-academic:scientific-writing',
+      autoLoaded: true,
+    });
+  });
+
   it('keeps explicit manual skills active without loading the same prompt twice', async () => {
     const runtime = await createAgentSkillRuntime('skill-test-user', ['custom-discussion']);
     const manual = runtime.getCatalog().find(skill => skill.id === 'user:custom-discussion');
@@ -258,6 +277,34 @@ describe('Agent Skill runtime', () => {
     expect(result.ok).toBe(true);
     expect(result.data).toMatchObject({ alreadyActive: true });
     expect(result.content).not.toContain('先概括结果，再解释机制');
+  });
+
+  it('exposes completion contracts only after a user skill is active', async () => {
+    const runtime = new AgentSkillRuntime(
+      'completion-contract-user',
+      [{
+        id: 'user:citation-verification',
+        rawId: 'citation-verification',
+        name: '逐句引用核验',
+        description: '核验全部章节',
+        category: 'user',
+        aliases: [],
+        sourceKind: 'user',
+        sourceLabel: '用户自定义 Skill',
+        trigger: '逐句引用核验',
+        prompt: '<completion-contract id="citation-verification-exhaustive" complete-marker="CITATION_VERIFICATION_COMPLETE" blocked-marker="CITATION_VERIFICATION_BLOCKED" />',
+      }] as any,
+      [],
+      ['citation-verification'],
+    );
+
+    expect(runtime.getActiveCompletionContracts()).toEqual([
+      expect.objectContaining({
+        id: 'citation-verification-exhaustive',
+        completeMarker: 'CITATION_VERIFICATION_COMPLETE',
+        blockedMarker: 'CITATION_VERIFICATION_BLOCKED',
+      }),
+    ]);
   });
 
   it('materializes a Codex-readable catalog and user Skill files', async () => {
@@ -276,5 +323,31 @@ describe('Agent Skill runtime', () => {
     expect(catalog).toContain('user:custom-discussion');
     expect(userFiles).toHaveLength(1);
     expect(await fs.readFile(path.join(codexRoot, userFiles[0]), 'utf-8')).toContain('先概括结果，再解释机制');
+  });
+
+  it('sends a query-ranked Skill summary while retaining the complete on-disk catalog', async () => {
+    tempDataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'agent-skills-ranked-'));
+    process.env.DATA_DIR = tempDataDir;
+    clearPathCache();
+
+    const runtime = await createAgentSkillRuntime('ranked-skill-user');
+    const context = await runtime.prepareCodexContext({
+      query: '请按目标期刊要求审稿并检查 Major Concern',
+      maxChars: 3_600,
+    });
+    const catalogPath = path.join(
+      tempDataDir,
+      'agent-skills',
+      'ranked-skill-user',
+      'codex',
+      'CATALOG.md',
+    );
+    const completeCatalog = await fs.readFile(catalogPath, 'utf-8');
+
+    expect(context.catalogPrompt.length).toBeLessThanOrEqual(3_600);
+    expect(context.catalogPrompt).toContain('scholar-harness-core:target-venue-peer-review');
+    expect(context.catalogPrompt).toContain('省略不等于禁用');
+    expect(completeCatalog).toContain('open-science-academic:scientific-visualization');
+    expect(completeCatalog.length).toBeGreaterThan(context.catalogPrompt.length);
   });
 });

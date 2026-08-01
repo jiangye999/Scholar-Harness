@@ -90,6 +90,10 @@ export interface ChatOptions {
    * 单次 Codex CLI 调用超时，毫秒。
    */
   codexTimeoutMs?: number;
+  /** Codex model selected in the composer for this request. */
+  codexModel?: string;
+  /** Codex reasoning level selected in the composer for this request. */
+  codexReasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultra';
   /**
    * 传给 Codex CLI 的图片附件路径。Codex exec 支持 `-i <file>`，
    * 图片类任务应使用附件而不是只把路径写进 prompt。
@@ -177,6 +181,8 @@ export interface ChatOptions {
   piSession?: PiSessionRuntime;
   /** Server-internal cancellation probe for the active Pi/Codex run. */
   isCancelled?: () => boolean;
+  /** Server-internal signal that aborts active HTTP/model work for this run. */
+  abortSignal?: AbortSignal;
 }
 
 export interface Message {

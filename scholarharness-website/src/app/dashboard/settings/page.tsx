@@ -2,13 +2,18 @@
 
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
-import { isAuthenticated, getCurrentUser, getStoredUser } from '@/lib/auth';
-import type { User } from '@/lib/auth';
+import {
+  changePassword,
+  deleteAccount,
+  getCurrentUser,
+  getStoredUser,
+  isAuthenticated,
+  updateProfile,
+} from '@/lib/auth';
 import Link from 'next/link';
 
 export default function SettingsPage() {
   const router = useRouter();
-  const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
 
   // Form states
@@ -30,9 +35,8 @@ export default function SettingsPage() {
     }
 
     const fetchUser = async () => {
-      const userData = getStoredUser();
+      const userData = await getCurrentUser() || getStoredUser();
       if (userData) {
-        setUser(userData);
         setUsername(userData.username || '');
         setEmail(userData.email);
       }
@@ -48,11 +52,14 @@ export default function SettingsPage() {
     setSaving(true);
 
     try {
-      // TODO: Call actual API
-      await new Promise(resolve => setTimeout(resolve, 1000));
+      const updatedUser = await updateProfile(username);
+      setUsername(updatedUser.username || '');
       setMessage({ type: 'success', text: '个人信息更新成功' });
     } catch (error) {
-      setMessage({ type: 'error', text: '更新失败，请重试' });
+      setMessage({
+        type: 'error',
+        text: error instanceof Error ? error.message : '更新失败，请重试',
+      });
     } finally {
       setSaving(false);
     }
@@ -75,14 +82,16 @@ export default function SettingsPage() {
     setSaving(true);
 
     try {
-      // TODO: Call actual API
-      await new Promise(resolve => setTimeout(resolve, 1000));
+      await changePassword(currentPassword, newPassword);
       setMessage({ type: 'success', text: '密码修改成功' });
       setCurrentPassword('');
       setNewPassword('');
       setConfirmPassword('');
     } catch (error) {
-      setMessage({ type: 'error', text: '密码修改失败，请重试' });
+      setMessage({
+        type: 'error',
+        text: error instanceof Error ? error.message : '密码修改失败，请重试',
+      });
     } finally {
       setSaving(false);
     }
@@ -93,10 +102,10 @@ export default function SettingsPage() {
     if (!confirmed) return;
 
     try {
-      // TODO: Call actual API
-      alert('账户删除功能暂未开放');
+      await deleteAccount();
+      router.replace('/login');
     } catch (error) {
-      alert('删除失败，请重试');
+      alert(error instanceof Error ? error.message : '删除失败，请重试');
     }
   };
 

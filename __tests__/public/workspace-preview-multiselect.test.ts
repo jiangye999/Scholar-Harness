@@ -3,7 +3,9 @@ import path from 'path';
 
 import { describe, expect, it } from 'vitest';
 
-const html = readFileSync(path.resolve(__dirname, '../../src/public/index.html'), 'utf-8');
+import { readPublicAppSource } from '../helpers/public-app-source';
+
+const html = readPublicAppSource();
 const chatBridgeRoute = readFileSync(path.resolve(__dirname, '../../src/server/routes/chat-bridge.ts'), 'utf-8');
 
 describe('workspace preview multi-select', () => {

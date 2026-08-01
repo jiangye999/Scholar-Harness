@@ -4,7 +4,10 @@ import {
   CHAT_SYSTEM_PROMPT_VERSION,
   buildChatSystemPrompt,
 } from '../../../src/server/services/chat-system-prompt';
-import { omitTrailingCurrentUserRequest } from '../../../src/server/services/chat-prompt-dedup';
+import {
+  omitQueriesAlreadyRepresentedInHistory,
+  omitTrailingCurrentUserRequest,
+} from '../../../src/server/services/chat-prompt-dedup';
 
 function countOccurrences(text: string, needle: string): number {
   return text.split(needle).length - 1;
@@ -47,5 +50,18 @@ describe('Chat prompt deduplication', () => {
     ];
 
     expect(omitTrailingCurrentUserRequest(history, ['重新作图'])).toEqual(history);
+  });
+
+  it('keeps unique recent queries while removing exact copies already rendered in history', () => {
+    const result = omitQueriesAlreadyRepresentedInHistory(
+      ['早期独立问题', '继续处理图表', ' 当前请求 ', '早期独立问题'],
+      [
+        { role: 'user', content: '继续处理图表' },
+        { role: 'assistant', content: '已完成第一步' },
+      ],
+      ['当前请求'],
+    );
+
+    expect(result).toEqual(['早期独立问题']);
   });
 });

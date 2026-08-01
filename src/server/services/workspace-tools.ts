@@ -3,6 +3,8 @@ import { createHash, randomUUID } from 'crypto';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 
+import mammoth = require('mammoth');
+
 import { logger } from '../../utils/logger';
 import { getDataDir } from '../../utils/paths';
 import { buildToolRuntimeEnv } from '../../utils/tool-runtime-env';
@@ -377,6 +379,44 @@ async function readTextFile(filePath: string): Promise<string> {
   return buffer.toString('utf-8');
 }
 
+interface ReadableWorkspaceFileContent {
+  content: string;
+  contentType: 'text' | 'docx-text';
+  extractionMethod: 'utf-8' | 'mammoth';
+  extractionWarnings?: string[];
+}
+
+async function readWorkspaceFileContent(filePath: string): Promise<ReadableWorkspaceFileContent> {
+  if (path.extname(filePath).toLowerCase() !== '.docx') {
+    return {
+      content: await readTextFile(filePath),
+      contentType: 'text',
+      extractionMethod: 'utf-8',
+    };
+  }
+
+  try {
+    const buffer = await fs.readFile(filePath);
+    const extracted = await mammoth.extractRawText({ buffer });
+    const content = String(extracted.value || '').replace(/\r\n?/g, '\n');
+    if (!content.trim()) {
+      throw new Error('DOCX 中没有可提取的正文文本');
+    }
+    return {
+      content,
+      contentType: 'docx-text',
+      extractionMethod: 'mammoth',
+      extractionWarnings: extracted.messages
+        .map(message => String(message.message || '').trim())
+        .filter(Boolean)
+        .slice(0, 20),
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`DOCX 纯文本提取失败: ${message}`);
+  }
+}
+
 async function walkWorkspaceTree(
   root: string,
   startDir: string,
@@ -694,7 +734,7 @@ export class WorkspaceToolRuntime {
         type: 'function',
         function: {
           name: 'read_file',
-          description: '读取文本文件的指定行窗口。写权限下会先把目标文件复制到安全工作区；读取后，edit_file 才能修改同一文件，防止盲改。',
+          description: '读取文本文件或 .docx 正文纯文本的指定行窗口。.docx 会由后端自动解析，不要把它当作二进制文件放弃，也不要改读同名旧 TXT。写权限下会先把目标文件复制到安全工作区；普通文本读取后，edit_file 才能修改同一文件，防止盲改。',
           parameters: {
             type: 'object',
             properties: {
@@ -831,6 +871,35 @@ export class WorkspaceToolRuntime {
         {
           type: 'function',
           function: {
+            name: 'move_file',
+            description: '在已授权工作目录内移动单个文件。目标可以是完整文件路径，也可以是已存在的目录；不会覆盖已有文件。适合扁平化 code/data/images 等子目录、整理图表与数据文件。操作会同步更新用户配置目录和当前会话 AI 工作目录。',
+            parameters: {
+              type: 'object',
+              properties: {
+                source: { type: 'string', description: '源文件路径，必须位于已授权工作目录内。' },
+                destination: { type: 'string', description: '目标文件路径，或一个已存在的目标目录。必须位于已授权工作目录内。' },
+              },
+              required: ['source', 'destination'],
+            },
+          },
+        },
+        {
+          type: 'function',
+          function: {
+            name: 'remove_empty_directory',
+            description: '删除已授权工作目录内一个确认为空的目录。不会递归删除，也不会删除工作目录根、AI 工作目录根或任何仍含文件的目录。适合在 move_file 搬完文件后清理空的 code/data/images 子目录。',
+            parameters: {
+              type: 'object',
+              properties: {
+                path: { type: 'string', description: '要删除的空目录路径，必须位于已授权工作目录内。' },
+              },
+              required: ['path'],
+            },
+          },
+        },
+        {
+          type: 'function',
+          function: {
             name: 'office_apply',
             description: '用 OfficeCLI 结构化修改或创建 .docx/.xlsx/.pptx。实际写入安全工作区副本，原始文件不直接改动。修改前优先 office_view/office_get/office_query 确认选择器。',
             parameters: {
@@ -903,6 +972,10 @@ export class WorkspaceToolRuntime {
           return await this.writeFile(args);
         case 'edit_file':
           return await this.editFile(args);
+        case 'move_file':
+          return await this.moveFile(args);
+        case 'remove_empty_directory':
+          return await this.removeEmptyDirectory(args);
         case 'office_apply':
           return await this.officeApply(args);
         case 'exec_shell':
@@ -1232,6 +1305,14 @@ export class WorkspaceToolRuntime {
     }
   }
 
+  private assertAuthorizedMutationPath(targetPath: string): void {
+    this.assertWritable(targetPath);
+    if (!isSubPath(this.root, targetPath)) {
+      throw new Error('文件移动和目录清理只能作用于已授权工作目录内的路径');
+    }
+    assertPathAuthorizedByWorkspaceRoot(this.root, targetPath);
+  }
+
   private async listDir(args: Record<string, unknown>): Promise<WorkspaceNativeToolResult> {
     const dirPath = this.resolveWorkspacePath(args.path, 'directory');
     const stat = await fs.stat(dirPath);
@@ -1430,7 +1511,8 @@ export class WorkspaceToolRuntime {
     if (!stat.isFile()) {
       throw new Error(`不是文件: ${this.displayPath(filePath)}`);
     }
-    const content = await readTextFile(resolved.readPath);
+    const readable = await readWorkspaceFileContent(resolved.readPath);
+    const content = readable.content;
     await this.noteRead(resolved.readPath);
     const slice = lineNumberedSlice(content, Number(args.start_line) || 1, Number(args.max_lines) || DEFAULT_READ_LINES);
     const copiedSummary = resolved.readPath !== resolved.sourcePath
@@ -1450,6 +1532,9 @@ export class WorkspaceToolRuntime {
         truncated: slice.truncated,
         nextStartLine: slice.nextStartLine,
         content: slice.content,
+        contentType: readable.contentType,
+        extractionMethod: readable.extractionMethod,
+        extractionWarnings: readable.extractionWarnings,
       },
     };
   }
@@ -1870,6 +1955,134 @@ export class WorkspaceToolRuntime {
         diff,
         backupId: backup.backupId,
         rollbackAvailable: true,
+      },
+    };
+  }
+
+  private async moveFile(args: Record<string, unknown>): Promise<WorkspaceNativeToolResult> {
+    const sourcePath = this.resolveWorkspacePath(args.source, 'file');
+    let destinationPath = this.resolveWorkspacePath(args.destination, 'file');
+    this.assertAuthorizedMutationPath(sourcePath);
+    this.assertAuthorizedMutationPath(destinationPath);
+
+    const sourceStat = await fs.stat(sourcePath).catch(() => null);
+    if (!sourceStat?.isFile()) {
+      throw new Error(`源路径不是文件或不存在: ${this.displayPath(sourcePath)}`);
+    }
+
+    const requestedDestinationStat = await fs.stat(destinationPath).catch(() => null);
+    if (requestedDestinationStat?.isDirectory()) {
+      destinationPath = path.join(destinationPath, path.basename(sourcePath));
+      this.assertAuthorizedMutationPath(destinationPath);
+    }
+
+    if (path.resolve(sourcePath) === path.resolve(destinationPath)) {
+      throw new Error('源文件和目标文件是同一路径');
+    }
+    const destinationStat = await fs.stat(destinationPath).catch(() => null);
+    if (destinationStat) {
+      throw new Error(`目标路径已存在，不会覆盖: ${this.displayPath(destinationPath)}`);
+    }
+
+    const safeSourcePath = await this.ensureSafeCopyForFile(sourcePath);
+    const safeDestinationPath = this.safeWorkRoot && !this.isInSafeWorkspace(destinationPath)
+      ? this.safePathForOriginal(destinationPath)
+      : destinationPath;
+    const safeDestinationStat = await fs.stat(safeDestinationPath).catch(() => null);
+    if (safeDestinationStat) {
+      throw new Error(`AI 工作目录中的目标路径已存在，不会覆盖: ${this.displayPath(safeDestinationPath)}`);
+    }
+
+    await fs.mkdir(path.dirname(safeDestinationPath), { recursive: true });
+    try {
+      await fs.rename(safeSourcePath, safeDestinationPath);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EXDEV') {
+        throw error;
+      }
+      await fs.copyFile(safeSourcePath, safeDestinationPath);
+      await fs.unlink(safeSourcePath);
+    }
+
+    let mirroredOutputs: WorkspaceOutputMirrorResult[] = [];
+    if (safeSourcePath !== sourcePath) {
+      mirroredOutputs = await this.mirrorOutputsToBothRoots([safeDestinationPath]);
+      const mirroredDestination = mirroredOutputs.find(result =>
+        result.mirrored && path.resolve(result.targetPath) === path.resolve(destinationPath)
+      );
+      if (!mirroredDestination) {
+        await fs.rename(safeDestinationPath, safeSourcePath).catch(() => undefined);
+        throw new Error('目标文件未能同步到用户配置目录，已保留源文件');
+      }
+      await fs.unlink(sourcePath);
+    }
+
+    this.readSnapshots.delete(sourcePath);
+    await this.noteRead(safeDestinationPath);
+    await this.commitSafeWorkspaceChange(
+      `AI move ${this.displayPath(sourcePath)} to ${this.displayPath(destinationPath)}`
+    );
+    return {
+      ok: true,
+      toolName: 'move_file',
+      target: `${this.displayPath(sourcePath)} -> ${this.displayPath(destinationPath)}`,
+      summary: `已移动 ${this.displayPath(sourcePath)} 到 ${this.displayPath(destinationPath)}；未覆盖任何已有文件`,
+      data: {
+        source: this.displayPath(sourcePath),
+        destination: this.displayPath(destinationPath),
+        safeWorkspaceSource: this.displayPath(safeSourcePath),
+        safeWorkspaceDestination: this.displayPath(safeDestinationPath),
+        mirroredOutputs,
+      },
+    };
+  }
+
+  private async removeEmptyDirectory(args: Record<string, unknown>): Promise<WorkspaceNativeToolResult> {
+    const directoryPath = this.resolveWorkspacePath(args.path, 'directory');
+    this.assertAuthorizedMutationPath(directoryPath);
+    if (path.resolve(directoryPath) === path.resolve(this.root)) {
+      throw new Error('不能删除工作目录根');
+    }
+    if (this.safeWorkRoot && path.resolve(directoryPath) === path.resolve(this.safeWorkRoot)) {
+      throw new Error('不能删除当前会话 AI 工作目录根');
+    }
+
+    const directoryStat = await fs.stat(directoryPath).catch(() => null);
+    if (!directoryStat?.isDirectory()) {
+      throw new Error(`路径不是目录或不存在: ${this.displayPath(directoryPath)}`);
+    }
+    const originalEntries = await fs.readdir(directoryPath);
+    if (originalEntries.length > 0) {
+      throw new Error(`目录不是空目录，拒绝删除: ${this.displayPath(directoryPath)}`);
+    }
+
+    const safeDirectoryPath = this.safeWorkRoot && !this.isInSafeWorkspace(directoryPath)
+      ? this.safePathForOriginal(directoryPath)
+      : directoryPath;
+    if (safeDirectoryPath !== directoryPath) {
+      const safeDirectoryStat = await fs.stat(safeDirectoryPath).catch(() => null);
+      if (safeDirectoryStat) {
+        if (!safeDirectoryStat.isDirectory()) {
+          throw new Error(`AI 工作目录中的对应路径不是目录: ${this.displayPath(safeDirectoryPath)}`);
+        }
+        const safeEntries = await fs.readdir(safeDirectoryPath);
+        if (safeEntries.length > 0) {
+          throw new Error(`AI 工作目录中的对应目录不是空目录，拒绝删除: ${this.displayPath(safeDirectoryPath)}`);
+        }
+        await fs.rmdir(safeDirectoryPath);
+      }
+    }
+    await fs.rmdir(directoryPath);
+    await this.commitSafeWorkspaceChange(`AI remove empty directory ${this.displayPath(directoryPath)}`);
+    return {
+      ok: true,
+      toolName: 'remove_empty_directory',
+      target: this.displayPath(directoryPath),
+      summary: `已删除空目录 ${this.displayPath(directoryPath)}；未执行递归删除`,
+      data: {
+        path: this.displayPath(directoryPath),
+        safeWorkspacePath: this.displayPath(safeDirectoryPath),
+        recursive: false,
       },
     };
   }

@@ -15,6 +15,33 @@ contextBridge.exposeInMainWorld('electronAPI', {
   openExternal: (url: string) => 
     ipcRenderer.invoke('open-external', url),
 
+  // 在主窗口右侧的隔离网页视图中打开受信任的模型厂商配置页。
+  openVendorConfigBrowser: (providerId: string, bounds: { x: number; y: number; width: number; height: number }) =>
+    ipcRenderer.invoke('vendor-config-browser-open', providerId, bounds),
+
+  setVendorConfigBrowserBounds: (bounds: { x: number; y: number; width: number; height: number }) =>
+    ipcRenderer.invoke('vendor-config-browser-bounds', bounds),
+
+  hideVendorConfigBrowser: () =>
+    ipcRenderer.invoke('vendor-config-browser-hide'),
+
+  vendorConfigBrowserCommand: (command: 'back' | 'reload' | 'external' | 'close') =>
+    ipcRenderer.invoke('vendor-config-browser-command', command),
+
+  onVendorConfigBrowserState: (callback: (state: {
+    providerId?: string;
+    name?: string;
+    url?: string;
+    canGoBack?: boolean;
+    loading?: boolean;
+    hidden?: boolean;
+    error?: string;
+  }) => void) =>
+    ipcRenderer.on('vendor-config-browser-state', (_event, state) => callback(state)),
+
+  removeVendorConfigBrowserStateListener: () =>
+    ipcRenderer.removeAllListeners('vendor-config-browser-state'),
+
   // 用系统默认程序打开本地文件
   openPath: (targetPath: string) =>
     ipcRenderer.invoke('open-path', targetPath),
@@ -22,6 +49,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // 在系统文件管理器中定位本地文件
   openContainingFolder: (targetPath: string) =>
     ipcRenderer.invoke('open-containing-folder', targetPath),
+
+  // 主窗口处于 sandbox 模式时，通过主进程可靠写入系统剪贴板。
+  writeClipboardText: (text: string) =>
+    ipcRenderer.invoke('clipboard-write-text', text),
 
   // Electron 32+ 不再可靠地暴露 File.path；通过 webUtils 获取拖拽/选择文件的真实本地路径。
   getPathForFile: (file: Parameters<typeof webUtils.getPathForFile>[0]) => {
@@ -160,8 +191,30 @@ export interface ElectronAPI {
     };
   }>;
   openExternal: (url: string) => Promise<void>;
+  openVendorConfigBrowser: (
+    providerId: string,
+    bounds: { x: number; y: number; width: number; height: number },
+  ) => Promise<{ success: boolean; providerId?: string; name?: string; url?: string; error?: string }>;
+  setVendorConfigBrowserBounds: (
+    bounds: { x: number; y: number; width: number; height: number },
+  ) => Promise<{ success: boolean; error?: string }>;
+  hideVendorConfigBrowser: () => Promise<{ success: boolean; error?: string }>;
+  vendorConfigBrowserCommand: (
+    command: 'back' | 'reload' | 'external' | 'close',
+  ) => Promise<{ success: boolean; error?: string }>;
+  onVendorConfigBrowserState: (callback: (state: {
+    providerId?: string;
+    name?: string;
+    url?: string;
+    canGoBack?: boolean;
+    loading?: boolean;
+    hidden?: boolean;
+    error?: string;
+  }) => void) => void;
+  removeVendorConfigBrowserStateListener: () => void;
   openPath: (targetPath: string) => Promise<{ success: boolean; error?: string }>;
   openContainingFolder: (targetPath: string) => Promise<{ success: boolean; error?: string }>;
+  writeClipboardText: (text: string) => Promise<{ success: boolean; error?: string }>;
   getPathForFile: (file: Parameters<typeof webUtils.getPathForFile>[0]) => string;
   onLoginError: (callback: (error: string) => void) => void;
   removeLoginErrorListener: () => void;

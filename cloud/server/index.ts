@@ -21,6 +21,8 @@ import verificationRoutes, { initializeVerificationRoutes } from './routes/verif
 import promptRoutes, { initializePromptRoutes } from './routes/prompts';
 import securityRoutes, { initializeSecurityRoutes } from './routes/security';
 import adminRoutes, { initializeAdminRoutes } from './routes/admin';
+import distributorRoutes, { initializeDistributorRoutes } from './routes/distributors';
+import distributorPortalRoutes, { initializeDistributorPortalRoutes } from './routes/distributor-portal';
 import downloadRoutes, { initializeDownloadRoutes } from './routes/downloads';
 import { publicRouter as feedbackRoutes, adminRouter as feedbackAdminRoutes, initializeFeedbackRoutes } from './routes/feedback';
 import { publicRouter as betaCodeRoutes, adminRouter as betaCodeAdminRoutes, initializeBetaCodeRoutes } from './routes/beta-codes';
@@ -56,6 +58,8 @@ async function initializeApp(): Promise<void> {
     initializePromptRoutes(db);
     initializeSecurityRoutes(db);
     await initializeAdminRoutes(db);
+    initializeDistributorRoutes(db);
+    initializeDistributorPortalRoutes(db);
     await initializeDownloadRoutes(db);
     initializeFeedbackRoutes(db);
     initializeBetaCodeRoutes(db);
@@ -129,10 +133,12 @@ async function initializeApp(): Promise<void> {
     apiRouter.use('/usage', usageRoutes);
     apiRouter.use('/beta-codes', betaCodeRoutes);
     apiRouter.use('/feedback', feedbackRoutes);
-    apiRouter.use('/admin', adminRoutes);
+    apiRouter.use('/admin/distributors', distributorRoutes);
+    apiRouter.use('/distributor', distributorPortalRoutes);
     apiRouter.use('/admin/feedback', feedbackAdminRoutes);
     apiRouter.use('/admin/beta-codes', betaCodeAdminRoutes);
     apiRouter.use('/admin/security', securityRoutes);
+    apiRouter.use('/admin', adminRoutes);
     apiRouter.use('/verification', verificationRoutes);
     apiRouter.use('/prompts', promptRoutes);
     apiRouter.use('/downloads', downloadRoutes);

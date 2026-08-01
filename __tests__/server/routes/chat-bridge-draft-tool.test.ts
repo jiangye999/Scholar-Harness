@@ -5,6 +5,7 @@ import {
   getAgentDraftSaveToolDefinitions,
   hasVerifiedDraftSaveReceipt,
   initializeChatBridgeRoutes,
+  isAgentDraftSaveToolName,
   shouldSyncWorkspaceDraftFiles,
 } from '../../../src/server/routes/chat-bridge';
 
@@ -247,5 +248,12 @@ describe('ChatBridge native draft tool', () => {
   it('does not expose the tool when the draft service is unavailable', () => {
     initializeChatBridgeRoutes({} as any);
     expect(getAgentDraftSaveToolDefinitions()).toEqual([]);
+  });
+
+  it('recognizes exact and provider-namespaced save_draft calls', () => {
+    expect(isAgentDraftSaveToolName('save_draft')).toBe(true);
+    expect(isAgentDraftSaveToolName('scholar_harness.save_draft')).toBe(true);
+    expect(isAgentDraftSaveToolName('scholar_harness__save_draft')).toBe(true);
+    expect(isAgentDraftSaveToolName('save_file')).toBe(false);
   });
 });

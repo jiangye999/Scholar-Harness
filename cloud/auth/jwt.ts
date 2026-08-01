@@ -54,10 +54,19 @@ export function initializeJwtSecrets(): void {
     fallbackSecret: DEFAULT_REFRESH_SECRET,
   });
 
-  if (
-    accessKeyRing.active.secret === DEFAULT_ACCESS_SECRET ||
-    refreshKeyRing.active.secret === DEFAULT_REFRESH_SECRET
-  ) {
+  const usesDevelopmentDefault =
+    accessKeyRing.keys.some(key => key.secret === DEFAULT_ACCESS_SECRET) ||
+    refreshKeyRing.keys.some(key => key.secret === DEFAULT_REFRESH_SECRET);
+
+  if (usesDevelopmentDefault && process.env.NODE_ENV === 'production') {
+    accessKeyRing = null;
+    refreshKeyRing = null;
+    throw new Error(
+      'JWT signing secrets are not configured. Set JWT access and refresh secrets before starting in production.'
+    );
+  }
+
+  if (usesDevelopmentDefault) {
     logger.warn('[JWT] JWT secrets not fully configured; using development defaults');
   }
 

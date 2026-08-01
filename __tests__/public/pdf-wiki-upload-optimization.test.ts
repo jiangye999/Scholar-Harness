@@ -3,8 +3,11 @@ import path from 'path';
 
 import { describe, expect, it } from 'vitest';
 
+import { readPublicAppSource, readPublicModuleSource } from '../helpers/public-app-source';
+
 const repoRoot = path.resolve(__dirname, '..', '..');
-const html = readFileSync(path.join(repoRoot, 'src/public/index.html'), 'utf-8');
+const html = readPublicAppSource();
+const pdfWikiGraphSource = readPublicModuleSource('app/pdf-wiki-core.js');
 const server = readFileSync(path.join(repoRoot, 'src/server/local-server.ts'), 'utf-8');
 const manager = readFileSync(path.join(repoRoot, 'src/utils/pdf-wiki-manager.ts'), 'utf-8');
 
@@ -171,7 +174,7 @@ describe('PDF Wiki upload optimization', () => {
     expect(html).toContain("secondHopNode.type === 'reference'");
     expect(html).toContain('!!focusNodeIds[item.edge.source] && !!focusNodeIds[item.edge.target]');
     expect(html).toContain('runtime.lockedNodeId !== nodeId && replaceLockedNode !== true');
-    expect(html).not.toContain('>取消固定</button>');
+    expect(pdfWikiGraphSource).not.toContain('>取消固定</button>');
     expect(html).toContain("typeVisibility: { pdf: false, topic: true, sentence: true, reference: true, entry: false }");
     expect(html).toContain('runtime.motionPaused = false');
   });

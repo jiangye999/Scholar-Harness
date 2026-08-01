@@ -31,6 +31,7 @@ import {
   readBibliometricArtifactManifest,
   type BibliometricArtifactManifest,
 } from '../../utils/bibliometrics-artifacts';
+import { prepareWorkspaceOutputDirectory } from '../services/workspace-directory';
 
 export interface BibliometricsRoutesOptions {
   readUserLiteratureRecords(userId: string): LiteratureRecord[];
@@ -384,6 +385,34 @@ export function isWosBibliometricPlainText(content: string): boolean {
   return hasWosHeader || (hasCoreFields && hasBibliometricFields);
 }
 
+export function assertWosFullRecordsWithAbstract(
+  dataset: WosPlainTextDataset,
+  fileName: string,
+): void {
+  const missingAbstract = dataset.records.filter(record => !String(record.article.abstract || '').trim());
+  const incompleteFullRecord = dataset.records.filter(record => {
+    const fields = record.fields || {};
+    const hasField = (tag: string): boolean =>
+      Array.isArray(fields[tag]) && fields[tag].some(value => String(value || '').trim());
+    return !hasField('AF') || !hasField('UT');
+  });
+  if (missingAbstract.length === 0 && incompleteFullRecord.length === 0) return;
+
+  const details = [
+    missingAbstract.length > 0 ? `缺少摘要 ${missingAbstract.length} 条` : '',
+    incompleteFullRecord.length > 0 ? `不满足 Full Record 字段要求 ${incompleteFullRecord.length} 条` : '',
+  ].filter(Boolean).join('；');
+  const examples = Array.from(new Set([
+    ...missingAbstract,
+    ...incompleteFullRecord,
+  ].map(record => record.article.title).filter(Boolean))).slice(0, 3);
+  throw new Error(
+    `${fileName} 未通过文献计量入库校验：${details}`
+    + `${examples.length > 0 ? `（例如：${examples.join('；')}）` : ''}。`
+    + '请在 Web of Science 导出时将 Record Content 设为 Full Record and Cited References；没有摘要的记录不会进入分析库。',
+  );
+}
+
 export function importBibliometricPlainTextForUser(args: {
   userId: string;
   sourceFiles: Array<{ fileName: string; content: string }>;
@@ -413,6 +442,9 @@ export function importBibliometricPlainTextForUser(args: {
   if (invalidFiles.length > 0) {
     throw new Error(`以下文件未解析到 WoS 记录：${invalidFiles.map(item => item.fileName).join('；')}。请确认导出格式为 Plain Text，且 Record Content 选择 Full Record and Cited References。`);
   }
+  parsedUploads.forEach(item => {
+    assertWosFullRecordsWithAbstract(item.dataset, item.fileName);
+  });
 
   const existingDataset = mode === 'replace' ? null : loadCurrentWosDataset(userId);
   const datasetsToMerge = [
@@ -506,6 +538,28 @@ export function createBibliometricsRouter(options: BibliometricsRoutesOptions): 
     };
   };
 
+  router.post('/workspace', async (req: Request, res: Response) => {
+    try {
+      const userId = sanitizeUserId(String(req.body?.userId || 'web-user'));
+      const prepared = await prepareWorkspaceOutputDirectory(
+        req.body?.workspaceDirectory,
+        ['文献计量分析'],
+      );
+      const outputDirectory = activateBibliometricsWorkspace(userId, prepared?.outputRoot);
+      res.json({
+        success: true,
+        outputDirectory,
+        workspaceEnabled: !!prepared,
+      });
+    } catch (error) {
+      logger.error('[Bibliometrics] Workspace configuration error:', error);
+      res.status(400).json({
+        success: false,
+        error: (error as Error).message || '文献计量工作目录配置失败',
+      });
+    }
+  });
+
   router.get('/dataset', (req: Request, res: Response) => {
     try {
       const userId = sanitizeUserId(String(req.query.userId || 'web-user'));
@@ -522,9 +576,19 @@ export function createBibliometricsRouter(options: BibliometricsRoutesOptions): 
     }
   });
 
-  router.post('/upload', handleBibliometricsPlainTextUpload, (req: Request, res: Response) => {
+  router.post('/upload', handleBibliometricsPlainTextUpload, async (req: Request, res: Response) => {
     try {
       const userId = sanitizeUserId(String(req.body?.userId || 'web-user'));
+      if (req.body?.workspaceDirectory) {
+        const workspaceDirectory = typeof req.body.workspaceDirectory === 'string'
+          ? JSON.parse(req.body.workspaceDirectory)
+          : req.body.workspaceDirectory;
+        const prepared = await prepareWorkspaceOutputDirectory(
+          workspaceDirectory,
+          ['文献计量分析'],
+        );
+        if (prepared) activateBibliometricsWorkspace(userId, prepared.outputRoot);
+      }
       const files = getUploadedBibliometricFiles(req);
       if (files.length === 0) {
         res.status(400).json({ success: false, error: '请上传 Web of Science Plain Text .txt 文件' });
@@ -1018,8 +1082,62 @@ export function createBibliometricsRouter(options: BibliometricsRoutesOptions): 
   return router;
 }
 
-function getBibliometricsDir(userId: string): string {
+interface BibliometricsWorkspaceConfig {
+  outputRoot: string;
+  updatedAt: string;
+}
+
+function getDefaultBibliometricsDir(userId: string): string {
   return path.join(getUserUploadDir(userId), 'bibliometrics');
+}
+
+function getBibliometricsWorkspaceConfigPath(userId: string): string {
+  return path.join(getUserUploadDir(userId), 'bibliometrics-workspace.json');
+}
+
+function loadBibliometricsWorkspaceConfig(userId: string): BibliometricsWorkspaceConfig | null {
+  const configPath = getBibliometricsWorkspaceConfigPath(userId);
+  if (!fs.existsSync(configPath)) return null;
+  try {
+    const parsed = JSON.parse(fs.readFileSync(configPath, 'utf-8')) as Partial<BibliometricsWorkspaceConfig>;
+    const outputRoot = String(parsed.outputRoot || '').trim();
+    if (!outputRoot || !path.isAbsolute(outputRoot)) return null;
+    return {
+      outputRoot: path.resolve(outputRoot),
+      updatedAt: String(parsed.updatedAt || ''),
+    };
+  } catch (error) {
+    logger.warn(`[Bibliometrics] Failed to load workspace config for ${userId}:`, error);
+    return null;
+  }
+}
+
+function getBibliometricsDir(userId: string): string {
+  return loadBibliometricsWorkspaceConfig(userId)?.outputRoot || getDefaultBibliometricsDir(userId);
+}
+
+function activateBibliometricsWorkspace(userId: string, outputRoot?: string): string {
+  const currentDir = getBibliometricsDir(userId);
+  const targetDir = outputRoot ? path.resolve(outputRoot) : getDefaultBibliometricsDir(userId);
+  fs.mkdirSync(targetDir, { recursive: true });
+  if (path.resolve(currentDir) !== path.resolve(targetDir) && fs.existsSync(currentDir)) {
+    fs.cpSync(currentDir, targetDir, {
+      recursive: true,
+      force: true,
+      errorOnExist: false,
+    });
+  }
+  const configPath = getBibliometricsWorkspaceConfigPath(userId);
+  if (outputRoot) {
+    fs.mkdirSync(path.dirname(configPath), { recursive: true });
+    fs.writeFileSync(configPath, JSON.stringify({
+      outputRoot: targetDir,
+      updatedAt: new Date().toISOString(),
+    } satisfies BibliometricsWorkspaceConfig, null, 2), 'utf-8');
+  } else if (fs.existsSync(configPath)) {
+    fs.rmSync(configPath, { force: true });
+  }
+  return targetDir;
 }
 
 function getCurrentWosDatasetPath(userId: string): string {

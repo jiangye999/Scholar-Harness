@@ -3,7 +3,9 @@ import path from 'path';
 
 import { describe, expect, it } from 'vitest';
 
-const html = readFileSync(path.resolve(__dirname, '../../src/public/index.html'), 'utf-8');
+import { readPublicAppSource } from '../helpers/public-app-source';
+
+const html = readPublicAppSource();
 const server = readFileSync(path.resolve(__dirname, '../../src/server/local-server.ts'), 'utf-8');
 
 describe('AI output attachment sidebar preview', () => {
@@ -18,10 +20,17 @@ describe('AI output attachment sidebar preview', () => {
   });
 
   it('routes thumbnails, file buttons, message links, and cards through the sidebar opener', () => {
-    expect(html).toContain('async function openOutputAttachmentInRightSidebar(button)');
+    expect(html).toContain('async function openOutputAttachmentInRightSidebar(button, suppliedNavigationContext)');
     expect(html).toContain('return openOutputAttachmentInRightSidebar(button);');
     expect(html).toContain('onclick="openOutputAttachmentCardInSidebar(this,event)"');
     expect(html).not.toContain("window.open(previewUrl, '_blank')");
+  });
+
+  it('keeps the preferred sidebar width when a historical attachment preview mounts', () => {
+    expect(html).toContain('function getPreferredRightSidebarWidth()');
+    expect(html).toContain('applyRightSidebarWidth(getPreferredRightSidebarWidth());');
+    expect(html).toContain("typeof ensureRightSidebarExpandedWidth === 'function'");
+    expect(html).toContain('ensureRightSidebarExpandedWidth();');
   });
 
   it('renders safe inline previews and keeps containing-folder behavior separate', () => {
@@ -73,10 +82,33 @@ describe('AI output attachment sidebar preview', () => {
     expect(server).toContain('"private, no-cache, must-revalidate"');
   });
 
+  it('restores historical file authorization before resolving a clicked attachment', () => {
+    const authorizeIndex = html.indexOf('await authorizeOutputAttachmentPreviewTargets(button);');
+    const resolveIndex = html.indexOf("fetch('/api/local-file/resolve?' + params.toString()");
+
+    expect(html).toContain('async function authorizeOutputAttachmentPreviewTargets(button)');
+    expect(html).toContain("fetch('/api/chat-bridge/workspace/authorize-preview'");
+    expect(html).toContain('candidates.unshift(filePath);');
+    expect(html).toContain('getWorkspaceRootsForLocalFileResolve(preferredRoot)');
+    expect(authorizeIndex).toBeGreaterThan(-1);
+    expect(resolveIndex).toBeGreaterThan(authorizeIndex);
+  });
+
+  it('reuses multi-root resolution after a thumbnail path returns 404', () => {
+    expect(html).toContain('await authorizeOutputAttachmentPreviewTargets(button);');
+    expect(html).toContain('var resolvedPath = await resolveOutputAttachmentLocalPath(button);');
+    expect(server).toMatch(
+      /getValidatedLocalFileResolveRoots\(\s*req\.query\.workspaceRoot,\s*req\.query\.workspaceRoots,\s*\)/,
+    );
+  });
+
   it('avoids full transcript relayout while sidebars open and close', () => {
     expect(html).toContain('content-visibility: auto;');
     expect(html).toContain('contain-intrinsic-size: auto 240px;');
-    expect(html).not.toContain('transition: width 240ms');
+    const mainRules = Array.from(html.matchAll(/\.main\s*\{([^}]*)\}/g))
+      .map((match) => match[1])
+      .join('\n');
+    expect(mainRules).not.toContain('transition: width 240ms');
   });
 
   it('uses format-aware read-only previews for spreadsheets, Word, and R/code files', () => {

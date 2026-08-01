@@ -3,7 +3,9 @@ import path from 'path';
 
 import { describe, expect, it } from 'vitest';
 
-const html = readFileSync(path.resolve(__dirname, '../../src/public/index.html'), 'utf-8');
+import { readPublicAppSource } from '../helpers/public-app-source';
+
+const html = readPublicAppSource();
 
 describe('composer workspace file mentions', () => {
   it('loads workspace files after @ and inserts a quoted relative path', () => {

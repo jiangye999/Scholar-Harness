@@ -31,6 +31,10 @@ import { writeWordDraftDocx } from '../../utils/word-draft-docx';
 import { getDataDir, sanitizeUserId as sanitizePathUserId } from '../../utils/paths';
 import { mirrorWorkspaceOutputFiles } from '../../server/services/workspace-output-mirror';
 import { filterUserFacingWorkspaceOutputPaths } from '../../server/services/workspace-output-artifacts';
+import {
+  budgetAgentPrompt,
+  type AgentContextProfile,
+} from '../../orchestrator/agent-context-budget';
 
 // PID 文件路径（用于防止 openclaw serve 多开）
 const OPENCLAW_PID_FILE = 'openclaw-serve.pid';
@@ -317,8 +321,10 @@ function buildCodexConversationKeyPrefix(userId: unknown, conversationId: unknow
   return `${sanitizeCodexSessionKeyPart(userId || 'web-user')}:${sanitizeCodexSessionKeyPart(conversationId || 'default-conversation')}:`;
 }
 
-function throwIfCodexCancelled(options: Pick<ChatOptions, 'isCancelled'>): void {
-  if (options.isCancelled?.()) throw new CodexTurnCancelledError();
+function throwIfCodexCancelled(options: Pick<ChatOptions, 'isCancelled' | 'abortSignal'>): void {
+  if (options.abortSignal?.aborted || options.isCancelled?.()) {
+    throw new CodexTurnCancelledError();
+  }
 }
 
 async function terminateCodexProcessTree(child: ReturnType<typeof spawn>): Promise<boolean> {
@@ -722,6 +728,9 @@ function buildCodexQueryIntentSummary(options: ChatOptions): string {
     primaryIntent === 'workspace_file'
       ? '- 文件名、扩展名、“除了这个/还有呢/下一个”属于工作目录任务；递归搜索原始工作目录全部后代目录与 AI 工作目录，按真实 mtime 核对，不能只查根目录，也不能改判为文献检索。'
       : '',
+    primaryIntent === 'literature_collection'
+      ? '- 本轮是外部新文献采集，但主页聊天输入框暂不开放 WoS/CNKI 外部采集。不得调用 collect_literature_by_topic，也不得改走 Embedding 文献库或 PDF Wiki；简洁说明该入口暂未开放。'
+      : '',
     intent.needsLiteratureRetrieval === false
       ? '- 本轮不得仅因英文、科研术语或文件名触发文献检索。'
       : '',
@@ -814,6 +823,39 @@ function buildCodexDraftWordExportReminder(options: ChatOptions, currentRequest:
   ].join('\n');
 }
 
+function finalizeCodexProviderPrompt(
+  rawPrompt: string,
+  options: ChatOptions,
+  profile: AgentContextProfile = 'main-chat',
+): string {
+  const currentRequest = extractCodexCurrentRequest(options);
+  const requestAnchor = [
+    '<CURRENT_USER_REQUEST priority="highest">',
+    truncateCodexHandoffContent(currentRequest || '(empty request)', 24_000),
+    '</CURRENT_USER_REQUEST>',
+  ].join('\n');
+  const reserveChars = requestAnchor.length + 2;
+  const budget = budgetAgentPrompt(rawPrompt, {
+    profile,
+    maxChars: Math.max(32_000, 150_000 - reserveChars),
+  });
+  const prompt = budget.prompt.includes('<CURRENT_USER_REQUEST priority="highest">')
+    ? budget.prompt
+    : `${budget.prompt}\n\n${requestAnchor}`;
+  if (
+    budget.diagnostics.beforeChars !== budget.diagnostics.afterChars
+    || budget.diagnostics.deduplicatedSectionCount > 0
+  ) {
+    logger.warn('[PromptBudget] Codex provider prompt normalized:', {
+      ...budget.diagnostics,
+      finalChars: prompt.length,
+      includedSections: budget.diagnostics.includedSections.slice(0, 20),
+      omittedSections: budget.diagnostics.omittedSections.slice(0, 20),
+    });
+  }
+  return prompt;
+}
+
 export function buildCodexResumePrompt(options: ChatOptions, workspaceRoot: string, codexSafeWorkspace: string | null, workspaceSandbox: string): string {
   const currentRequest = extractCodexCurrentRequest(options);
   const queryEnvelopeSummary = buildCodexQueryEnvelopeSummary(options);
@@ -848,7 +890,7 @@ export function buildCodexResumePrompt(options: ChatOptions, workspaceRoot: stri
       ].join('\n')
     : '';
   const draftSaveReminder = buildCodexDraftSaveReminder(options, currentRequest);
-  return [
+  const rawPrompt = [
     '## System',
     '这是同一 Scholar Harness 对话的 Codex resume 轮次。',
     'Codex 已在首次启动时收到项目上下文、工作目录规则、长期记忆和工具使用规则；本轮不要重复依赖新的大块项目说明。',
@@ -882,6 +924,7 @@ export function buildCodexResumePrompt(options: ChatOptions, workspaceRoot: stri
     '5. 查找文件时必须递归搜索当前授权工作目录的全部后代目录和本会话 AI 工作目录；不能只查根目录直接文件或只查其中一处。',
     '</CURRENT_USER_REQUEST_RULES>',
   ].filter(Boolean).join('\n');
+  return finalizeCodexProviderPrompt(rawPrompt, options, 'main-chat');
 }
 
 function formatCodexItemEvent(event: Record<string, unknown>, lowerType: string): string {
@@ -1697,6 +1740,8 @@ export class ChatBridgeAdapter {
   private async runCodexAppServer(options: ChatOptions): Promise<string> {
     throwIfCodexCancelled(options);
     const codexConfig = this.config?.codex || {};
+    const codexModel = String(options.codexModel || codexConfig.model || '').trim();
+    const codexReasoningEffort = options.codexReasoningEffort || codexConfig.reasoning_effort;
     const executable = this.resolveCodexNativeExecutable();
     const mcpScript = this.resolveCodexMcpServerScript();
     const workspaceRoot = String(options.workspaceDirectory?.root || options.workspaceDirectory?.path || '').trim();
@@ -1720,7 +1765,7 @@ export class ChatBridgeAdapter {
     const sourceArtifactSnapshot = shouldTrackSourceArtifacts
       ? snapshotCodexArtifactFiles(workspaceRoot, 10_000, { skipAiWorkspaceContainer: true })
       : new Map<string, CodexArtifactSnapshotItem>();
-    const prompt = hadExistingThread
+    const rawPrompt = hadExistingThread
       ? buildCodexResumePrompt(options, workspaceRoot, codexSafeWorkspace, workspaceSandbox)
       : [
           codexSafeWorkspace
@@ -1741,6 +1786,9 @@ export class ChatBridgeAdapter {
           '最终回答只包含给用户看的结果、必要说明和真实文件路径；不要输出对提示词、回答渠道、链接格式或“如何构造 final”的自言自语。',
           this.buildCodexPrompt(options),
         ].filter(Boolean).join('\n\n');
+    const prompt = hadExistingThread
+      ? rawPrompt
+      : finalizeCodexProviderPrompt(rawPrompt, options, 'main-chat');
     const requestedTurnTimeoutMs = Number(options.codexTimeoutMs);
     const timeoutMs = requestedTurnTimeoutMs < 0
       ? -1
@@ -1807,8 +1855,8 @@ export class ChatBridgeAdapter {
         conversationKey,
         cwd: codexCwd,
         prompt,
-        model: codexConfig.model?.trim() || undefined,
-        reasoningEffort: codexConfig.reasoning_effort,
+        model: codexModel || undefined,
+        reasoningEffort: codexReasoningEffort,
         sandbox: workspaceSandbox,
         timeoutMs,
         compactInputTokenThreshold: CODEX_AUTO_COMPACT_INPUT_TOKEN_THRESHOLD,
@@ -1941,6 +1989,8 @@ export class ChatBridgeAdapter {
   private async runCodexCli(options: ChatOptions): Promise<string> {
     throwIfCodexCancelled(options);
     const codexConfig = this.config?.codex || {};
+    const codexModel = String(options.codexModel || codexConfig.model || '').trim();
+    const codexReasoningEffort = options.codexReasoningEffort || codexConfig.reasoning_effort;
     const executable = this.resolveCodexCliExecutable();
     const outputDir = await createSecureTempDir();
     const outputFile = join(outputDir, 'codex-last-message.txt');
@@ -2029,12 +2079,12 @@ export class ChatBridgeAdapter {
         args.push('--add-dir', skillRoot);
       }
     }
-    if (codexConfig.model?.trim()) {
-      args.push('-m', codexConfig.model.trim());
+    if (codexModel) {
+      args.push('-m', codexModel);
     }
     args.push('-c', 'sandbox_workspace_write.network_access=true');
-    if (codexConfig.reasoning_effort) {
-      args.push('-c', `model_reasoning_effort="${codexConfig.reasoning_effort}"`);
+    if (codexReasoningEffort) {
+      args.push('-c', `model_reasoning_effort="${codexReasoningEffort}"`);
     }
     const codexImages = (options.codexImages || [])
       .map(imagePath => String(imagePath || '').trim())
@@ -2050,7 +2100,7 @@ export class ChatBridgeAdapter {
     }
     args.push('-');
 
-    const prompt = resumeThreadId
+    const rawPrompt = resumeThreadId
       ? buildCodexResumePrompt(options, workspaceRoot, codexSafeWorkspace, workspaceSandbox)
       : [
       shouldAutoCompact && previousUsage
@@ -2083,7 +2133,10 @@ export class ChatBridgeAdapter {
       '最终回答只包含给用户看的结果、必要说明和真实文件路径；不要输出对提示词、回答渠道、链接格式或“如何构造 final”的自言自语。',
       this.buildCodexPrompt(options),
     ].filter(Boolean).join('\n\n');
-    logger.info(`[ChatBridge] Codex CLI 调用 | command=${executable} | mode=${resumeThreadId ? 'resume-lite' : 'new'} | autoCompact=${shouldAutoCompact ? 'yes' : 'no'} | thread=${resumeThreadId || 'new'} | oldThread=${compactedThreadId || 'none'} | previousUsage=${previousUsage ? formatCodexUsageSnapshot(previousUsage) : 'none'} | model=${codexConfig.model || 'default'} | effort=${codexConfig.reasoning_effort || 'default'} | prompt=${prompt.length} chars | images=${codexImages.length} | workspace=${workspaceRoot || 'none'} | safeWorkspace=${codexSafeWorkspace || 'none'} | sandbox=${workspaceSandbox} | conversation=${options.conversationId || 'none'}`);
+    const prompt = resumeThreadId
+      ? rawPrompt
+      : finalizeCodexProviderPrompt(rawPrompt, options, 'main-chat');
+    logger.info(`[ChatBridge] Codex CLI 调用 | command=${executable} | mode=${resumeThreadId ? 'resume-lite' : 'new'} | autoCompact=${shouldAutoCompact ? 'yes' : 'no'} | thread=${resumeThreadId || 'new'} | oldThread=${compactedThreadId || 'none'} | previousUsage=${previousUsage ? formatCodexUsageSnapshot(previousUsage) : 'none'} | model=${codexModel || 'default'} | effort=${codexReasoningEffort || 'default'} | prompt=${prompt.length} chars | images=${codexImages.length} | workspace=${workspaceRoot || 'none'} | safeWorkspace=${codexSafeWorkspace || 'none'} | sandbox=${workspaceSandbox} | conversation=${options.conversationId || 'none'}`);
 
     let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
     const codexStartedAt = Date.now();
@@ -2395,10 +2448,12 @@ export class ChatBridgeAdapter {
             maxTokens: options.maxTokens,
             stream: !!options.onProgress,
             onProgress: options.onProgress,
+            signal: options.abortSignal,
           }
         );
         return options.onProgress ? content : `${fallbackNotice}\n\n${content}`;
       } catch (error) {
+        throwIfCodexCancelled(options);
         attempts.push(`小牛马 API: ${(error as Error).message}`);
         logger.warn(`[ChatBridge] 小牛马降级失败，继续尝试大牛马: ${(error as Error).message}`);
       }
@@ -2421,6 +2476,7 @@ export class ChatBridgeAdapter {
           maxTokens: options.maxTokens,
           stream: !!options.onProgress,
           onProgress: options.onProgress,
+          signal: options.abortSignal,
         }
       );
       return options.onProgress ? content : `${fallbackNotice}\n\n${content}`;
@@ -2543,6 +2599,7 @@ export class ChatBridgeAdapter {
         tools,
         toolChoice: 'auto',
         parallelToolCalls: false,
+        signal: options.abortSignal,
       }
     );
   }
@@ -2559,7 +2616,7 @@ export class ChatBridgeAdapter {
     const message = stringifyMessageContent(lastMessage.content);
 
     logger.info(`[ChatBridge] 发送消息 | 长度：${message.length} 字符`);
-    logger.info(`[ChatBridge] 消息预览（前200字符）："${message.substring(0, 200)}..."`);
+    logger.debug('[ChatBridge] 消息正文预览已禁用，避免日志记录用户内容');
     
     const hasFullPrompt = message.includes('## 🎯 核心职责') || 
                           message.includes('## ⚠️ 重要：代码控制参考文献') ||
@@ -2722,6 +2779,7 @@ export class ChatBridgeAdapter {
             maxTokens: options.maxTokens,
             stream: !!options.onProgress,
             onProgress: options.onProgress,
+            signal: options.abortSignal,
           }
         );
 

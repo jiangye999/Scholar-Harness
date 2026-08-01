@@ -1,6 +1,8 @@
 {
-  "version": "1.0.7",
-  "downloadUrl": "https://scholarharness.com/downloads/scholar-harness-setup-1.0.7.exe",
-  "publishedAt": "2026-07-21",
-  "releaseNotes": "1.0.7 更新：重构配置、技能与插件中心，新增系统/用户 Skill 清单自动同步和章节核心论点引导；新增学术 MCP 在线市场、后台部署队列与 AI 辅助接入；PDF Wiki 升级持久化去重队列、边上传边处理和纯代码引用—尾注匹配；知识图谱支持完整论点句、三级关系、主题多选、持续动态布局及左右键交互；修复进度回退、长内容异常换行、Embedding 提示遮挡和插件安装状态问题。"
+  "version": "1.0.8",
+  "downloadUrl": "https://scholarharness.com/downloads/scholar-harness-setup-1.0.8.exe",
+  "macArm64DownloadUrl": "https://github.com/jiangye999/Scholar-Harness/releases/download/v1.0.8/scholar-harness-1.0.8-arm64.dmg",
+  "macX64DownloadUrl": "https://github.com/jiangye999/Scholar-Harness/releases/download/v1.0.8/scholar-harness-1.0.8-x64.dmg",
+  "publishedAt": "2026-08-01",
+  "releaseNotes": "1.0.8 更新：统一主页、Meta、文献计量等入口的正式 Agent 执行内核；文献检索和页面上下文改为 Agent 按需调用，减少超大 Prompt、重复检索和无关上下文；新增轻量资源目录、Embedding 优先与 PDF Wiki 回退检索；修复跨页面任务恢复、上下文重复注入及不同入口行为不一致问题。"
 }

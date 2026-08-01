@@ -234,6 +234,28 @@ describe('AutoResearchManager', () => {
     expect(result.state.projectMemory[0].source).toBe('embedding-library-sync');
   });
 
+  it('keeps full embeddings for retrieval while serving a compact cached UI state', async () => {
+    await manager.syncEmbeddingLibrary('web-user', [{
+      id: 'paper-with-vector',
+      title: 'Compact AutoResearch state',
+      author: 'Test A.',
+      year: 2026,
+      journal: 'Test Journal',
+      abstract: 'The full state must retain its vector.',
+      keywords: ['compact state'],
+      embedding: [0.1, 0.2, 0.3, 0.4],
+    }], { mergedTags: [], promotedTags: [] });
+
+    const fullState = await manager.getState('web-user');
+    const viewState = await manager.getViewState('web-user');
+
+    expect(fullState.literatureMap.nodes[0].embedding).toEqual([0.1, 0.2, 0.3, 0.4]);
+    expect(viewState.literatureMap.totalNodeCount).toBe(1);
+    expect(viewState.literatureMap.totalEmbeddingCount).toBe(1);
+    expect(viewState.literatureMap.nodes[0].embedding).toBeUndefined();
+    expect(fs.existsSync(path.join(tempDir, 'autoresearch', 'web-user', 'state-view.json'))).toBe(true);
+  });
+
   it('evaluates citation alignment and reproducibility from stored evidence', async () => {
     await manager.syncPdfWikiStore('web-user', createPdfWikiStore(false), {
       projectId: 'project-test',

@@ -11,9 +11,20 @@ permissions:
 
 jobs:
   build-macos:
-    name: Build macOS dmg and zip
-    runs-on: macos-14
+    name: Build macOS ${{ matrix.arch }} DMG
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            runner: macos-15
+            builder_flag: --arm64
+          - arch: x64
+            runner: macos-15-intel
+            builder_flag: --x64
 
     env:
       CSC_IDENTITY_AUTO_DISCOVERY: "false"
@@ -47,21 +58,14 @@ jobs:
           node scripts/prepare-mac-icon.js 2>&1 | tee -a macos-build.log
           node scripts/write-mac-electron-builder-config.js 2>&1 | tee -a macos-build.log
 
-      - name: Build macOS x64 installer
+      - name: Build macOS ${{ matrix.arch }} installer
         run: |
           set -o pipefail
-          npx electron-builder --config dist/electron-builder-mac.json --mac dmg --x64 --publish never 2>&1 | tee -a macos-build.log
-
-      - name: Release macOS disk-image devices
-        if: success()
-        run: |
-          hdiutil info
-          sleep 10
-
-      - name: Build macOS arm64 installer
-        run: |
-          set -o pipefail
-          npx electron-builder --config dist/electron-builder-mac.json --mac dmg --arm64 --publish never 2>&1 | tee -a macos-build.log
+          npx electron-builder \
+            --config dist/electron-builder-mac.json \
+            --mac dmg \
+            ${{ matrix.builder_flag }} \
+            --publish never 2>&1 | tee -a macos-build.log
 
       - name: Print build log tail
         if: failure()
@@ -69,27 +73,21 @@ jobs:
           echo "Last 200 lines from macos-build.log"
           tail -n 200 macos-build.log || true
 
-      - name: List macOS artifacts
+      - name: Verify macOS ${{ matrix.arch }} artifact
+        shell: bash
         run: |
+          set -euo pipefail
+          version="$(node -p \"require('./package.json').version\")"
+          test -s "dist-electron/scholar-harness-${version}-${{ matrix.arch }}.dmg"
           ls -lh dist-electron
 
-      - name: Upload macOS arm64 dmg
+      - name: Upload macOS ${{ matrix.arch }} installer
         uses: actions/upload-artifact@v4
         with:
-          name: scholar-harness-macos-arm64-${{ github.run_number }}
+          name: scholar-harness-macos-installer-${{ matrix.arch }}-${{ github.run_number }}
           path: |
-            dist-electron/*-arm64.dmg
-            dist-electron/*-arm64.dmg.blockmap
-          if-no-files-found: error
-          retention-days: 14
-
-      - name: Upload macOS x64 dmg
-        uses: actions/upload-artifact@v4
-        with:
-          name: scholar-harness-macos-x64-${{ github.run_number }}
-          path: |
-            dist-electron/*-x64.dmg
-            dist-electron/*-x64.dmg.blockmap
+            dist-electron/*-${{ matrix.arch }}.dmg
+            dist-electron/*-${{ matrix.arch }}.dmg.blockmap
           if-no-files-found: error
           retention-days: 14
 
@@ -97,25 +95,65 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: scholar-harness-macos-build-log-${{ github.run_number }}
+          name: scholar-harness-macos-${{ matrix.arch }}-build-log-${{ github.run_number }}
           path: macos-build.log
           if-no-files-found: warn
           retention-days: 14
 
-      - name: Publish failure log branch
-        if: failure()
+  publish-macos:
+    name: Publish macOS installers
+    needs: build-macos
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Read release version
+        id: release-version
+        shell: bash
+        run: echo "version=$(node -p \"require('./package.json').version\")" >> "$GITHUB_OUTPUT"
+
+      - name: Download macOS installers
+        uses: actions/download-artifact@v4
+        with:
+          pattern: scholar-harness-macos-installer-*-${{ github.run_number }}
+          path: release-assets
+          merge-multiple: true
+
+      - name: Verify installers and create checksums
+        shell: bash
         run: |
-          if [ ! -f macos-build.log ]; then
-            echo "macos-build.log was not created"
-            exit 0
-          fi
-          cp macos-build.log /tmp/macos-build.log
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git checkout --orphan ci/macos-build-log
-          git rm -rf .
-          mkdir -p ci-logs
-          cp /tmp/macos-build.log ci-logs/macos-build.log
-          git add ci-logs/macos-build.log
-          git commit -m "Capture macOS build failure log"
-          git push --force origin ci/macos-build-log
+          set -euo pipefail
+          version="${{ steps.release-version.outputs.version }}"
+          test -s "release-assets/scholar-harness-${version}-x64.dmg"
+          test -s "release-assets/scholar-harness-${version}-arm64.dmg"
+          sha256sum \
+            "release-assets/scholar-harness-${version}-x64.dmg" \
+            "release-assets/scholar-harness-${version}-arm64.dmg" \
+            > release-assets/SHA256SUMS-macos.txt
+          cat release-assets/SHA256SUMS-macos.txt
+
+      - name: Publish macOS installers to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.release-version.outputs.version }}
+          name: Scholar Harness v${{ steps.release-version.outputs.version }}
+          body: |
+            Scholar Harness ${{ steps.release-version.outputs.version }} macOS 安装包。
+
+            - `arm64`：Apple Silicon（M1/M2/M3/M4）
+            - `x64`：Intel Mac
+            - `SHA256SUMS-macos.txt`：安装包完整性校验
+
+            当前 macOS 构建未进行 Apple Developer ID 签名和公证，首次打开时可能需要在“系统设置 → 隐私与安全性”中确认。
+          files: |
+            release-assets/scholar-harness-${{ steps.release-version.outputs.version }}-arm64.dmg
+            release-assets/scholar-harness-${{ steps.release-version.outputs.version }}-arm64.dmg.blockmap
+            release-assets/scholar-harness-${{ steps.release-version.outputs.version }}-x64.dmg
+            release-assets/scholar-harness-${{ steps.release-version.outputs.version }}-x64.dmg.blockmap
+            release-assets/SHA256SUMS-macos.txt
+          fail_on_unmatched_files: false
+          overwrite_files: true
+          make_latest: true

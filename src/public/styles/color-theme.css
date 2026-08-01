@@ -1,0 +1,1379 @@
+/* Scholar Harness color themes
+ * White surfaces stay white. Dark UI chrome and every neutral gray step are
+ * derived from one palette so changing the theme never produces mixed hues.
+ */
+:root,
+:root[data-color-theme="ink"] {
+  color-scheme: light;
+  --theme-primary: #111827;
+  --theme-primary-hover: #030712;
+  --theme-ink: #111827;
+  --theme-mid: #4b5563;
+  --theme-border: #d1d5db;
+  --theme-soft: #e5e7eb;
+  --theme-softer: #f3f4f6;
+  --theme-shadow-rgb: 17 24 39;
+  --theme-on-primary: #ffffff;
+}
+
+:root[data-color-theme="pink"] {
+  --theme-primary: #be185d;
+  --theme-primary-hover: #9d174d;
+  --theme-ink: #831843;
+  --theme-mid: #9d526f;
+  --theme-border: #f0c7d6;
+  --theme-soft: #f7dce6;
+  --theme-softer: #fdf1f5;
+  --theme-shadow-rgb: 190 24 93;
+}
+
+:root[data-color-theme="ocean"] {
+  --theme-primary: #1d4ed8;
+  --theme-primary-hover: #1e40af;
+  --theme-ink: #1e3a8a;
+  --theme-mid: #526c9d;
+  --theme-border: #c9d7f2;
+  --theme-soft: #dfe8f8;
+  --theme-softer: #f1f5fc;
+  --theme-shadow-rgb: 29 78 216;
+}
+
+:root[data-color-theme="teal"] {
+  --theme-primary: #0f766e;
+  --theme-primary-hover: #115e59;
+  --theme-ink: #134e4a;
+  --theme-mid: #4f7775;
+  --theme-border: #c4dfdc;
+  --theme-soft: #dcecea;
+  --theme-softer: #eff8f6;
+  --theme-shadow-rgb: 15 118 110;
+}
+
+:root[data-color-theme="violet"] {
+  --theme-primary: #7e22ce;
+  --theme-primary-hover: #6b21a8;
+  --theme-ink: #581c87;
+  --theme-mid: #795b93;
+  --theme-border: #dbc8eb;
+  --theme-soft: #eadff3;
+  --theme-softer: #f7f1fb;
+  --theme-shadow-rgb: 126 34 206;
+}
+
+:root[data-color-theme="clay"] {
+  --theme-primary: #c2410c;
+  --theme-primary-hover: #9a3412;
+  --theme-ink: #7c2d12;
+  --theme-mid: #966451;
+  --theme-border: #e8cec4;
+  --theme-soft: #f2e1da;
+  --theme-softer: #fbf3ef;
+  --theme-shadow-rgb: 194 65 12;
+}
+
+:root[data-color-theme="amber"] {
+  --theme-primary: #a16207;
+  --theme-primary-hover: #854d0e;
+  --theme-ink: #713f12;
+  --theme-mid: #8b7048;
+  --theme-border: #e7d8bd;
+  --theme-soft: #f1e8d7;
+  --theme-softer: #faf7ef;
+  --theme-shadow-rgb: 161 98 7;
+}
+
+:root[data-color-theme="aurora"] {
+  --theme-primary: #9f82fd;
+  --theme-primary-hover: #8268d5;
+  --theme-ink: #4d3e80;
+  --theme-mid: #76679f;
+  --theme-border: #dbd3f5;
+  --theme-soft: #ebe7fb;
+  --theme-softer: #f8f6fe;
+  --theme-shadow-rgb: 159 130 253;
+}
+
+:root[data-color-theme="crimson"] {
+  --theme-primary: #d7000f;
+  --theme-primary-hover: #ac000c;
+  --theme-ink: #75000f;
+  --theme-mid: #94616a;
+  --theme-border: #ebc5cb;
+  --theme-soft: #f4dde1;
+  --theme-softer: #fcf2f4;
+  --theme-shadow-rgb: 215 0 15;
+}
+
+:root[data-color-theme="mountain"] {
+  --theme-primary: #174973;
+  --theme-primary-hover: #113957;
+  --theme-ink: #0f314d;
+  --theme-mid: #557185;
+  --theme-border: #c8d7e2;
+  --theme-soft: #dee8ef;
+  --theme-softer: #f1f6f9;
+  --theme-shadow-rgb: 23 73 115;
+}
+
+:root[data-color-theme="magenta"] {
+  --theme-primary: #c51f63;
+  --theme-primary-hover: #a71952;
+  --theme-ink: #7c163f;
+  --theme-mid: #99566f;
+  --theme-border: #edc5d4;
+  --theme-soft: #f4dce5;
+  --theme-softer: #fcf1f5;
+  --theme-shadow-rgb: 197 31 99;
+}
+
+:root[data-color-theme="cocoa"] {
+  --theme-primary: #765a35;
+  --theme-primary-hover: #5f482b;
+  --theme-ink: #4a3326;
+  --theme-mid: #806b5b;
+  --theme-border: #dfd2c5;
+  --theme-soft: #ebe2da;
+  --theme-softer: #f8f4ef;
+  --theme-shadow-rgb: 118 90 53;
+}
+
+:root[data-color-theme="midnight"] {
+  --theme-primary: #0e3265;
+  --theme-primary-hover: #09254d;
+  --theme-ink: #071d3b;
+  --theme-mid: #526780;
+  --theme-border: #c7d3e1;
+  --theme-soft: #dde7f0;
+  --theme-softer: #f1f6fa;
+  --theme-shadow-rgb: 14 50 101;
+}
+
+:root[data-color-theme="royal"] {
+  --theme-primary: #0b3289;
+  --theme-primary-hover: #082568;
+  --theme-ink: #071f57;
+  --theme-mid: #506b9e;
+  --theme-border: #c6d2eb;
+  --theme-soft: #dee6f5;
+  --theme-softer: #f2f5fb;
+  --theme-shadow-rgb: 11 50 137;
+}
+
+:root[data-color-theme="orange"] {
+  --theme-primary: #ff8a00;
+  --theme-primary-hover: #d97000;
+  --theme-ink: #713d00;
+  --theme-mid: #936943;
+  --theme-border: #f0d1ad;
+  --theme-soft: #f8e3cc;
+  --theme-softer: #fef6ec;
+  --theme-shadow-rgb: 255 138 0;
+}
+
+:root[data-color-theme="peacock"] {
+  --theme-primary: #008c8d;
+  --theme-primary-hover: #006f70;
+  --theme-ink: #005455;
+  --theme-mid: #4a7979;
+  --theme-border: #bfdedb;
+  --theme-soft: #d8ece8;
+  --theme-softer: #eff8f6;
+  --theme-shadow-rgb: 0 140 141;
+}
+
+:root[data-color-theme="jade"] {
+  --theme-primary: #087879;
+  --theme-primary-hover: #056061;
+  --theme-ink: #084d4e;
+  --theme-mid: #527b77;
+  --theme-border: #c5ddd7;
+  --theme-soft: #dcebe6;
+  --theme-softer: #f0f8f5;
+  --theme-shadow-rgb: 8 120 121;
+}
+
+/* Exact palettes imported from the user-maintained Desktop/color.txt list. */
+:root[data-color-theme="fluorescent"] { --theme-primary: #00e08e; --theme-shadow-rgb: 0 224 142; }
+:root[data-color-theme="pomegranate"] { --theme-primary: #e72d48; --theme-shadow-rgb: 231 45 72; }
+:root[data-color-theme="honey"] { --theme-primary: #fbea03; --theme-shadow-rgb: 251 234 3; }
+:root[data-color-theme="deepsea"] { --theme-primary: #122e8a; --theme-shadow-rgb: 18 46 138; }
+:root[data-color-theme="charcoal"] { --theme-primary: #1a1a1d; --theme-shadow-rgb: 26 26 29; }
+:root[data-color-theme="sweetpink"] { --theme-primary: #e6397c; --theme-shadow-rgb: 230 57 124; }
+:root[data-color-theme="ji-green"] { --theme-primary: #215a59; --theme-shadow-rgb: 33 90 89; }
+:root[data-color-theme="lingxiao"] { --theme-primary: #ed723f; --theme-shadow-rgb: 237 114 63; }
+:root[data-color-theme="shanzhi"] { --theme-primary: #999a7e; --theme-shadow-rgb: 153 154 126; }
+:root[data-color-theme="wanxiang"] { --theme-primary: #d7c6a6; --theme-shadow-rgb: 215 198 166; }
+:root[data-color-theme="pinegreen"] { --theme-primary: #3d6036; --theme-shadow-rgb: 61 96 54; }
+:root[data-color-theme="fochi"] { --theme-primary: #c7935f; --theme-shadow-rgb: 199 147 95; }
+:root[data-color-theme="mogreen"] { --theme-primary: #a0c198; --theme-shadow-rgb: 160 193 152; }
+:root[data-color-theme="mossgreen"] { --theme-primary: #535e4b; --theme-shadow-rgb: 83 94 75; }
+:root[data-color-theme="oubi"] { --theme-primary: #c0d695; --theme-shadow-rgb: 192 214 149; }
+:root[data-color-theme="landy"] { --theme-primary: #7a916d; --theme-shadow-rgb: 122 145 109; }
+:root[data-color-theme="calyxgreen"] { --theme-primary: #014946; --theme-shadow-rgb: 1 73 70; }
+:root[data-color-theme="true-red"] { --theme-primary: #c3272b; --theme-shadow-rgb: 195 39 43; }
+:root[data-color-theme="liuli"] { --theme-primary: #0b6051; --theme-shadow-rgb: 11 96 81; }
+:root[data-color-theme="yuzi"] { --theme-primary: #fabe51; --theme-shadow-rgb: 250 190 81; }
+:root[data-color-theme="xungreen"] { --theme-primary: #1c6c4c; --theme-shadow-rgb: 28 108 76; }
+:root[data-color-theme="greentea"] { --theme-primary: #91b821; --theme-shadow-rgb: 145 184 33; }
+:root[data-color-theme="inkgreen"] { --theme-primary: #1c2d25; --theme-shadow-rgb: 28 45 37; }
+:root[data-color-theme="greenshen"] { --theme-primary: #354e40; --theme-shadow-rgb: 53 78 64; }
+:root[data-color-theme="headdress-red"] { --theme-primary: #bc3823; --theme-shadow-rgb: 188 56 35; }
+:root[data-color-theme="tea"] { --theme-primary: #765a35; --theme-shadow-rgb: 118 90 53; }
+:root[data-color-theme="goldred"] { --theme-primary: #ee781f; --theme-shadow-rgb: 238 120 31; }
+:root[data-color-theme="qinglu"] { --theme-primary: #000013; --theme-shadow-rgb: 0 0 19; }
+:root[data-color-theme="titian"] { --theme-primary: #b05b24; --theme-shadow-rgb: 176 91 36; }
+:root[data-color-theme="tiffany"] { --theme-primary: #81cac4; --theme-shadow-rgb: 129 202 196; }
+:root[data-color-theme="bordeaux"] { --theme-primary: #4a010a; --theme-shadow-rgb: 74 1 10; }
+:root[data-color-theme="botanical"] { --theme-primary: #8ab04d; --theme-shadow-rgb: 138 176 77; }
+:root[data-color-theme="blackoak"] { --theme-primary: #202f39; --theme-shadow-rgb: 32 47 57; }
+:root[data-color-theme="capri"] { --theme-primary: #015697; --theme-shadow-rgb: 1 86 151; }
+:root[data-color-theme="scarlet"] { --theme-primary: #c23738; --theme-shadow-rgb: 194 55 56; }
+:root[data-color-theme="ink-teal"] { --theme-primary: #034342; --theme-shadow-rgb: 3 67 66; }
+:root[data-color-theme="chestnut-red"] { --theme-primary: #8c4643; --theme-shadow-rgb: 140 70 67; }
+:root[data-color-theme="berry"] { --theme-primary: #d81e5b; --theme-shadow-rgb: 216 30 91; }
+:root[data-color-theme="blaze-orange"] { --theme-primary: #ff5f00; --theme-shadow-rgb: 255 95 0; }
+:root[data-color-theme="electric-blue"] { --theme-primary: #0099ff; --theme-shadow-rgb: 0 153 255; }
+:root[data-color-theme="lime-green"] { --theme-primary: #bfff00; --theme-shadow-rgb: 191 255 0; }
+:root[data-color-theme="oak-blue"] { --theme-primary: #212f3a; --theme-shadow-rgb: 33 47 58; }
+:root[data-color-theme="dai-blue"] { --theme-primary: #584c5e; --theme-shadow-rgb: 88 76 94; }
+:root[data-color-theme="lang-green"] { --theme-primary: #555b37; --theme-shadow-rgb: 85 91 55; }
+:root[data-color-theme="elegant-yellow"] { --theme-primary: #ffd217; --theme-shadow-rgb: 255 210 23; }
+:root[data-color-theme="kelai"] { --theme-primary: #002e9f; --theme-shadow-rgb: 0 46 159; }
+:root[data-color-theme="yin-red"] { --theme-primary: #be002f; --theme-shadow-rgb: 190 0 47; }
+:root[data-color-theme="red-gold"] { --theme-primary: #f2be1d; --theme-shadow-rgb: 242 190 29; }
+
+/* Message action icons always use the selected theme's deep tone.
+ * This final theme-layer rule intentionally wins over legacy compatibility
+ * styles that previously forced the toolbar back to neutral gray. */
+.message .msg-actions button,
+.message .msg-actions button:hover,
+.message .msg-actions button:focus-visible,
+.message .msg-actions svg,
+.message .msg-actions .gear-icon,
+.message .msg-actions .gear-icon.active,
+.message .msg-actions .save-icon {
+  color: var(--theme-ink) !important;
+  stroke: var(--theme-ink) !important;
+}
+
+/* Keep the separator above each assistant action row on the exact selected
+ * theme tone. Photo backgrounds must not turn this rule into a white line. */
+.message.bot .message-footer,
+#metaAiChatMessages .message.bot .message-footer,
+.pdf-paper-chat-shell .message.bot .message-footer {
+  border-top-color: var(--theme-primary) !important;
+}
+
+/* App chrome and the main composer are brand controls rather than body text.
+ * Keep them on the exact selected theme color instead of the black-mixed ink
+ * or muted text colors used for readable long-form content. */
+.app-titlebar-brand,
+.app-menu-item,
+.app-chrome-icon-btn,
+.app-chrome .theme-toggle,
+.app-chrome .sidebar-toggle,
+.app-chrome .history-toggle,
+.app-chrome-icon-btn:hover,
+.app-menu-item:hover,
+.app-chrome .theme-toggle:hover,
+.app-chrome .sidebar-toggle:hover,
+.app-chrome .history-toggle:hover {
+  color: var(--theme-primary) !important;
+}
+
+.app-chrome svg,
+.app-chrome svg * {
+  color: var(--theme-primary) !important;
+  stroke: var(--theme-primary) !important;
+}
+
+.app-academic-workflows,
+.app-academic-workflow-btn,
+.app-academic-workflow-btn:hover,
+.app-academic-workflow-btn:focus-visible {
+  color: var(--theme-primary) !important;
+}
+
+.app-academic-workflow-icon {
+  display: inline-block;
+  width: 17px;
+  height: 17px;
+  flex: 0 0 17px;
+  background: currentColor;
+  -webkit-mask-image: var(--workflow-icon);
+  mask-image: var(--workflow-icon);
+  -webkit-mask-position: center;
+  mask-position: center;
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+  -webkit-mask-size: contain;
+  mask-size: contain;
+}
+
+.app-academic-workflow-icon.auto-research {
+  --workflow-icon: url('/icons/workflows/auto-research.svg');
+}
+
+.app-academic-workflow-icon.paper-writing {
+  --workflow-icon: url('/icons/workflows/paper-writing.svg');
+}
+
+.app-academic-workflow-icon.bibliometrics {
+  --workflow-icon: url('/icons/workflows/bibliometrics.svg');
+}
+
+.app-academic-workflow-icon.pdf-manager {
+  --workflow-icon: url('/icons/workflows/pdf-manager.svg');
+}
+
+.app-academic-workflow-icon.meta-analysis {
+  --workflow-icon: url('/icons/workflows/meta-analysis.svg');
+}
+
+.app-academic-workflow-icon.research-enhancement {
+  --workflow-icon: url('/icons/workflows/research-enhancement.svg');
+}
+
+@media (max-width: 820px) {
+  .app-academic-workflow-icon {
+    width: 15px;
+    height: 15px;
+    flex-basis: 15px;
+  }
+}
+
+.input-area-container .upload-experiment-btn,
+.input-area-container .composer-framework-btn,
+.input-area-container .composer-workspace-btn,
+.input-area-container .main-context-source-trigger.composer-context-btn,
+.input-area-container .upload-experiment-btn:hover,
+.input-area-container .composer-framework-btn:hover,
+.input-area-container .composer-workspace-btn:hover,
+.input-area-container .main-context-source-trigger.composer-context-btn:hover,
+.composer-provider-btn,
+.composer-provider-btn:hover,
+.composer-provider-selector.open .composer-provider-btn,
+.composer-provider-current-model {
+  color: var(--theme-primary) !important;
+}
+
+.input-area-container .composer-left-actions svg,
+.input-area-container .composer-left-actions svg *,
+.composer-provider-btn svg,
+.composer-provider-btn svg * {
+  color: var(--theme-primary) !important;
+  stroke: var(--theme-primary) !important;
+}
+
+:root:is(
+  [data-color-theme="fluorescent"], [data-color-theme="pomegranate"],
+  [data-color-theme="honey"], [data-color-theme="deepsea"],
+  [data-color-theme="charcoal"], [data-color-theme="sweetpink"], [data-color-theme="ji-green"],
+  [data-color-theme="lingxiao"], [data-color-theme="shanzhi"], [data-color-theme="wanxiang"],
+  [data-color-theme="pinegreen"], [data-color-theme="fochi"], [data-color-theme="mogreen"],
+  [data-color-theme="mossgreen"], [data-color-theme="oubi"],
+  [data-color-theme="landy"], [data-color-theme="calyxgreen"],
+  [data-color-theme="true-red"], [data-color-theme="liuli"], [data-color-theme="yuzi"],
+  [data-color-theme="xungreen"], [data-color-theme="greentea"],
+  [data-color-theme="inkgreen"], [data-color-theme="greenshen"], [data-color-theme="headdress-red"],
+  [data-color-theme="tea"], [data-color-theme="goldred"], [data-color-theme="qinglu"],
+  [data-color-theme="titian"],
+  [data-color-theme="tiffany"], [data-color-theme="bordeaux"],
+  [data-color-theme="botanical"],
+  [data-color-theme="blackoak"], [data-color-theme="capri"],
+  [data-color-theme="scarlet"], [data-color-theme="ink-teal"],
+  [data-color-theme="chestnut-red"], [data-color-theme="berry"],
+  [data-color-theme="blaze-orange"], [data-color-theme="electric-blue"],
+  [data-color-theme="lime-green"], [data-color-theme="oak-blue"],
+  [data-color-theme="dai-blue"], [data-color-theme="lang-green"],
+  [data-color-theme="elegant-yellow"], [data-color-theme="kelai"],
+  [data-color-theme="yin-red"], [data-color-theme="red-gold"]
+) {
+  --theme-primary-hover: color-mix(in srgb, var(--theme-primary) 78%, #000000);
+  --theme-ink: color-mix(in srgb, var(--theme-primary) 42%, #111827);
+  --theme-mid: color-mix(in srgb, var(--theme-primary) 38%, #4b5563);
+  --theme-border: color-mix(in srgb, var(--theme-primary) 25%, #ffffff);
+  --theme-soft: color-mix(in srgb, var(--theme-primary) 14%, #ffffff);
+  --theme-softer: color-mix(in srgb, var(--theme-primary) 6%, #ffffff);
+}
+
+:root:is(
+  [data-color-theme="fluorescent"], [data-color-theme="honey"],
+  [data-color-theme="shanzhi"], [data-color-theme="wanxiang"],
+  [data-color-theme="fochi"], [data-color-theme="mogreen"], [data-color-theme="oubi"],
+  [data-color-theme="yuzi"], [data-color-theme="greentea"],
+  [data-color-theme="tiffany"], [data-color-theme="botanical"],
+  [data-color-theme="blaze-orange"], [data-color-theme="electric-blue"],
+  [data-color-theme="lime-green"], [data-color-theme="elegant-yellow"],
+  [data-color-theme="red-gold"]
+) {
+  --theme-on-primary: #202f39;
+}
+
+:root,
+:root[data-theme="dark"],
+:root[data-theme="light"] {
+  --bg-primary: #ffffff;
+  --bg-sidebar: #ffffff;
+  --bg-secondary: var(--theme-softer);
+  --bg-tertiary: var(--theme-soft);
+  --message-bubble-bg: #ffffff;
+  --bg-input: #ffffff;
+  --text-primary: var(--theme-ink);
+  --text-secondary: var(--theme-mid);
+  --border-color: var(--theme-border);
+  --accent-color: var(--theme-primary);
+  --accent-hover: var(--theme-primary-hover);
+  --danger-color: #b42318;
+  --success-bg: var(--theme-softer);
+  --message-border: var(--theme-soft);
+  --code-bg: var(--theme-softer);
+  --scrollbar-thumb: var(--theme-soft);
+  --scrollbar-thumb-hover: var(--theme-border);
+  --history-active: var(--theme-soft);
+  --modal-bg: #ffffff;
+  --modal-border: var(--theme-border);
+  --sidebar-border: var(--theme-soft);
+  --modal-input-bg: #ffffff;
+  --modal-input-border: var(--theme-border);
+  --modal-code-bg: var(--theme-softer);
+  --modal-tip-bg: var(--theme-softer);
+  --brand-title-color: var(--theme-primary);
+  --sidebar-item-hover: var(--theme-softer);
+  --sidebar-item-active: var(--theme-soft);
+  --sidebar-item-text: var(--theme-ink);
+  --sidebar-item-muted: var(--theme-mid);
+  --sidebar-section-title: var(--theme-mid);
+  --link-color: var(--theme-primary);
+  --link-hover-color: var(--theme-primary-hover);
+}
+
+/* Shared chat surfaces use a theme-tinted frosted layer. Agent transcript
+ * wrappers stay transparent so the log and final answer remain separate. */
+.message.bot > .content:not(.agent-transcript-content),
+.message.bot.pi-agent-message > .content:not(.agent-transcript-content),
+#metaAiChatMessages .message.bot > .content:not(.agent-transcript-content),
+.pdf-paper-chat-shell .message.bot > .content:not(.agent-transcript-content),
+.message.bot .agent-transcript,
+.message.bot .agent-transcript-answer,
+#metaAiChatMessages .message.bot .agent-transcript,
+#metaAiChatMessages .message.bot .agent-transcript-answer,
+.pdf-paper-chat-shell .message.bot .agent-transcript,
+.pdf-paper-chat-shell .message.bot .agent-transcript-answer {
+  background:
+    linear-gradient(
+      135deg,
+      color-mix(in srgb, var(--theme-softer) 58%, transparent),
+      color-mix(in srgb, var(--theme-soft) 36%, transparent)
+    ) !important;
+  border-color: var(--theme-ink) !important;
+  -webkit-backdrop-filter: blur(18px) saturate(145%) contrast(1.03);
+  backdrop-filter: blur(18px) saturate(145%) contrast(1.03);
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.52),
+    inset 0 -1px 0 rgb(var(--theme-shadow-rgb) / 0.08),
+    0 10px 26px rgb(var(--theme-shadow-rgb) / 0.08) !important;
+}
+
+.message.bot > .content.agent-transcript-content,
+#metaAiChatMessages .message.bot > .content.agent-transcript-content,
+.pdf-paper-chat-shell .message.bot > .content.agent-transcript-content {
+  background: transparent !important;
+  border-color: transparent !important;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  box-shadow: none !important;
+}
+
+/* Keep ordinary assistant replies and Agent replies on one visual contract:
+ * the answer bubble ends first, while actions and the disclaimer live on a
+ * separate row below it. The footer remains in the existing DOM so copy,
+ * share, keyword and draft actions keep their current event handlers. */
+.message.bot > .content:not(.agent-transcript-content) {
+  position: relative;
+  margin-bottom: 44px;
+}
+
+.message.bot > .content:not(.agent-transcript-content) > .message-footer {
+  position: absolute;
+  top: calc(100% + 9px);
+  right: 0;
+  left: 0;
+  width: 100%;
+  box-sizing: border-box;
+  margin: 0 !important;
+  padding: 7px 3px 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  .message.bot > .content:not(.agent-transcript-content),
+  .message.bot.pi-agent-message > .content:not(.agent-transcript-content),
+  #metaAiChatMessages .message.bot > .content:not(.agent-transcript-content),
+  .pdf-paper-chat-shell .message.bot > .content:not(.agent-transcript-content),
+  .message.bot .agent-transcript,
+  .message.bot .agent-transcript-answer,
+  #metaAiChatMessages .message.bot .agent-transcript,
+  #metaAiChatMessages .message.bot .agent-transcript-answer,
+  .pdf-paper-chat-shell .message.bot .agent-transcript,
+  .pdf-paper-chat-shell .message.bot .agent-transcript-answer,
+  .message.user > .content,
+  #metaAiChatMessages .message.user > .content,
+  .pdf-paper-chat-shell .message.user > .content {
+    background: var(--theme-softer) !important;
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+}
+
+.message.user > .content,
+#metaAiChatMessages .message.user > .content,
+.pdf-paper-chat-shell .message.user > .content {
+  border: 1px solid color-mix(in srgb, var(--theme-border) 58%, transparent) !important;
+  background:
+    linear-gradient(
+      135deg,
+      color-mix(in srgb, var(--theme-softer) 54%, transparent),
+      color-mix(in srgb, var(--theme-soft) 32%, transparent)
+    ) !important;
+  -webkit-backdrop-filter: blur(18px) saturate(145%) contrast(1.03);
+  backdrop-filter: blur(18px) saturate(145%) contrast(1.03);
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.42),
+    inset 0 -1px 0 rgb(var(--theme-shadow-rgb) / 0.06),
+    0 8px 22px rgb(var(--theme-shadow-rgb) / 0.06) !important;
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  .message.user > .content,
+  #metaAiChatMessages .message.user > .content,
+  .pdf-paper-chat-shell .message.user > .content {
+    background: var(--theme-softer) !important;
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+}
+
+/* Theme-tinted frosted surfaces inside chat content. Tables remain readable
+ * without covering a selected chat background with an opaque white card. */
+.message.bot .message-markdown-table-scroll,
+#metaAiChatMessages .message.bot .message-markdown-table-scroll,
+.pdf-paper-chat-shell .message.bot .message-markdown-table-scroll {
+  border-color: var(--theme-ink) !important;
+  background:
+    linear-gradient(
+      135deg,
+      color-mix(in srgb, var(--theme-softer) 48%, transparent),
+      color-mix(in srgb, var(--theme-soft) 28%, transparent)
+    ) !important;
+  -webkit-backdrop-filter: blur(16px) saturate(138%) contrast(1.02);
+  backdrop-filter: blur(16px) saturate(138%) contrast(1.02);
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.34),
+    0 8px 20px rgb(var(--theme-shadow-rgb) / 0.05) !important;
+}
+
+.message.bot .message-markdown-table,
+#metaAiChatMessages .message.bot .message-markdown-table,
+.pdf-paper-chat-shell .message.bot .message-markdown-table {
+  background: transparent !important;
+}
+
+.message.bot .message-markdown-table th,
+#metaAiChatMessages .message.bot .message-markdown-table th,
+.pdf-paper-chat-shell .message.bot .message-markdown-table th {
+  background: color-mix(in srgb, var(--theme-soft) 46%, transparent) !important;
+}
+
+.message.bot .message-markdown-table td,
+#metaAiChatMessages .message.bot .message-markdown-table td,
+.pdf-paper-chat-shell .message.bot .message-markdown-table td {
+  background: color-mix(in srgb, var(--theme-softer) 16%, transparent) !important;
+}
+
+.message.bot .message-markdown-table th,
+.message.bot .message-markdown-table td,
+#metaAiChatMessages .message.bot .message-markdown-table th,
+#metaAiChatMessages .message.bot .message-markdown-table td,
+.pdf-paper-chat-shell .message.bot .message-markdown-table th,
+.pdf-paper-chat-shell .message.bot .message-markdown-table td {
+  border-color: var(--theme-ink) !important;
+}
+
+/* AI image collections use the same frosted surface contract as assistant
+ * messages. Keep the image pixels untouched while allowing the selected chat
+ * background to remain visible through the collection and card gutters. */
+.message.bot .output-image-collection,
+#metaAiChatMessages .message.bot .output-image-collection,
+.pdf-paper-chat-shell .message.bot .output-image-collection {
+  border-color: color-mix(in srgb, var(--theme-border) 68%, transparent) !important;
+  background:
+    linear-gradient(
+      135deg,
+      color-mix(in srgb, var(--theme-softer) 54%, transparent),
+      color-mix(in srgb, var(--theme-soft) 30%, transparent)
+    ) !important;
+  -webkit-backdrop-filter: blur(20px) saturate(145%) contrast(1.03);
+  backdrop-filter: blur(20px) saturate(145%) contrast(1.03);
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.44),
+    inset 0 -1px 0 rgb(var(--theme-shadow-rgb) / 0.07),
+    0 10px 26px rgb(var(--theme-shadow-rgb) / 0.07) !important;
+}
+
+.message.bot .workspace-image-thumb.output-image-collection-thumb,
+#metaAiChatMessages .message.bot .workspace-image-thumb.output-image-collection-thumb,
+.pdf-paper-chat-shell .message.bot .workspace-image-thumb.output-image-collection-thumb,
+.message.bot .output-image-collection-more,
+#metaAiChatMessages .message.bot .output-image-collection-more,
+.pdf-paper-chat-shell .message.bot .output-image-collection-more {
+  border-color: color-mix(in srgb, var(--theme-border) 54%, transparent) !important;
+  background:
+    linear-gradient(
+      145deg,
+      color-mix(in srgb, var(--theme-softer) 42%, transparent),
+      color-mix(in srgb, var(--theme-soft) 22%, transparent)
+    ) !important;
+  -webkit-backdrop-filter: blur(14px) saturate(138%);
+  backdrop-filter: blur(14px) saturate(138%);
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.38),
+    0 7px 18px rgb(var(--theme-shadow-rgb) / 0.05) !important;
+}
+
+.message.bot .workspace-image-thumb.output-image-collection-thumb:hover,
+#metaAiChatMessages .message.bot .workspace-image-thumb.output-image-collection-thumb:hover,
+.pdf-paper-chat-shell .message.bot .workspace-image-thumb.output-image-collection-thumb:hover {
+  border-color: var(--theme-primary) !important;
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.48),
+    0 10px 24px rgb(var(--theme-shadow-rgb) / 0.13) !important;
+}
+
+/* The composer uses a slightly more opaque glass layer than messages so text,
+ * placeholders and controls remain stable over detailed photography. */
+.input-area-container,
+.meta-analysis-ai-composer.input-area-container {
+  border-color: color-mix(in srgb, var(--theme-border) 72%, transparent) !important;
+  background:
+    linear-gradient(
+      135deg,
+      color-mix(in srgb, var(--theme-softer) 78%, transparent),
+      color-mix(in srgb, var(--theme-soft) 58%, transparent)
+    ) !important;
+  -webkit-backdrop-filter: blur(20px) saturate(140%) contrast(1.03);
+  backdrop-filter: blur(20px) saturate(140%) contrast(1.03);
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.46),
+    inset 0 -1px 0 rgb(var(--theme-shadow-rgb) / 0.06),
+    0 10px 28px rgb(var(--theme-shadow-rgb) / 0.08) !important;
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  .message.bot .message-markdown-table-scroll,
+  #metaAiChatMessages .message.bot .message-markdown-table-scroll,
+  .pdf-paper-chat-shell .message.bot .message-markdown-table-scroll,
+  .message.bot .output-image-collection,
+  #metaAiChatMessages .message.bot .output-image-collection,
+  .pdf-paper-chat-shell .message.bot .output-image-collection,
+  .message.bot .workspace-image-thumb.output-image-collection-thumb,
+  #metaAiChatMessages .message.bot .workspace-image-thumb.output-image-collection-thumb,
+  .pdf-paper-chat-shell .message.bot .workspace-image-thumb.output-image-collection-thumb,
+  .message.bot .output-image-collection-more,
+  #metaAiChatMessages .message.bot .output-image-collection-more,
+  .pdf-paper-chat-shell .message.bot .output-image-collection-more,
+  .input-area-container,
+  .meta-analysis-ai-composer.input-area-container {
+    background: var(--theme-softer) !important;
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+}
+
+.empty-state .brand-title {
+  color: var(--brand-title-color) !important;
+}
+
+.empty-state .typing-greeting,
+.empty-state .typing-greeting span,
+.ai-disclaimer {
+  color: var(--theme-primary) !important;
+}
+
+.empty-state .typing-greeting span {
+  border-right-color: var(--theme-primary) !important;
+}
+
+.ai-disclaimer {
+  opacity: 1 !important;
+}
+
+body {
+  background: #ffffff !important;
+}
+
+/* Color picker */
+.app-chrome .theme-toggle {
+  color: var(--theme-primary) !important;
+}
+
+.app-chrome .theme-toggle.active {
+  background: var(--theme-softer) !important;
+  box-shadow: inset 0 0 0 1px var(--theme-border) !important;
+}
+
+.color-theme-picker {
+  position: fixed;
+  z-index: 40050;
+  width: min(720px, calc(100vw - 24px));
+  padding: 10px;
+  border: 1px solid color-mix(in srgb, var(--theme-primary) 24%, rgb(255 255 255 / 0.62));
+  border-radius: 12px;
+  background: color-mix(in srgb, rgb(255 255 255 / 0.78) 82%, var(--theme-softer));
+  color: var(--theme-ink);
+  box-shadow:
+    0 18px 48px rgb(var(--theme-shadow-rgb) / 0.18),
+    inset 0 1px 0 rgb(255 255 255 / 0.68);
+  -webkit-backdrop-filter: blur(24px) saturate(155%) contrast(1.03);
+  backdrop-filter: blur(24px) saturate(155%) contrast(1.03);
+  -webkit-app-region: no-drag;
+}
+
+.color-theme-picker[hidden] {
+  display: none !important;
+}
+
+.color-theme-picker-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 1px 1px 8px;
+}
+
+.color-theme-picker-head > div {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.color-theme-picker-head strong {
+  color: var(--theme-ink);
+  font-size: 13px;
+}
+
+.color-theme-picker-close {
+  width: 26px !important;
+  height: 26px !important;
+  min-width: 26px !important;
+  padding: 0 !important;
+  border: 0 !important;
+  border-radius: 7px !important;
+  background: transparent !important;
+  color: var(--theme-mid) !important;
+  display: inline-grid !important;
+  place-items: center;
+  cursor: pointer;
+}
+
+.color-theme-picker-close:hover {
+  background: var(--theme-softer) !important;
+  color: var(--theme-primary) !important;
+}
+
+.color-theme-options {
+  display: block;
+  max-height: min(388px, calc(100vh - 92px));
+  overflow-y: auto;
+  padding: 0 2px 2px 0;
+  scrollbar-gutter: stable;
+}
+
+.color-theme-group + .color-theme-group {
+  margin-top: 10px;
+  padding-top: 9px;
+  border-top: 1px solid var(--theme-border);
+}
+
+.color-theme-group-title {
+  margin: 0 2px 6px;
+  color: var(--theme-mid);
+  font-size: 10px;
+  font-weight: 750;
+  letter-spacing: 0.08em;
+}
+
+.color-theme-group-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.color-theme-option {
+  min-width: 0;
+  min-height: 48px;
+  padding: 7px 8px !important;
+  border: 1px solid transparent !important;
+  border-radius: 9px !important;
+  background: rgb(255 255 255 / 0.58) !important;
+  color: var(--theme-ink) !important;
+  display: flex !important;
+  align-items: center;
+  justify-content: flex-start !important;
+  gap: 8px;
+  text-align: left;
+  cursor: pointer;
+  box-shadow: none !important;
+  -webkit-backdrop-filter: blur(10px) saturate(125%);
+  backdrop-filter: blur(10px) saturate(125%);
+}
+
+.color-theme-option:hover {
+  border-color: var(--theme-border) !important;
+  background: var(--theme-softer) !important;
+  color: var(--theme-ink) !important;
+  transform: none !important;
+}
+
+.color-theme-option.selected {
+  border-color: var(--theme-primary) !important;
+  background: var(--theme-softer) !important;
+  box-shadow: inset 0 0 0 1px var(--theme-primary) !important;
+}
+
+.color-theme-option > span:last-child {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.color-theme-option strong {
+  overflow: hidden;
+  color: inherit;
+  font-size: 12px;
+  line-height: 1.15;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.color-theme-option small {
+  overflow: hidden;
+  color: var(--theme-mid);
+  font-size: 9px;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.color-theme-swatch {
+  position: relative;
+  width: 28px;
+  height: 28px;
+  flex: 0 0 28px;
+  border: 1px solid rgb(15 23 42 / 0.08);
+  border-radius: 50%;
+  background: #ffffff;
+  overflow: hidden;
+}
+
+.color-theme-swatch i {
+  position: absolute;
+  display: block;
+  border-radius: 50%;
+}
+
+.color-theme-swatch i:first-child {
+  width: 22px;
+  height: 22px;
+  left: -4px;
+  bottom: -3px;
+}
+
+.color-theme-swatch i:last-child {
+  width: 18px;
+  height: 18px;
+  right: -4px;
+  top: -3px;
+}
+
+.color-theme-swatch-ink i:first-child { background: #111827; }
+.color-theme-swatch-ink i:last-child { background: #e5e7eb; }
+.color-theme-swatch-pink i:first-child { background: #be185d; }
+.color-theme-swatch-pink i:last-child { background: #f7dce6; }
+.color-theme-swatch-ocean i:first-child { background: #1d4ed8; }
+.color-theme-swatch-ocean i:last-child { background: #dfe8f8; }
+.color-theme-swatch-teal i:first-child { background: #0f766e; }
+.color-theme-swatch-teal i:last-child { background: #dcecea; }
+.color-theme-swatch-violet i:first-child { background: #7e22ce; }
+.color-theme-swatch-violet i:last-child { background: #eadff3; }
+.color-theme-swatch-clay i:first-child { background: #c2410c; }
+.color-theme-swatch-clay i:last-child { background: #f2e1da; }
+.color-theme-swatch-amber i:first-child { background: #a16207; }
+.color-theme-swatch-amber i:last-child { background: #f1e8d7; }
+.color-theme-swatch-aurora i:first-child { background: #7047d7; }
+.color-theme-swatch-aurora i:last-child { background: #9f82fd; }
+.color-theme-swatch-crimson i:first-child { background: #d8001c; }
+.color-theme-swatch-crimson i:last-child { background: #eec1a7; }
+.color-theme-swatch-mountain i:first-child { background: #174973; }
+.color-theme-swatch-mountain i:last-child { background: #a1d4ef; }
+.color-theme-swatch-magenta i:first-child { background: #c51f63; }
+.color-theme-swatch-magenta i:last-child { background: #f1dddf; }
+.color-theme-swatch-cocoa i:first-child { background: #765435; }
+.color-theme-swatch-cocoa i:last-child { background: #fbe9be; }
+.color-theme-swatch-midnight i:first-child { background: #0e3265; }
+.color-theme-swatch-midnight i:last-child { background: #e3f9fd; }
+.color-theme-swatch-royal i:first-child { background: #0b3289; }
+.color-theme-swatch-royal i:last-child { background: #dee6f5; }
+.color-theme-swatch-orange i:first-child { background: #ff8a00; }
+.color-theme-swatch-orange i:last-child { background: #f8e3cc; }
+.color-theme-swatch-peacock i:first-child { background: #008c8d; }
+.color-theme-swatch-peacock i:last-child { background: #d8ece8; }
+.color-theme-swatch-jade i:first-child { background: #087879; }
+.color-theme-swatch-jade i:last-child { background: #bee0d2; }
+
+.color-theme-swatch-ink { --swatch-color: #111827; }
+.color-theme-swatch-pink { --swatch-color: #be185d; }
+.color-theme-swatch-ocean { --swatch-color: #1d4ed8; }
+.color-theme-swatch-teal { --swatch-color: #0f766e; }
+.color-theme-swatch-violet { --swatch-color: #7e22ce; }
+.color-theme-swatch-clay { --swatch-color: #c2410c; }
+.color-theme-swatch-amber { --swatch-color: #a16207; }
+.color-theme-swatch-aurora { --swatch-color: #9f82fd; }
+.color-theme-swatch-crimson { --swatch-color: #d7000f; }
+.color-theme-swatch-mountain { --swatch-color: #174973; }
+.color-theme-swatch-magenta { --swatch-color: #c51f63; }
+.color-theme-swatch-cocoa { --swatch-color: #765a35; }
+.color-theme-swatch-midnight { --swatch-color: #0e3265; }
+.color-theme-swatch-royal { --swatch-color: #0b3289; }
+.color-theme-swatch-orange { --swatch-color: #ff8a00; }
+.color-theme-swatch-peacock { --swatch-color: #008c8d; }
+.color-theme-swatch-jade { --swatch-color: #087879; }
+.color-theme-swatch-fluorescent { --swatch-color: #00e08e; }
+.color-theme-swatch-pomegranate { --swatch-color: #e72d48; }
+.color-theme-swatch-honey { --swatch-color: #fbea03; }
+.color-theme-swatch-deepsea { --swatch-color: #122e8a; }
+.color-theme-swatch-charcoal { --swatch-color: #1a1a1d; }
+.color-theme-swatch-sweetpink { --swatch-color: #e6397c; }
+.color-theme-swatch-ji-green { --swatch-color: #215a59; }
+.color-theme-swatch-lingxiao { --swatch-color: #ed723f; }
+.color-theme-swatch-shanzhi { --swatch-color: #999a7e; }
+.color-theme-swatch-wanxiang { --swatch-color: #d7c6a6; }
+.color-theme-swatch-pinegreen { --swatch-color: #3d6036; }
+.color-theme-swatch-fochi { --swatch-color: #c7935f; }
+.color-theme-swatch-mogreen { --swatch-color: #a0c198; }
+.color-theme-swatch-mossgreen { --swatch-color: #535e4b; }
+.color-theme-swatch-oubi { --swatch-color: #c0d695; }
+.color-theme-swatch-landy { --swatch-color: #7a916d; }
+.color-theme-swatch-calyxgreen { --swatch-color: #014946; }
+.color-theme-swatch-true-red { --swatch-color: #c3272b; }
+.color-theme-swatch-liuli { --swatch-color: #0b6051; }
+.color-theme-swatch-yuzi { --swatch-color: #fabe51; }
+.color-theme-swatch-xungreen { --swatch-color: #1c6c4c; }
+.color-theme-swatch-greentea { --swatch-color: #91b821; }
+.color-theme-swatch-inkgreen { --swatch-color: #1c2d25; }
+.color-theme-swatch-greenshen { --swatch-color: #354e40; }
+.color-theme-swatch-headdress-red { --swatch-color: #bc3823; }
+.color-theme-swatch-tea { --swatch-color: #765a35; }
+.color-theme-swatch-goldred { --swatch-color: #ee781f; }
+.color-theme-swatch-qinglu { --swatch-color: #000013; }
+.color-theme-swatch-titian { --swatch-color: #b05b24; }
+.color-theme-swatch-tiffany { --swatch-color: #81cac4; }
+.color-theme-swatch-bordeaux { --swatch-color: #4a010a; }
+.color-theme-swatch-botanical { --swatch-color: #8ab04d; }
+.color-theme-swatch-blackoak { --swatch-color: #202f39; }
+.color-theme-swatch-capri { --swatch-color: #015697; }
+.color-theme-swatch-scarlet { --swatch-color: #c23738; }
+.color-theme-swatch-ink-teal { --swatch-color: #034342; }
+.color-theme-swatch-chestnut-red { --swatch-color: #8c4643; }
+.color-theme-swatch-berry { --swatch-color: #d81e5b; }
+.color-theme-swatch-blaze-orange { --swatch-color: #ff5f00; }
+.color-theme-swatch-electric-blue { --swatch-color: #0099ff; }
+.color-theme-swatch-lime-green { --swatch-color: #bfff00; }
+.color-theme-swatch-oak-blue { --swatch-color: #212f3a; }
+.color-theme-swatch-dai-blue { --swatch-color: #584c5e; }
+.color-theme-swatch-lang-green { --swatch-color: #555b37; }
+.color-theme-swatch-elegant-yellow { --swatch-color: #ffd217; }
+.color-theme-swatch-kelai { --swatch-color: #002e9f; }
+.color-theme-swatch-yin-red { --swatch-color: #be002f; }
+.color-theme-swatch-red-gold { --swatch-color: #f2be1d; }
+
+.color-theme-swatch[class*="color-theme-swatch-"] i:first-child {
+  background: var(--swatch-color) !important;
+}
+
+.color-theme-swatch[class*="color-theme-swatch-"] i:last-child {
+  background: color-mix(in srgb, var(--swatch-color) 22%, #ffffff) !important;
+}
+
+/* Important dark UI surfaces now follow the selected primary color. */
+#mainChatPiQueuePanel.pi-queue-panel,
+#mainChatPiQueuePanel.pi-queue-panel:hover,
+.meta-analysis-running-strip.pi-queue-panel,
+#modalOverlay.meta-analysis-shared-composer-overlay #metaAnalysisPiQueuePanel.meta-analysis-running-strip.pi-queue-panel,
+#modalOverlay.meta-analysis-shared-composer-overlay #metaAnalysisPiQueuePanel.meta-analysis-running-strip.pi-queue-panel:hover {
+  border-color: color-mix(in srgb, var(--theme-primary-hover) 76%, rgba(255, 255, 255, 0.42)) !important;
+  background:
+    linear-gradient(
+      135deg,
+      rgba(255, 255, 255, 0.12),
+      rgba(255, 255, 255, 0.035)
+    ) !important;
+  color: var(--text-primary) !important;
+  -webkit-backdrop-filter: blur(22px) saturate(150%) contrast(1.04);
+  backdrop-filter: blur(22px) saturate(150%) contrast(1.04);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.58),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.18),
+    0 10px 26px rgb(var(--theme-shadow-rgb) / 0.12) !important;
+}
+
+#mainChatPiQueuePanel .pi-queue-head,
+.meta-analysis-running-strip .pi-queue-head,
+#modalOverlay.meta-analysis-shared-composer-overlay #metaAnalysisPiQueuePanel.meta-analysis-running-strip .pi-queue-head {
+  background:
+    linear-gradient(
+      135deg,
+      color-mix(in srgb, var(--theme-primary) 60%, transparent),
+      color-mix(in srgb, var(--theme-primary-hover) 46%, transparent)
+    ) !important;
+  color: var(--theme-on-primary) !important;
+  -webkit-backdrop-filter: blur(18px) saturate(148%);
+  backdrop-filter: blur(18px) saturate(148%);
+  border-bottom: 0 !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.38);
+}
+
+#mainChatPiQueuePanel .pi-preflight-current,
+#mainChatPiQueuePanel .pi-preflight-log,
+#mainChatPiQueuePanel .pi-queue-items,
+.meta-analysis-running-strip .pi-queue-items {
+  background:
+    linear-gradient(
+      135deg,
+      rgba(255, 255, 255, 0.14),
+      rgba(255, 255, 255, 0.045)
+    ) !important;
+  color: var(--text-primary) !important;
+  -webkit-backdrop-filter: blur(20px) saturate(142%);
+  backdrop-filter: blur(20px) saturate(142%);
+  border-top: 0 !important;
+  border-bottom: 0 !important;
+  box-shadow: none !important;
+}
+
+.agent-transcript.is-running .agent-transcript-header {
+  border-color: var(--theme-primary-hover) !important;
+  background: var(--theme-primary) !important;
+  color: var(--theme-on-primary) !important;
+}
+
+.agent-transcript.is-running {
+  border-color: var(--theme-primary) !important;
+}
+
+.agent-transcript.has-scroll-log .agent-transcript-body {
+  scrollbar-color: var(--theme-primary) transparent;
+}
+
+.agent-transcript.has-scroll-log .agent-transcript-body::-webkit-scrollbar-track {
+  background: transparent !important;
+}
+
+.agent-transcript.has-scroll-log .agent-transcript-body::-webkit-scrollbar-thumb {
+  background: var(--theme-primary) !important;
+  border: 1px solid color-mix(in srgb, var(--theme-primary) 72%, rgba(255, 255, 255, 0.62));
+  border-radius: 999px;
+}
+
+.agent-transcript.has-scroll-log .agent-transcript-body::-webkit-scrollbar-thumb:hover {
+  background: var(--theme-primary-hover) !important;
+}
+
+/* AI-generated file cards share the same neutral glass surface as messages.
+ * Keep the glass untinted so filenames and file-type colors remain legible
+ * across every selectable chat background and color theme. */
+.output-attachment-card,
+.output-attachment-overflow > summary {
+  border-color: color-mix(in srgb, var(--theme-primary) 34%, rgba(255, 255, 255, 0.58)) !important;
+  background:
+    linear-gradient(
+      135deg,
+      rgba(255, 255, 255, 0.48),
+      rgba(255, 255, 255, 0.20)
+    ) !important;
+  -webkit-backdrop-filter: blur(18px) saturate(145%) contrast(1.03);
+  backdrop-filter: blur(18px) saturate(145%) contrast(1.03);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.66),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.18),
+    0 7px 18px rgb(var(--theme-shadow-rgb) / 0.08) !important;
+}
+
+.output-attachment-card-clickable {
+  transition:
+    border-color 180ms ease,
+    background-color 180ms ease,
+    box-shadow 180ms ease;
+}
+
+.output-attachment-card-clickable:hover,
+.output-attachment-overflow > summary:hover {
+  border-color: var(--theme-primary) !important;
+  background:
+    linear-gradient(
+      135deg,
+      rgba(255, 255, 255, 0.58),
+      rgba(255, 255, 255, 0.28)
+    ) !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.74),
+    0 8px 20px rgb(var(--theme-shadow-rgb) / 0.11) !important;
+}
+
+.output-attachment-card .output-attachment-icon {
+  border: 1px solid rgba(255, 255, 255, 0.46);
+  background: rgba(255, 255, 255, 0.24) !important;
+  -webkit-backdrop-filter: blur(10px) saturate(130%);
+  backdrop-filter: blur(10px) saturate(130%);
+}
+
+.output-attachment-card .output-attachment-open {
+  border-color: color-mix(in srgb, var(--theme-primary) 30%, rgba(255, 255, 255, 0.56)) !important;
+  background: rgba(255, 255, 255, 0.14) !important;
+}
+
+.output-attachment-card .output-attachment-open:hover {
+  border-color: var(--theme-primary) !important;
+  background: rgba(255, 255, 255, 0.36) !important;
+  color: var(--theme-primary) !important;
+}
+
+/* Inline citations, short identifiers and local paths inside AI answers used
+ * to inherit the opaque white code surface. Give only those inline elements
+ * a quieter glass treatment; fenced code blocks remain unchanged. */
+.message.bot .content code.message-inline-code,
+.message.bot .content .message-local-file-link,
+#metaAiChatMessages .message.bot .content code.message-inline-code,
+#metaAiChatMessages .message.bot .content .message-local-file-link,
+.pdf-paper-chat-shell .message.bot .content code.message-inline-code,
+.pdf-paper-chat-shell .message.bot .content .message-local-file-link {
+  border-color: color-mix(in srgb, var(--theme-primary) 28%, rgba(255, 255, 255, 0.48)) !important;
+  background:
+    linear-gradient(
+      135deg,
+      rgba(255, 255, 255, 0.34),
+      rgba(255, 255, 255, 0.16)
+    ) !important;
+  color: var(--text-primary) !important;
+  -webkit-backdrop-filter: blur(10px) saturate(135%);
+  backdrop-filter: blur(10px) saturate(135%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.48),
+    0 2px 7px rgb(var(--theme-shadow-rgb) / 0.05);
+}
+
+.message.bot .content .message-local-file-link:hover,
+#metaAiChatMessages .message.bot .content .message-local-file-link:hover,
+.pdf-paper-chat-shell .message.bot .content .message-local-file-link:hover {
+  border-color: var(--theme-primary) !important;
+  background:
+    linear-gradient(
+      135deg,
+      rgba(255, 255, 255, 0.42),
+      rgba(255, 255, 255, 0.22)
+    ) !important;
+  color: var(--theme-primary) !important;
+}
+
+#mainChatPiQueuePanel .pi-queue-title,
+.meta-analysis-running-strip .pi-queue-title,
+.agent-transcript.is-running .agent-transcript-header,
+.agent-transcript.is-running .agent-transcript-header * {
+  color: var(--theme-on-primary) !important;
+}
+
+#mainChatPiQueuePanel .pi-queue-item-text,
+.meta-analysis-running-strip .pi-queue-item-text {
+  color: var(--text-primary) !important;
+}
+
+#mainChatPiQueuePanel .pi-queue-item-actions button,
+.meta-analysis-running-strip .pi-queue-item-actions button {
+  color: var(--theme-primary) !important;
+}
+
+#mainChatPiQueuePanel .pi-queue-item-actions button:hover,
+#mainChatPiQueuePanel .pi-queue-item-actions button:focus-visible {
+  background: #ffffff !important;
+  color: var(--theme-primary) !important;
+  outline: none;
+}
+
+#mainChatPiQueuePanel .pi-queue-live-dot,
+#mainChatPiQueuePanel.running .pi-queue-live-dot,
+.meta-analysis-running-strip .pi-queue-live-dot,
+.meta-analysis-running-strip.running .pi-queue-live-dot {
+  background: var(--theme-on-primary) !important;
+  color: var(--theme-on-primary) !important;
+}
+
+#pdfPaperChatReturnBar .pdf-paper-chat-return-btn,
+#metaAnalysisChatReturnBar .pdf-paper-chat-return-btn,
+#analysisWorkflowChatReturnBar .pdf-paper-chat-return-btn,
+#modalOverlay.meta-analysis-shared-composer-overlay #metaAiNewConversationBtn.meta-analysis-wizard-btn,
+#configCenterCodexEffortSaveButton,
+.mcp-market-search .mcp-online-search-btn,
+.embedding-library-header-tabs button,
+.chat-avatar-role-btn.active,
+.chat-avatar-toolbar-btn.primary,
+.article-structure-current-toggle.active,
+.workspace-preview-select-toggle[aria-checked="true"],
+.first-run-action-stack button.primary {
+  border-color: var(--theme-primary) !important;
+  background: var(--theme-primary) !important;
+  color: var(--theme-on-primary) !important;
+}
+
+/* Composer action buttons use the selected theme in idle, running, queued and
+ * stop states. This intentionally lives in the final theme layer so the older
+ * responsive rules cannot restore the former fixed black background. */
+.input-area-container .send-btn,
+.input-area-container .send-btn.sending,
+.input-area-container .send-btn.can-stop,
+.input-area-container .send-btn.sending.queue-ready,
+#modalOverlay.meta-analysis-shared-composer-overlay #metaAiPlanBtn,
+#modalOverlay.meta-analysis-shared-composer-overlay #metaAiPlanBtn.sending,
+#modalOverlay.meta-analysis-shared-composer-overlay #metaAiPlanBtn.can-stop {
+  border-color: var(--theme-primary) !important;
+  background: var(--theme-primary) !important;
+  color: var(--theme-on-primary) !important;
+}
+
+.input-area-container .send-btn svg,
+#modalOverlay.meta-analysis-shared-composer-overlay #metaAiPlanBtn svg {
+  color: var(--theme-on-primary) !important;
+  stroke: currentColor !important;
+}
+
+#pdfPaperChatReturnBar .pdf-paper-chat-return-btn:hover,
+#metaAnalysisChatReturnBar .pdf-paper-chat-return-btn:hover,
+#analysisWorkflowChatReturnBar .pdf-paper-chat-return-btn:hover,
+#modalOverlay.meta-analysis-shared-composer-overlay #metaAiNewConversationBtn.meta-analysis-wizard-btn:hover,
+#configCenterCodexEffortSaveButton:hover,
+.mcp-market-search .mcp-online-search-btn:hover,
+.embedding-library-header-tabs button:hover,
+.first-run-action-stack button.primary:hover,
+.sentence-claim-search-button:hover,
+.input-area-container .send-btn:hover,
+.input-area-container .send-btn.sending:hover,
+.input-area-container .send-btn.can-stop:hover,
+#modalOverlay.meta-analysis-shared-composer-overlay #metaAiPlanBtn:hover,
+#modalOverlay.meta-analysis-shared-composer-overlay #metaAiPlanBtn.sending:hover,
+#modalOverlay.meta-analysis-shared-composer-overlay #metaAiPlanBtn.can-stop:hover {
+  border-color: var(--theme-primary-hover) !important;
+  background: var(--theme-primary-hover) !important;
+}
+
+.input-area-container .send-btn:focus-visible,
+#modalOverlay.meta-analysis-shared-composer-overlay #metaAiPlanBtn:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--theme-primary) 42%, #ffffff) !important;
+  outline-offset: 3px;
+}
+
+.input-area-container .send-btn:active,
+#modalOverlay.meta-analysis-shared-composer-overlay #metaAiPlanBtn:active {
+  border-color: var(--theme-primary-hover) !important;
+  background: var(--theme-primary-hover) !important;
+  transform: scale(0.96);
+}
+
+.query-nav-dot::before {
+  /*
+   * Do not use --theme-soft here. A number of imported palettes only define
+   * --theme-primary, so --theme-soft would fall back to the default gray.
+   * Deriving the rail color from the active primary keeps every unselected
+   * dot in the current theme family.
+   */
+  background: var(--theme-primary) !important;
+}
+
+.query-nav-dot.active-neighbor::before,
+.query-nav-dot.hover-neighbor::before {
+  background: color-mix(in srgb, var(--theme-primary) 28%, #ffffff) !important;
+}
+
+.query-nav-dot.active-second-neighbor::before,
+.query-nav-dot.hover-second-neighbor::before {
+  background: color-mix(in srgb, var(--theme-primary) 50%, #ffffff) !important;
+}
+
+.query-nav-dot.active-third-neighbor::before,
+.query-nav-dot.hover-third-neighbor::before {
+  background: color-mix(in srgb, var(--theme-primary) 72%, #ffffff) !important;
+}
+
+.query-nav-dot:hover::before,
+.query-nav-dot.active::before,
+.query-nav-dot.hover-focus::before {
+  background: #ffffff !important;
+}
+
+.review-progress-fill {
+  background: var(--theme-primary) !important;
+}
+
+.right-sidebar-file-preview-image-nav:hover:not(:disabled) {
+  background: var(--theme-primary) !important;
+}
+
+.mcp-deploy-progress-badge,
+.pdf-paper-chat-return-bar {
+  background: var(--theme-primary) !important;
+}
+
+button[style*="background:#111827"],
+button[style*="background: #111827"],
+button[style*="background:#111111"],
+button[style*="background: #111111"],
+button[style*="background:#000000"],
+button[style*="background: #000000"] {
+  border-color: var(--theme-primary) !important;
+  background: var(--theme-primary) !important;
+  color: var(--theme-on-primary) !important;
+}
+
+button[style*="background:#111827"]:hover,
+button[style*="background: #111827"]:hover,
+button[style*="background:#111111"]:hover,
+button[style*="background: #111111"]:hover,
+button[style*="background:#000000"]:hover,
+button[style*="background: #000000"]:hover {
+  border-color: var(--theme-primary-hover) !important;
+  background: var(--theme-primary-hover) !important;
+}
+
+@media (max-width: 620px) {
+  .color-theme-picker {
+    width: min(360px, calc(100vw - 20px)) !important;
+  }
+
+  .color-theme-options {
+    max-height: min(370px, calc(100vh - 130px));
+    overflow-y: auto;
+  }
+
+  .color-theme-group-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (min-width: 621px) and (max-width: 900px) {
+  .color-theme-group-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}

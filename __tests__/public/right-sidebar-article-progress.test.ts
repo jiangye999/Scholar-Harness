@@ -3,7 +3,9 @@ import path from 'path';
 
 import { describe, expect, it } from 'vitest';
 
-const html = readFileSync(path.resolve(__dirname, '../../src/public/index.html'), 'utf-8');
+import { readPublicAppSource } from '../helpers/public-app-source';
+
+const html = readPublicAppSource();
 
 function readFunctionBody(name: string, nextName: string): string {
   const start = html.indexOf(`function ${name}`);
@@ -44,7 +46,7 @@ describe('right article progress sidebar', () => {
     expect(html).toContain('width: var(--right-sidebar-width, 37.5vw);');
     expect(html).toContain('var RIGHT_SIDEBAR_DEFAULT_RATIO = 0.375;');
     expect(html).toContain('return Math.round(viewportWidth * RIGHT_SIDEBAR_DEFAULT_RATIO);');
-    expect(html).toContain("var RIGHT_SIDEBAR_WIDTH_VERSION = '8';");
+    expect(html).toContain("var RIGHT_SIDEBAR_WIDTH_VERSION = '9';");
     expect(html).toContain('var RIGHT_SIDEBAR_MAX_WIDTH = 1350;');
     expect(html).toContain('RIGHT_SIDEBAR_CUSTOM_WIDTH_KEY');
   });

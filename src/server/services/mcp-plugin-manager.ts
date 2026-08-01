@@ -62,7 +62,48 @@ interface StoredMcpMarketplaceConfig {
   pulseTenantId: string;
 }
 
-export const MCP_PLUGIN_MARKETPLACE: Array<Omit<McpPluginInput, 'enabled'>> = [
+interface McpCuratedMarketplacePlugin extends Omit<McpPluginInput, 'enabled'> {
+  autoEnableOnInstall?: boolean;
+}
+
+export const BROWSER_ASSIST_PLUGIN_ID = 'browser-assist';
+
+const BROWSER_ASSIST_USAGE_POLICY = [
+  '仅在普通网页读取或官方 API 无法取得内容时使用，并优先访问官网、开放获取页面和用户有权访问的内容。',
+  '浏览器必须保持可见；遇到登录、CAPTCHA、滑块、人机验证或访问授权页面时，立即停止自动操作并请用户亲自在浏览器中完成。',
+  '用户明确确认验证完成后才可继续。禁止自动求解验证码、伪装真人轨迹、隐藏自动化特征、轮换代理、规避访问控制或绕过网站限制。',
+  '应遵守网站服务条款并限制访问频率；不得批量抓取用户无权访问的受限内容。',
+].join('');
+
+export const MCP_PLUGIN_MARKETPLACE: McpCuratedMarketplacePlugin[] = [
+  {
+    id: BROWSER_ASSIST_PLUGIN_ID,
+    name: 'Browser Assist MCP',
+    description: '学术网页读取受登录或人机验证阻塞时，打开可见浏览器供用户人工接管；验证完成后 AI 可复用持久会话继续读取。不会破解验证码或规避网站限制。',
+    command: 'npx',
+    args: [
+      '-y',
+      '@playwright/mcp@latest',
+      '--user-data-dir',
+      '${pluginDataDir}/profile',
+      '--output-dir',
+      '${pluginDataDir}/output',
+      '--output-mode',
+      'file',
+      '--save-session',
+      '--viewport-size',
+      '1440x900',
+      '--timeout-navigation',
+      '90000',
+      '--timeout-action',
+      '15000',
+    ],
+    env: {},
+    source: 'market',
+    risk: 'network',
+    iconKind: 'curated',
+    autoEnableOnInstall: true,
+  },
   {
     id: 'filesystem',
     name: 'Filesystem MCP',
@@ -118,6 +159,7 @@ export interface McpMarketplaceCandidate extends Omit<McpPluginInput, 'enabled'>
   installable?: boolean;
   projectType?: 'mcp' | 'related-project';
   aiAdaptable?: boolean;
+  autoEnableOnInstall?: boolean;
 }
 
 function marketplaceId(prefix: string, value: string): string {
@@ -133,7 +175,7 @@ async function searchNpmMcpPlugins(query: string): Promise<McpMarketplaceCandida
   const text = query ? `${query} mcp` : 'academic research literature citation paper mcp';
   const url = `https://registry.npmjs.org/-/v1/search?text=${encodeURIComponent(text)}&size=20`;
   const response = await fetch(url, {
-    headers: { accept: 'application/json', 'user-agent': 'Scholar-Harness/1.0.7' },
+    headers: { accept: 'application/json', 'user-agent': 'Scholar-Harness/1.0.8' },
     signal: AbortSignal.timeout(10_000),
   });
   if (!response.ok) throw new Error(`npm Registry 返回 HTTP ${response.status}`);
@@ -153,7 +195,7 @@ async function searchNpmMcpPlugins(query: string): Promise<McpMarketplaceCandida
       const metadataResponse = await fetch(
         `https://registry.npmjs.org/${encodeURIComponent(String(pkg.name))}/latest`,
         {
-          headers: { accept: 'application/json', 'user-agent': 'Scholar-Harness/1.0.7' },
+          headers: { accept: 'application/json', 'user-agent': 'Scholar-Harness/1.0.8' },
           signal: AbortSignal.timeout(8_000),
         },
       );
@@ -218,7 +260,7 @@ async function searchGithubMcpPlugins(query: string): Promise<McpMarketplaceCand
   const headers: Record<string, string> = {
     accept: 'application/vnd.github+json',
     'x-github-api-version': '2022-11-28',
-    'user-agent': 'Scholar-Harness/1.0.7',
+    'user-agent': 'Scholar-Harness/1.0.8',
   };
   const githubToken = String(process.env.GITHUB_TOKEN || process.env.GH_TOKEN || '').trim();
   if (githubToken) headers.authorization = `Bearer ${githubToken}`;
@@ -304,13 +346,13 @@ async function searchSmitheryMcpPlugins(query: string, config: McpMarketplaceCon
 async function searchGlamaMcpPlugins(query: string): Promise<McpMarketplaceCandidate[]> {
   const url = `https://glama.ai/api/mcp/v1/servers?query=${encodeURIComponent(query || 'academic research')}&first=20`;
   const response = await fetch(url, {
-    headers: { accept: 'application/json', 'user-agent': 'Scholar-Harness/1.0.7' },
+    headers: { accept: 'application/json', 'user-agent': 'Scholar-Harness/1.0.8' },
     signal: AbortSignal.timeout(10_000),
   });
   if (!response.ok) throw new Error(`Glama 返回 HTTP ${response.status}`);
   const payload = await response.json();
   const githubHeaders: Record<string, string> = {
-    'user-agent': 'Scholar-Harness/1.0.7',
+    'user-agent': 'Scholar-Harness/1.0.8',
     'x-github-api-version': '2022-11-28',
   };
   const githubToken = String(process.env.GITHUB_TOKEN || process.env.GH_TOKEN || '').trim();
@@ -378,7 +420,7 @@ async function searchPulseMcpPlugins(query: string, config: McpMarketplaceConfig
 async function searchMcpSoPlugins(query: string): Promise<McpMarketplaceCandidate[]> {
   const url = `https://mcp.so/servers?q=${encodeURIComponent(query || 'academic research')}`;
   const response = await fetch(url, {
-    headers: { accept: 'text/html', 'user-agent': 'Scholar-Harness/1.0.7' },
+    headers: { accept: 'text/html', 'user-agent': 'Scholar-Harness/1.0.8' },
     signal: AbortSignal.timeout(10_000),
   });
   if (!response.ok) throw new Error(`MCP.so 返回 HTTP ${response.status}`);
@@ -563,8 +605,99 @@ function parseExposedToolName(name: string): { pluginId: string; toolName: strin
   return match ? { pluginId: match[1], toolName: match[2] } : null;
 }
 
+const BROWSER_ASSIST_ALLOWED_TOOLS = new Set([
+  'browser_close',
+  'browser_click',
+  'browser_drag',
+  'browser_fill_form',
+  'browser_handle_dialog',
+  'browser_hover',
+  'browser_navigate',
+  'browser_navigate_back',
+  'browser_press_key',
+  'browser_resize',
+  'browser_select_option',
+  'browser_snapshot',
+  'browser_tabs',
+  'browser_take_screenshot',
+  'browser_type',
+  'browser_wait_for',
+]);
+
+const BROWSER_ASSIST_VERIFICATION_PATTERN = new RegExp([
+  'captcha',
+  'recaptcha',
+  'hcaptcha',
+  'turnstile',
+  'cloudflare.{0,20}challenge',
+  'verify.{0,20}(?:human|person)',
+  'human.{0,20}verification',
+  '人机验证',
+  '验证码',
+  '滑块验证',
+  'stealth',
+  'webdriver',
+  'fingerprint spoof',
+  'proxy rotation',
+  '绕过.{0,12}(?:验证|反爬|限制)',
+  '破解.{0,12}(?:验证|验证码)',
+].join('|'), 'i');
+
+const browserAssistCallTimes: number[] = [];
+
+export function filterMcpToolsForPlugin(
+  plugin: Pick<McpPluginRecord, 'id'>,
+  tools: McpDiscoveredTool[],
+): McpDiscoveredTool[] {
+  if (plugin.id !== BROWSER_ASSIST_PLUGIN_ID) return tools;
+  return tools.filter(tool => BROWSER_ASSIST_ALLOWED_TOOLS.has(tool.name));
+}
+
+export function validateMcpPluginToolCallPolicy(
+  plugin: Pick<McpPluginRecord, 'id'>,
+  toolName: string,
+  args: Record<string, unknown>,
+): void {
+  if (plugin.id !== BROWSER_ASSIST_PLUGIN_ID) return;
+  if (!BROWSER_ASSIST_ALLOWED_TOOLS.has(toolName)) {
+    throw new Error(`Browser Assist 不允许调用高风险浏览器工具：${toolName}`);
+  }
+  const serializedArgs = JSON.stringify(args);
+  if (BROWSER_ASSIST_VERIFICATION_PATTERN.test(serializedArgs)) {
+    throw new Error(
+      'Browser Assist 已检测到登录、验证码、人机验证或规避检测相关操作。'
+      + '请让用户在可见浏览器中亲自完成验证；用户确认完成后，AI 再通过页面快照继续。',
+    );
+  }
+  const url = typeof args.url === 'string' ? args.url.trim() : '';
+  if (url && url !== 'about:blank' && !/^https?:\/\//i.test(url)) {
+    throw new Error('Browser Assist 只允许打开 HTTP(S) 网页。');
+  }
+  const now = Date.now();
+  while (browserAssistCallTimes.length && now - browserAssistCallTimes[0] > 60_000) {
+    browserAssistCallTimes.shift();
+  }
+  if (browserAssistCallTimes.length >= 60) {
+    throw new Error('Browser Assist 已达到安全访问频率上限，请稍后继续，避免对目标网站造成高频请求。');
+  }
+  browserAssistCallTimes.push(now);
+}
+
+async function resolveMcpRuntimeArgs(plugin: McpPluginRecord): Promise<string[]> {
+  const requiresPluginDataDir = plugin.args.some(arg => arg.includes('${pluginDataDir}'));
+  const pluginDataDir = path.join(getDataDir(), 'mcp-runtime', sanitizeToolName(plugin.id));
+  if (requiresPluginDataDir) {
+    await fs.mkdir(pluginDataDir, { recursive: true });
+  }
+  return plugin.args
+    .filter(arg => arg !== '${workspace}')
+    .map(arg => arg.replaceAll('${pluginDataDir}', pluginDataDir));
+}
+
 export class McpStdioSession {
   private child: ChildProcessWithoutNullStreams | null = null;
+  private initialized = false;
+  private startPromise: Promise<void> | null = null;
   private buffer = Buffer.alloc(0);
   private framing: 'jsonl' | 'content-length' = 'jsonl';
   private stderr = '';
@@ -581,9 +714,32 @@ export class McpStdioSession {
   ) {}
 
   async start(): Promise<void> {
-    if (this.child) return;
+    if (
+      this.child
+      && this.initialized
+      && this.child.exitCode === null
+      && !this.child.killed
+    ) {
+      return;
+    }
+    if (this.startPromise) {
+      return this.startPromise;
+    }
+    this.startPromise = this.startProcess();
+    try {
+      await this.startPromise;
+    } finally {
+      this.startPromise = null;
+    }
+  }
+
+  private async startProcess(): Promise<void> {
+    if (this.child) this.close();
+    this.buffer = Buffer.alloc(0);
+    this.stderr = '';
+    this.initialized = false;
     const command = this.plugin.command;
-    const args = this.plugin.args.filter(arg => arg !== '${workspace}');
+    const args = await resolveMcpRuntimeArgs(this.plugin);
     const adapterEntry = args.find(arg => /\.mjs$/i.test(arg));
     if (adapterEntry) {
       try {
@@ -605,7 +761,7 @@ export class McpStdioSession {
       ),
     };
     const isWindowsScript = process.platform === 'win32' && /(?:^|[\\/])(?:npx|npm|pnpm|yarn)(?:\.cmd)?$/i.test(command);
-    this.child = isWindowsScript
+    const child = isWindowsScript
       ? spawn(process.env.ComSpec || 'cmd.exe', ['/d', '/c', 'call', command, ...args], {
           cwd: process.cwd(),
           env,
@@ -620,16 +776,21 @@ export class McpStdioSession {
           windowsHide: true,
           stdio: ['pipe', 'pipe', 'pipe'],
         });
-    this.child.stdout.on('data', chunk => this.consume(Buffer.from(chunk)));
-    this.child.stderr.on('data', chunk => {
+    this.child = child;
+    child.stdout.on('data', chunk => this.consume(Buffer.from(chunk)));
+    child.stderr.on('data', chunk => {
       const text = String(chunk || '').trim();
       if (text) {
         this.stderr = `${this.stderr}\n${text}`.trim().slice(-4000);
         logger.debug(`[McpPlugins:${this.plugin.id}] ${text.slice(0, 1000)}`);
       }
     });
-    this.child.on('error', error => this.failAll(error));
-    this.child.on('exit', (code, signal) => {
+    child.on('error', error => this.failAll(error));
+    child.on('exit', (code, signal) => {
+      if (this.child === child) {
+        this.child = null;
+        this.initialized = false;
+      }
       const signedCode = typeof code === 'number' && code > 0x7fffffff
         ? code - 0x100000000
         : code;
@@ -640,12 +801,18 @@ export class McpStdioSession {
         `MCP 插件进程已退出（退出码=${signedCode ?? 'unknown'}${signal ? `，信号=${signal}` : ''}）${detail}`,
       ));
     });
-    await this.request('initialize', {
-      protocolVersion: '2024-11-05',
-      capabilities: {},
-      clientInfo: { name: 'scholar-harness', version: '1.0.7' },
-    }, this.timeouts.initializeMs === undefined ? 20_000 : this.timeouts.initializeMs);
-    this.notify('notifications/initialized', {});
+    try {
+      await this.request('initialize', {
+        protocolVersion: '2024-11-05',
+        capabilities: {},
+        clientInfo: { name: 'scholar-harness', version: '1.0.8' },
+      }, this.timeouts.initializeMs === undefined ? 60_000 : this.timeouts.initializeMs);
+      this.notify('notifications/initialized', {});
+      this.initialized = true;
+    } catch (error) {
+      this.close();
+      throw error;
+    }
   }
 
   async listTools(): Promise<McpDiscoveredTool[]> {
@@ -668,16 +835,17 @@ export class McpStdioSession {
   }
 
   close(): void {
-    if (!this.child) return;
-    this.child.kill();
+    const child = this.child;
     this.child = null;
+    this.initialized = false;
+    if (child) child.kill();
+    this.failAll(new Error('MCP 会话已关闭'));
   }
 
   private request(method: string, params: unknown, timeoutMs: number): Promise<any> {
     if (!this.child) return Promise.reject(new Error('MCP 插件尚未启动'));
     const id = this.sequence++;
     const payload = { jsonrpc: '2.0', id, method, params };
-    this.write(payload);
     return new Promise((resolve, reject) => {
       const timer = timeoutMs > 0
         ? setTimeout(() => {
@@ -686,6 +854,16 @@ export class McpStdioSession {
           }, timeoutMs)
         : undefined;
       this.pending.set(id, { resolve, reject, timer });
+      try {
+        // Register the waiter before writing. A local stdio server can answer
+        // synchronously; writing first would drop that response and later
+        // surface a false initialize timeout.
+        this.write(payload);
+      } catch (error) {
+        if (timer) clearTimeout(timer);
+        this.pending.delete(id);
+        reject(error instanceof Error ? error : new Error(String(error)));
+      }
     });
   }
 
@@ -725,6 +903,10 @@ export class McpStdioSession {
         if (message.error) pending.reject(new Error(message.error.message || JSON.stringify(message.error)));
         else pending.resolve(message.result);
       } catch (error) {
+        if (/^(?:trace|debug|info|warn|error)\s*:/i.test(body)) {
+          logger.debug(`[McpPlugins:${this.plugin.id}] Ignored non-protocol stdout: ${body.slice(0, 1000)}`);
+          continue;
+        }
         logger.warn(`[McpPlugins:${this.plugin.id}] Invalid MCP response:`, error);
       }
     }
@@ -774,12 +956,77 @@ export class McpStdioSession {
   }
 }
 
+interface PooledMcpSession {
+  signature: string;
+  session: McpStdioSession;
+  idleTimer?: NodeJS.Timeout;
+}
+
+const MCP_SESSION_IDLE_MS = 10 * 60 * 1000;
+const pooledMcpSessions = new Map<string, PooledMcpSession>();
+
+function getMcpPluginRuntimeSignature(plugin: McpPluginRecord): string {
+  return JSON.stringify({
+    command: plugin.command,
+    args: plugin.args,
+    env: plugin.env,
+    updatedAt: plugin.updatedAt,
+  });
+}
+
+function disposePooledMcpSession(pluginId: string): void {
+  const entry = pooledMcpSessions.get(pluginId);
+  if (!entry) return;
+  if (entry.idleTimer) clearTimeout(entry.idleTimer);
+  entry.session.close();
+  pooledMcpSessions.delete(pluginId);
+}
+
+function schedulePooledMcpSessionCleanup(pluginId: string, entry: PooledMcpSession): void {
+  if (entry.idleTimer) clearTimeout(entry.idleTimer);
+  entry.idleTimer = setTimeout(() => {
+    if (pooledMcpSessions.get(pluginId) === entry) {
+      disposePooledMcpSession(pluginId);
+    }
+  }, MCP_SESSION_IDLE_MS);
+  entry.idleTimer.unref?.();
+}
+
+function getPooledMcpSession(plugin: McpPluginRecord): PooledMcpSession {
+  const signature = getMcpPluginRuntimeSignature(plugin);
+  const existing = pooledMcpSessions.get(plugin.id);
+  if (existing && existing.signature === signature) {
+    schedulePooledMcpSessionCleanup(plugin.id, existing);
+    return existing;
+  }
+  if (existing) disposePooledMcpSession(plugin.id);
+  const entry: PooledMcpSession = {
+    signature,
+    session: new McpStdioSession(plugin, { initializeMs: 60_000 }),
+  };
+  pooledMcpSessions.set(plugin.id, entry);
+  schedulePooledMcpSessionCleanup(plugin.id, entry);
+  return entry;
+}
+
+function mcpToolFailure(plugin: McpPluginRecord | undefined, error: unknown): Record<string, unknown> {
+  const detail = error instanceof Error ? error.message : String(error || '未知错误');
+  const pluginLabel = plugin?.name || plugin?.id || 'MCP 插件';
+  const message = `${pluginLabel} 调用失败：${detail}`;
+  return {
+    isError: true,
+    error: message,
+    content: [{ type: 'text', text: message }],
+  };
+}
+
 export async function listMcpPlugins(): Promise<McpPluginRecord[]> {
   return (await readStore()).plugins.map(publicPlugin);
 }
 
 export async function saveMcpPlugin(input: unknown): Promise<McpPluginRecord> {
   const parsed = pluginInputSchema.parse(input);
+  disposePooledMcpSession(parsed.id);
   const store = await readStore();
   const existing = store.plugins.find(plugin => plugin.id === parsed.id);
   const now = new Date().toISOString();
@@ -805,6 +1052,7 @@ export async function saveMcpPlugin(input: unknown): Promise<McpPluginRecord> {
 }
 
 export async function removeMcpPlugin(id: string): Promise<boolean> {
+  disposePooledMcpSession(id);
   const store = await readStore();
   const next = store.plugins.filter(plugin => plugin.id !== id);
   if (next.length === store.plugins.length) return false;
@@ -814,6 +1062,7 @@ export async function removeMcpPlugin(id: string): Promise<boolean> {
 }
 
 export async function setMcpPluginEnabled(id: string, enabled: boolean): Promise<McpPluginRecord> {
+  disposePooledMcpSession(id);
   const store = await readStore();
   const plugin = store.plugins.find(item => item.id === id);
   if (!plugin) throw new Error('插件不存在');
@@ -827,6 +1076,7 @@ export async function discoverMcpPlugin(
   id: string,
   options: { initializeTimeoutMs?: number; listToolsTimeoutMs?: number } = {},
 ): Promise<McpPluginRecord> {
+  disposePooledMcpSession(id);
   const store = await readStore();
   const plugin = store.plugins.find(item => item.id === id);
   if (!plugin) throw new Error('插件不存在');
@@ -836,9 +1086,12 @@ export async function discoverMcpPlugin(
   });
   try {
     await session.start();
-    plugin.tools = await session.listTools();
+    plugin.tools = filterMcpToolsForPlugin(plugin, await session.listTools());
     plugin.status = 'ready';
-    plugin.error = '';
+    plugin.error = plugin.id === BROWSER_ASSIST_PLUGIN_ID && plugin.tools.length === 0
+      ? 'Playwright MCP 未返回允许的浏览器工具，请检查安装版本。'
+      : '';
+    if (plugin.error) plugin.status = 'error';
   } catch (error) {
     plugin.status = 'error';
     plugin.error = (error as Error).message;
@@ -849,6 +1102,33 @@ export async function discoverMcpPlugin(
   plugin.updatedAt = plugin.lastCheckedAt;
   await writeStore(store);
   return publicPlugin(plugin);
+}
+
+export async function installBrowserAssistMcpPlugin(): Promise<McpPluginRecord> {
+  const existing = (await listMcpPlugins()).find(plugin => plugin.id === BROWSER_ASSIST_PLUGIN_ID);
+  if (existing?.status === 'ready' && existing.tools.length > 0) {
+    return existing.enabled
+      ? existing
+      : setMcpPluginEnabled(BROWSER_ASSIST_PLUGIN_ID, true);
+  }
+
+  const template = MCP_PLUGIN_MARKETPLACE.find(plugin => plugin.id === BROWSER_ASSIST_PLUGIN_ID);
+  if (!template) {
+    throw new Error('Browser Assist MCP 内置安装配置缺失');
+  }
+
+  await saveMcpPlugin({
+    ...template,
+    enabled: false,
+  });
+  const discovered = await discoverMcpPlugin(BROWSER_ASSIST_PLUGIN_ID, {
+    initializeTimeoutMs: 180_000,
+    listToolsTimeoutMs: 60_000,
+  });
+  if (discovered.status !== 'ready' || discovered.tools.length === 0) {
+    return discovered;
+  }
+  return setMcpPluginEnabled(BROWSER_ASSIST_PLUGIN_ID, true);
 }
 
 export async function getEnabledMcpToolDefinitions(): Promise<LLMToolDefinition[]> {
@@ -862,6 +1142,7 @@ export async function getEnabledMcpToolDefinitions(): Promise<LLMToolDefinition[
       description: [
         `[用户插件：${plugin.name}；权限等级：${plugin.risk}]`,
         tool.description || tool.name,
+        plugin.id === BROWSER_ASSIST_PLUGIN_ID ? BROWSER_ASSIST_USAGE_POLICY : '',
         plugin.risk === 'write' || plugin.risk === 'command'
           ? '此工具可能修改文件或执行命令；用户本轮未明确要求执行时，必须先询问确认。'
           : '',
@@ -889,6 +1170,9 @@ export async function getEnabledMcpPluginCatalogPrompt(): Promise<string> {
     ...plugins.map(plugin => [
       `- ${plugin.name}（ID: ${plugin.id}；权限: ${plugin.risk}）`,
       `  用途：${plugin.description || '未提供说明'}`,
+      ...(plugin.id === BROWSER_ASSIST_PLUGIN_ID
+        ? [`  强制规则：${BROWSER_ASSIST_USAGE_POLICY}`]
+        : []),
       `  工具：${plugin.tools.map(tool => tool.name).join('、')}`,
     ].join('\n')),
   ].join('\n');
@@ -896,25 +1180,57 @@ export async function getEnabledMcpPluginCatalogPrompt(): Promise<string> {
 
 export async function executeMcpPluginToolCall(call: LLMToolCall): Promise<unknown> {
   const parsedName = parseExposedToolName(call.function.name);
-  if (!parsedName) throw new Error('不是用户 MCP 插件工具');
+  if (!parsedName) return mcpToolFailure(undefined, new Error('不是用户 MCP 插件工具'));
   const store = await readStore();
   const plugin = store.plugins.find(item => item.id === parsedName.pluginId && item.enabled);
-  if (!plugin) throw new Error('插件未安装或未启用');
+  if (!plugin) return mcpToolFailure(undefined, new Error('插件未安装或未启用'));
   const tool = plugin.tools.find(item => sanitizeToolName(item.name) === parsedName.toolName);
-  if (!tool) throw new Error('插件工具不存在，请重新检测插件');
+  if (!tool) return mcpToolFailure(plugin, new Error('插件工具不存在，请重新检测插件'));
   let args: Record<string, unknown> = {};
   try {
     const parsed = JSON.parse(call.function.arguments || '{}');
     if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) args = parsed;
   } catch {
-    throw new Error('插件工具参数不是有效 JSON');
+    return mcpToolFailure(plugin, new Error('插件工具参数不是有效 JSON'));
   }
-  const session = new McpStdioSession(plugin);
   try {
-    await session.start();
-    return await session.callTool(tool.name, args);
-  } finally {
-    session.close();
+    validateMcpPluginToolCallPolicy(plugin, tool.name, args);
+  } catch (error) {
+    return mcpToolFailure(plugin, error);
+  }
+  if (plugin.id === BROWSER_ASSIST_PLUGIN_ID) {
+    const url = typeof args.url === 'string' ? args.url : '';
+    let host = '';
+    try {
+      host = url ? new URL(url).host : '';
+    } catch {
+      host = '';
+    }
+    logger.info(`[BrowserAssist] ${tool.name}${host ? ` | host=${host}` : ''}`);
+  }
+
+  let entry = getPooledMcpSession(plugin);
+  try {
+    await entry.session.start();
+  } catch (firstError) {
+    logger.warn(`[McpPlugins:${plugin.id}] Initialize failed; recreating the session once.`, firstError);
+    disposePooledMcpSession(plugin.id);
+    entry = getPooledMcpSession(plugin);
+    try {
+      await entry.session.start();
+    } catch (retryError) {
+      disposePooledMcpSession(plugin.id);
+      return mcpToolFailure(plugin, retryError);
+    }
+  }
+
+  try {
+    const result = await entry.session.callTool(tool.name, args);
+    schedulePooledMcpSessionCleanup(plugin.id, entry);
+    return result;
+  } catch (error) {
+    disposePooledMcpSession(plugin.id);
+    return mcpToolFailure(plugin, error);
   }
 }
 

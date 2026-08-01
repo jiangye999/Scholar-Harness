@@ -41,9 +41,120 @@ def clean_text(value: str, max_len: int = 1200) -> str:
     return text[:max_len]
 
 
+def caption_match(value: str) -> re.Match[str] | None:
+    match = CAPTION_RE.search(clean_text(value, 1600))
+    return match if match and match.start() <= 4 else None
+
+
+def is_caption_text(value: str) -> bool:
+    return caption_match(value) is not None
+
+
+def has_real_caption(item: dict) -> bool:
+    caption = clean_text(item.get("caption", ""), 1200)
+    title = clean_text(item.get("captionTitle", ""), 320)
+    return bool(is_caption_text(caption) or title)
+
+
+def perceptual_hash(image_path: Path, grid: int = 16) -> int | None:
+    pix = None
+    converted = None
+    try:
+        pix = fitz.Pixmap(str(image_path))
+        if pix.alpha or pix.n not in (1, 3):
+            converted = fitz.Pixmap(fitz.csRGB, pix)
+            pix = converted
+        if pix.width <= 0 or pix.height <= 0:
+            return None
+        samples = pix.samples
+        values: list[int] = []
+        for gy in range(grid):
+            y = min(pix.height - 1, int((gy + 0.5) * pix.height / grid))
+            for gx in range(grid):
+                x = min(pix.width - 1, int((gx + 0.5) * pix.width / grid))
+                offset = y * pix.stride + x * pix.n
+                if pix.n == 1:
+                    gray = int(samples[offset])
+                else:
+                    red, green, blue = samples[offset], samples[offset + 1], samples[offset + 2]
+                    gray = int(0.299 * red + 0.587 * green + 0.114 * blue)
+                values.append(gray)
+        average = sum(values) / max(1, len(values))
+        result = 0
+        for value in values:
+            result = (result << 1) | int(value >= average)
+        return result
+    except Exception:
+        return None
+    finally:
+        converted = None
+        pix = None
+
+
+def visual_item_quality(item: dict) -> int:
+    source = clean_text(item.get("source", ""), 80).lower()
+    score = {
+        "caption-crop": 45,
+        "visual-region": 35,
+        "embedded-image": 30,
+        "caption-page-fallback": 10,
+    }.get(source, 0)
+    if has_real_caption(item):
+        score += 60
+    confidence = clean_text(item.get("confidence", ""), 40).lower()
+    score += {"high": 15, "medium": 8, "low": 0}.get(confidence, 0)
+    return score
+
+
+def dedupe_visual_items(items: list[dict]) -> list[dict]:
+    unique: list[dict] = []
+    signatures: list[tuple[str, int | None, float]] = []
+    for item in items:
+        image_path = Path(str(item.get("absolutePath") or ""))
+        if not image_path.is_file():
+            continue
+        try:
+            exact = hashlib.sha256(image_path.read_bytes()).hexdigest()
+        except OSError:
+            exact = ""
+        width = max(1, int(item.get("width") or 1))
+        height = max(1, int(item.get("height") or 1))
+        aspect = width / height
+        visual_hash = perceptual_hash(image_path)
+
+        duplicate_index = -1
+        for index, (known_exact, known_hash, known_aspect) in enumerate(signatures):
+            exact_match = bool(exact and known_exact and exact == known_exact)
+            perceptual_match = (
+                visual_hash is not None
+                and known_hash is not None
+                and abs(aspect - known_aspect) / max(aspect, known_aspect, 0.01) <= 0.12
+                and bin(visual_hash ^ known_hash).count("1") <= 10
+            )
+            if exact_match or perceptual_match:
+                duplicate_index = index
+                break
+
+        if duplicate_index < 0:
+            item["contentHash"] = exact
+            unique.append(item)
+            signatures.append((exact, visual_hash, aspect))
+            continue
+        if visual_item_quality(item) > visual_item_quality(unique[duplicate_index]):
+            old_path = Path(str(unique[duplicate_index].get("absolutePath") or ""))
+            if old_path != image_path:
+                old_path.unlink(missing_ok=True)
+            item["contentHash"] = exact
+            unique[duplicate_index] = item
+            signatures[duplicate_index] = (exact, visual_hash, aspect)
+        else:
+            image_path.unlink(missing_ok=True)
+    return unique
+
+
 def caption_meta(text: str) -> dict:
     caption = clean_text(text, 1200)
-    match = CAPTION_RE.search(caption)
+    match = caption_match(caption)
     label = clean_text(match.group(1), 80) if match else ""
     title = caption
     if match:
@@ -130,7 +241,7 @@ def page_text_blocks(page: fitz.Page) -> list[tuple[fitz.Rect, str]]:
 def guess_section_title(blocks: list[tuple[fitz.Rect, str]], target_index: int) -> str:
     for _, text in reversed(blocks[:target_index]):
         clean = clean_text(text, 180)
-        if CAPTION_RE.search(clean):
+        if is_caption_text(clean):
             continue
         if len(clean) <= 90 and (
             re.match(r"^\d+(?:\.\d+)*\s+[A-Z]", clean)
@@ -144,7 +255,7 @@ def guess_section_title(blocks: list[tuple[fitz.Rect, str]], target_index: int) 
 def nearest_caption(blocks: list[tuple[fitz.Rect, str]], target: fitz.Rect) -> tuple[int, fitz.Rect, str] | None:
     best: tuple[float, int, fitz.Rect, str] | None = None
     for index, (rect, text) in enumerate(blocks):
-        if not CAPTION_RE.search(text):
+        if not is_caption_text(text):
             continue
         vertical_gap = 0.0
         if rect.y0 >= target.y1:
@@ -157,7 +268,10 @@ def nearest_caption(blocks: list[tuple[fitz.Rect, str]], target: fitz.Rect) -> t
             score += 80
         if best is None or score < best[0]:
             best = (score, index, rect, text)
-    if not best or best[0] > 520:
+    # A body paragraph elsewhere on the page may mention "Fig. 1", but it is
+    # not the caption for an embedded publisher mark. Real captions are
+    # spatially adjacent to their figure.
+    if not best or best[0] > 160:
         return None
     return best[1], best[2], best[3]
 
@@ -166,14 +280,14 @@ def context_for_index(blocks: list[tuple[fitz.Rect, str]], index: int) -> dict:
     before: list[str] = []
     after: list[str] = []
     for _, text in reversed(blocks[max(0, index - 5):index]):
-        if CAPTION_RE.search(text):
+        if is_caption_text(text):
             continue
         before.append(text)
         if len(" ".join(before)) > 650:
             break
     before = list(reversed(before))
     for _, text in blocks[index + 1:index + 7]:
-        if CAPTION_RE.search(text):
+        if is_caption_text(text):
             continue
         after.append(text)
         if len(" ".join(after)) > 650:
@@ -195,8 +309,8 @@ def context_for_rect(blocks: list[tuple[fitz.Rect, str]], target: fitz.Rect) -> 
 
     before: list[str] = []
     after: list[str] = []
-    before_candidates = [(rect, text) for rect, text in blocks if rect.y1 <= target.y0 and not CAPTION_RE.search(text)]
-    after_candidates = [(rect, text) for rect, text in blocks if rect.y0 >= target.y1 and not CAPTION_RE.search(text)]
+    before_candidates = [(rect, text) for rect, text in blocks if rect.y1 <= target.y0 and not is_caption_text(text)]
+    after_candidates = [(rect, text) for rect, text in blocks if rect.y0 >= target.y1 and not is_caption_text(text)]
     for _, text in reversed(before_candidates[-4:]):
         before.append(text)
     for _, text in after_candidates[:4]:
@@ -231,7 +345,7 @@ def caption_crops(
         for block_index, (rect, text) in enumerate(blocks):
             if existing + len(items) >= max_assets:
                 break
-            if not CAPTION_RE.search(text):
+            if not is_caption_text(text):
                 continue
             top = max(page_rect.y0, rect.y0 - min(page_rect.height * 0.52, 380))
             bottom = min(page_rect.y1, rect.y1 + 28)
@@ -348,7 +462,7 @@ def caption_page_fallbacks(
         blocks = page_text_blocks(page)
         caption_block: tuple[int, fitz.Rect, str] | None = None
         for block_index, (rect, text) in enumerate(blocks):
-            if CAPTION_RE.search(text):
+            if is_caption_text(text):
                 caption_block = (block_index, rect, text)
                 break
         if not caption_block:
@@ -416,12 +530,30 @@ def embedded_images(
                 if digest in seen_hashes:
                     continue
                 seen_hashes.add(digest)
+                rects = page.get_image_rects(xref)
+                image_rect = rect_union([fitz.Rect(rect) for rect in rects]) if rects else None
+                context = context_for_rect(blocks, image_rect) if image_rect else {
+                    "caption": "",
+                    "captionLabel": "",
+                    "captionTitle": "",
+                    "sectionTitle": "",
+                    "contextBefore": "",
+                    "contextAfter": "",
+                    "nearbyText": "",
+                }
+                image_aspect = pix.width / max(1, pix.height)
+                page_area_ratio = rect_area(image_rect) / max(1.0, rect_area(page.rect)) if image_rect else 0.0
+                if page_index == 0 and not has_real_caption(context):
+                    continue
+                if not has_real_caption(context) and (
+                    (0 < page_area_ratio < 0.018)
+                    or image_aspect > 6.5
+                    or image_aspect < 0.12
+                ):
+                    continue
                 filename = f"{pdf_stem}_p{page_index + 1:03d}_embedded_{image_index + 1:02d}.png"
                 output_path = output_dir / filename
                 width, height = pixmap_to_png(pix, output_path)
-                rects = page.get_image_rects(xref)
-                image_rect = rect_union([fitz.Rect(rect) for rect in rects]) if rects else fitz.Rect(0, 0, pix.width, pix.height)
-                context = context_for_rect(blocks, image_rect)
                 items.append({
                     "filename": filename,
                     "absolutePath": str(output_path),
@@ -431,6 +563,11 @@ def embedded_images(
                     **context,
                     "width": width,
                     "height": height,
+                    "rectX": image_rect.x0 if image_rect else 0,
+                    "rectY": image_rect.y0 if image_rect else 0,
+                    "rectWidth": image_rect.width if image_rect else 0,
+                    "rectHeight": image_rect.height if image_rect else 0,
+                    "pageAreaRatio": page_area_ratio,
                     "description": clean_text(f"Embedded image from PDF page {page_index + 1}. {context.get('captionTitle') or context.get('nearbyText')}", 360),
                     "suggestedUse": "Use after matching its caption/nearby text to the slide content.",
                     "confidence": "high" if context.get("captionTitle") else "medium",
@@ -452,7 +589,7 @@ def extract_from_pdf(pdf_path: Path, output_dir: Path, max_assets: int) -> list[
         items.extend(visual_region_crops(doc, pdf_path, output_dir, len(items), max_assets, caption_pages))
         pages_with_items = {int(item["page"]) for item in items if "page" in item}
         items.extend(caption_page_fallbacks(doc, pdf_path, output_dir, len(items), max_assets, pages_with_items))
-    return items[:max_assets]
+    return dedupe_visual_items(items[:max_assets])
 
 
 def main() -> int:

@@ -3,7 +3,7 @@ import * as path from 'path';
 import { BM25Retriever } from './bm25-retriever';
 import { VectorRetriever } from './vector-retriever';
 import { MetadataFilter } from './metadata-filter';
-import { buildSemanticRetrievalQuery } from './semantic-query';
+import { buildSemanticRetrievalQuery, tokenizeRetrievalText } from './semantic-query';
 import type {
   UnifiedLiterature,
   RetrievedDocument,
@@ -16,6 +16,7 @@ interface FusionResult {
   id: string;
   bm25Score: number;
   vectorScore: number;
+  rerankScore?: number;
   combinedScore: number;
 }
 
@@ -25,6 +26,7 @@ export class HybridRetrievalEngine {
   private metadataFilter: MetadataFilter;
   private literatureMap: Map<string, UnifiedLiterature> = new Map();
   private config: RetrievalConfig;
+  private persistenceDirectory?: string;
 
   constructor(config: Partial<RetrievalConfig> = {}, apiConfig?: { url?: string; key?: string }) {
     this.config = {
@@ -47,8 +49,9 @@ export class HybridRetrievalEngine {
         similarity: 'cosine',
       },
       reranker: {
-        enabled: false,
-        topN: 20,
+        enabled: true,
+        topN: 50,
+        candidateTopN: 80,
       },
       maxCitationsPerParagraph: 3,
       defaultCitationStyle: 'numeric',
@@ -108,6 +111,17 @@ export class HybridRetrievalEngine {
     return this.literatureMap.size;
   }
 
+  async prepareDocumentEmbeddings(documentIds: string[]): Promise<{
+    requestedCount: number;
+    embeddedCount: number;
+  }> {
+    const result = await this.vectorRetriever.prepareDocumentEmbeddings(documentIds);
+    if (this.persistenceDirectory && this.vectorRetriever.hasDirtyEmbeddings()) {
+      this.saveIndex(this.persistenceDirectory);
+    }
+    return result;
+  }
+
   async retrieve(query: RetrievalQuery): Promise<RetrievalResult> {
     const startTime = Date.now();
     const { query: queryText, filters, topK = 20, searchMode = 'hybrid' } = query;
@@ -115,43 +129,44 @@ export class HybridRetrievalEngine {
 
     let bm25Results: Array<{ id: string; score: number }> = [];
     let vectorResults: Array<{ id: string; score: number }> = [];
+    const filteredIds = filters ? this.metadataFilter.filter(filters) : null;
 
     const bm25Start = Date.now();
     if (searchMode === 'bm25' || searchMode === 'hybrid') {
       const bm25Limit = searchMode === 'hybrid'
         ? Math.min(
-            Math.max(this.config.bm25.topN, topK * 8, 80),
+            Math.max(
+              this.config.bm25.topN,
+              this.config.reranker.candidateTopN || 0,
+              topK * 4
+            ),
             Math.max(1, this.literatureMap.size)
           )
         : this.config.bm25.topN;
       bm25Results = this.bm25Retriever.search(semanticQueryText, bm25Limit);
+      if (filteredIds) {
+        bm25Results = bm25Results.filter(result => filteredIds.has(result.id));
+      }
     }
     const bm25Ms = Date.now() - bm25Start;
 
     const vectorStart = Date.now();
     if (searchMode === 'vector') {
       vectorResults = await this.vectorRetriever.search(semanticQueryText, this.config.vector.topN);
+      if (filteredIds) {
+        vectorResults = vectorResults.filter(result => filteredIds.has(result.id));
+      }
     } else if (searchMode === 'hybrid' && bm25Results.length > 0) {
-      const vectorCandidateLimit = Math.max(this.config.vector.topN, topK * 8, 80);
-      const vectorWithinResults = await this.vectorRetriever.searchWithin(
+      // 严格级联：向量阶段只能处理 BM25 粗筛出的候选，禁止再做全库向量召回后加权融合。
+      vectorResults = await this.vectorRetriever.searchWithin(
         semanticQueryText,
         bm25Results.map(result => result.id),
-        vectorCandidateLimit
+        bm25Results.length
       );
-      const vectorGlobalResults = await this.vectorRetriever.search(
-        semanticQueryText,
-        Math.max(this.config.vector.topN, topK * 4, 40)
-      );
-      vectorResults = this.mergeVectorResults(vectorWithinResults, vectorGlobalResults, vectorCandidateLimit);
     }
     const vectorMs = Date.now() - vectorStart;
 
-    let fused = this.fuseResults(bm25Results, vectorResults, searchMode);
-
-    if (filters) {
-      const filteredIds = this.metadataFilter.filter(filters);
-      fused = fused.filter(r => filteredIds.has(r.id));
-    }
+    let fused = this.buildCascadeResults(bm25Results, vectorResults, searchMode);
 
     const rerankStart = Date.now();
     if (this.config.reranker.enabled) {
@@ -171,18 +186,48 @@ export class HybridRetrievalEngine {
         ...lit,
         bm25Score: r.bm25Score,
         vectorScore: r.vectorScore,
+        rerankScore: r.rerankScore,
         combinedScore: r.combinedScore,
         rank: index + 1,
       };
     });
 
+    if (this.persistenceDirectory && this.vectorRetriever.hasDirtyEmbeddings()) {
+      try {
+        this.saveIndex(this.persistenceDirectory);
+      } catch (error) {
+        console.warn('[HybridEngine] Failed to persist lazy candidate embeddings:', error);
+      }
+    }
+
     const totalMs = Date.now() - startTime;
+    const embeddingConfigured = this.vectorRetriever.hasApiConfig();
+    const semanticApplied = vectorResults.length > 0;
+    const strategy = searchMode === 'bm25'
+      ? 'bm25'
+      : searchMode === 'vector'
+        ? 'vector'
+        : semanticApplied
+          ? 'bm25-embedding-reranker'
+          : 'bm25-fallback';
 
     return {
       query: queryText,
       filters,
       totalCount: results.length,
       results,
+      pipeline: {
+        strategy,
+        bm25CandidateCount: bm25Results.length,
+        vectorCandidateCount: vectorResults.length,
+        rerankedCount: fused.length,
+        embeddingConfigured,
+        fallbackReason: searchMode === 'hybrid' && !semanticApplied
+          ? embeddingConfigured
+            ? 'embedding-empty-or-failed'
+            : 'embedding-not-configured'
+          : undefined,
+      },
       timing: {
         bm25Ms,
         vectorMs,
@@ -192,68 +237,92 @@ export class HybridRetrievalEngine {
     };
   }
 
-  private fuseResults(
+  /**
+   * 构造各阶段结果。hybrid 模式下 BM25 只决定候选资格，最终基础顺序完全来自候选向量相似度。
+   * 如果 Embedding 未配置或调用失败，才显式降级为 BM25 顺序。
+   */
+  private buildCascadeResults(
     bm25Results: Array<{ id: string; score: number }>,
     vectorResults: Array<{ id: string; score: number }>,
     mode: string
   ): FusionResult[] {
-    const scores = new Map<string, { bm25?: number; vector?: number }>();
-    const semanticAvailable = mode === 'hybrid' && vectorResults.length > 0;
+    const maxBm25 = Math.max(...bm25Results.map(result => result.score), 1);
+    const normalizedBm25 = new Map(
+      bm25Results.map(result => [result.id, result.score / maxBm25])
+    );
 
-    if (mode === 'bm25' || mode === 'hybrid') {
-      const maxBm25 = Math.max(...bm25Results.map(r => r.score), 1);
-      for (const r of bm25Results) {
-        scores.set(r.id, { bm25: r.score / maxBm25 });
-      }
+    if ((mode === 'hybrid' || mode === 'vector') && vectorResults.length > 0) {
+      return vectorResults.map(result => ({
+        id: result.id,
+        bm25Score: normalizedBm25.get(result.id) || 0,
+        vectorScore: result.score,
+        combinedScore: result.score,
+      })).sort((a, b) => b.vectorScore - a.vectorScore);
     }
 
-    if (mode === 'vector' || mode === 'hybrid') {
-      const maxVector = Math.max(...vectorResults.map(r => r.score), 1);
-      for (const r of vectorResults) {
-        const existing = scores.get(r.id) || {};
-        scores.set(r.id, { ...existing, vector: r.score / maxVector });
-      }
-    }
-
-    return Array.from(scores.entries()).map(([id, s]) => ({
-      id,
-      bm25Score: s.bm25 || 0,
-      vectorScore: s.vector || 0,
-      combinedScore: this.calculateCombinedScore(s.bm25, s.vector, semanticAvailable),
-    })).sort((a, b) => b.combinedScore - a.combinedScore);
-  }
-
-  private mergeVectorResults(
-    primary: Array<{ id: string; score: number }>,
-    secondary: Array<{ id: string; score: number }>,
-    limit: number
-  ): Array<{ id: string; score: number }> {
-    const merged = new Map<string, number>();
-    for (const result of [...primary, ...secondary]) {
-      const current = merged.get(result.id) || 0;
-      if (result.score > current) merged.set(result.id, result.score);
-    }
-    return Array.from(merged.entries())
-      .map(([id, score]) => ({ id, score }))
-      .sort((a, b) => b.score - a.score)
-      .slice(0, Math.max(1, limit));
-  }
-
-  private calculateCombinedScore(bm25?: number, vector?: number, semanticAvailable = false): number {
-    if (bm25 === undefined && vector === undefined) return 0;
-    if (semanticAvailable) {
-      return (bm25 || 0) * 0.22 + (vector || 0) * 0.78;
-    }
-    if (bm25 === undefined) return vector!;
-    if (vector === undefined) return bm25;
-    // BM25 只负责粗召回和兜底；真正有向量相似度时由上面的 semanticAvailable 分支主导排序。
-    return bm25 * 0.35 + vector * 0.65;
+    return bm25Results.map(result => ({
+      id: result.id,
+      bm25Score: result.score / maxBm25,
+      vectorScore: 0,
+      combinedScore: result.score / maxBm25,
+    })).sort((a, b) => b.bm25Score - a.bm25Score);
   }
 
   private async rerank(query: string, results: FusionResult[]): Promise<FusionResult[]> {
     if (!this.config.reranker.enabled) return results;
+    const queryTokens = this.uniqueTokens(tokenizeRetrievalText(query));
+    const normalizedPhrase = this.normalizeForRerank(query);
+    const reranked = results.map(result => {
+      const literature = this.literatureMap.get(result.id);
+      if (!literature) return { ...result, rerankScore: result.combinedScore };
+      const rerankText = String(
+        literature.embeddingText
+        || `${literature.title || ''} ${literature.abstract || ''}`
+      );
+      const candidateTokens = new Set(tokenizeRetrievalText(rerankText));
+      const matchedTokenCount = queryTokens.filter(token => candidateTokens.has(token)).length;
+      const coverage = queryTokens.length > 0 ? matchedTokenCount / queryTokens.length : 0;
+      const exactPhrase = normalizedPhrase.length >= 4
+        && this.normalizeForRerank(rerankText).includes(normalizedPhrase);
+      const attachment = literature.evidenceAttachment;
+      const provenanceCompleteness = attachment
+        ? [
+            attachment.sentence,
+            attachment.sourcePdfId || attachment.sourcePdfName,
+            attachment.section,
+            attachment.references?.length ? 'references' : '',
+          ].filter(Boolean).length / 4
+        : 0;
 
-    return results.slice(0, this.config.reranker.topN);
+      // BM25 分数不进入重排计算。它只决定候选资格；此处在语义分数上补充
+      // 精确短语、查询覆盖和证据来源完整度三个可解释特征。
+      const semanticBase = result.vectorScore > 0 ? result.vectorScore : result.combinedScore;
+      const rerankScore = semanticBase
+        + (exactPhrase ? 0.04 : 0)
+        + coverage * 0.04
+        + provenanceCompleteness * 0.02;
+      return {
+        ...result,
+        rerankScore,
+        combinedScore: rerankScore,
+      };
+    });
+
+    return reranked
+      .sort((a, b) => Number(b.rerankScore || 0) - Number(a.rerankScore || 0))
+      .slice(0, Math.max(1, this.config.reranker.topN));
+  }
+
+  private uniqueTokens(tokens: string[]): string[] {
+    return Array.from(new Set(tokens.filter(token => token.length > 1)));
+  }
+
+  private normalizeForRerank(value: string): string {
+    return String(value || '')
+      .toLowerCase()
+      .replace(/[^\p{L}\p{N}\u4e00-\u9fa5]+/gu, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
   }
 
   getLiterature(id: string): UnifiedLiterature | undefined {
@@ -278,9 +347,13 @@ export class HybridRetrievalEngine {
   /**
    * 更新 API 配置（用于运行时更新 Embedding API 配置）
    */
-  updateApiConfig(apiConfig?: { url?: string; key?: string }): void {
+  updateApiConfig(apiConfig?: { url?: string; key?: string; model?: string; dimensions?: number }): void {
     this.vectorRetriever.updateApiConfig(apiConfig);
     console.log(`[HybridEngine] API config updated: url=${apiConfig?.url ? '已配置' : '空'}, key=${apiConfig?.key ? '已配置' : '空'}`);
+  }
+
+  setPersistenceDirectory(cacheDir: string): void {
+    this.persistenceDirectory = cacheDir;
   }
 
   /**
@@ -293,10 +366,11 @@ export class HybridRetrievalEngine {
 
     const literatureMapPath = path.join(cacheDir, 'literature-map.json');
     const literatureMapData = {
-      version: 1,
+      version: 2,
       timestamp: Date.now(),
       literatures: Array.from(this.literatureMap.entries()).map(([id, lit]) => ({
         id,
+        citationId: lit.citationId,
         title: lit.title,
         authors: lit.authors,
         author: lit.author,
@@ -311,8 +385,13 @@ export class HybridRetrievalEngine {
         doi: lit.doi,
         documentType: lit.documentType,
         categories: lit.categories,
+        documentCategories: lit.documentCategories,
+        references: lit.references,
         source: lit.source,
-        embedding: lit.embedding,
+        rawData: lit.rawData,
+        embeddingText: lit.embeddingText,
+        evidenceAttachment: lit.evidenceAttachment,
+        chunks: lit.chunks,
       })),
     };
     fs.writeFileSync(literatureMapPath, JSON.stringify(literatureMapData), 'utf-8');
@@ -338,10 +417,15 @@ export class HybridRetrievalEngine {
 
     try {
       const literatureMapData = JSON.parse(fs.readFileSync(literatureMapPath, 'utf-8'));
+      if (literatureMapData.version !== 2) {
+        console.log(`[HybridEngine] Unsupported literature map version: ${literatureMapData.version}`);
+        return false;
+      }
       this.literatureMap.clear();
       for (const litData of literatureMapData.literatures) {
         this.literatureMap.set(litData.id, {
           id: litData.id,
+          citationId: litData.citationId,
           title: litData.title,
           authors: litData.authors,
           author: litData.author,
@@ -356,8 +440,13 @@ export class HybridRetrievalEngine {
           doi: litData.doi,
           documentType: litData.documentType,
           categories: litData.categories,
+          documentCategories: litData.documentCategories,
+          references: litData.references,
           source: litData.source,
-          embedding: litData.embedding,
+          rawData: litData.rawData,
+          embeddingText: litData.embeddingText,
+          evidenceAttachment: litData.evidenceAttachment,
+          chunks: litData.chunks,
         });
       }
 

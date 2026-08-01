@@ -20,12 +20,14 @@ function LoginPageContent() {
   const searchParams = useSearchParams();
 
   useEffect(() => {
-    // Load remembered email
-    const savedEmail = localStorage.getItem('rememberedEmail');
-    if (savedEmail) {
-      setEmail(savedEmail);
-      setRememberMe(true);
-    }
+    const timer = window.setTimeout(() => {
+      const savedEmail = localStorage.getItem('rememberedEmail');
+      if (savedEmail) {
+        setEmail(savedEmail);
+        setRememberMe(true);
+      }
+    }, 0);
+    return () => window.clearTimeout(timer);
   }, []);
 
   // 验证内测码
@@ -47,7 +49,7 @@ function LoginPageContent() {
       } else {
         setBetaCodeMessage(result.reason || '内测码无效');
       }
-    } catch (err) {
+    } catch {
       setBetaCodeValid(false);
       setBetaCodeMessage('验证失败，请稍后重试');
     } finally {
@@ -97,8 +99,8 @@ function LoginPageContent() {
         const redirectTo = searchParams.get('redirect') || '/dashboard';
         router.push(redirectTo);
       }
-    } catch (err: any) {
-      setError(err.message || '登录失败，请重试');
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : '登录失败，请重试');
     } finally {
       setLoading(false);
     }

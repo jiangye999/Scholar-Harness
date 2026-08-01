@@ -129,7 +129,7 @@ export default function ContactPage() {
               <h3 className="font-semibold text-blue-900 mb-2">响应时间</h3>
               <p className="text-blue-700 text-sm">
                 我们通常会在1-2个工作日内回复您的邮件。如果是紧急问题，
-                请在邮件主题中标注"【紧急】"。
+                请在邮件主题中标注“【紧急】”。
               </p>
             </div>
           </div>

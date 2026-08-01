@@ -16,11 +16,6 @@ const structureChecks = [
     close: countStandaloneTags(/^\s*<\/script>\s*$/gim),
   },
   {
-    label: 'style tags',
-    open: countStandaloneTags(/^\s*<style(?:\s[^>]*)?>\s*$/gim),
-    close: countStandaloneTags(/^\s*<\/style>\s*$/gim),
-  },
-  {
     label: 'body tags',
     open: countStandaloneTags(/^\s*<body(?:\s[^>]*)?>\s*$/gim),
     close: countStandaloneTags(/^\s*<\/body>\s*$/gim),
@@ -46,6 +41,82 @@ structureChecks.forEach((check) => {
   }
 });
 
+const inlineStyleTags = [...html.matchAll(/<style([^>]*)>([\s\S]*?)<\/style>/gi)];
+const stylesheets = [...html.matchAll(/<link\b([^>]*)>/gi)]
+  .map((match, index) => {
+    const attrs = match[1] || '';
+    const relMatch = attrs.match(/\brel=["']([^"']+)["']/i);
+    const hrefMatch = attrs.match(/\bhref=["']([^"']+)["']/i);
+    if (!relMatch || !/\bstylesheet\b/i.test(relMatch[1]) || !hrefMatch) return null;
+
+    const href = hrefMatch[1];
+    if (/^(?:https?:)?\/\//i.test(href)) return null;
+
+    const localHref = href.split(/[?#]/, 1)[0];
+    const stylesheetPath = path.resolve(publicDir, localHref.replace(/^\/+/, ''));
+    return {
+      index,
+      label: href,
+      code: fs.readFileSync(stylesheetPath, 'utf8'),
+    };
+  })
+  .filter(Boolean);
+
+if (inlineStyleTags.length === 0 && stylesheets.length === 0) {
+  hasError = true;
+  console.error('[Public JS] Missing page styles: no inline styles or local stylesheets found');
+}
+
+function validateCssBraces(source, label) {
+  let depth = 0;
+  let quote = '';
+  let inComment = false;
+
+  for (let index = 0; index < source.length; index += 1) {
+    const char = source[index];
+    const next = source[index + 1];
+
+    if (inComment) {
+      if (char === '*' && next === '/') {
+        inComment = false;
+        index += 1;
+      }
+      continue;
+    }
+
+    if (quote) {
+      if (char === '\\') {
+        index += 1;
+      } else if (char === quote) {
+        quote = '';
+      }
+      continue;
+    }
+
+    if (char === '/' && next === '*') {
+      inComment = true;
+      index += 1;
+    } else if (char === '"' || char === "'") {
+      quote = char;
+    } else if (char === '{') {
+      depth += 1;
+    } else if (char === '}') {
+      depth -= 1;
+      if (depth < 0) break;
+    }
+  }
+
+  if (depth !== 0 || quote || inComment) {
+    hasError = true;
+    console.error(
+      `[Public JS] Invalid CSS structure in ${label}: depth=${depth}, quote=${Boolean(quote)}, comment=${inComment}`
+    );
+  }
+}
+
+inlineStyleTags.forEach((match, index) => validateCssBraces(match[2], `inline style ${index}`));
+stylesheets.forEach((stylesheet) => validateCssBraces(stylesheet.code, stylesheet.label));
+
 const scripts = [...html.matchAll(/<script([^>]*)>([\s\S]*?)<\/script>/gi)]
   .map((match, index) => {
     const attrs = match[1] || '';
@@ -59,7 +130,8 @@ const scripts = [...html.matchAll(/<script([^>]*)>([\s\S]*?)<\/script>/gi)]
       return null;
     }
 
-    const srcPath = path.resolve(publicDir, src.replace(/^\/+/, ''));
+    const localSrc = src.split(/[?#]/, 1)[0];
+    const srcPath = path.resolve(publicDir, localSrc.replace(/^\/+/, ''));
     return {
       index,
       label: src,
@@ -81,4 +153,7 @@ if (hasError) {
   process.exit(1);
 }
 
-console.log(`[Public JS] Checked ${scripts.length} script file/block(s)`);
+console.log(
+  `[Public JS] Checked ${scripts.length} script file/block(s) and ` +
+  `${stylesheets.length + inlineStyleTags.length} style file/block(s)`
+);

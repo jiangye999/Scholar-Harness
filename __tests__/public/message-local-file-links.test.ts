@@ -4,17 +4,17 @@ import * as vm from 'vm';
 
 import { describe, expect, it, vi } from 'vitest';
 
+import { readPublicAppSource } from '../helpers/public-app-source';
+
 function loadLocalLinkHelpers() {
-  const source = fs.readFileSync(
-    path.resolve(process.cwd(), 'src/public/index.html'),
-    'utf-8',
-  );
+  const source = readPublicAppSource();
   const start = source.indexOf('    function decodeMessageLinkTarget(value) {');
   const end = source.indexOf('    function isCollapsibleRCodeBlock(language, code) {', start);
   if (start < 0 || end < 0) throw new Error('Local message link helpers were not found');
   const openOutputAttachmentFile = vi.fn(async () => undefined);
   const context = vm.createContext({
-    window: {},
+    window: { location: { origin: 'http://localhost' } },
+    URL,
     decodeURIComponent,
     escapeHtml: (value: unknown) => String(value)
       .replace(/&/g, '&amp;')
@@ -23,6 +23,8 @@ function loadLocalLinkHelpers() {
       .replace(/"/g, '&quot;')
       .replace(/'/g, '&#39;'),
     isOutputAttachmentPath: (value: unknown) => /\.(?:docx?|xlsx?|pdf|png|txt)$/i.test(String(value || '')),
+    getOutputAttachmentFileName: (value: unknown) => String(value || '').split(/[?#]/)[0].split(/[\\/]/).pop() || '',
+    isOutputImagePath: (value: unknown) => /\.(?:png|jpe?g|gif|bmp|webp|tiff?|svg)$/i.test(String(value || '')),
     openOutputAttachmentFile,
   });
   vm.runInContext(source.slice(start, end), context);
@@ -30,6 +32,7 @@ function loadLocalLinkHelpers() {
     context: context as unknown as {
       decodeMessageLinkTarget: (value: string) => string;
       isMessageLocalFileLinkTarget: (value: string) => boolean;
+      isMessageImagePreviewTarget: (value: string) => boolean;
       renderMessageMarkdownLink: (label: string, target: string) => string;
       protectInlineLocalFileMarkdownLinks: (text: string) => {
         text: string;
@@ -72,6 +75,20 @@ describe('message local-file links', () => {
     expect(event.preventDefault).toHaveBeenCalledOnce();
     expect(event.stopPropagation).toHaveBeenCalledOnce();
     expect(openOutputAttachmentFile).toHaveBeenCalledWith(link);
+  });
+
+  it('opens API image links in the right sidebar instead of an external browser', () => {
+    const { context } = loadLocalLinkHelpers();
+    const target = '/api/bibliometrics/artifacts/file?userId=web-user&file=figure1.svg';
+    const html = context.renderMessageMarkdownLink(target, target);
+
+    expect(context.isMessageImagePreviewTarget(target)).toBe(true);
+    expect(html).toContain('class="message-local-file-link message-image-preview-link"');
+    expect(html).toContain('data-file-kind="image"');
+    expect(html).toContain('data-file-name="figure1.svg"');
+    expect(html).toContain('在右侧查看图片');
+    expect(html).not.toContain('<a ');
+    expect(html).not.toContain('target="_blank"');
   });
 
   it('does not nest backtick-wrapped local file links inside fragmented code elements', () => {

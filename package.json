@@ -1,11 +1,11 @@
 {
   "name": "scholar-harness",
-  "version": "1.0.7",
+  "version": "1.0.8",
   "description": "Scholar Harness - 对话式学术论文写作助手",
   "author": "sjs@cau.edu.cn",
   "main": "dist/electron/main.js",
   "scripts": {
-    "dev": "ts-node-dev --respawn src/server/local-server.ts",
+    "dev": "tsx watch src/server/local-server.ts",
     "build": "node scripts/check-public-js.js && tsc && node scripts/build-copy.js",
     "build:bytecode": "node scripts/run-bytecode-with-electron.js",
     "start": "node dist/src/server/local-server.js",
@@ -19,7 +19,7 @@
     "electron:build:signed": "node scripts/check-code-signing.js --required && npm run electron:build",
     "electron:build:debug": "npm run electron:prepare && npm run build && tsc -p electron/tsconfig.json && node scripts/build-copy.js && electron-builder --win",
     "electron:preview": "npm run build && tsc -p electron/tsconfig.json && electron .",
-    "cloud:import-core-prompts": "ts-node cloud/scripts/import-core-prompts.ts"
+    "cloud:import-core-prompts": "tsx cloud/scripts/import-core-prompts.ts"
   },
   "build": {
     "appId": "com.scholar-harness.app",
@@ -132,7 +132,10 @@
       ],
       "category": "public.app-category.education",
       "icon": "build/icon.icns",
-      "artifactName": "${productName} Setup ${version}-${arch}.${ext}"
+      "artifactName": "scholar-harness-${version}-${arch}.${ext}",
+      "extendInfo": {
+        "NSMicrophoneUsageDescription": "Scholar Harness 使用麦克风在本地驱动文献网状图声浪效果，不录音或上传音频。"
+      }
     },
     "nsis": {
       "oneClick": false,
@@ -152,10 +155,10 @@
     "@tesseract.js-data/chi_sim": "^1.0.0",
     "@tesseract.js-data/eng": "^1.0.0",
     "archiver": "^7.0.1",
-    "axios": "^1.6.0",
+    "axios": "^1.18.1",
     "bytenode": "^1.5.7",
     "dotenv": "^16.3.0",
-    "express": "^4.18.2",
+    "express": "^4.22.2",
     "jszip": "^3.10.1",
     "mammoth": "^1.11.0",
     "multer": "^1.4.5-lts.1",
@@ -177,11 +180,9 @@
     "@types/send": "^1.2.1",
     "@types/supertest": "^7.2.0",
     "electron": "^33.4.11",
-    "electron-builder": "^26.8.1",
+    "electron-builder": "^26.15.3",
     "fs-extra": "^11.3.4",
-    "pkg": "^5.8.1",
     "supertest": "^7.2.2",
-    "ts-node-dev": "^2.0.0",
     "tsx": "^4.21.0",
     "typescript": "^5.3.0",
     "vitest": "^1.0.0"

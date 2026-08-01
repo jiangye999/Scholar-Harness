@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import Link from 'next/link';
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'https://scholarharness.com/api/v1';
@@ -104,6 +104,71 @@ interface BetaCodeStats {
   disabled: number;
 }
 
+type DistributorPeriodType = 'month' | 'year';
+
+interface DistributorMetrics {
+  period_registrations: number;
+  total_registrations: number;
+  period_purchases: number;
+  gross_revenue: number;
+  refund_amount: number;
+  net_revenue: number;
+  commission_amount: number;
+}
+
+interface DistributorPackageBreakdown {
+  package_type: string;
+  purchase_count: number;
+  gross_revenue: number;
+  refund_amount: number;
+  net_revenue: number;
+}
+
+interface DistributorItem {
+  id: string;
+  name: string;
+  invite_code: string;
+  contact_name?: string;
+  contact_phone?: string;
+  commission_rate: number;
+  status: 'active' | 'disabled';
+  notes?: string;
+  created_at: string;
+  updated_at: string;
+  account: {
+    email: string;
+    display_name?: string;
+    status: 'active' | 'disabled';
+    last_login_at?: string;
+  } | null;
+  metrics: DistributorMetrics;
+  package_breakdown: DistributorPackageBreakdown[];
+}
+
+interface DistributorSummary {
+  distributors: number;
+  registrations: number;
+  purchases: number;
+  net_revenue: number;
+  commission_amount: number;
+}
+
+interface DistributorPurchase {
+  id: string;
+  user_email: string;
+  username?: string;
+  payment_type: string;
+  package_type: string;
+  amount: number;
+  currency: string;
+  payment_method: string;
+  status: string;
+  refund_amount: number;
+  net_revenue: number;
+  created_at: string;
+  paid_at?: string;
+}
+
 type BetaCodeKind = 'trial' | 'premium_trial' | 'extended_trial' | 'lifetime_2d' | 'lifetime_once' | 'limited_trial_2d_15d';
 type CommercialCardPlanKey = 'month' | 'quarter' | 'year';
 
@@ -149,6 +214,19 @@ function getCompactDate(): string {
   return new Date().toISOString().slice(0, 10).replace(/-/g, '');
 }
 
+function getCurrentMonth(): string {
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+}
+
+function formatCurrency(value: number): string {
+  return new Intl.NumberFormat('zh-CN', {
+    style: 'currency',
+    currency: 'CNY',
+    minimumFractionDigits: 2,
+  }).format(Number(value || 0));
+}
+
 function downloadTextFile(filename: string, content: string): void {
   const blob = new Blob([`\uFEFF${content}`], { type: 'text/plain;charset=utf-8' });
   const url = URL.createObjectURL(blob);
@@ -161,7 +239,7 @@ function downloadTextFile(filename: string, content: string): void {
   URL.revokeObjectURL(url);
 }
 
-type AdminTab = 'stats' | 'pricing' | 'users' | 'payments' | 'upstream' | 'embedding' | 'beta-codes' | 'feedback';
+type AdminTab = 'stats' | 'pricing' | 'users' | 'payments' | 'upstream' | 'embedding' | 'beta-codes' | 'distributors' | 'feedback';
 
 interface FeedbackItem {
   id: string;
@@ -203,6 +281,7 @@ export default function AdminPage() {
   const [password, setPassword] = useState('');
   const [loginError, setLoginError] = useState('');
   const [loginLoading, setLoginLoading] = useState(false);
+  const adminRefreshPromiseRef = useRef<Promise<string | null> | null>(null);
 
   const [stats, setStats] = useState<Stats | null>(null);
   const [pricing, setPricing] = useState<PricingItem[]>([]);
@@ -213,6 +292,28 @@ export default function AdminPage() {
   const [upstreamEmbeddingConfigs, setUpstreamEmbeddingConfigs] = useState<UpstreamEmbeddingConfigItem[]>([]);
   const [betaCodes, setBetaCodes] = useState<BetaCodeItem[]>([]);
   const [betaCodeStats, setBetaCodeStats] = useState<BetaCodeStats | null>(null);
+  const [distributors, setDistributors] = useState<DistributorItem[]>([]);
+  const [distributorSummary, setDistributorSummary] = useState<DistributorSummary | null>(null);
+  const [distributorPeriodType, setDistributorPeriodType] = useState<DistributorPeriodType>('month');
+  const [distributorPeriod, setDistributorPeriod] = useState(getCurrentMonth());
+  const [selectedDistributorId, setSelectedDistributorId] = useState<string | null>(null);
+  const [distributorPurchases, setDistributorPurchases] = useState<DistributorPurchase[]>([]);
+  const [distributorLoading, setDistributorLoading] = useState(false);
+  const [newDistributor, setNewDistributor] = useState({
+    name: '',
+    invite_code: '',
+    contact_name: '',
+    contact_phone: '',
+    commission_rate: 0,
+    notes: '',
+    account_email: '',
+    account_password: '',
+  });
+  const [distributorAccountDrafts, setDistributorAccountDrafts] = useState<Record<string, {
+    email: string;
+    password: string;
+    status: 'active' | 'disabled';
+  }>>({});
   const [feedback, setFeedback] = useState<FeedbackItem[]>([]);
   const [feedbackStats, setFeedbackStats] = useState<FeedbackStats | null>(null);
   const [newBetaCode, setNewBetaCode] = useState<{
@@ -282,35 +383,96 @@ export default function AdminPage() {
   });
 
   useEffect(() => {
-    checkAuth();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => {
+      void (async () => {
+        if (!localStorage.getItem('adminToken') && !localStorage.getItem('adminRefreshToken')) {
+          setLoading(false);
+          return;
+        }
+
+        try {
+          const response = await adminFetch(`${API_BASE_URL}/admin/stats`, {
+            signal: controller.signal,
+          });
+          if (response.ok) {
+            setStats(await response.json());
+            setIsLoggedIn(true);
+          }
+          setLoading(false);
+        } catch (error) {
+          if ((error as Error).name === 'AbortError') return;
+          setLoading(false);
+        }
+      })();
+    }, 0);
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
   }, []);
 
-  const checkAuth = async () => {
-    const token = localStorage.getItem('adminToken');
-    if (!token) {
-      setLoading(false);
-      return;
+  function clearAdminSession(message = '') {
+    localStorage.removeItem('adminToken');
+    localStorage.removeItem('adminRefreshToken');
+    setIsLoggedIn(false);
+    if (message) setLoginError(message);
+  }
+
+  async function refreshAdminSession(): Promise<string | null> {
+    if (adminRefreshPromiseRef.current) return adminRefreshPromiseRef.current;
+
+    adminRefreshPromiseRef.current = (async () => {
+      const refreshToken = localStorage.getItem('adminRefreshToken');
+      if (!refreshToken) return null;
+
+      try {
+        const response = await fetch(`${API_BASE_URL}/admin/refresh`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ refreshToken }),
+        });
+        if (!response.ok) return null;
+
+        const data = await response.json();
+        const nextAccessToken = data?.tokens?.accessToken;
+        const nextRefreshToken = data?.tokens?.refreshToken;
+        if (!nextAccessToken || !nextRefreshToken) return null;
+
+        localStorage.setItem('adminToken', nextAccessToken);
+        localStorage.setItem('adminRefreshToken', nextRefreshToken);
+        return nextAccessToken as string;
+      } catch {
+        return null;
+      } finally {
+        adminRefreshPromiseRef.current = null;
+      }
+    })();
+
+    return adminRefreshPromiseRef.current;
+  }
+
+  async function adminFetch(url: string, init: RequestInit = {}): Promise<Response> {
+    const requestWithToken = (token: string | null) => {
+      const headers = new Headers(init.headers);
+      if (!headers.has('Content-Type')) headers.set('Content-Type', 'application/json');
+      if (token) headers.set('Authorization', `Bearer ${token}`);
+      return fetch(url, { ...init, headers });
+    };
+
+    let token = localStorage.getItem('adminToken');
+    let response = await requestWithToken(token);
+    if (response.status !== 401) return response;
+
+    token = await refreshAdminSession();
+    if (token) {
+      response = await requestWithToken(token);
+      if (response.status !== 401) return response;
     }
 
-    try {
-      // Verify token is still valid
-      const res = await fetch(`${API_BASE_URL}/admin/stats`, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      if (res.ok) {
-        setIsLoggedIn(true);
-        setLoading(false);
-        loadData('stats');
-      } else {
-        localStorage.removeItem('adminToken');
-        setLoading(false);
-      }
-    } catch {
-      localStorage.removeItem('adminToken');
-      setLoading(false);
-    }
-  };
+    clearAdminSession('登录已过期，请重新登录。');
+    throw new Error('ADMIN_SESSION_EXPIRED');
+  }
 
   const getAuthHeaders = () => ({
     'Content-Type': 'application/json',
@@ -349,6 +511,7 @@ export default function AdminPage() {
 
       const data = await res.json();
       localStorage.setItem('adminToken', data.tokens.accessToken);
+      localStorage.setItem('adminRefreshToken', data.tokens.refreshToken);
       setIsLoggedIn(true);
       setLoginLoading(false);
       loadData('stats');
@@ -359,11 +522,208 @@ export default function AdminPage() {
   };
 
   const handleLogout = () => {
-    localStorage.removeItem('adminToken');
-    setIsLoggedIn(false);
+    clearAdminSession();
     setSecretCode('');
     setEmail('');
     setPassword('');
+  };
+
+  const loadDistributorData = async (
+    periodType: DistributorPeriodType = distributorPeriodType,
+    period: string = distributorPeriod
+  ) => {
+    setDistributorLoading(true);
+    try {
+      const params = new URLSearchParams({
+        period_type: periodType,
+        period,
+      });
+      const res = await adminFetch(`${API_BASE_URL}/admin/distributors?${params.toString()}`, {
+        headers: getAuthHeaders(),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        alert(data.message || '读取分销商统计失败');
+        return;
+      }
+      setDistributors(data.distributors || []);
+      setDistributorSummary(data.summary || null);
+    } catch (err) {
+      if ((err as Error).message === 'ADMIN_SESSION_EXPIRED') return;
+      console.error('Load distributor data failed:', err);
+      alert('读取分销商统计失败，请检查网络后重试');
+    } finally {
+      setDistributorLoading(false);
+    }
+  };
+
+  const loadDistributorPurchases = async (
+    distributorId: string,
+    periodType: DistributorPeriodType = distributorPeriodType,
+    period: string = distributorPeriod
+  ) => {
+    try {
+      const params = new URLSearchParams({
+        period_type: periodType,
+        period,
+        limit: '500',
+      });
+      const res = await adminFetch(
+        `${API_BASE_URL}/admin/distributors/${distributorId}/purchases?${params.toString()}`,
+        { headers: getAuthHeaders() }
+      );
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        alert(data.message || '读取购买明细失败');
+        return;
+      }
+      setSelectedDistributorId(distributorId);
+      setDistributorPurchases(data.purchases || []);
+    } catch (err) {
+      if ((err as Error).message === 'ADMIN_SESSION_EXPIRED') return;
+      console.error('Load distributor purchases failed:', err);
+      alert('读取购买明细失败，请重试');
+    }
+  };
+
+  const createDistributor = async () => {
+    if (!newDistributor.name.trim()) {
+      alert('请填写分销商名称');
+      return;
+    }
+
+    try {
+      const res = await adminFetch(`${API_BASE_URL}/admin/distributors`, {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: JSON.stringify({
+          ...newDistributor,
+          invite_code: newDistributor.invite_code.trim() || undefined,
+          account_email: newDistributor.account_email.trim() || undefined,
+          account_password: newDistributor.account_password || undefined,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        alert(data.message || '创建分销商失败');
+        return;
+      }
+      setNewDistributor({
+        name: '',
+        invite_code: '',
+        contact_name: '',
+        contact_phone: '',
+        commission_rate: 0,
+        notes: '',
+        account_email: '',
+        account_password: '',
+      });
+      await loadDistributorData();
+    } catch (err) {
+      if ((err as Error).message === 'ADMIN_SESSION_EXPIRED') return;
+      console.error('Create distributor failed:', err);
+      alert('创建分销商失败，请重试');
+    }
+  };
+
+  const updateDistributor = async (
+    distributorId: string,
+    updates: Partial<Pick<DistributorItem, 'name' | 'contact_name' | 'contact_phone' | 'commission_rate' | 'status' | 'notes'>>
+  ) => {
+    try {
+      const res = await adminFetch(`${API_BASE_URL}/admin/distributors/${distributorId}`, {
+        method: 'PATCH',
+        headers: getAuthHeaders(),
+        body: JSON.stringify(updates),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        alert(data.message || '更新分销商失败');
+        await loadDistributorData();
+        return;
+      }
+      await loadDistributorData();
+      if (selectedDistributorId === distributorId) {
+        await loadDistributorPurchases(distributorId);
+      }
+    } catch (err) {
+      if ((err as Error).message === 'ADMIN_SESSION_EXPIRED') return;
+      console.error('Update distributor failed:', err);
+      alert('更新分销商失败，请重试');
+    }
+  };
+
+  const updateDistributorAccountDraft = (
+    distributor: DistributorItem,
+    updates: Partial<{ email: string; password: string; status: 'active' | 'disabled' }>
+  ) => {
+    setDistributorAccountDrafts((current) => ({
+      ...current,
+      [distributor.id]: {
+        email: current[distributor.id]?.email ?? distributor.account?.email ?? '',
+        password: current[distributor.id]?.password ?? '',
+        status: current[distributor.id]?.status ?? distributor.account?.status ?? 'active',
+        ...updates,
+      },
+    }));
+  };
+
+  const saveDistributorAccount = async (distributor: DistributorItem) => {
+    const draft = distributorAccountDrafts[distributor.id];
+    const email = (draft?.email ?? distributor.account?.email ?? '').trim();
+    const password = (draft?.password ?? '').trim();
+    const status = draft?.status ?? distributor.account?.status ?? 'active';
+
+    if (!email) {
+      alert('请填写分销商登录邮箱');
+      return;
+    }
+    if (!distributor.account && password.length < 8) {
+      alert('首次创建账户必须设置至少 8 位密码');
+      return;
+    }
+    if (password && password.length < 8) {
+      alert('新密码至少需要 8 位');
+      return;
+    }
+
+    try {
+      const res = await adminFetch(`${API_BASE_URL}/admin/distributors/${distributor.id}/account`, {
+        method: 'PUT',
+        headers: getAuthHeaders(),
+        body: JSON.stringify({
+          email,
+          password: password || undefined,
+          display_name: distributor.contact_name || distributor.name,
+          status,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        alert(data.message || '保存分销商登录账户失败');
+        return;
+      }
+      setDistributorAccountDrafts((current) => {
+        const next = { ...current };
+        delete next[distributor.id];
+        return next;
+      });
+      await loadDistributorData();
+      alert(distributor.account ? '登录账户已更新' : '登录账户已创建');
+    } catch (err) {
+      if ((err as Error).message === 'ADMIN_SESSION_EXPIRED') return;
+      console.error('Save distributor account failed:', err);
+      alert('保存分销商登录账户失败，请重试');
+    }
+  };
+
+  const copyDistributorCode = async (code: string) => {
+    try {
+      await navigator.clipboard.writeText(code);
+      alert(`分销商邀请码已复制：${code}`);
+    } catch {
+      alert(`请手动复制邀请码：${code}`);
+    }
   };
 
   const loadData = async (tab: string) => {
@@ -401,6 +761,8 @@ export default function AdminPage() {
         ]);
         if (codesRes.ok) setBetaCodes((await codesRes.json()).codes || []);
         if (statsRes.ok) setBetaCodeStats((await statsRes.json()).stats);
+      } else if (tab === 'distributors') {
+        await loadDistributorData();
       } else if (tab === 'feedback') {
         const [feedbackRes, statsRes] = await Promise.all([
           fetch(`${API_BASE_URL}/admin/feedback`, { headers: getAuthHeaders() }),
@@ -1017,18 +1379,18 @@ export default function AdminPage() {
 
         {/* Tabs */}
         <div className="bg-white rounded-xl shadow mb-6">
-          <div className="flex border-b">
-            {(['stats', 'pricing', 'users', 'payments', 'upstream', 'embedding', 'beta-codes', 'feedback'] as const).map((tab) => (
+          <div className="flex overflow-x-auto border-b">
+            {(['stats', 'pricing', 'users', 'payments', 'upstream', 'embedding', 'beta-codes', 'distributors', 'feedback'] as const).map((tab) => (
               <button
                 key={tab}
                 onClick={() => handleTabChange(tab)}
-                className={`px-6 py-4 font-medium transition ${
+                className={`whitespace-nowrap px-6 py-4 font-medium transition ${
                   activeTab === tab
                     ? 'text-blue-600 border-b-2 border-blue-600'
                     : 'text-gray-600 hover:text-gray-900'
                 }`}
               >
-                {tab === 'stats' ? '统计概览' : tab === 'pricing' ? '定价管理' : tab === 'users' ? '用户管理' : tab === 'payments' ? '支付记录' : tab === 'upstream' ? '上游API' : tab === 'embedding' ? '上游Embedding' : tab === 'beta-codes' ? '内测码' : '意见反馈'}
+                {tab === 'stats' ? '统计概览' : tab === 'pricing' ? '定价管理' : tab === 'users' ? '用户管理' : tab === 'payments' ? '支付记录' : tab === 'upstream' ? '上游API' : tab === 'embedding' ? '上游Embedding' : tab === 'beta-codes' ? '内测码' : tab === 'distributors' ? '分销商' : '意见反馈'}
               </button>
             ))}
           </div>
@@ -1802,6 +2164,428 @@ export default function AdminPage() {
                 </table>
               )}
             </div>
+          </div>
+        )}
+
+        {activeTab === 'distributors' && (
+          <div className="space-y-6">
+            <div className="bg-white rounded-xl shadow p-6">
+              <div className="flex flex-wrap items-start justify-between gap-4">
+                <div>
+                  <h2 className="text-xl font-bold text-gray-900">分销商邀请码</h2>
+                  <p className="mt-1 text-sm text-gray-500">
+                    管理员查看全部分销商；分销商通过独立门户仅查看自己邀请码带来的注册、套餐购买和分成。
+                  </p>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <Link
+                    href="/distributor"
+                    target="_blank"
+                    className="rounded-lg bg-gray-900 px-4 py-2 text-sm font-medium text-white hover:bg-black"
+                  >
+                    打开分销商门户
+                  </Link>
+                  <div className="inline-flex rounded-lg border border-gray-200 p-1">
+                    {(['month', 'year'] as DistributorPeriodType[]).map((periodType) => (
+                      <button
+                        key={periodType}
+                        type="button"
+                        onClick={() => {
+                          const nextPeriod = periodType === 'month'
+                            ? getCurrentMonth()
+                            : String(new Date().getFullYear());
+                          setDistributorPeriodType(periodType);
+                          setDistributorPeriod(nextPeriod);
+                          setSelectedDistributorId(null);
+                          setDistributorPurchases([]);
+                          void loadDistributorData(periodType, nextPeriod);
+                        }}
+                        className={`rounded-md px-4 py-2 text-sm font-medium transition ${
+                          distributorPeriodType === periodType
+                            ? 'bg-gray-900 text-white'
+                            : 'text-gray-600 hover:bg-gray-100'
+                        }`}
+                      >
+                        {periodType === 'month' ? '月度' : '年度'}
+                      </button>
+                    ))}
+                  </div>
+                  <input
+                    type={distributorPeriodType === 'month' ? 'month' : 'number'}
+                    min={distributorPeriodType === 'year' ? 2000 : undefined}
+                    max={distributorPeriodType === 'year' ? 2200 : undefined}
+                    value={distributorPeriod}
+                    onChange={(event) => {
+                      const nextPeriod = event.target.value;
+                      setDistributorPeriod(nextPeriod);
+                      setSelectedDistributorId(null);
+                      setDistributorPurchases([]);
+                      if (
+                        (distributorPeriodType === 'month' && /^\d{4}-\d{2}$/.test(nextPeriod))
+                        || (distributorPeriodType === 'year' && /^\d{4}$/.test(nextPeriod))
+                      ) {
+                        void loadDistributorData(distributorPeriodType, nextPeriod);
+                      }
+                    }}
+                    className="rounded-lg border border-gray-300 px-3 py-2 text-sm"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => void loadDistributorData()}
+                    className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
+                  >
+                    {distributorLoading ? '统计中...' : '刷新统计'}
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {distributorSummary && (
+              <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
+                <div className="rounded-xl bg-white p-5 shadow">
+                  <div className="text-sm text-gray-500">分销商</div>
+                  <div className="mt-2 text-2xl font-bold">{distributorSummary.distributors}</div>
+                </div>
+                <div className="rounded-xl bg-white p-5 shadow">
+                  <div className="text-sm text-gray-500">新增注册</div>
+                  <div className="mt-2 text-2xl font-bold text-blue-600">{distributorSummary.registrations}</div>
+                </div>
+                <div className="rounded-xl bg-white p-5 shadow">
+                  <div className="text-sm text-gray-500">购买笔数</div>
+                  <div className="mt-2 text-2xl font-bold text-violet-600">{distributorSummary.purchases}</div>
+                </div>
+                <div className="rounded-xl bg-white p-5 shadow">
+                  <div className="text-sm text-gray-500">净销售额</div>
+                  <div className="mt-2 text-2xl font-bold text-emerald-700">{formatCurrency(distributorSummary.net_revenue)}</div>
+                </div>
+                <div className="rounded-xl bg-white p-5 shadow">
+                  <div className="text-sm text-gray-500">应计分成</div>
+                  <div className="mt-2 text-2xl font-bold text-amber-600">{formatCurrency(distributorSummary.commission_amount)}</div>
+                </div>
+              </div>
+            )}
+
+            <div className="rounded-xl bg-white p-6 shadow">
+              <h3 className="text-lg font-bold text-gray-900">新增分销商</h3>
+              <p className="mt-1 text-sm text-gray-500">
+                邀请码可留空自动生成；登录邮箱和初始密码同时填写后，会一并开通独立门户账户。
+              </p>
+              <div className="mt-4 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+                <input
+                  value={newDistributor.name}
+                  onChange={(event) => setNewDistributor({ ...newDistributor, name: event.target.value })}
+                  className="rounded-lg border border-gray-300 px-3 py-2"
+                  placeholder="分销商名称 *"
+                />
+                <input
+                  value={newDistributor.invite_code}
+                  onChange={(event) => setNewDistributor({
+                    ...newDistributor,
+                    invite_code: event.target.value.toUpperCase().replace(/[^A-Z0-9]/g, ''),
+                  })}
+                  className="rounded-lg border border-gray-300 px-3 py-2 font-mono uppercase"
+                  placeholder="邀请码（可留空）"
+                  maxLength={20}
+                />
+                <input
+                  value={newDistributor.contact_name}
+                  onChange={(event) => setNewDistributor({ ...newDistributor, contact_name: event.target.value })}
+                  className="rounded-lg border border-gray-300 px-3 py-2"
+                  placeholder="联系人"
+                />
+                <input
+                  value={newDistributor.contact_phone}
+                  onChange={(event) => setNewDistributor({ ...newDistributor, contact_phone: event.target.value })}
+                  className="rounded-lg border border-gray-300 px-3 py-2"
+                  placeholder="联系方式"
+                />
+                <label className="flex items-center gap-3 rounded-lg border border-gray-300 px-3 py-2">
+                  <span className="whitespace-nowrap text-sm text-gray-600">分成比例</span>
+                  <input
+                    type="number"
+                    min="0"
+                    max="100"
+                    step="0.01"
+                    value={newDistributor.commission_rate}
+                    onChange={(event) => setNewDistributor({
+                      ...newDistributor,
+                      commission_rate: Math.min(100, Math.max(0, Number(event.target.value) || 0)),
+                    })}
+                    className="min-w-0 flex-1 border-0 text-right outline-none"
+                  />
+                  <span className="text-sm text-gray-500">%</span>
+                </label>
+                <input
+                  value={newDistributor.notes}
+                  onChange={(event) => setNewDistributor({ ...newDistributor, notes: event.target.value })}
+                  className="rounded-lg border border-gray-300 px-3 py-2 md:col-span-2"
+                  placeholder="备注"
+                />
+                <input
+                  type="email"
+                  value={newDistributor.account_email}
+                  onChange={(event) => setNewDistributor({ ...newDistributor, account_email: event.target.value })}
+                  className="rounded-lg border border-gray-300 px-3 py-2"
+                  placeholder="门户登录邮箱（可稍后设置）"
+                />
+                <input
+                  type="password"
+                  value={newDistributor.account_password}
+                  onChange={(event) => setNewDistributor({ ...newDistributor, account_password: event.target.value })}
+                  className="rounded-lg border border-gray-300 px-3 py-2"
+                  placeholder="初始密码（至少 8 位）"
+                />
+                <button
+                  type="button"
+                  onClick={() => void createDistributor()}
+                  className="rounded-lg bg-gray-900 px-5 py-2 font-medium text-white hover:bg-black"
+                >
+                  生成长期邀请码
+                </button>
+              </div>
+            </div>
+
+            {distributors.length === 0 ? (
+              <div className="rounded-xl bg-white px-6 py-14 text-center text-gray-500 shadow">
+                {distributorLoading ? '正在读取分销商统计...' : '暂无分销商，请先创建'}
+              </div>
+            ) : (
+              <div className="space-y-4">
+                {distributors.map((distributor) => (
+                  <div key={distributor.id} className="rounded-xl bg-white p-6 shadow">
+                    <div className="flex flex-wrap items-start justify-between gap-4">
+                      <div className="min-w-0">
+                        <div className="flex flex-wrap items-center gap-3">
+                          <h3 className="text-lg font-bold text-gray-900">{distributor.name}</h3>
+                          <span className={`rounded-full px-2 py-1 text-xs font-medium ${
+                            distributor.status === 'active'
+                              ? 'bg-emerald-100 text-emerald-800'
+                              : 'bg-gray-200 text-gray-600'
+                          }`}>
+                            {distributor.status === 'active' ? '启用中' : '已停用'}
+                          </span>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => void copyDistributorCode(distributor.invite_code)}
+                          className="mt-2 inline-flex items-center gap-2 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 font-mono text-sm font-semibold text-gray-900 hover:border-gray-400"
+                        >
+                          {distributor.invite_code}
+                          <span className="font-sans text-xs font-normal text-gray-500">复制</span>
+                        </button>
+                        <div className="mt-2 text-sm text-gray-500">
+                          {distributor.contact_name || '未填写联系人'}
+                          {distributor.contact_phone ? ` · ${distributor.contact_phone}` : ''}
+                        </div>
+                      </div>
+
+                      <div className="flex flex-wrap items-end gap-3">
+                        <label className="block">
+                          <span className="mb-1 block text-xs text-gray-500">分成比例（自动保存）</span>
+                          <div className="flex items-center rounded-lg border border-gray-300 px-3 py-2">
+                            <input
+                              type="number"
+                              min="0"
+                              max="100"
+                              step="0.01"
+                              value={distributor.commission_rate}
+                              onChange={(event) => {
+                                const rate = Math.min(100, Math.max(0, Number(event.target.value) || 0));
+                                setDistributors((items) => items.map((item) => (
+                                  item.id === distributor.id
+                                    ? {
+                                        ...item,
+                                        commission_rate: rate,
+                                        metrics: {
+                                          ...item.metrics,
+                                          commission_amount: Math.round(item.metrics.net_revenue * rate) / 100,
+                                        },
+                                      }
+                                    : item
+                                )));
+                              }}
+                              onBlur={(event) => void updateDistributor(distributor.id, {
+                                commission_rate: Math.min(100, Math.max(0, Number(event.target.value) || 0)),
+                              })}
+                              className="w-20 border-0 text-right font-semibold outline-none"
+                            />
+                            <span className="ml-1 text-sm text-gray-500">%</span>
+                          </div>
+                        </label>
+                        <button
+                          type="button"
+                          onClick={() => void updateDistributor(distributor.id, {
+                            status: distributor.status === 'active' ? 'disabled' : 'active',
+                          })}
+                          className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
+                        >
+                          {distributor.status === 'active' ? '停用邀请码' : '重新启用'}
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-6">
+                      <div className="rounded-lg bg-gray-50 p-3">
+                        <div className="text-xs text-gray-500">本期注册</div>
+                        <div className="mt-1 text-lg font-bold">{distributor.metrics.period_registrations}</div>
+                      </div>
+                      <div className="rounded-lg bg-gray-50 p-3">
+                        <div className="text-xs text-gray-500">累计注册</div>
+                        <div className="mt-1 text-lg font-bold">{distributor.metrics.total_registrations}</div>
+                      </div>
+                      <div className="rounded-lg bg-gray-50 p-3">
+                        <div className="text-xs text-gray-500">本期购买</div>
+                        <div className="mt-1 text-lg font-bold">{distributor.metrics.period_purchases}</div>
+                      </div>
+                      <div className="rounded-lg bg-gray-50 p-3">
+                        <div className="text-xs text-gray-500">销售额</div>
+                        <div className="mt-1 font-bold">{formatCurrency(distributor.metrics.gross_revenue)}</div>
+                      </div>
+                      <div className="rounded-lg bg-gray-50 p-3">
+                        <div className="text-xs text-gray-500">净销售额</div>
+                        <div className="mt-1 font-bold text-emerald-700">{formatCurrency(distributor.metrics.net_revenue)}</div>
+                      </div>
+                      <div className="rounded-lg bg-amber-50 p-3">
+                        <div className="text-xs text-amber-700">本期应计分成</div>
+                        <div className="mt-1 font-bold text-amber-700">{formatCurrency(distributor.metrics.commission_amount)}</div>
+                      </div>
+                    </div>
+
+                    <div className="mt-5 rounded-xl border border-gray-200 bg-gray-50 p-4">
+                      <div className="flex flex-wrap items-start justify-between gap-3">
+                        <div>
+                          <h4 className="text-sm font-bold text-gray-900">分销商门户账户</h4>
+                          <p className="mt-1 text-xs text-gray-500">
+                            该账户登录后只能读取当前分销商的数据；密码留空表示不修改。
+                          </p>
+                        </div>
+                        <div className="text-right text-xs text-gray-500">
+                          {distributor.account?.last_login_at
+                            ? `最近登录：${new Date(distributor.account.last_login_at).toLocaleString()}`
+                            : distributor.account ? '尚未登录' : '尚未开通'}
+                        </div>
+                      </div>
+                      <div className="mt-3 grid gap-3 md:grid-cols-[minmax(220px,1fr)_minmax(180px,0.8fr)_140px_auto]">
+                        <input
+                          type="email"
+                          value={distributorAccountDrafts[distributor.id]?.email ?? distributor.account?.email ?? ''}
+                          onChange={(event) => updateDistributorAccountDraft(distributor, { email: event.target.value })}
+                          className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm"
+                          placeholder="登录邮箱"
+                        />
+                        <input
+                          type="password"
+                          value={distributorAccountDrafts[distributor.id]?.password ?? ''}
+                          onChange={(event) => updateDistributorAccountDraft(distributor, { password: event.target.value })}
+                          className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm"
+                          placeholder={distributor.account ? '新密码（留空不修改）' : '初始密码（至少 8 位）'}
+                        />
+                        <select
+                          value={distributorAccountDrafts[distributor.id]?.status ?? distributor.account?.status ?? 'active'}
+                          onChange={(event) => updateDistributorAccountDraft(distributor, {
+                            status: event.target.value as 'active' | 'disabled',
+                          })}
+                          className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm"
+                        >
+                          <option value="active">允许登录</option>
+                          <option value="disabled">禁止登录</option>
+                        </select>
+                        <button
+                          type="button"
+                          onClick={() => void saveDistributorAccount(distributor)}
+                          className="rounded-lg bg-gray-900 px-4 py-2 text-sm font-medium text-white hover:bg-black"
+                        >
+                          {distributor.account ? '保存账户' : '开通账户'}
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="mt-5">
+                      <div className="flex flex-wrap items-center justify-between gap-3">
+                        <div>
+                          <h4 className="text-sm font-bold text-gray-900">套餐购买统计</h4>
+                          <p className="text-xs text-gray-500">同一用户多次购买会逐笔计数，不做首次购买去重。</p>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (selectedDistributorId === distributor.id) {
+                              setSelectedDistributorId(null);
+                              setDistributorPurchases([]);
+                            } else {
+                              void loadDistributorPurchases(distributor.id);
+                            }
+                          }}
+                          className="rounded-lg bg-gray-900 px-4 py-2 text-sm font-medium text-white hover:bg-black"
+                        >
+                          {selectedDistributorId === distributor.id ? '收起购买明细' : '查看逐笔购买'}
+                        </button>
+                      </div>
+
+                      {distributor.package_breakdown.length === 0 ? (
+                        <div className="mt-3 rounded-lg border border-dashed border-gray-300 px-4 py-5 text-sm text-gray-500">
+                          本期暂无成功购买
+                        </div>
+                      ) : (
+                        <div className="mt-3 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                          {distributor.package_breakdown.map((packageItem) => (
+                            <div key={packageItem.package_type} className="rounded-lg border border-gray-200 p-4">
+                              <div className="font-semibold text-gray-900">{packageItem.package_type}</div>
+                              <div className="mt-2 flex justify-between text-sm text-gray-600">
+                                <span>{packageItem.purchase_count} 笔</span>
+                                <span>{formatCurrency(packageItem.net_revenue)}</span>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+
+                    {selectedDistributorId === distributor.id && (
+                      <div className="mt-5 overflow-hidden rounded-lg border border-gray-200">
+                        {distributorPurchases.length === 0 ? (
+                          <div className="px-4 py-8 text-center text-sm text-gray-500">本期暂无购买明细</div>
+                        ) : (
+                          <div className="overflow-x-auto">
+                            <table className="min-w-full divide-y divide-gray-200 text-sm">
+                              <thead className="bg-gray-50">
+                                <tr>
+                                  <th className="px-4 py-3 text-left font-semibold text-gray-700">购买时间</th>
+                                  <th className="px-4 py-3 text-left font-semibold text-gray-700">用户</th>
+                                  <th className="px-4 py-3 text-left font-semibold text-gray-700">套餐类型</th>
+                                  <th className="px-4 py-3 text-left font-semibold text-gray-700">支付方式</th>
+                                  <th className="px-4 py-3 text-right font-semibold text-gray-700">金额</th>
+                                  <th className="px-4 py-3 text-right font-semibold text-gray-700">退款</th>
+                                  <th className="px-4 py-3 text-right font-semibold text-gray-700">净收入</th>
+                                </tr>
+                              </thead>
+                              <tbody className="divide-y divide-gray-100 bg-white">
+                                {distributorPurchases.map((purchase) => (
+                                  <tr key={purchase.id}>
+                                    <td className="whitespace-nowrap px-4 py-3 text-gray-600">
+                                      {new Date(purchase.paid_at || purchase.created_at).toLocaleString()}
+                                    </td>
+                                    <td className="px-4 py-3">
+                                      <div className="font-medium text-gray-900">{purchase.username || purchase.user_email}</div>
+                                      {purchase.username && <div className="text-xs text-gray-500">{purchase.user_email}</div>}
+                                    </td>
+                                    <td className="px-4 py-3 font-medium text-gray-900">{purchase.package_type}</td>
+                                    <td className="px-4 py-3 text-gray-600">{purchase.payment_method}</td>
+                                    <td className="px-4 py-3 text-right">{formatCurrency(purchase.amount)}</td>
+                                    <td className="px-4 py-3 text-right text-red-600">{formatCurrency(purchase.refund_amount)}</td>
+                                    <td className="px-4 py-3 text-right font-semibold text-emerald-700">{formatCurrency(purchase.net_revenue)}</td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         )}
 

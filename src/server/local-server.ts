@@ -53,17 +53,20 @@ import {
 } from "../utils/draft-section-classifier";
 import { ProjectManager } from "../utils/project-manager";
 import { AutoResearchManager } from "../utils/autoresearch-manager";
-import { PdfWikiManager, type PdfWikiEntry, type PdfWikiReference, type PdfWikiSentencePoint, type PdfWikiSourcePdf, type PdfWikiStore, type PdfWikiViewpoint } from "../utils/pdf-wiki-manager";
+import { PdfWikiManager, type PdfWikiEntry, type PdfWikiLlmConfig, type PdfWikiManualTopicInput, type PdfWikiReference, type PdfWikiSentencePoint, type PdfWikiSourcePdf, type PdfWikiStore, type PdfWikiTopicInput, type PdfWikiViewpoint } from "../utils/pdf-wiki-manager";
 import { getLibraryFavoriteSet, removeLibraryFavorites, toggleLibraryFavorite } from "../utils/library-favorites";
 import {
+  addPdfWikiPdfGroupToPdfs,
   assignPdfWikiPdfGroup,
   assignPdfWikiPdfGroups,
   createPdfWikiPdfGroup,
   deletePdfWikiPdfGroup,
   loadPdfWikiPdfManagement,
+  matchesPdfWikiPdfGroupQuery,
   renamePdfWikiPdfGroup,
   removePdfWikiPdfAssignments,
 } from "../utils/pdf-wiki-pdf-management";
+import { isNonScientificPdfFigureRecord } from "../utils/pdf-wiki-figure-filter";
 import {
   getDataDir,
   getUploadDir,
@@ -85,6 +88,16 @@ import {
   type DraftSubsectionTarget,
 } from "../utils/draft-subsection-target";
 import { buildToolRuntimeEnv } from "../utils/tool-runtime-env";
+import {
+  getProjectCitationEvidenceLedgerPath,
+  upsertProjectCitationEvidenceEntries,
+  type ProjectCitationEvidenceEntryInput,
+} from "./services/project-citation-evidence-ledger";
+import {
+  budgetAgentPrompt,
+  compactAgentContextValue,
+  precomputeAgentContext,
+} from "../orchestrator/agent-context-budget";
 import { detectPdfFastTextStatus, isPdfFastTextAvailable } from "../utils/pdf-fast-text";
 import { extractPdfTextWithLiteParse, isLiteParseAvailable } from "../utils/pdf-liteparse";
 import { isPdfMarkerAvailable } from "../utils/pdf-marker";
@@ -138,6 +151,8 @@ import pdfMarkerRoutes from "./routes/pdf-marker";
 import pdfFastTextRoutes from "./routes/pdf-fast-text";
 import {
   createMetaAnalysisRouter,
+  executeMetaAnalysisAgentTool,
+  getMetaAnalysisWritingContextForUser,
   type MetaAnalysisAssistantInput,
   type MetaAnalysisAssistantResult,
 } from "./routes/meta-analysis";
@@ -152,10 +167,13 @@ import {
 } from "./services/local-output-path-candidates";
 import {
   createBibliometricsRouter,
+  getBibliometricWritingContextForUser,
   importBibliometricPlainTextForUser,
   isWosBibliometricPlainText,
 } from "./routes/bibliometrics";
-import { createAutoResearchRouter } from "./routes/autoresearch";
+import { createLiteratureCollectionRouter } from "./routes/literature-collection";
+import { createChatAvatarRouter } from "./routes/chat-avatars";
+import { buildAutoResearchWritingContext, createAutoResearchRouter } from "./routes/autoresearch";
 import {
   runAcademicResearchSkill,
   type AcademicResearchMode,
@@ -1976,6 +1994,62 @@ function getPdfWikiLlmRuntimeConfig(): {
   };
 }
 
+async function callMetaAnalysisPiAgent(
+  input: MetaAnalysisAssistantInput,
+  prompt: string,
+  provider: 'secondary' | 'primary' | 'codex',
+  runtime?: { apiUrl?: string; apiKey?: string; model?: string },
+): Promise<string> {
+  const configuredWorkspace = input.supplementalContext?.workspaceDirectory;
+  const workspaceDirectory = configuredWorkspace?.enabled && configuredWorkspace.path
+    ? {
+        root: configuredWorkspace.path,
+        path: configuredWorkspace.path,
+        permission: configuredWorkspace.permission,
+        aiWorkRoot: configuredWorkspace.aiWorkRoot,
+        safeWorkRoot: configuredWorkspace.aiWorkRoot,
+      }
+    : undefined;
+  const runtimeContext = precomputeAgentContext({
+    profile: "meta-analysis",
+    maxChars: 110_000,
+    prompt,
+    conversationHandoff: (input.chatHistory || []).map(message => ({
+      role: message.role,
+      content: message.content,
+    })),
+  });
+  logger.info("[MetaAnalysisAI] Provider-ready context precomputed:", {
+    beforeChars: runtimeContext.diagnostics.beforeChars,
+    totalChars: runtimeContext.diagnostics.totalChars,
+    handoffChars: runtimeContext.diagnostics.handoffChars,
+    omittedDuplicateHandoffMessages: runtimeContext.diagnostics.omittedDuplicateHandoffMessages,
+  });
+  return chatBridge.chat({
+    model: runtime?.model,
+    messages: [
+      { role: 'system', content: '你是严格输出 JSON 的 Meta 分析工程 Agent。必须遵循用户给出的 JSON Schema，只输出一个 JSON 对象。' },
+      { role: 'user', content: runtimeContext.prompt },
+    ],
+    userId: input.userId,
+    conversationId: input.conversationId || null,
+    forceProvider: provider,
+    bypassCodexPreference: provider !== 'codex',
+    disableFallback: true,
+    codexModel: input.codexModel,
+    codexReasoningEffort: input.codexReasoningEffort,
+    apiUrl: runtime?.apiUrl,
+    apiKey: runtime?.apiKey,
+    temperature: 0.1,
+    maxTokens: 8000,
+    codexTimeoutMs: -1,
+    workspaceDirectory,
+    conversationHandoff: runtimeContext.conversationHandoff,
+    piSession: input.piSession,
+    isCancelled: input.isCancelled,
+  });
+}
+
 async function generateMetaAnalysisAiPlan(input: MetaAnalysisAssistantInput): Promise<MetaAnalysisAssistantResult> {
   const attempts: string[] = [];
   let llmPrompt: string | null = null;
@@ -1990,11 +2064,19 @@ async function generateMetaAnalysisAiPlan(input: MetaAnalysisAssistantInput): Pr
         includeRecentContext: false,
         includeLongTermMemory: false,
       });
-      const rawText = await callMetaAnalysisCodexAssistant(input, prompt);
+      const savedCodexConfig = loadCodexConfigForPdfWiki();
+      const codexConfig = {
+        ...savedCodexConfig,
+        model: input.codexModel || savedCodexConfig.model,
+        reasoningEffort: input.codexReasoningEffort || savedCodexConfig.reasoningEffort,
+      };
+      const rawText = await callMetaAnalysisPiAgent(input, prompt, 'codex', {
+        model: codexConfig.model,
+      });
       const parsed = parseMetaAnalysisAssistantJson(rawText);
       return {
         ...parsed,
-        provider: `Codex CLI (${loadCodexConfigForPdfWiki().model})`,
+        provider: `Codex App Server (${codexConfig.model})`,
         rawText,
         fallbackChain: requestedProvider ? [requestedProvider] : ['codex'],
       };
@@ -2015,7 +2097,7 @@ async function generateMetaAnalysisAiPlan(input: MetaAnalysisAssistantInput): Pr
         includeRecentContext: true,
         includeLongTermMemory: true,
       });
-      const rawText = await callMetaAnalysisLlmAssistant(secondaryRuntime, llmPrompt);
+      const rawText = await callMetaAnalysisPiAgent(input, llmPrompt, 'secondary', secondaryRuntime);
       const parsed = parseMetaAnalysisAssistantJson(rawText);
       return {
         ...parsed,
@@ -2040,7 +2122,7 @@ async function generateMetaAnalysisAiPlan(input: MetaAnalysisAssistantInput): Pr
         includeRecentContext: true,
         includeLongTermMemory: true,
       });
-      const rawText = await callMetaAnalysisLlmAssistant(primaryRuntime, llmPrompt);
+      const rawText = await callMetaAnalysisPiAgent(input, llmPrompt, 'primary', primaryRuntime);
       const parsed = parseMetaAnalysisAssistantJson(rawText);
       return {
         ...parsed,
@@ -2131,6 +2213,12 @@ async function buildMetaAnalysisAiAssistantPrompt(
       : '请基于当前 excelJsonPacket 自动判断列角色、CK/control、treatment、合并/拆分/换算列，并输出副本整理方案。',
     chatHistoryLast10Turns: includeRecentContext ? (input.chatHistory || []) : [],
     recentUserQueriesLast10: includeRecentContext ? (input.recentUserQueries || []) : [],
+    composerContext: input.supplementalContext || {
+      workspaceFiles: [],
+      chatAttachments: [],
+      selectedContextSources: {},
+      selectedSkills: [],
+    },
     crossSessionLongTermMemory: memoryContext,
     methodGuide: {
       source: DOING_META_GUIDE_SOURCE,
@@ -2173,11 +2261,19 @@ async function buildMetaAnalysisAiAssistantPrompt(
     sampleRows: input.workspace.sampleRows,
   };
 
-  return `你是 Scholar Harness 的聊天式 Meta 分析数据工程代理。你的第一目标不是直接跑模型，而是和用户聊天澄清需求，并根据用户需求整理 Meta 数据库 Excel 的副本，使副本满足后续 Meta 分析要求。
+  const boundedPayload = compactAgentContextValue(payload, {
+    maxChars: 48_000,
+    maxDepth: 9,
+    maxArrayItems: 36,
+    maxStringChars: 3_500,
+  });
+  const rawPrompt = `## Meta 分析执行协议
+你是 Scholar Harness 的聊天式 Meta 分析数据工程代理。你的第一目标不是直接跑模型，而是和用户聊天澄清需求，并根据用户需求整理 Meta 数据库 Excel 的副本，使副本满足后续 Meta 分析要求。
 
 输入方式说明：
 - 用户的 Excel 编码表已经由后端转换为结构化 JSON 数据包 excelJsonPacket。你应该优先阅读 excelJsonPacket，而不是假设自己直接读取原始 Excel。
 - excelJsonPacket 中包含 sheets、columns、column stats、sampleRows、candidateOutcomes、candidateRoles 和 warnings。
+- composerContext 是用户通过统一输入框明确附加的工作目录、工作目录文件、上传附件、持续使用上下文和 Skill；需要时可读取其中的本地路径并把这些材料纳入当前判断。
 - Excel 只作为用户编辑/展示/导出的载体；你的判断和规划必须基于 JSON 数据包，然后输出可执行的数据整理方案。
 
 硬性规则：
@@ -2197,6 +2293,19 @@ async function buildMetaAnalysisAiAssistantPrompt(
 12. 亚组分析必须针对“合并效应值”进行：如果某列参与亚组分析，例如 Crop/作物，则同一个作物水平下的所有效应量必须先合并成一个该作物的 pooled subgroup effect，再用于亚组图和表；不要把每个 PDF/每行数据当作亚组结果。
 13. suggestedConfig 只作为“后续分析草案”，不是现在就运行的指令。若字段尚不可靠，可以为空或只填高置信部分。
 14. 必须利用 crossSessionLongTermMemory、chatHistoryLast10Turns、recentUserQueriesLast10 理解用户偏好、研究背景、常用指标和前文约束。
+15. operations 必须使用可执行参数，不要只写自然语言：
+   - split_mean_sd: { "sourceColumn": "原列", "meanColumn": "均值列", "spreadColumn": "SD或SE列", "spreadType": "sd|se" }
+   - convert_se_to_sd: { "seColumn": "SE列", "nColumn": "样本量列", "sdColumn": "目标SD列" }
+   - unit_convert: { "sourceColumn": "原列", "targetColumn": "目标列", "factor": 1.0, "offset": 0, "fromUnit": "", "toUnit": "" }
+   - range_midpoint: { "sourceColumn": "范围列", "targetColumn": "中点列" }
+   - range_group: { "sourceColumn": "数值列", "targetColumn": "分组列", "spec": "0-30=短期;30-90=中期;>90=长期" }
+   - normalize_labels: { "sourceColumn": "标签列", "targetColumn": "标准标签列", "mapping": { "原值": "标准值" } }
+   - merge_columns: { "columns": ["列1", "列2"], "targetColumn": "合并列" }
+   - filter_rows: { "column": "列", "operator": "eq|neq|in|not_in|contains|gt|gte|lt|lte|truthy|falsey", "value": "值", "values": [], "mode": "exclude|include" }
+   - delete_columns: { "columns": ["待删除列"] }
+   - add_columns: { "targetColumn": "新列", "value": "默认值" }
+16. operations 新生成的列可以直接用于 suggestedConfig.outcomes、moderatorColumns 和 subgroupColumns；列名必须与 operation 的目标列完全一致。
+17. suggestedConfig.outcomes 必须覆盖用户确认的任意因变量，不得只围绕 N2O/NO；每个 outcome 都要明确 measure 和处理/对照字段。长表中处理与对照共用同一测量列时，可以让 treatmentMean 与 controlMean 指向同一列，系统会按 treatment/control 规则配对。
 15. 如果自动判断不够可靠，把低置信假设和需要用户确认的问题放到 questions，不要编造不存在的字段。
 
 JSON Schema：
@@ -2266,7 +2375,7 @@ JSON Schema：
   "operations": [
     {
       "id": "stable-id",
-      "type": "copy_workspace|inspect_columns|map_effect_size|split_mean_sd|convert_se_to_sd|unit_convert|range_midpoint|filter_rows|delete_columns|add_columns|range_group|configure_subgroups|configure_moderators|mean_only_bootstrap|await_confirmation",
+      "type": "copy_workspace|inspect_columns|map_effect_size|split_mean_sd|convert_se_to_sd|unit_convert|normalize_labels|merge_columns|range_midpoint|filter_rows|delete_columns|add_columns|range_group|configure_subgroups|configure_moderators|mean_only_bootstrap|await_confirmation",
       "title": "操作标题",
       "rationale": "为什么需要这个操作",
       "params": {},
@@ -2320,8 +2429,22 @@ JSON Schema：
   "warnings": []
 }
 
-当前输入 JSON：
-${JSON.stringify(payload, null, 2)}`;
+## 当前 Meta 输入 JSON
+${JSON.stringify(boundedPayload, null, 2)}`;
+  const budgetResult = budgetAgentPrompt(rawPrompt, {
+    profile: 'meta-analysis',
+    maxChars: 110_000,
+  });
+  logger.info('[MetaAnalysisAI] Unified context pre-budget:', {
+    beforeChars: budgetResult.diagnostics.beforeChars,
+    afterChars: budgetResult.diagnostics.afterChars,
+    beforeEstimatedTokens: budgetResult.diagnostics.beforeEstimatedTokens,
+    afterEstimatedTokens: budgetResult.diagnostics.afterEstimatedTokens,
+    deduplicatedSectionCount: budgetResult.diagnostics.deduplicatedSectionCount,
+    omittedSectionCount: budgetResult.diagnostics.omittedSectionCount,
+    truncatedSectionCount: budgetResult.diagnostics.truncatedSectionCount,
+  });
+  return budgetResult.prompt;
 }
 
 async function callMetaAnalysisLlmAssistant(
@@ -2374,7 +2497,9 @@ async function callMetaAnalysisCodexAssistant(input: MetaAnalysisAssistantInput,
   const executable = getCodexCliCandidatesForPdfWiki(codexConfig.command).find(candidate => fs.existsSync(candidate))
     || normalizeCodexCliCommandForPdfWiki(codexConfig.command)
     || 'codex';
-  const taskDir = path.join(getUserUploadDir(input.userId), 'meta-analysis', 'ai-assistant', input.workspace.id);
+  const taskDir = input.workspace.storageRoot
+    ? path.join(input.workspace.storageRoot, 'ai-assistant', input.workspace.id)
+    : path.join(getUserUploadDir(input.userId), 'meta-analysis', 'ai-assistant', input.workspace.id);
   await fs.promises.mkdir(taskDir, { recursive: true });
   const lastMessagePath = path.join(taskDir, 'codex_last_message.txt');
   const stdoutPath = path.join(taskDir, 'codex_stdout.txt');
@@ -3769,6 +3894,16 @@ interface LitInfo {
   keywords: string[];
 }
 
+interface LiteratureSummaryCache {
+  version: 1;
+  sources: {
+    txt: { size: number; mtimeMs: number } | null;
+    json: { size: number; mtimeMs: number } | null;
+  };
+  summary: LitInfo;
+  updatedAt: string;
+}
+
 function getLitSummary(content: string): LitInfo {
   const years: string[] = [];
   const journals: string[] = [];
@@ -3823,6 +3958,78 @@ function getLitSummary(content: string): LitInfo {
     journals: [...new Set(journals)].slice(0, 10),
     keywords: [...new Set(keywords)].slice(0, 20)
   };
+}
+
+function getLiteratureSummarySource(
+  filePath: string,
+): { size: number; mtimeMs: number } | null {
+  if (!fs.existsSync(filePath)) return null;
+  const stat = fs.statSync(filePath);
+  return {
+    size: stat.size,
+    mtimeMs: Math.round(stat.mtimeMs),
+  };
+}
+
+function isSameLiteratureSummarySource(
+  left: { size: number; mtimeMs: number } | null,
+  right: { size: number; mtimeMs: number } | null,
+): boolean {
+  if (!left || !right) return left === right;
+  return left.size === right.size && left.mtimeMs === right.mtimeMs;
+}
+
+function readLiteratureSummaryCache(
+  userId: string,
+  litFile: string,
+  litJsonFile: string,
+): LitInfo | null {
+  const cachePath = path.join(getUserUploadDir(userId), "literature-summary.json");
+  if (!fs.existsSync(cachePath)) return null;
+  try {
+    const cached = JSON.parse(fs.readFileSync(cachePath, "utf-8")) as LiteratureSummaryCache;
+    if (
+      cached.version !== 1
+      || !cached.summary
+      || !isSameLiteratureSummarySource(
+        cached.sources?.txt || null,
+        getLiteratureSummarySource(litFile),
+      )
+      || !isSameLiteratureSummarySource(
+        cached.sources?.json || null,
+        getLiteratureSummarySource(litJsonFile),
+      )
+    ) {
+      return null;
+    }
+    return cached.summary;
+  } catch (error) {
+    logger.warn("[Literature] Failed to read summary cache:", error);
+    return null;
+  }
+}
+
+function writeLiteratureSummaryCache(
+  userId: string,
+  litFile: string,
+  litJsonFile: string,
+  summary: LitInfo,
+): void {
+  const cachePath = path.join(getUserUploadDir(userId), "literature-summary.json");
+  const cache: LiteratureSummaryCache = {
+    version: 1,
+    sources: {
+      txt: getLiteratureSummarySource(litFile),
+      json: getLiteratureSummarySource(litJsonFile),
+    },
+    summary,
+    updatedAt: new Date().toISOString(),
+  };
+  try {
+    fs.writeFileSync(cachePath, JSON.stringify(cache, null, 2), "utf-8");
+  } catch (error) {
+    logger.warn("[Literature] Failed to write summary cache:", error);
+  }
 }
 
 interface SearchResult {
@@ -4530,7 +4737,9 @@ async function processChatMessage(
   const needWebSearch = queryIntent.needsWebSearch;
   const webSearchQuery = queryIntent.resolvedQuery || messageForTask;
   let taskType = "回答问题";
-  if (queryIntent.primaryIntent === 'literature_retrieval') {
+  if (queryIntent.primaryIntent === 'literature_collection') {
+    taskType = '外部文献采集';
+  } else if (queryIntent.primaryIntent === 'literature_retrieval') {
     taskType = '逐句检索';
   } else if (queryIntent.primaryIntent === 'academic_writing') {
     if (/(?:讨论)|\bdiscussion\b/i.test(messageForTask)) {
@@ -5119,7 +5328,11 @@ app.get("/api/auth/me", async (req: Request, res: Response) => {
     const session = await authGuard.getSession();
     
     if (!session) {
-      return res.json({ error: '未登录' });
+      return res.status(401).json({
+        code: 'AUTH_REQUIRED',
+        message: '未登录',
+        recoverable: true,
+      });
     }
     
     let canRefreshCloudProfile = true;
@@ -5564,13 +5777,21 @@ app.get("/api/usage/daily-stats", async (req: Request, res: Response) => {
     if (await authGuard.isAccessTokenExpired()) {
       const refreshed = await authGuard.refreshToken();
       if (!refreshed) {
-        return res.json({ error: '登录已过期' });
+        return res.status(401).json({
+          code: 'SESSION_EXPIRED',
+          message: '登录已过期',
+          recoverable: true,
+        });
       }
     }
     
     const currentSession = await authGuard.getSession();
     if (!currentSession) {
-      return res.json({ error: '未登录' });
+      return res.status(401).json({
+        code: 'AUTH_REQUIRED',
+        message: '未登录',
+        recoverable: true,
+      });
     }
     
     // 转发到云端API获取用量统计
@@ -5581,28 +5802,13 @@ app.get("/api/usage/daily-stats", async (req: Request, res: Response) => {
     });
     
     if (!response.ok) {
-      // 云端API不可用时，返回本地模拟数据
-      logger.warn('[Usage] Cloud API unavailable, returning mock data');
-      
-      // 生成最近30天的空数据
-      const dailyStats = [];
-      for (let i = 29; i >= 0; i--) {
-        const date = new Date();
-        date.setDate(date.getDate() - i);
-        dailyStats.push({
-          date: date.toISOString().split('T')[0],
-          word_count: 0,
-          file_count: 0,
-        });
-      }
-      
-      return res.json({
-        daily_stats: dailyStats,
-        subscription: currentSession.subscription || {
-          plan_type: 'free',
-          quota_remaining: 0,
-          quota_total: 0,
-        },
+      const upstreamStatus = response.status;
+      logger.warn(`[Usage] Cloud API request failed with status ${upstreamStatus}`);
+      return res.status(upstreamStatus === 401 || upstreamStatus === 403 ? upstreamStatus : 502).json({
+        code: 'USAGE_UPSTREAM_UNAVAILABLE',
+        message: '云端用量统计暂时不可用，请稍后重试',
+        recoverable: true,
+        upstreamStatus,
       });
     }
     
@@ -5610,22 +5816,10 @@ app.get("/api/usage/daily-stats", async (req: Request, res: Response) => {
     res.json(data);
   } catch (error) {
     logger.error('[Usage] Get daily stats failed:', error);
-    
-    // 出错时返回模拟数据
-    const dailyStats = [];
-    for (let i = 29; i >= 0; i--) {
-      const date = new Date();
-      date.setDate(date.getDate() - i);
-      dailyStats.push({
-        date: date.toISOString().split('T')[0],
-        word_count: 0,
-        file_count: 0,
-      });
-    }
-    
-    res.json({
-      daily_stats: dailyStats,
-      error: '获取用量统计失败，显示空数据',
+    res.status(502).json({
+      code: 'USAGE_UPSTREAM_UNAVAILABLE',
+      message: '获取用量统计失败，请稍后重试',
+      recoverable: true,
     });
   }
 });
@@ -5724,6 +5918,14 @@ app.post('/api/cloud-prompts/prefetch', async (req: Request, res: Response) => {
   }
 });
 
+const metaAnalysisRouteOptions = {
+  getIntegratedDataTablesForExport: (userId: string, pdfIds: string[]) => pdfWikiManager.getIntegratedDataTablesForExport(userId, pdfIds),
+  generateAiPlan: generateMetaAnalysisAiPlan,
+  interruptAiConversation: async (userId: string, conversationId: string) => {
+    await chatBridge.interruptCodexConversation(userId, conversationId);
+  },
+};
+
 // 使用模块导出的单例 chatBridge，避免重复实例化导致多个 openclaw 进程
 chatBridge.loadConfig().then(() => {
   initializeChatBridgeRoutes(chatBridge, {
@@ -5798,6 +6000,117 @@ chatBridge.loadConfig().then(() => {
       }
       return { ok: false, summary: '科研增强工具未执行', error: `不支持的工具：${name}` };
     },
+    executeMetaAnalysisTool: input => executeMetaAnalysisAgentTool(metaAnalysisRouteOptions, input),
+    searchLocalLiterature: async ({ userId, query, topK, sourceMode }) => {
+      const useEmbedding = sourceMode === 'embedding_then_pdfwiki' || sourceMode === 'embedding' || sourceMode === 'both';
+      const usePdfWiki = sourceMode === 'pdf_wiki' || sourceMode === 'both';
+      let embeddingResults: ReviewWriterEvidence[] = [];
+      let pdfWikiResults: ReviewWriterEvidence[] = [];
+      if (useEmbedding) {
+        embeddingResults = await retrieveReviewAbstractEvidence(query, userId, Math.max(topK, 8));
+      }
+      if (usePdfWiki || (sourceMode === 'embedding_then_pdfwiki' && embeddingResults.length < topK)) {
+        pdfWikiResults = await retrieveReviewPdfWikiEvidence(query, userId, Math.max(topK, 8));
+      }
+      const results = deduplicateReviewEvidence([...embeddingResults, ...pdfWikiResults])
+        .slice(0, topK)
+        .map(item => ({
+          id: item.id,
+          source: item.source,
+          title: item.title,
+          authors: item.authors,
+          year: item.year,
+          journal: item.journal,
+          doi: item.doi,
+          abstract: String(item.abstract || '').slice(0, 2400),
+          score: item.score,
+          citation: item.citation,
+          referenceRaw: item.referenceRaw,
+          traceSnippets: Array.isArray(item.traceSnippets) ? item.traceSnippets.slice(0, 6) : [],
+        }));
+      return {
+        ok: true,
+        toolName: 'search_local_literature',
+        summary: `本地文献检索完成：Embedding ${embeddingResults.length} 条，PDF Wiki ${pdfWikiResults.length} 条，去重返回 ${results.length} 条。`,
+        query,
+        sourceMode,
+        results,
+      };
+    },
+    loadPageContextResource: async ({ resourceId, userId, arguments: args, context }) => {
+      const detailLevel = args.detailLevel === 'full' ? 'full' : 'summary';
+      const maxChars = detailLevel === 'full' ? 80_000 : 14_000;
+      const focus = String(args.focus || '').trim();
+      if (resourceId === 'current-pdf') {
+        const resource = (Array.isArray(context.agentResources) ? context.agentResources : [])
+          .find((item: any) => item && item.id === 'current-pdf') as Record<string, unknown> | undefined;
+        const pdfId = String(resource?.pdfId || '').trim();
+        const selectedText = String(resource?.selectedText || '').trim().slice(0, 12_000);
+        if (!pdfId) return { ok: false, toolName: 'read_page_context', summary: '当前论文未读取', error: '资源目录缺少 PDF ID。' };
+        const fullText = await pdfWikiManager.getPdfReaderFullText(userId, pdfId);
+        if (!fullText) return { ok: false, toolName: 'read_page_context', summary: '当前论文未读取', error: '未找到当前 PDF。' };
+        const text = String(fullText.text || '');
+        return {
+          ok: true,
+          toolName: 'read_page_context',
+          summary: `已按需读取当前论文：${fullText.pdf.title || fullText.pdf.originalName || pdfId}。`,
+          resourceId,
+          detailLevel,
+          focus,
+          selectedText,
+          metadata: {
+            pdfId,
+            title: fullText.pdf.title || fullText.pdf.originalName || 'PDF',
+            authors: fullText.pdf.authors || '',
+            year: fullText.pdf.year || '',
+            journal: fullText.pdf.journal || '',
+            doi: fullText.pdf.doi || '',
+            parser: fullText.parser,
+            fullTextLength: text.length,
+          },
+          content: text.slice(0, maxChars),
+          truncated: text.length > maxChars,
+        };
+      }
+
+      if (resourceId === 'bibliometrics') {
+        const value = getBibliometricWritingContextForUser(userId);
+        if (!value?.available) return { ok: false, toolName: 'read_page_context', summary: '文献计量结果未读取', error: '当前项目没有可用文献计量结果。' };
+        const content = String(value.contextMarkdown || '');
+        return { ok: true, toolName: 'read_page_context', summary: '已按需读取文献计量结果。', resourceId, detailLevel, focus, generatedAt: value.generatedAt, dataset: value.dataset, content: content.slice(0, maxChars), truncated: content.length > maxChars };
+      }
+
+      if (resourceId === 'meta-analysis') {
+        const value = getMetaAnalysisWritingContextForUser(userId);
+        if (!value?.available) return { ok: false, toolName: 'read_page_context', summary: 'Meta 分析结果未读取', error: '当前项目没有可用 Meta 分析结果。' };
+        const content = String(value.contextMarkdown || '');
+        return { ok: true, toolName: 'read_page_context', summary: '已按需读取 Meta 分析结果。', resourceId, detailLevel, focus, generatedAt: value.generatedAt, dataset: value.dataset, content: content.slice(0, maxChars), truncated: content.length > maxChars };
+      }
+
+      if (resourceId === 'auto-research') {
+        const state = await autoResearchManager.getState(sanitizeUserId(userId), resolveOverviewProjectContext());
+        const value = buildAutoResearchWritingContext(state);
+        if (!value.available) return { ok: false, toolName: 'read_page_context', summary: 'Auto Research 结果未读取', error: '当前项目没有可用 Auto Research 结果。' };
+        const content = String(value.contextMarkdown || '');
+        return { ok: true, toolName: 'read_page_context', summary: '已按需读取 Auto Research 结果。', resourceId, detailLevel, focus, generatedAt: value.generatedAt, dataset: value.dataset, content: content.slice(0, maxChars), truncated: content.length > maxChars };
+      }
+
+      if (resourceId === 'ordinary-draft') {
+        const value = await getOrdinaryDraftContextForChat(userId, focus);
+        if (!value?.available || !('content' in value)) {
+          return {
+            ok: false,
+            toolName: 'read_page_context',
+            summary: '章节草稿未读取',
+            error: value && 'reason' in value ? value.reason : '当前项目没有可用章节草稿。',
+          };
+        }
+        const content = String(value.content || '');
+        return { ok: true, toolName: 'read_page_context', summary: '已按需读取当前项目章节草稿。', resourceId, detailLevel, focus, source: value.source, chapters: value.chapters, updatedAt: value.updatedAt, wordCount: value.wordCount, content: content.slice(0, maxChars), truncated: content.length > maxChars };
+      }
+
+      return { ok: false, toolName: 'read_page_context', summary: '页面资源未读取', error: `不支持的页面资源：${resourceId}` };
+    },
   });
   // 初始化 unified-chat 路由
   initializeUnifiedChatRoutes(chatBridge, {
@@ -5831,10 +6144,7 @@ app.use("/api/ocr", ocrRoutes);
 app.use("/api/ppt-master", pptMasterRoutes);
 app.use("/api/pdf-wiki/marker", pdfMarkerRoutes);
 app.use("/api/pdf-wiki/fast-text", pdfFastTextRoutes);
-app.use("/api/meta-analysis", createMetaAnalysisRouter({
-  getIntegratedDataTablesForExport: (userId, pdfIds) => pdfWikiManager.getIntegratedDataTablesForExport(userId, pdfIds),
-  generateAiPlan: generateMetaAnalysisAiPlan,
-}));
+app.use("/api/meta-analysis", createMetaAnalysisRouter(metaAnalysisRouteOptions));
 app.use("/api/academic-research", academicResearchRoutes);
 app.use("/api/project-memory", projectMemoryRoutes);
 async function runResearchEnhancementAiReviewer(input: {
@@ -5979,6 +6289,18 @@ app.use("/api/research-session", createResearchSessionRouter({
 app.use("/api/submission-prep", createSubmissionPrepRouter({
   getSecondaryRuntime: getDeepAnalysisSecondaryRuntimeConfig,
 }));
+app.use("/api/literature-collection", createLiteratureCollectionRouter({
+  dataDir,
+  getPlannerRuntime: getDeepAnalysisSecondaryRuntimeConfig,
+  importWosPlainText: ({ userId, fileName, content }) => {
+    importBibliometricPlainTextForUser({
+      userId,
+      mode: "append",
+      sourceFiles: [{ fileName, content }],
+    });
+  },
+}));
+app.use("/api/chat-avatars", createChatAvatarRouter({ dataDir }));
 app.use("/api/bibliometrics", createBibliometricsRouter({
   readUserLiteratureRecords,
   loadOuterTagsConfigForUser,
@@ -6656,7 +6978,7 @@ async function computeOverviewStatus(userId: string): Promise<OverviewStatusPayl
     ),
     buildOverviewModule(
       "pdfWiki",
-      "PDF句子级Wiki论点库",
+      "Wiki论点库",
       pdfWikiStatus.status === "processing" ? "running" : ((pdfWikiStore.sentenceCloud?.points?.length || pdfWikiStore.entries.length) > 0 ? "ready" : "empty"),
       pdfWikiStatus.status === "processing" ? "生成中" : ((pdfWikiStore.sentenceCloud?.points?.length || pdfWikiStore.entries.length) > 0 ? "已生成" : "未生成"),
       pdfWikiStore.sentenceCloud?.points?.length || pdfWikiStore.entries.length,
@@ -6664,7 +6986,7 @@ async function computeOverviewStatus(userId: string): Promise<OverviewStatusPayl
         { label: "PDF", value: pdfWikiStore.pdfs.length },
         { label: "参考文献", value: pdfWikiStore.referenceIndex.length },
       ],
-      String(pdfWikiStatus.message || "PDF 深入分析后会形成句子级论点库。"),
+      String(pdfWikiStatus.message || "PDF 深入分析后会形成 Wiki论点库。"),
       "showPdfWikiViewer"
     ),
     buildOverviewModule(
@@ -7185,7 +7507,7 @@ const FLOWCHART_SOURCE_LABELS: Record<string, string> = {
   overview: "全局 Overview",
   memory: "长期记忆",
   literature: "Embedding 文献库",
-  pdfWiki: "PDF句子级Wiki论点库",
+  pdfWiki: "Wiki论点库",
   meta: "Meta 分析编码表",
   bibliometrics: "文献计量分析结果",
   autoResearch: "Auto Research 结果",
@@ -7909,14 +8231,82 @@ app.post("/api/upload", handleLiteratureUpload, async (req: Request, res: Respon
     }
     
     // 合并新文献（去重）- 记录真正新增的文献
+    //
+    // 不能只按标题判断：WoS/CNKI 导出的题名大小写、标点和空白经常不同，
+    // 同名论文也可能属于不同年份。优先使用 DOI / 来源记录号，其次使用
+    // “标准化标题 + 年份 + 第一作者”，最后才退化到标题指纹。
+    const normalizeDedupeText = (value: unknown): string =>
+      String(value || '')
+        .normalize('NFKC')
+        .toLowerCase()
+        .replace(/[^\p{L}\p{N}]+/gu, ' ')
+        .trim()
+        .replace(/\s+/g, ' ');
+    const normalizeDoi = (value: unknown): string =>
+      String(value || '')
+        .trim()
+        .toLowerCase()
+        .replace(/^https?:\/\/(?:dx\.)?doi\.org\//, '')
+        .replace(/^doi:\s*/, '')
+        .trim();
+    const getFirstAuthor = (paper: any): string => {
+      const authors = paper?.authors ?? paper?.author ?? [];
+      if (Array.isArray(authors)) {
+        return normalizeDedupeText(authors[0]);
+      }
+      return normalizeDedupeText(String(authors).split(/[;,]/)[0]);
+    };
+    const getPaperDedupeKeys = (paper: any): string[] => {
+      const keys: string[] = [];
+      const doi = normalizeDoi(
+        paper?.doi
+        || paper?.DOI
+        || paper?.identifiers?.doi
+        || paper?.metadata?.doi,
+      );
+      if (doi) keys.push(`doi:${doi}`);
+
+      const sourceRecordId = normalizeDedupeText(
+        paper?.wosId
+        || paper?.ut
+        || paper?.UT
+        || paper?.accessionNumber
+        || paper?.sourceRecordId,
+      );
+      if (sourceRecordId) keys.push(`source:${sourceRecordId}`);
+
+      const title = normalizeDedupeText(paper?.title);
+      const year = normalizeDedupeText(paper?.year);
+      const firstAuthor = getFirstAuthor(paper);
+      if (title && (year || firstAuthor)) {
+        keys.push(`bibliographic:${title}|${year}|${firstAuthor}`);
+      } else if (title) {
+        keys.push(`title:${title}`);
+      }
+      return keys;
+    };
+
+    const hasImportableAbstract = (paper: any): boolean => {
+      if (paper?.isPdf) return true;
+      const abstract = String(paper?.abstract || '').trim();
+      return abstract.length > 0 && abstract !== '[PDF文件需要进一步解析]';
+    };
+    const papersMissingAbstract = allPapers.filter((paper: any) => !hasImportableAbstract(paper));
+    const importablePapers = allPapers.filter((paper: any) => hasImportableAbstract(paper));
+
     const mergedPapers = [...existingPapers];
-    const existingTitles = new Set(existingPapers.map(p => p.title?.toLowerCase()));
+    const existingDedupeKeys = new Set(
+      existingPapers.flatMap((paper: any) => getPaperDedupeKeys(paper)),
+    );
     const newPapersToAdd: any[] = [];  // 记录真正新增的文献
     
-    for (const paper of allPapers) {
-      if (!existingTitles.has(paper.title?.toLowerCase())) {
+    for (const paper of importablePapers) {
+      const dedupeKeys = getPaperDedupeKeys(paper);
+      const duplicate = dedupeKeys.some((key) => existingDedupeKeys.has(key));
+      if (!duplicate) {
         mergedPapers.push(paper);
         newPapersToAdd.push(paper);  // 只有真正新增的才加入这个列表
+        dedupeKeys.forEach((key) => existingDedupeKeys.add(key));
       }
     }
     
@@ -7925,10 +8315,14 @@ app.post("/api/upload", handleLiteratureUpload, async (req: Request, res: Respon
     const newEmbeddablePapers = newPapersToAdd.filter((paper: any) => {
       const title = String(paper.title || '').trim();
       const abstract = String(paper.abstract || '').trim();
-      return !paper.isPdf && title && abstract !== '[PDF文件需要进一步解析]';
+      return !paper.isPdf && title && abstract && abstract !== '[PDF文件需要进一步解析]';
     });
-    const duplicateCount = allPapers.length - newPaperCount;
-    logger.info(`[Upload] Dedup result: ${newPaperCount} new papers (${newEmbeddablePapers.length} embeddable), ${duplicateCount} duplicates skipped, ${mergedPapers.length} total`);
+    const duplicateCount = importablePapers.length - newPaperCount;
+    logger.info(
+      `[Upload] Import result: ${newPaperCount} new papers (${newEmbeddablePapers.length} embeddable), `
+      + `${duplicateCount} duplicates skipped, ${papersMissingAbstract.length} records without abstracts rejected, `
+      + `${mergedPapers.length} total`,
+    );
     
     fs.writeFileSync(literatureFile, JSON.stringify({ papers: mergedPapers }, null, 2), 'utf-8');
     
@@ -8118,6 +8512,7 @@ app.post("/api/upload", handleLiteratureUpload, async (req: Request, res: Respon
         newEmbeddableCount: newEmbeddablePapers.length, // 真正进入摘要 embedding/索引的文献数量
         duplicateCount: duplicateCount,         // 被去重跳过的文献数量
         uploadedCount: allPapers.length,        // 本次上传的文献总数
+        missingAbstractCount: papersMissingAbstract.length, // 缺少摘要、未进入文献库的题录数量
         pdfCount: pdfFilesForWiki.length,
         pdfQueuedCount: Number(pdfWikiQueueSnapshot?.addedPdfs || 0),
         pdfDuplicateCount: Number(pdfWikiQueueSnapshot?.skippedDuplicatePdfs || 0),
@@ -8794,7 +9189,15 @@ function findLatestAllowedLocalFileByName(fileName: string, roots: string[]): st
 
 app.get("/api/local-file/resolve", (req: Request, res: Response) => {
   try {
-    const primaryRoots = getValidatedLocalFileResolveRoots(req.query.workspaceRoot);
+    // Keep every verified workspace root supplied by the attachment card. An
+    // artifact mentioned with a relative name may have been written either to
+    // the conversation AI workspace or to the original project root. Using
+    // only workspaceRoot here made valid files in workspaceRoots invisible and
+    // caused the sidebar to return HTTP 404.
+    const primaryRoots = getValidatedLocalFileResolveRoots(
+      req.query.workspaceRoot,
+      req.query.workspaceRoots,
+    );
     const roots = getLocalFileResolveSearchRoots(req.query.workspaceRoot, req.query.workspaceRoots);
     const direct = resolveExistingAllowedLocalFile(req.query.path, roots);
     const relative = direct ? null : resolveRelativeAllowedLocalFile(req.query.path, roots);
@@ -10038,9 +10441,206 @@ app.get("/api/pdf-wiki/status", async (req: Request, res: Response) => {
   }
 });
 
+app.get("/api/pdf-wiki/topics", async (req: Request, res: Response) => {
+  try {
+    const userId = sanitizeUserId(req.query.userId || "web-user");
+    const catalog = await pdfWikiManager.getTopicCatalog(userId);
+    res.json({ success: true, ...catalog });
+  } catch (error) {
+    logger.error("[PdfWiki] Topic catalog route error:", error);
+    res.status(500).json({
+      success: false,
+      code: "PDF_WIKI_TOPIC_CATALOG_READ_FAILED",
+      message: (error as Error).message,
+      recoverable: true,
+    });
+  }
+});
+
+app.post("/api/pdf-wiki/topics/expand", async (req: Request, res: Response) => {
+  try {
+    const userId = sanitizeUserId(req.body?.userId || "web-user");
+    const rawTopics = Array.isArray(req.body?.topics) ? req.body.topics : [];
+    const topics: PdfWikiTopicInput[] = rawTopics.slice(0, 20).map((value: unknown) => {
+      const record = value && typeof value === 'object' ? value as Record<string, unknown> : {};
+      return {
+        label: String(record.label || '').trim().slice(0, 80),
+        description: String(record.description || '').trim().slice(0, 500),
+      };
+    }).filter((topic: PdfWikiTopicInput) => !!topic.label);
+    if (topics.length === 0) {
+      res.status(400).json({
+        success: false,
+        code: "PDF_WIKI_TOPIC_REQUIRED",
+        message: "请至少输入一个主题名称",
+        recoverable: true,
+      });
+      return;
+    }
+    const runtime = getPdfWikiLlmRuntimeConfig();
+    const llmConfig: PdfWikiLlmConfig = {
+      apiUrl: runtime.apiUrl,
+      apiKey: runtime.apiKey,
+      model: runtime.model,
+      jsonApiUrl: runtime.jsonApiUrl,
+      jsonApiKey: runtime.jsonApiKey,
+      jsonModel: runtime.jsonModel,
+      ocrModel: runtime.ocrModel,
+      visionModel: runtime.visionModel,
+      dedicated: runtime.dedicated,
+    };
+    const result = await pdfWikiManager.expandAndSaveTopics(userId, topics, llmConfig);
+    res.json({ success: true, ...result.catalog, reclassifiedPointCount: result.reclassifiedPointCount });
+  } catch (error) {
+    logger.error("[PdfWiki] Topic expansion route error:", error);
+    res.status(500).json({
+      success: false,
+      code: "PDF_WIKI_TOPIC_EXPANSION_FAILED",
+      message: (error as Error).message,
+      recoverable: true,
+    });
+  }
+});
+
+app.get("/api/pdf-wiki/topics/annotation-status", async (req: Request, res: Response) => {
+  try {
+    const userId = sanitizeUserId(req.query.userId || "web-user");
+    const status = await pdfWikiManager.getSentenceTopicAnnotationStatus(userId);
+    res.json({ success: true, ...status });
+  } catch (error) {
+    logger.error("[PdfWiki] Sentence topic annotation status route error:", error);
+    res.status(500).json({
+      success: false,
+      code: "PDF_WIKI_SENTENCE_TOPIC_STATUS_FAILED",
+      message: (error as Error).message,
+      recoverable: true,
+    });
+  }
+});
+
+app.post("/api/pdf-wiki/topics/annotate-sentences", async (req: Request, res: Response) => {
+  try {
+    const userId = sanitizeUserId(req.body?.userId || "web-user");
+    const runtime = getPdfWikiLlmRuntimeConfig();
+    const llmConfig: PdfWikiLlmConfig = {
+      apiUrl: runtime.apiUrl,
+      apiKey: runtime.apiKey,
+      model: runtime.model,
+      jsonApiUrl: runtime.jsonApiUrl,
+      jsonApiKey: runtime.jsonApiKey,
+      jsonModel: runtime.jsonModel,
+      ocrModel: runtime.ocrModel,
+      visionModel: runtime.visionModel,
+      dedicated: runtime.dedicated,
+    };
+    const status = await pdfWikiManager.startSentenceTopicAnnotation(userId, llmConfig, {
+      force: req.body?.force === true,
+    });
+    res.status(status.status === 'processing' ? 202 : 200).json({ success: true, ...status });
+  } catch (error) {
+    logger.error("[PdfWiki] Sentence topic annotation start route error:", error);
+    res.status(400).json({
+      success: false,
+      code: "PDF_WIKI_SENTENCE_TOPIC_ANNOTATION_FAILED",
+      message: (error as Error).message,
+      recoverable: true,
+    });
+  }
+});
+
+app.put("/api/pdf-wiki/topics", async (req: Request, res: Response) => {
+  try {
+    const userId = sanitizeUserId(req.body?.userId || "web-user");
+    const rawTopic = req.body?.topic && typeof req.body.topic === 'object'
+      ? req.body.topic as Record<string, unknown>
+      : {};
+    const normalizeTerms = (value: unknown, limit: number): string[] => {
+      const values = Array.isArray(value) ? value : (typeof value === 'string' ? value.split(/[,;，；\n]+/) : []);
+      return values.map(item => String(item || '').trim().slice(0, 100)).filter(Boolean).slice(0, limit);
+    };
+    const topic: PdfWikiManualTopicInput = {
+      id: String(rawTopic.id || '').trim().slice(0, 80) || undefined,
+      label: String(rawTopic.label || '').trim().slice(0, 80),
+      description: String(rawTopic.description || '').trim().slice(0, 500),
+      aliases: normalizeTerms(rawTopic.aliases, 12),
+      keywords: normalizeTerms(rawTopic.keywords, 30),
+      excludeKeywords: normalizeTerms(rawTopic.excludeKeywords, 12),
+    };
+    if (!topic.label) {
+      res.status(400).json({ success: false, code: "PDF_WIKI_TOPIC_LABEL_REQUIRED", message: "请输入主题名称", recoverable: true });
+      return;
+    }
+    const result = await pdfWikiManager.saveManualTopicDefinition(userId, topic);
+    res.json({ success: true, ...result.catalog, topic: result.topic, reclassifiedPointCount: result.reclassifiedPointCount });
+  } catch (error) {
+    logger.error("[PdfWiki] Manual topic save route error:", error);
+    res.status(400).json({
+      success: false,
+      code: "PDF_WIKI_TOPIC_SAVE_FAILED",
+      message: (error as Error).message,
+      recoverable: true,
+    });
+  }
+});
+
+app.delete("/api/pdf-wiki/topics/:topicId", async (req: Request, res: Response) => {
+  try {
+    const userId = sanitizeUserId(req.query.userId || "web-user");
+    const topicId = String(req.params.topicId || '').trim().slice(0, 100);
+    if (!topicId) {
+      res.status(400).json({ success: false, code: "PDF_WIKI_TOPIC_ID_REQUIRED", message: "缺少主题 ID", recoverable: true });
+      return;
+    }
+    const result = await pdfWikiManager.deleteTopicDefinition(userId, topicId);
+    res.json({ success: true, ...result.catalog, reclassifiedPointCount: result.reclassifiedPointCount });
+  } catch (error) {
+    logger.error("[PdfWiki] Topic deletion route error:", error);
+    res.status(400).json({
+      success: false,
+      code: "PDF_WIKI_TOPIC_DELETE_FAILED",
+      message: (error as Error).message,
+      recoverable: true,
+    });
+  }
+});
+
 app.get("/api/pdf-wiki/entries", async (req: Request, res: Response) => {
   try {
     const userId = sanitizeUserId(req.query.userId || "web-user");
+    const summaryOnly = String(req.query.summary || '') === '1';
+    if (summaryOnly) {
+      const requestedLimit = Number(req.query.limit || 240);
+      const pointLimit = Math.max(60, Math.min(500, Number.isFinite(requestedLimit) ? Math.floor(requestedLimit) : 240));
+      const [status, snapshot] = await Promise.all([
+        pdfWikiManager.getLightweightStatus(userId),
+        pdfWikiManager.getViewerStoreSnapshot(userId),
+      ]);
+      const publishablePoints = snapshot.sentenceCloud.points.filter(point => {
+        if (!point || point.claimCandidate !== true) return false;
+        const type = String(point.claimType || '').toLowerCase().replace(/[\s_-]+/g, '_');
+        return type !== 'method'
+          && type !== 'non_claim'
+          && String(point.claimText || point.sentence || '').trim().length > 0;
+      });
+      const initialPoints = publishablePoints.slice(0, pointLimit);
+      res.json({
+        success: true,
+        status,
+        generatedAt: snapshot.generatedAt,
+        pdfCount: snapshot.pdfs.length,
+        entryCount: snapshot.entries.length,
+        totalSentencePointCount: publishablePoints.length,
+        partial: publishablePoints.length > initialPoints.length,
+        sentenceCloud: {
+          generatedAt: snapshot.sentenceCloud.generatedAt,
+          points: initialPoints,
+          clouds: [],
+        },
+        entries: [],
+        favoriteEntryIds: [],
+      });
+      return;
+    }
     const [status, store] = await Promise.all([
       pdfWikiManager.getStatus(userId),
       pdfWikiManager.getStore(userId),
@@ -10404,7 +11004,7 @@ async function exportPdfWikiObsidianVault(userId: string, store: PdfWikiStore, o
   const points = sortPdfWikiSentencePointsForObsidian(store.sentenceCloud?.points || []);
   const entries = Array.isArray(store.entries) ? store.entries.slice() : [];
   if (points.length === 0 && entries.length === 0) {
-    throw new Error("当前还没有可导出的 PDF Wiki 句子级论点库。");
+    throw new Error("当前还没有可导出的 Wiki论点库。");
   }
 
   const timestamp = formatPdfWikiObsidianTimestamp(new Date());
@@ -11309,6 +11909,15 @@ function formatPdfWikiObsidianTimestamp(date: Date): string {
 }
 
 const PDF_WIKI_FIGURE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".webp", ".svg"]);
+const PDF_WIKI_FIGURE_FINGERPRINT_CACHE_LIMIT = 4096;
+
+interface PdfWikiFigureFingerprintCacheEntry {
+  size: number;
+  mtimeMs: number;
+  fingerprint: string;
+}
+
+const pdfWikiFigureFingerprintCache = new Map<string, PdfWikiFigureFingerprintCacheEntry>();
 
 interface PdfWikiFigurePreview {
   name: string;
@@ -11337,6 +11946,54 @@ function readPdfWikiFigureJson(jsonPath: string): Record<string, unknown> {
   } catch (error) {
     logger.warn(`[PdfWiki] Failed to read figure metadata ${jsonPath}:`, error);
     return {};
+  }
+}
+
+function getPdfWikiFigureQuickFingerprint(filePath: string): string {
+  try {
+    const stat = fs.statSync(filePath);
+    const cached = pdfWikiFigureFingerprintCache.get(filePath);
+    if (cached && cached.size === stat.size && cached.mtimeMs === stat.mtimeMs) {
+      return cached.fingerprint;
+    }
+
+    const digest = crypto.createHash("sha256");
+    digest.update(String(stat.size));
+    const sampleSize = 16 * 1024;
+    if (stat.size <= sampleSize * 4) {
+      digest.update(fs.readFileSync(filePath));
+    } else {
+      const handle = fs.openSync(filePath, "r");
+      try {
+        const positions = [
+          0,
+          Math.max(0, Math.floor((stat.size - sampleSize) / 2)),
+          Math.max(0, stat.size - sampleSize),
+        ];
+        for (const position of positions) {
+          const buffer = Buffer.allocUnsafe(sampleSize);
+          const bytesRead = fs.readSync(handle, buffer, 0, sampleSize, position);
+          digest.update(buffer.subarray(0, bytesRead));
+        }
+      } finally {
+        fs.closeSync(handle);
+      }
+    }
+
+    const fingerprint = digest.digest("hex");
+    if (pdfWikiFigureFingerprintCache.size >= PDF_WIKI_FIGURE_FINGERPRINT_CACHE_LIMIT) {
+      const oldestKey = pdfWikiFigureFingerprintCache.keys().next().value;
+      if (typeof oldestKey === "string") pdfWikiFigureFingerprintCache.delete(oldestKey);
+    }
+    pdfWikiFigureFingerprintCache.set(filePath, {
+      size: stat.size,
+      mtimeMs: stat.mtimeMs,
+      fingerprint,
+    });
+    return fingerprint;
+  } catch (error) {
+    logger.debug(`[PdfWiki] Failed to fingerprint figure ${filePath}: ${error instanceof Error ? error.message : String(error)}`);
+    return "";
   }
 }
 
@@ -11417,6 +12074,35 @@ function buildPdfWikiManagedPdfAbstractPreview(
   return compactPdfWikiPlainText(abstractText, 1600);
 }
 
+function doesPdfWikiMatchAutoGroup(pdf: PdfWikiSourcePdf, groupName: string): boolean {
+  const inferred = inferPdfWikiSourceName(pdf.originalName);
+  const title = firstReadablePdfWikiText(pdf.title, inferred.title, pdf.originalName);
+  const abstractPreview = buildPdfWikiManagedPdfAbstractPreview(pdf);
+  const searchText = compactPdfWikiPlainText(
+    [title, pdf.originalName, abstractPreview].filter(Boolean).join("\n"),
+    10000
+  );
+  return matchesPdfWikiPdfGroupQuery(searchText, groupName);
+}
+
+async function autoAssignPdfWikiGroupByName(
+  userId: string,
+  groupId: string,
+  groupName: string
+): Promise<{
+  management: ReturnType<typeof loadPdfWikiPdfManagement>;
+  matchedPdfIds: string[];
+}> {
+  const store = await pdfWikiManager.getPdfManagerStoreSnapshot(userId);
+  const matchedPdfIds = store.pdfs
+    .filter(pdf => doesPdfWikiMatchAutoGroup(pdf, groupName))
+    .map(pdf => pdf.id);
+  const management = matchedPdfIds.length > 0
+    ? addPdfWikiPdfGroupToPdfs(dataDir, userId, groupId, matchedPdfIds)
+    : loadPdfWikiPdfManagement(dataDir, userId);
+  return { management, matchedPdfIds };
+}
+
 function isPdfWikiGarbledDisplayText(value: unknown): boolean {
   const text = typeof value === "string" ? value.replace(/\s+/g, " ").trim() : "";
   if (!text) return false;
@@ -11441,34 +12127,10 @@ function firstReadablePdfWikiText(...values: unknown[]): string {
 }
 
 function isPdfWikiNonScientificFigureRecord(record: Record<string, unknown>, fileName = ""): boolean {
-  const text = [
-    fileName,
-    record.id,
-    record.number,
-    record.label,
-    record.name,
-    record.title,
-    record.caption,
-    record.description,
-    record.note,
-    record.ocr_text,
-    record.ocrText,
-    record.source,
-    record.type,
-  ].map(value => String(value || "")).join(" ").replace(/\s+/g, " ").toLowerCase();
-  if (!text.trim()) return false;
-
-  if (/(elsevier|springer|wiley|mdpi|frontiers|sciencedirect|publisher)\s+(logo|mark|brand)/i.test(text)) return true;
-  if (/(logo|decorative|decoration|ornament|placeholder|misembedded|cover\s+page|journal\s+cover|front\s+cover|cover\s+image)/i.test(text)) return true;
-  if (/(not\s+(?:a\s+)?scientific\s+figure|not\s+the\s+actual\s+figure|not\s+a\s+data\s+figure|not\s+.*with\s+data)/i.test(text)) return true;
-  if (/(no\s+(?:axes|axis|labels?|numerical\s+data|numeric\s+data|data\s+visible|chart|graph|table\s+content)|cannot\s+extract\s+meaningful\s+data|no\s+meaningful\s+data)/i.test(text)) return true;
-
-  const page = firstPdfWikiString(record.page, record.pages, record.page_number, record.pageNumber).toLowerCase();
-  const isFirstPage = /^(?:p\.?\s*)?1$|^page\s*1$/.test(page);
-  return isFirstPage && /(cover|logo|publisher|decorative|placeholder|sciencedirect|elsevier)/i.test(text);
+  return isNonScientificPdfFigureRecord(record, fileName);
 }
 
-function ensurePdfWikiMetaFigurePreviewCopies(userId: string, pdf: PdfWikiSourcePdf): void {
+function ensurePdfWikiMetaFigurePreviewCopies(userId: string, pdf: Pick<PdfWikiSourcePdf, "id">): void {
   const taskDir = getPdfWikiCodexExtractDir(userId, pdf.id);
   const sourceDir = path.join(taskDir, "figures");
   const targetDir = path.join(taskDir, "meta-figures");
@@ -11490,7 +12152,7 @@ function ensurePdfWikiMetaFigurePreviewCopies(userId: string, pdf: PdfWikiSource
   }
 }
 
-function getPdfWikiFigurePreviews(userId: string, pdf: PdfWikiSourcePdf, scope: "pdf" | "meta" = "pdf"): PdfWikiFigurePreview[] {
+function getPdfWikiFigurePreviews(userId: string, pdf: Pick<PdfWikiSourcePdf, "id">, scope: "pdf" | "meta" = "pdf"): PdfWikiFigurePreview[] {
   const figureDirName = getPdfWikiFigureScopeDirName(scope);
   const figureDir = path.join(getPdfWikiCodexExtractDir(userId, pdf.id), figureDirName);
   if (scope === "meta") {
@@ -11499,6 +12161,7 @@ function getPdfWikiFigurePreviews(userId: string, pdf: PdfWikiSourcePdf, scope: 
   if (!fs.existsSync(figureDir)) return [];
 
   try {
+    const seenFingerprints = new Set<string>();
     return fs.readdirSync(figureDir, { withFileTypes: true })
       .filter(entry => entry.isFile() && PDF_WIKI_FIGURE_EXTENSIONS.has(path.extname(entry.name).toLowerCase()))
       .sort((a, b) => a.name.localeCompare(b.name, "zh-CN", { numeric: true }))
@@ -11516,6 +12179,10 @@ function getPdfWikiFigurePreviews(userId: string, pdf: PdfWikiSourcePdf, scope: 
         ) {
           return null;
         }
+        const persistedHash = firstPdfWikiString(meta.contentHash, meta.content_hash).toLowerCase();
+        const fingerprint = persistedHash || getPdfWikiFigureQuickFingerprint(filePath);
+        if (fingerprint && seenFingerprints.has(fingerprint)) return null;
+        if (fingerprint) seenFingerprints.add(fingerprint);
         return {
           name: entry.name,
           url: `/api/pdf-wiki/pdfs/${encodeURIComponent(pdf.id)}/figures/${encodeURIComponent(entry.name)}?userId=${encodeURIComponent(userId)}${scope === "meta" ? "&scope=meta" : ""}`,
@@ -11532,6 +12199,67 @@ function getPdfWikiFigurePreviews(userId: string, pdf: PdfWikiSourcePdf, scope: 
     logger.warn(`[PdfWiki] Failed to list figures for ${pdf.id}:`, error);
     return [];
   }
+}
+
+function getPdfWikiLightweightFigurePreviews(
+  userId: string,
+  pdf: Pick<PdfWikiSourcePdf, "id">,
+  storedFigures: unknown[]
+): PdfWikiFigurePreview[] {
+  const figureDir = path.join(getPdfWikiCodexExtractDir(userId, pdf.id), getPdfWikiFigureScopeDirName("pdf"));
+  if (!fs.existsSync(figureDir)) return [];
+  const storedByFileName = new Map<string, Record<string, unknown>>();
+  storedFigures.forEach(item => {
+    const record = asPdfWikiRecord(item);
+    const rawFileName = firstPdfWikiString(record.name, record.file, record.filename);
+    const fileName = path.basename(rawFileName.replace(/\\/g, "/")).toLowerCase();
+    if (fileName) storedByFileName.set(fileName, record);
+  });
+
+  const previews: PdfWikiFigurePreview[] = [];
+  const seenFingerprints = new Set<string>();
+  try {
+    fs.readdirSync(figureDir, { withFileTypes: true })
+      .filter(entry => entry.isFile() && PDF_WIKI_FIGURE_EXTENSIONS.has(path.extname(entry.name).toLowerCase()))
+      .sort((a, b) => a.name.localeCompare(b.name, "zh-CN", { numeric: true }))
+      .forEach((entry, index) => {
+        const fileName = entry.name;
+        const storedRecord = storedByFileName.get(fileName.toLowerCase());
+        // Lightweight list loading normally avoids per-image JSON reads. For
+        // the first few generic legacy files, however, the sibling metadata is
+        // required to identify title-page publisher assets. Limit the fallback
+        // to three files per PDF to keep the manager list responsive.
+        const record = storedRecord || (index < 3
+          ? readPdfWikiFigureJson(path.join(figureDir, `${fileName.replace(/\.[^.]+$/, "")}.json`))
+          : {});
+        if (
+          fileName.toLowerCase() === "000_overview_diagram.svg"
+          || firstPdfWikiString(record.id) === "overview_diagram"
+          || isPdfWikiNonScientificFigureRecord(record, fileName)
+        ) {
+          return;
+        }
+        const filePath = path.join(figureDir, fileName);
+        const persistedHash = firstPdfWikiString(record.contentHash, record.content_hash).toLowerCase();
+        const fingerprint = persistedHash || getPdfWikiFigureQuickFingerprint(filePath);
+        if (fingerprint && seenFingerprints.has(fingerprint)) return;
+        if (fingerprint) seenFingerprints.add(fingerprint);
+        const baseName = fileName.replace(/\.[^.]+$/, "");
+        previews.push({
+          name: fileName,
+          url: `/api/pdf-wiki/pdfs/${encodeURIComponent(pdf.id)}/figures/${encodeURIComponent(fileName)}?userId=${encodeURIComponent(userId)}`,
+          number: firstPdfWikiString(record.number, record.label, baseName, `Figure ${index + 1}`),
+          title: firstPdfWikiString(record.title, record.description),
+          caption: firstPdfWikiString(record.caption),
+          page: firstPdfWikiString(record.page, record.page_number, record.pageNumber),
+          size: 0,
+          scope: "pdf",
+        });
+      });
+  } catch (error) {
+    logger.warn(`[PdfWiki] Failed to list lightweight figures for ${pdf.id}:`, error);
+  }
+  return previews;
 }
 
 interface BundledGetDataStatus {
@@ -11696,7 +12424,12 @@ function serializePdfWikiManagedPdf(
   pdf: PdfWikiSourcePdf,
   groupIds: string[] | undefined,
   deepAnalysis?: Awaited<ReturnType<PdfWikiManager["getPdfDeepAnalysis"]>>,
-  favorite = false
+  favorite = false,
+  options: {
+    includeFigurePreviews?: boolean;
+    deepAnalysisAvailable?: boolean;
+    detailsLoaded?: boolean;
+  } = {}
 ): Record<string, unknown> {
   const inferred = inferPdfWikiSourceName(pdf.originalName);
   const normalizedGroupIds = Array.isArray(groupIds) ? groupIds : [];
@@ -11706,6 +12439,22 @@ function serializePdfWikiManagedPdf(
   const rawAbstractPreview = buildPdfWikiManagedPdfAbstractPreview(pdf, deepAnalysis);
   const abstractPreview = isPdfWikiGarbledDisplayText(rawAbstractPreview) ? "" : rawAbstractPreview;
   const searchText = compactPdfWikiPlainText([title, abstractPreview].filter(Boolean).join("\n"), 7000);
+  const storedMeta = asPdfWikiRecord(pdf.metaData);
+  const storedFigures = Array.isArray(storedMeta.source_figures)
+    ? storedMeta.source_figures
+    : (Array.isArray(storedMeta.sourceFigures) ? storedMeta.sourceFigures : []);
+  const lightweightFigurePreviews = getPdfWikiLightweightFigurePreviews(userId, pdf, storedFigures);
+  const figureDir = path.join(getPdfWikiCodexExtractDir(userId, pdf.id), getPdfWikiFigureScopeDirName("pdf"));
+  const figurePreviews = options.includeFigurePreviews === true
+    ? getPdfWikiFigurePreviews(userId, pdf)
+    : lightweightFigurePreviews;
+  const figuresAvailable = figurePreviews.length > 0 || storedFigures.length > 0 || fs.existsSync(figureDir);
+  const figureExtractionStatus = pdf.figureExtractionStatus
+    || (figurePreviews.length > 0 || storedFigures.length > 0 ? "completed" : "not-started");
+  const recognitionComplete = Boolean(
+    pdf.parsedTextCachedAt
+    || (pdf.processedAt && (pdf.extractionParser || Number(pdf.textLength || 0) > 0))
+  );
   return {
     id: pdf.id,
     originalName: pdf.originalName,
@@ -11722,11 +12471,20 @@ function serializePdfWikiManagedPdf(
     textLength: pdf.textLength || 0,
     parsedTextCachedAt: pdf.parsedTextCachedAt || '',
     processedAt: pdf.processedAt || '',
+    extractionParser: pdf.extractionParser || '',
+    recognitionComplete,
     sourceUrl: `/api/pdf-wiki/pdfs/${encodeURIComponent(pdf.id)}/source?userId=${encodeURIComponent(userId)}`,
-    figurePreviews: getPdfWikiFigurePreviews(userId, pdf),
+    figurePreviews,
+    figureCount: figurePreviews.length,
+    figuresAvailable,
+    figureExtractionStatus,
+    figureExtractionAttemptedAt: pdf.figureExtractionAttemptedAt || "",
+    figureExtractionError: pdf.figureExtractionError || "",
     abstractPreview,
     searchText,
     deepAnalysis: deepAnalysis || null,
+    deepAnalysisAvailable: options.deepAnalysisAvailable ?? !!deepAnalysis,
+    detailsLoaded: options.detailsLoaded === true,
   };
 }
 
@@ -11734,8 +12492,8 @@ app.get("/api/pdf-wiki/pdfs", async (req: Request, res: Response) => {
   try {
     const userId = sanitizeUserId(req.query.userId || "web-user");
     const [status, store] = await Promise.all([
-      pdfWikiManager.getStatus(userId),
-      pdfWikiManager.getStore(userId),
+      pdfWikiManager.getLightweightStatus(userId),
+      pdfWikiManager.getPdfManagerStoreSnapshot(userId),
     ]);
     const management = loadPdfWikiPdfManagement(dataDir, userId);
     const favoritePdfIds = getLibraryFavoriteSet(userId, "pdfWikiPdf");
@@ -11746,15 +12504,19 @@ app.get("/api/pdf-wiki/pdfs", async (req: Request, res: Response) => {
     const sortedPdfs = store.pdfs
       .slice()
       .sort((a, b) => a.originalName.localeCompare(b.originalName, "zh-CN"));
-    const pdfs = await Promise.all(sortedPdfs.map(async pdf =>
+    const pdfs = sortedPdfs.map(pdf =>
       serializePdfWikiManagedPdf(
         userId,
         pdf,
         assignments[pdf.id],
-        await pdfWikiManager.getPdfDeepAnalysis(userId, pdf.id),
-        favoritePdfIds.has(pdf.id)
+        undefined,
+        favoritePdfIds.has(pdf.id),
+        {
+          deepAnalysisAvailable: pdfWikiManager.hasPdfDeepAnalysisSnapshot(userId, pdf.id),
+          detailsLoaded: false,
+        }
       )
-    ));
+    );
 
     res.json({
       success: true,
@@ -11767,6 +12529,47 @@ app.get("/api/pdf-wiki/pdfs", async (req: Request, res: Response) => {
     });
   } catch (error) {
     logger.error("[PdfWiki] PDF manager route error:", error);
+    res.status(500).json({ success: false, error: (error as Error).message });
+  }
+});
+
+app.get("/api/pdf-wiki/pdfs/:pdfId/details", async (req: Request, res: Response) => {
+  try {
+    const userId = sanitizeUserId(req.query.userId || "web-user");
+    const pdfId = String(req.params.pdfId || "").trim();
+    try {
+      await pdfWikiManager.ensurePdfFiguresForManager(userId, pdfId);
+    } catch (figureError) {
+      logger.warn(
+        `[PdfWiki] Could not ensure PDF figures before loading details for ${pdfId}: ${(figureError as Error).message}`
+      );
+    }
+    const store = await pdfWikiManager.getPdfManagerStoreSnapshot(userId);
+    const pdf = store.pdfs.find(item => item.id === pdfId);
+    if (!pdf) {
+      res.status(404).json({ success: false, error: "未找到该 PDF" });
+      return;
+    }
+    const management = loadPdfWikiPdfManagement(dataDir, userId);
+    const favoritePdfIds = getLibraryFavoriteSet(userId, "pdfWikiPdf");
+    const deepAnalysis = await pdfWikiManager.getPdfDeepAnalysisSnapshot(userId, pdfId);
+    res.json({
+      success: true,
+      pdf: serializePdfWikiManagedPdf(
+        userId,
+        pdf,
+        management.assignments[pdf.id],
+        deepAnalysis,
+        favoritePdfIds.has(pdf.id),
+        {
+          includeFigurePreviews: true,
+          deepAnalysisAvailable: !!deepAnalysis,
+          detailsLoaded: true,
+        }
+      ),
+    });
+  } catch (error) {
+    logger.error("[PdfWiki] PDF manager details route error:", error);
     res.status(500).json({ success: false, error: (error as Error).message });
   }
 });
@@ -11789,7 +12592,7 @@ app.get("/api/pdf-wiki/pdfs/:pdfId/source", async (req: Request, res: Response) 
       return;
     }
 
-    const store = await pdfWikiManager.getStore(userId);
+    const store = await pdfWikiManager.getPdfManagerStoreSnapshot(userId);
     const pdf = store.pdfs.find(item => item.id === pdfId);
     if (!pdf) {
       res.status(404).json({ success: false, error: "未找到该 PDF" });
@@ -12069,6 +12872,43 @@ app.post("/api/pdf-wiki/reader/ai-read", async (req: Request, res: Response) => 
   } catch (error) {
     logger.error("[PdfWikiReader] AI read failed:", error);
     res.status(500).json({ success: false, error: (error as Error).message || "AI 阅读失败" });
+  }
+});
+
+app.get("/api/pdf-wiki/reader/context", async (req: Request, res: Response) => {
+  try {
+    const userId = sanitizeUserId(req.query.userId || "web-user");
+    const pdfId = String(req.query.pdfId || "").trim();
+    if (!pdfId) {
+      res.status(400).json({ success: false, error: "缺少 PDF ID" });
+      return;
+    }
+
+    const fullText = await pdfWikiManager.getPdfReaderFullText(userId, pdfId);
+    if (!fullText) {
+      res.status(404).json({ success: false, error: "未找到当前 PDF，请先上传并识别 PDF" });
+      return;
+    }
+
+    const pdf = fullText.pdf;
+    res.json({
+      success: true,
+      context: {
+        pdfId,
+        title: pdf.title || pdf.originalName || "PDF",
+        originalName: pdf.originalName || "",
+        authors: pdf.authors || "",
+        year: pdf.year || "",
+        journal: pdf.journal || "",
+        doi: pdf.doi || "",
+        parser: fullText.parser,
+        fullTextLength: fullText.text.length,
+        paperText: truncatePdfReaderFullText(fullText.text, 90000),
+      },
+    });
+  } catch (error) {
+    logger.error("[PdfWikiReader] Load homepage chat context failed:", error);
+    res.status(500).json({ success: false, error: (error as Error).message || "读取论文上下文失败" });
   }
 });
 
@@ -12413,7 +13253,7 @@ app.get("/api/pdf-wiki/pdfs/:pdfId/figures/:fileName", async (req: Request, res:
     const userId = sanitizeUserId(req.query.userId || "web-user");
     const pdfId = String(req.params.pdfId || "").trim();
     const fileName = path.basename(String(req.params.fileName || ""));
-    if (!pdfId || !fileName || fileName !== req.params.fileName) {
+    if (!/^[a-zA-Z0-9_-]{1,120}$/.test(pdfId) || !fileName || fileName !== req.params.fileName) {
       res.status(400).json({ success: false, error: "图片路径无效" });
       return;
     }
@@ -12422,13 +13262,16 @@ app.get("/api/pdf-wiki/pdfs/:pdfId/figures/:fileName", async (req: Request, res:
       return;
     }
 
-    const store = await pdfWikiManager.getStore(userId);
-    if (!store.pdfs.some(pdf => pdf.id === pdfId)) {
-      res.status(404).json({ success: false, error: "未找到该 PDF" });
+    // A figure request must remain a cheap static-file read. Calling getStore()
+    // here reclassifies every sentence topic and made each thumbnail block the
+    // server for several seconds. Validate the id and resolved directory instead.
+    const extractRoot = path.resolve(path.join(dataDir, "uploads", userId, "pdf-wiki", "codex-extract"));
+    const pdfExtractDir = path.resolve(path.join(extractRoot, pdfId));
+    if (pdfExtractDir !== extractRoot && !pdfExtractDir.startsWith(`${extractRoot}${path.sep}`)) {
+      res.status(400).json({ success: false, error: "图片路径越界" });
       return;
     }
-
-    const figureDir = path.resolve(path.join(getPdfWikiCodexExtractDir(userId, pdfId), getPdfWikiFigureScopeDirName(req.query.scope)));
+    const figureDir = path.resolve(path.join(pdfExtractDir, getPdfWikiFigureScopeDirName(req.query.scope)));
     const target = path.resolve(path.join(figureDir, fileName));
     if (target !== figureDir && !target.startsWith(`${figureDir}${path.sep}`)) {
       res.status(400).json({ success: false, error: "图片路径越界" });
@@ -12450,22 +13293,23 @@ app.get("/api/pdf-wiki/meta", async (req: Request, res: Response) => {
     const userId = sanitizeUserId(req.query.userId || "web-user");
     const pdfId = typeof req.query.pdfId === "string" ? req.query.pdfId.trim() : "";
     const summaryOnly = req.query.summary === "1" || req.query.summaryOnly === "true";
-    const [status, metaDatabase, store] = await Promise.all([
-      pdfWikiManager.getStatus(userId),
+    const forceRefreshSummary = req.query.refresh === "1" || req.query.forceRefresh === "true";
+    const [status, metaDatabase] = await Promise.all([
+      pdfWikiManager.getLightweightStatus(userId),
       pdfWikiManager.getMetaDatabase(userId, {
         includeDetails: pdfId ? true : !summaryOnly,
         pdfIds: pdfId ? [pdfId] : undefined,
+        forceRefreshSummary,
       }),
-      pdfWikiManager.getStore(userId),
     ]);
-    const pdfById = new Map(store.pdfs.map(pdf => [pdf.id, pdf]));
-    metaDatabase.items = metaDatabase.items.map(item => {
-      const pdf = pdfById.get(item.pdfId);
-      return {
+    // Figure discovery can copy and inspect many files. The summary list does not
+    // render figures, so only do this work for the one explicitly opened PDF.
+    if (pdfId) {
+      metaDatabase.items = metaDatabase.items.map(item => ({
         ...item,
-        figurePreviews: pdf ? getPdfWikiFigurePreviews(userId, pdf, "meta") : [],
-      } as typeof item & { figurePreviews: PdfWikiFigurePreview[] };
-    });
+        figurePreviews: getPdfWikiFigurePreviews(userId, { id: item.pdfId }, "meta"),
+      } as typeof item & { figurePreviews: PdfWikiFigurePreview[] }));
+    }
     res.json({
       success: true,
       status,
@@ -12864,24 +13708,72 @@ app.post("/api/pdf-wiki/meta/tables/export", async (req: Request, res: Response)
   }
 });
 
-app.post("/api/pdf-wiki/pdf-groups", (req: Request, res: Response) => {
+app.post("/api/pdf-wiki/pdf-groups", async (req: Request, res: Response) => {
   try {
     const userId = sanitizeUserId(req.body.userId || "web-user");
     const name = String(req.body.name || "").trim();
-    const management = createPdfWikiPdfGroup(dataDir, userId, name);
-    res.json({ success: true, groups: management.groups, assignments: management.assignments });
+    let management = createPdfWikiPdfGroup(dataDir, userId, name);
+    const createdGroup = management.groups[management.groups.length - 1];
+    let matchedPdfIds: string[] = [];
+    let autoMatchError = "";
+    if (createdGroup) {
+      try {
+        const autoMatch = await autoAssignPdfWikiGroupByName(userId, createdGroup.id, createdGroup.name);
+        management = autoMatch.management;
+        matchedPdfIds = autoMatch.matchedPdfIds;
+      } catch (error) {
+        autoMatchError = (error as Error).message;
+        logger.warn(`[PdfWiki] Auto-match failed for new PDF group ${createdGroup.id}:`, error);
+      }
+    }
+    res.json({
+      success: true,
+      groups: management.groups,
+      assignments: management.assignments,
+      autoMatch: {
+        groupId: createdGroup?.id || "",
+        query: createdGroup?.name || name,
+        matchedCount: matchedPdfIds.length,
+        matchedPdfIds,
+        error: autoMatchError,
+      },
+    });
   } catch (error) {
     logger.error("[PdfWiki] Create PDF group route error:", error);
     res.status(400).json({ success: false, error: (error as Error).message });
   }
 });
 
-app.patch("/api/pdf-wiki/pdf-groups/:groupId", (req: Request, res: Response) => {
+app.patch("/api/pdf-wiki/pdf-groups/:groupId", async (req: Request, res: Response) => {
   try {
     const userId = sanitizeUserId(req.body.userId || "web-user");
     const name = String(req.body.name || "").trim();
-    const management = renamePdfWikiPdfGroup(dataDir, userId, req.params.groupId, name);
-    res.json({ success: true, groups: management.groups, assignments: management.assignments });
+    let management = renamePdfWikiPdfGroup(dataDir, userId, req.params.groupId, name);
+    const renamedGroup = management.groups.find(group => group.id === req.params.groupId);
+    let matchedPdfIds: string[] = [];
+    let autoMatchError = "";
+    if (renamedGroup) {
+      try {
+        const autoMatch = await autoAssignPdfWikiGroupByName(userId, renamedGroup.id, renamedGroup.name);
+        management = autoMatch.management;
+        matchedPdfIds = autoMatch.matchedPdfIds;
+      } catch (error) {
+        autoMatchError = (error as Error).message;
+        logger.warn(`[PdfWiki] Auto-match failed for renamed PDF group ${renamedGroup.id}:`, error);
+      }
+    }
+    res.json({
+      success: true,
+      groups: management.groups,
+      assignments: management.assignments,
+      autoMatch: {
+        groupId: renamedGroup?.id || req.params.groupId,
+        query: renamedGroup?.name || name,
+        matchedCount: matchedPdfIds.length,
+        matchedPdfIds,
+        error: autoMatchError,
+      },
+    });
   } catch (error) {
     logger.error("[PdfWiki] Rename PDF group route error:", error);
     res.status(400).json({ success: false, error: (error as Error).message });
@@ -12904,7 +13796,7 @@ app.post("/api/pdf-wiki/pdfs/:pdfId/group", async (req: Request, res: Response) 
     const userId = sanitizeUserId(req.body.userId || "web-user");
     const groupId = typeof req.body.groupId === "string" ? req.body.groupId : "";
     const rawGroupIds = Array.isArray(req.body.groupIds) ? req.body.groupIds : null;
-    const store = await pdfWikiManager.getStore(userId);
+    const store = await pdfWikiManager.getPdfManagerStoreSnapshot(userId);
     if (!store.pdfs.some(pdf => pdf.id === req.params.pdfId)) {
       res.status(404).json({ success: false, error: "未找到该 PDF" });
       return;
@@ -12926,7 +13818,7 @@ app.post("/api/pdf-wiki/pdfs/:pdfId/groups", async (req: Request, res: Response)
     const groupIds = Array.isArray(req.body.groupIds)
       ? req.body.groupIds.map((item: unknown) => String(item || ""))
       : [];
-    const store = await pdfWikiManager.getStore(userId);
+    const store = await pdfWikiManager.getPdfManagerStoreSnapshot(userId);
     if (!store.pdfs.some(pdf => pdf.id === req.params.pdfId)) {
       res.status(404).json({ success: false, error: "未找到该 PDF" });
       return;
@@ -12945,7 +13837,7 @@ app.post("/api/pdf-wiki/pdfs/:pdfId/favorite", async (req: Request, res: Respons
     const userId = sanitizeUserId(req.body.userId || "web-user");
     const pdfId = String(req.params.pdfId || "").trim();
     const favorite = req.body.favorite !== false;
-    const store = await pdfWikiManager.getStore(userId);
+    const store = await pdfWikiManager.getPdfManagerStoreSnapshot(userId);
     if (!store.pdfs.some(pdf => pdf.id === pdfId)) {
       res.status(404).json({ success: false, error: "未找到该 PDF" });
       return;
@@ -12984,27 +13876,98 @@ app.post("/api/pdf-wiki/pdfs/delete", async (req: Request, res: Response) => {
   }
 });
 
+app.post("/api/pdf-wiki/recognition-queue", async (req: Request, res: Response) => {
+  try {
+    const userId = sanitizeUserId(req.body.userId || "web-user");
+    const items = Array.isArray(req.body.items)
+      ? req.body.items.map((item: unknown) => {
+          const record = item && typeof item === "object" ? item as Record<string, unknown> : {};
+          return {
+            pdfId: String(record.pdfId || "").trim(),
+            mode: record.mode === "images-only" ? "images-only" as const : "full" as const,
+          };
+        }).filter((item: { pdfId: string }) => !!item.pdfId)
+      : [];
+    const queue = await pdfWikiManager.enqueuePdfRecognition(userId, items);
+    res.status(202).json({
+      success: true,
+      message: queue.addedItems
+        ? `已将 ${queue.addedItems} 个 PDF 加入后端持久化识别队列`
+        : "这些 PDF 已在识别队列中，无需重复提交",
+      queue,
+    });
+  } catch (error) {
+    logger.error("[PdfWikiRecognitionQueue] Enqueue route error:", error);
+    const message = (error as Error).message;
+    res.status(400).json({
+      success: false,
+      code: "PDF_RECOGNITION_QUEUE_SUBMIT_FAILED",
+      message,
+      error: message,
+      recoverable: true,
+    });
+  }
+});
+
+app.get("/api/pdf-wiki/recognition-queue", async (req: Request, res: Response) => {
+  try {
+    const userId = sanitizeUserId(req.query.userId || "web-user");
+    const queue = await pdfWikiManager.getRecognitionQueueSnapshot(userId);
+    res.json({ success: true, queue });
+  } catch (error) {
+    logger.error("[PdfWikiRecognitionQueue] Status route error:", error);
+    const message = (error as Error).message;
+    res.status(500).json({
+      success: false,
+      code: "PDF_RECOGNITION_QUEUE_STATUS_FAILED",
+      message,
+      error: message,
+      recoverable: true,
+    });
+  }
+});
+
 app.post("/api/pdf-wiki/pdfs/:pdfId/reidentify", async (req: Request, res: Response) => {
   try {
     const userId = sanitizeUserId(req.body.userId || "web-user");
-    const result = await pdfWikiManager.reidentifyPdfWithLiteParse(userId, req.params.pdfId);
+    const imagesOnly = req.body.imagesOnly === true || req.body.imagesOnly === "true";
+    const figureResult = imagesOnly
+      ? await pdfWikiManager.ensurePdfFiguresForManager(userId, req.params.pdfId, { force: true })
+      : null;
+    const recognitionResult = imagesOnly
+      ? null
+      : await pdfWikiManager.reidentifyPdfWithLiteParse(userId, req.params.pdfId);
+    const pdf = figureResult?.pdf || recognitionResult?.pdf;
+    if (!pdf) {
+      throw new Error("PDF 识别没有返回结果");
+    }
     const management = loadPdfWikiPdfManagement(dataDir, userId);
     const favoritePdfIds = getLibraryFavoriteSet(userId, "pdfWikiPdf");
+    const deepAnalysis = await pdfWikiManager.getPdfDeepAnalysisSnapshot(userId, pdf.id);
+    const resultMessage = imagesOnly
+      ? `已重新提取 PDF 图片：${figureResult?.figureCount || 0} 张`
+      : recognitionResult?.message || "PDF 识别完成";
     res.json({
       success: true,
-      message: result.message,
+      message: resultMessage,
       pdf: serializePdfWikiManagedPdf(
         userId,
-        result.pdf,
-        management.assignments[result.pdf.id],
-        await pdfWikiManager.getPdfDeepAnalysis(userId, result.pdf.id),
-        favoritePdfIds.has(result.pdf.id)
+        pdf,
+        management.assignments[pdf.id],
+        deepAnalysis,
+        favoritePdfIds.has(pdf.id),
+        {
+          includeFigurePreviews: true,
+          deepAnalysisAvailable: !!deepAnalysis,
+          detailsLoaded: true,
+        }
       ),
-      parser: result.parser,
-      textLength: result.textLength,
-      referenceCount: result.referenceCount,
-      figureCount: result.figureCount,
-      figureError: result.figureError || "",
+      parser: imagesOnly ? pdf.extractionParser || "" : recognitionResult?.parser || "",
+      textLength: imagesOnly ? Number(pdf.textLength || 0) : recognitionResult?.textLength || 0,
+      referenceCount: imagesOnly ? Number(pdf.referenceIndex?.length || 0) : recognitionResult?.referenceCount || 0,
+      figureCount: figureResult?.figureCount ?? recognitionResult?.figureCount ?? 0,
+      figureError: figureResult?.figureError || recognitionResult?.figureError || "",
+      autoGroupMatch: recognitionResult?.autoGroupMatch,
     });
   } catch (error) {
     logger.error("[PdfWiki] Reidentify PDF route error:", error);
@@ -13012,14 +13975,80 @@ app.post("/api/pdf-wiki/pdfs/:pdfId/reidentify", async (req: Request, res: Respo
   }
 });
 
+app.get("/api/pdf-wiki/pdfs/:pdfId/deep-analysis", async (req: Request, res: Response) => {
+  try {
+    const userId = sanitizeUserId(req.query.userId || "web-user");
+    const pdfId = String(req.params.pdfId || "").trim();
+    const deepAnalysis = await pdfWikiManager.getPdfDeepAnalysisSnapshot(userId, pdfId);
+    if (!deepAnalysis) {
+      res.status(404).json({
+        success: false,
+        code: "PDF_DEEP_ANALYSIS_NOT_FOUND",
+        message: "当前 PDF 没有已保存的深入分析结果",
+        error: "当前 PDF 没有已保存的深入分析结果",
+        recoverable: true,
+      });
+      return;
+    }
+    res.json({
+      ...deepAnalysis,
+      success: true,
+      pdfId,
+    });
+  } catch (error) {
+    logger.error("[PdfWiki] Read deep analysis route error:", error);
+    const message = (error as Error).message;
+    res.status(500).json({
+      success: false,
+      code: "PDF_DEEP_ANALYSIS_READ_FAILED",
+      message,
+      error: message,
+      recoverable: true,
+    });
+  }
+});
+
 app.post("/api/pdf-wiki/pdfs/:pdfId/deep-analysis", async (req: Request, res: Response) => {
   try {
     const userId = sanitizeUserId(req.body.userId || "web-user");
+    const skipIfAnalyzed = req.body.skipIfAnalyzed === true || req.body.skipIfAnalyzed === "true";
+    const forceDeepAnalysis = req.body.force === true || req.body.force === "true";
+    const existingDeepAnalysis = pdfWikiManager.hasPdfDeepAnalysisSnapshot(userId, req.params.pdfId)
+      ? await pdfWikiManager.getPdfDeepAnalysisSnapshot(userId, req.params.pdfId)
+      : null;
+    if (skipIfAnalyzed && existingDeepAnalysis?.wikiSync && existingDeepAnalysis.wikiSync.itemCount > 0) {
+      const store = await pdfWikiManager.getPdfManagerStoreSnapshot(userId);
+      const pdf = store.pdfs.find(item => item.id === req.params.pdfId);
+      if (!pdf) {
+        res.status(404).json({ success: false, error: "未找到该 PDF" });
+        return;
+      }
+      const management = loadPdfWikiPdfManagement(dataDir, userId);
+      const favoritePdfIds = getLibraryFavoriteSet(userId, "pdfWikiPdf");
+      res.json({
+        success: true,
+        skipped: true,
+        skipReason: "already-analyzed",
+        pdfId: pdf.id,
+        pdf: serializePdfWikiManagedPdf(
+          userId,
+          pdf,
+          management.assignments[pdf.id],
+          undefined,
+          favoritePdfIds.has(pdf.id),
+          {
+            deepAnalysisAvailable: true,
+            detailsLoaded: false,
+          }
+        ),
+      });
+      return;
+    }
     const pdfWikiLlm = getPdfWikiLlmRuntimeConfig();
     const secondaryRuntime = getDeepAnalysisSecondaryRuntimeConfig();
     const codexDirectPdf = pdfWikiLlm.codexAvailable && isCodexCliPreferredForPdfWiki();
 
-    if (!codexDirectPdf && !secondaryRuntime.configured) {
+    if (!codexDirectPdf && !secondaryRuntime.configured && (!existingDeepAnalysis || forceDeepAnalysis)) {
       res.status(400).json({ success: false, error: "请先启用 Codex CLI 优先，或在小牛马配置中填写 API 地址、Key 和模型名后再进行 PDF 深入分析" });
       return;
     }
@@ -13036,7 +14065,13 @@ app.post("/api/pdf-wiki/pdfs/:pdfId/deep-analysis", async (req: Request, res: Re
       textExtractionEngine: "liteparse",
       deepAnalysisEngine: codexDirectPdf ? "auto" : "api",
     }, {
-      force: req.body.force === true || req.body.force === "true",
+      force: forceDeepAnalysis,
+      vectorConfig: {
+        apiUrl: currentEmbeddingConfig.enabled ? currentEmbeddingConfig.url : undefined,
+        apiKey: currentEmbeddingConfig.enabled ? currentEmbeddingConfig.key : undefined,
+        model: currentEmbeddingConfig.model,
+        dimensions: currentEmbeddingConfig.dimensions,
+      },
     });
     const { pdf, ...analysisPayload } = result;
     const management = loadPdfWikiPdfManagement(dataDir, userId);
@@ -13059,7 +14094,12 @@ app.post("/api/pdf-wiki/pdfs/:pdfId/deep-analysis", async (req: Request, res: Re
         pdf,
         management.assignments[pdf.id],
         analysisPayload,
-        favoritePdfIds.has(pdf.id)
+        favoritePdfIds.has(pdf.id),
+        {
+          includeFigurePreviews: true,
+          deepAnalysisAvailable: true,
+          detailsLoaded: true,
+        }
       ),
       researchSession,
     });
@@ -13630,6 +14670,9 @@ app.post("/api/literature/search", async (req: Request, res: Response) => {
 
 app.get("/api/literature/:userId", async (req: Request, res: Response) => {
   let userId = req.params.userId;
+  const summaryOnly = req.query.summaryOnly === "1"
+    || req.query.summaryOnly === "true"
+    || req.query.summary === "1";
   // 使用统一的路径管理模块
   let litFile = getUserLiteratureTxtPath(userId);
   
@@ -13728,40 +14771,52 @@ app.get("/api/literature/:userId", async (req: Request, res: Response) => {
   
   let content = '';
   let summary = { count: 0, years: [] as string[], journals: [] as string[], keywords: [] as string[] };
-  
-  if (fs.existsSync(litFile)) {
-    content = fs.readFileSync(litFile, 'utf-8');
-    summary = getLitSummary(content);
-  }
-  
   const litJsonFile = getUserLiteraturePath(userId);
-  if (fs.existsSync(litJsonFile)) {
-    try {
-      const parsed = JSON.parse(fs.readFileSync(litJsonFile, 'utf-8'));
-      const litData = Array.isArray(parsed) ? parsed : (Array.isArray(parsed.papers) ? parsed.papers : []);
-      if (litData.length > 0) {
-        summary.count = litData.length;
-        const years = [...new Set(litData.map((p: any) => p.year).filter(Boolean))].sort();
-        const journals = [...new Set(litData.map((p: any) => p.journal).filter(Boolean))];
-        const keywords = [...new Set(litData.flatMap((p: any): string[] => {
-          const kw = p.keywords;
-          if (Array.isArray(kw)) return kw as string[];
-          return (kw || '').split(/[,;]/).map((k: string) => k.trim()).filter(Boolean) as string[];
-        }))] as string[];
-        summary.years = years.map(String) as string[];
-        summary.journals = journals.slice(0, 10) as string[];
-        summary.keywords = keywords.slice(0, 20) as string[];
-        
-        if (!content) {
-          content = `文献库: ${litData.length} 篇文献`;
-        }
-      }
-    } catch (e) {
-      logger.warn("[Literature] Failed to parse literature.json:", e);
+
+  const cachedSummary = readLiteratureSummaryCache(userId, litFile, litJsonFile);
+  if (cachedSummary) {
+    summary = cachedSummary;
+  } else {
+    if (fs.existsSync(litFile)) {
+      content = fs.readFileSync(litFile, 'utf-8');
+      summary = getLitSummary(content);
     }
+
+    if (fs.existsSync(litJsonFile)) {
+      try {
+        const parsed = JSON.parse(fs.readFileSync(litJsonFile, 'utf-8'));
+        const litData = Array.isArray(parsed) ? parsed : (Array.isArray(parsed.papers) ? parsed.papers : []);
+        if (litData.length > 0) {
+          summary.count = litData.length;
+          const years = [...new Set(litData.map((p: any) => p.year).filter(Boolean))].sort();
+          const journals = [...new Set(litData.map((p: any) => p.journal).filter(Boolean))];
+          const keywords = [...new Set(litData.flatMap((p: any): string[] => {
+            const kw = p.keywords;
+            if (Array.isArray(kw)) return kw as string[];
+            return (kw || '').split(/[,;]/).map((k: string) => k.trim()).filter(Boolean) as string[];
+          }))] as string[];
+          summary.years = years.map(String) as string[];
+          summary.journals = journals.slice(0, 10) as string[];
+          summary.keywords = keywords.slice(0, 20) as string[];
+        }
+      } catch (e) {
+        logger.warn("[Literature] Failed to parse literature.json:", e);
+      }
+    }
+    writeLiteratureSummaryCache(userId, litFile, litJsonFile, summary);
+  }
+
+  if (!summaryOnly && !content && fs.existsSync(litFile)) {
+    content = fs.readFileSync(litFile, "utf-8");
   }
   
-  res.json({ exists: true, summary, content, journalStyles });
+  res.json({
+    exists: true,
+    summary,
+    content: summaryOnly ? "" : content,
+    serverBacked: true,
+    journalStyles,
+  });
 });
 
 app.get("/api/backups/:userId", async (req: Request, res: Response) => {
@@ -18103,7 +19158,9 @@ async function rerankClaimCandidatesByAbstractConclusions(query: string, items: 
     const bm25Score = normalizeClaimEvidenceScore(preparedItem.item?.bm25Score);
     const originalVectorScore = normalizeClaimEvidenceScore(preparedItem.item?.vectorScore);
     const originalCombinedScore = Number(preparedItem.item?.combinedScore || preparedItem.item?.score || 0);
-    const combinedScore = bm25Score * 0.22 + conclusionSemanticScore * 0.78;
+    // BM25 已在前一阶段完成候选粗筛，不能再与语义分数按比例融合。
+    // 此处是独立的摘要结论 reranker，最终顺序只由候选与目标句的语义支撑度决定。
+    const combinedScore = conclusionSemanticScore;
     return {
       ...preparedItem.item,
       originalVectorScore,
@@ -18650,6 +19707,8 @@ interface RetrievalExecutionResult {
   sourceErrors?: Array<{ source: "abstract" | "pdfWiki"; error: string }>;
 }
 
+type RetrievalProgressReporter = (message: string, details?: Record<string, unknown>) => void;
+
 app.post("/api/retrieval/detect", async (req: Request, res: Response) => {
   try {
     const { message, context, userId } = req.body;
@@ -18900,6 +19959,18 @@ ${contextText || '无额外上下文'}
 });
 
 app.post("/api/retrieval/execute", async (req: Request, res: Response) => {
+  const streamProgress = String(req.get("accept") || "").includes("text/event-stream");
+  let responseClosed = false;
+  let heartbeat: NodeJS.Timeout | undefined;
+  const sendEvent = (type: "progress" | "result" | "error", payload: Record<string, unknown>) => {
+    if (!streamProgress || responseClosed || res.writableEnded) return;
+    res.write(`data: ${JSON.stringify({ type, ...payload })}\n\n`);
+  };
+  const reportProgress: RetrievalProgressReporter = (message, details = {}) => {
+    logger.info(`[RetrievalProgress] ${message}`);
+    sendEvent("progress", { message, details });
+  };
+
   try {
     const { points, userId } = req.body;
     const rawSources = Array.isArray(req.body.librarySources)
@@ -18916,6 +19987,26 @@ app.post("/api/retrieval/execute", async (req: Request, res: Response) => {
       res.json({ success: false, error: "没有检索点" });
       return;
     }
+
+    if (streamProgress) {
+      res.status(200);
+      res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+      res.setHeader("Cache-Control", "no-cache, no-transform");
+      res.setHeader("Connection", "keep-alive");
+      res.setHeader("X-Accel-Buffering", "no");
+      res.flushHeaders();
+      res.once("close", () => {
+        responseClosed = true;
+        if (heartbeat) clearInterval(heartbeat);
+      });
+      heartbeat = setInterval(() => {
+        if (!responseClosed && !res.writableEnded) {
+          res.write(`: retrieval-heartbeat ${Date.now()}\n\n`);
+        }
+      }, 10_000);
+      heartbeat.unref?.();
+      reportProgress(`已接收 ${points.length} 组检索词，正在初始化文献检索`);
+    }
     
     const unifiedUserId = sanitizeUserId(userId || "web-user");
     const results: RetrievalExecutionResult[] = [];
@@ -18923,10 +20014,13 @@ app.post("/api/retrieval/execute", async (req: Request, res: Response) => {
 
     for (const source of librarySources) {
       try {
+        const sourceLabel = source === "pdfWiki" ? "PDF Wiki" : "Embedding 文献库";
+        reportProgress(`正在检索 ${sourceLabel}`);
         const result = source === "pdfWiki"
-          ? await runPdfWikiRetrieval(points, unifiedUserId)
-          : await runAbstractRetrieval(points, unifiedUserId);
+          ? await runPdfWikiRetrieval(points, unifiedUserId, reportProgress)
+          : await runAbstractRetrieval(points, unifiedUserId, reportProgress);
         results.push(result);
+        reportProgress(`${sourceLabel} 检索完成，获得 ${result.uniqueCount} 条去重证据`);
       } catch (error) {
         const message = (error as Error).message || `${source} 检索失败`;
         sourceErrors.push({ source, error: message });
@@ -18934,12 +20028,18 @@ app.post("/api/retrieval/execute", async (req: Request, res: Response) => {
       }
     }
     if (results.length === 0) {
-      res.json({
+      const errorPayload = {
         success: false,
         error: sourceErrors.map(item => `${item.source}: ${item.error}`).join("；") || "两个文献库均未返回结果",
         requestedLibrarySources: librarySources,
         sourceErrors,
-      });
+      };
+      if (streamProgress) {
+        sendEvent("error", errorPayload);
+        res.end();
+      } else {
+        res.json(errorPayload);
+      }
       return;
     }
 
@@ -18947,6 +20047,7 @@ app.post("/api/retrieval/execute", async (req: Request, res: Response) => {
       ? results[0]
       : combineRetrievalResults(points, unifiedUserId, results)
     ;
+    reportProgress("证据检索完成，正在保存检索记录");
     const researchSession = await recordRetrievalResearchProvenance({
       userId: unifiedUserId,
       sessionId: cleanOptionalResearchSessionId(req.body.researchSessionId),
@@ -18958,20 +20059,44 @@ app.post("/api/retrieval/execute", async (req: Request, res: Response) => {
       return undefined;
     });
 
-    res.json({
+    const responsePayloadWithProvenance = {
       ...responsePayload,
       requestedLibrarySources: librarySources,
       sourceErrors,
       researchSession,
-    });
+    };
+    if (streamProgress) {
+      reportProgress(`检索完成，共获得 ${responsePayload.uniqueCount} 条去重证据`);
+      sendEvent("result", { payload: responsePayloadWithProvenance });
+      res.end();
+    } else {
+      res.json(responsePayloadWithProvenance);
+    }
     
   } catch (error) {
     logger.error("[Retrieval] Execute error:", error);
-    res.json({ success: false, error: (error as Error).message });
+    const errorPayload = {
+      success: false,
+      error: (error as Error).message,
+      code: "RETRIEVAL_EXECUTION_FAILED",
+      recoverable: true,
+    };
+    if (streamProgress && !res.writableEnded) {
+      sendEvent("error", errorPayload);
+      res.end();
+    } else if (!res.headersSent) {
+      res.status(500).json(errorPayload);
+    }
+  } finally {
+    if (heartbeat) clearInterval(heartbeat);
   }
 });
 
-async function runAbstractRetrieval(points: RetrievalPoint[], userId: string): Promise<RetrievalExecutionResult> {
+async function runAbstractRetrieval(
+  points: RetrievalPoint[],
+  userId: string,
+  reportProgress: RetrievalProgressReporter = () => undefined
+): Promise<RetrievalExecutionResult> {
   userId = sanitizeUserId(userId);
   const userEngine = await retrievalEngineManager.getEngine(userId);
 
@@ -18994,6 +20119,11 @@ async function runAbstractRetrieval(points: RetrievalPoint[], userId: string): P
 
   const allResults: any[] = [];
   const searchStats: RetrievalSearchStat[] = [];
+  const totalVariants = points.reduce(
+    (total, point) => total + buildRetrievalPointQueryVariants(point).length,
+    0
+  );
+  let completedVariants = 0;
 
   for (const point of points) {
     const variants = buildRetrievalPointQueryVariants(point);
@@ -19005,6 +20135,10 @@ async function runAbstractRetrieval(points: RetrievalPoint[], userId: string): P
 
     for (const variant of variants) {
       try {
+        reportProgress(
+          `Embedding 文献库：正在召回${variant.label}证据（${completedVariants + 1}/${Math.max(1, totalVariants)}）`,
+          { source: "abstract", completed: completedVariants, total: totalVariants }
+        );
         const queryResults = await userEngine.retrieve({
           query: variant.query,
           topK: 15,
@@ -19013,6 +20147,10 @@ async function runAbstractRetrieval(points: RetrievalPoint[], userId: string): P
 
         const initialResults = queryResults.results;
         logger.info(`[Retrieval] ${variant.label} 检索到 ${initialResults.length} 篇文献，开始 AI 筛选...`);
+        reportProgress(
+          `Embedding 文献库：已召回 ${initialResults.length} 篇，正在筛选最相关证据（${completedVariants + 1}/${Math.max(1, totalVariants)}）`,
+          { source: "abstract", found: initialResults.length, completed: completedVariants, total: totalVariants }
+        );
 
         const selectedResults = await aiSelectPapers(
           initialResults,
@@ -19023,6 +20161,11 @@ async function runAbstractRetrieval(points: RetrievalPoint[], userId: string): P
         );
 
         logger.info(`[Retrieval] ${variant.label} AI 筛选出 ${selectedResults.length} 篇最相关文献`);
+        completedVariants += 1;
+        reportProgress(
+          `Embedding 文献库：完成 ${completedVariants}/${Math.max(1, totalVariants)} 条检索路径`,
+          { source: "abstract", selected: selectedResults.length, completed: completedVariants, total: totalVariants }
+        );
 
         const resultsWithMeta = selectedResults.map(doc => ({
           title: doc.title,
@@ -19048,7 +20191,12 @@ async function runAbstractRetrieval(points: RetrievalPoint[], userId: string): P
           selected: selectedResults.length
         });
       } catch (e) {
+        completedVariants += 1;
         logger.warn(`[Retrieval] ${variant.label} 论点检索失败:`, e);
+        reportProgress(
+          `Embedding 文献库：第 ${completedVariants}/${Math.max(1, totalVariants)} 条路径失败，已继续下一条`,
+          { source: "abstract", completed: completedVariants, total: totalVariants, recoverable: true }
+        );
       }
     }
   }
@@ -19287,8 +20435,13 @@ async function executePdfWikiRetrieval(points: RetrievalPoint[], userId: string,
   }
 }
 
-async function runPdfWikiRetrieval(points: RetrievalPoint[], userId: string): Promise<RetrievalExecutionResult> {
+async function runPdfWikiRetrieval(
+  points: RetrievalPoint[],
+  userId: string,
+  reportProgress: RetrievalProgressReporter = () => undefined
+): Promise<RetrievalExecutionResult> {
   userId = sanitizeUserId(userId);
+  reportProgress("PDF Wiki：正在读取句子级证据索引", { source: "pdfWiki" });
   const status = await pdfWikiManager.getStatus(userId);
   const pdfWikiCount = Math.max(Number(status.sentencePointCount || 0), Number(status.entryCount || 0));
   if (status.status !== 'completed' || pdfWikiCount === 0) {
@@ -19313,6 +20466,11 @@ async function runPdfWikiRetrieval(points: RetrievalPoint[], userId: string): Pr
 
   const allResults: PdfWikiRetrievalResult[] = [];
   const searchStats: RetrievalSearchStat[] = [];
+  const totalVariants = points.reduce(
+    (total, point) => total + buildRetrievalPointQueryVariants(point).length,
+    0
+  );
+  let completedVariants = 0;
 
   for (const point of points) {
     const variants = buildRetrievalPointQueryVariants(point);
@@ -19323,6 +20481,10 @@ async function runPdfWikiRetrieval(points: RetrievalPoint[], userId: string): Pr
 
     for (const variant of variants) {
       try {
+        reportProgress(
+          `PDF Wiki：正在匹配句子证据（${completedVariants + 1}/${Math.max(1, totalVariants)}）`,
+          { source: "pdfWiki", completed: completedVariants, total: totalVariants }
+        );
         const queryResults = await wikiEngine.retrieve({
           query: variant.query,
           topK: 12,
@@ -19350,8 +20512,18 @@ async function runPdfWikiRetrieval(points: RetrievalPoint[], userId: string): Pr
           found: queryResults.results.length,
           selected: selected.length,
         });
+        completedVariants += 1;
+        reportProgress(
+          `PDF Wiki：完成 ${completedVariants}/${Math.max(1, totalVariants)} 条检索路径`,
+          { source: "pdfWiki", selected: selected.length, completed: completedVariants, total: totalVariants }
+        );
       } catch (error) {
+        completedVariants += 1;
         logger.warn(`[PdfWikiRetrieval] ${variant.label} 论点检索失败:`, error);
+        reportProgress(
+          `PDF Wiki：第 ${completedVariants}/${Math.max(1, totalVariants)} 条路径失败，已继续下一条`,
+          { source: "pdfWiki", completed: completedVariants, total: totalVariants, recoverable: true }
+        );
       }
     }
   }
@@ -19854,6 +21026,8 @@ interface ReviewWriterGenerationInput {
   customCitationFormat: string;
   inTextCitationFormat: string;
   journalStyleIds: string[];
+  projectRoot: string;
+  projectId?: string;
 }
 
 interface ReviewWriterGenerationResult {
@@ -19870,6 +21044,7 @@ interface ReviewWriterGenerationResult {
   warnings: string[];
   qualityReview?: ReviewWriterQualityReviewResult;
   arsReports?: ReviewWriterArsReports;
+  citationEvidenceLedgerPath?: string;
   researchSession?: {
     sessionId: string;
     writingArtifactId: string;
@@ -22849,7 +24024,8 @@ async function runReviewWriterQualityGate(
 }
 
 function parseReviewWriterGenerationInput(body: any): { input?: ReviewWriterGenerationInput; error?: string } {
-  const writingProfileId = normalizeProjectWritingProfileId(body.writingProfileId || projectManager.getCurrentProject().writingProfileId);
+  const currentProject = projectManager.getCurrentProject();
+  const writingProfileId = normalizeProjectWritingProfileId(body.writingProfileId || currentProject.writingProfileId);
   const profile = getProjectWritingProfile(writingProfileId);
   const topic = cleanReviewText(body.topic);
   const useAutoResearchContext = body.useAutoResearchContext === undefined ? true : parseReviewBoolean(body.useAutoResearchContext);
@@ -22879,6 +24055,14 @@ function parseReviewWriterGenerationInput(body: any): { input?: ReviewWriterGene
   const referenceFormat = cleanReviewMultilineText(body.referenceFormat || body.targetReferenceFormat, "", 3000);
   const inTextCitationFormat = buildReviewCitationFormatInstruction(citationStyle, customCitationFormat);
   const journalStyleIds = parseReviewJournalStyleIds(body.journalStyleIds || body.targetJournalStyleIds);
+  const explicitProjectRoot = cleanReviewMultilineText(
+    body.projectRoot || body.workspacePath || body.workspaceRoot,
+    "",
+    4000
+  );
+  const projectRoot = explicitProjectRoot
+    || currentProject.projectDir
+    || path.join(getDataDir(), "projects", currentProject.projectId || `workspace-${sanitizeUserId(body.userId || "web-user")}`);
 
   return {
     input: {
@@ -22900,6 +24084,8 @@ function parseReviewWriterGenerationInput(body: any): { input?: ReviewWriterGene
       customCitationFormat,
       inTextCitationFormat,
       journalStyleIds,
+      projectRoot,
+      projectId: cleanReviewText(body.projectId, currentProject.projectId || "") || undefined,
     },
   };
 }
@@ -23318,6 +24504,24 @@ async function runReviewWriterGeneration(
           writtenSentence: sentence.writtenSentence,
           evidence: selectedEvidence,
         });
+        if (selectedEvidence.length > 0) {
+          await recordReviewWriterSentenceEvidenceToProjectLedger(input, {
+            sectionId: section.id,
+            sectionTitle: section.title,
+            paragraphId: paragraph.id,
+            paragraphTitle: paragraph.title,
+            sentenceId: sentence.id,
+            plannedContent: sentence.plannedContent,
+            purpose: sentence.purpose,
+            searchQuery: sentence.searchQuery || query,
+            writtenSentence: sentence.writtenSentence,
+            evidence: selectedEvidence,
+          }).catch((error) => {
+            const message = (error as Error)?.message || String(error);
+            logger.warn(`[CitationEvidenceLedger] Failed to save one-click writing evidence: ${message}`);
+            retrievalWarnings.push(`项目级引用证据 JSON 写入失败：${message}`);
+          });
+        }
         throwIfReviewWriterStopped(shouldStop);
         writtenSentences.push(sentence.writtenSentence);
         totalSentences++;
@@ -23449,6 +24653,7 @@ async function runReviewWriterGeneration(
       ].filter((item): item is string => typeof item === "string" && item.trim().length > 0))).slice(0, 18),
     qualityReview: qualityGate.review,
     arsReports,
+    citationEvidenceLedgerPath: getProjectCitationEvidenceLedgerPath(input.projectRoot),
   };
   const researchSession = await recordReviewWriterResearchSession(
     input,
@@ -23638,6 +24843,59 @@ function mapReviewEvidenceToResearchSource(evidence: ReviewWriterEvidence): Rese
       originalScore: evidence.originalScore,
     },
   };
+}
+
+async function recordReviewWriterSentenceEvidenceToProjectLedger(
+  input: ReviewWriterGenerationInput,
+  sentenceRecord: ReviewWriterSentenceProvenance,
+): Promise<void> {
+  const entries: ProjectCitationEvidenceEntryInput[] = sentenceRecord.evidence.map((evidence) => {
+    const support = evidence.claimSupport;
+    const firstAuthor = String(evidence.authors || '')
+      .split(/[,;，；]|\band\b|\s+&\s+/i)
+      .map((author) => author.trim())
+      .filter(Boolean)[0];
+    return {
+      sentence: sentenceRecord.writtenSentence,
+      sentenceId: sentenceRecord.sentenceId,
+      section: sentenceRecord.sectionTitle,
+      workflow: 'one-click-writing',
+      sourceLibrary: evidence.source === 'pdfWiki' ? 'pdf-wiki' : 'embedding',
+      reference: {
+        title: evidence.title,
+        abstract: evidence.abstract,
+        authors: evidence.authors,
+        firstAuthor,
+        year: evidence.year,
+        journal: evidence.journal,
+        doi: evidence.doi,
+        citation: evidence.citation,
+      },
+      support: support
+        ? {
+            relation: support.relation,
+            score: typeof support.adjustedScore === 'number'
+              ? support.adjustedScore * (support.adjustedScore <= 1 ? 100 : 1)
+              : support.confidence * 100,
+            confidence: support.confidence,
+            evidenceSnippet: support.evidenceSnippets?.[0],
+            reason: support.reason,
+          }
+        : undefined,
+      retrieval: {
+        query: sentenceRecord.searchQuery,
+        path: evidence.traceSnippets?.map((snippet) => snippet.sourceLabel).filter(Boolean).join('；')
+          || (evidence.source === 'pdfWiki' ? 'PDF Wiki' : 'Embedding'),
+        recordId: evidence.id,
+      },
+    };
+  });
+  if (entries.length === 0) return;
+  await upsertProjectCitationEvidenceEntries({
+    projectRoot: input.projectRoot,
+    projectId: input.projectId,
+    entries,
+  });
 }
 
 function mapReviewEvidenceToResearchCitation(evidence: ReviewWriterEvidence) {
@@ -24001,6 +25259,81 @@ export default app;
 
 // ============ 逐句检索写作 API ============
 
+function resolveCitationEvidenceProjectRoot(body: any, userId: string): {
+  projectRoot: string;
+  projectId?: string;
+} {
+  const currentProject = projectManager.getCurrentProject();
+  const explicitRoot = String(body?.projectRoot || body?.workspacePath || body?.workspaceRoot || '').trim();
+  return {
+    projectRoot: explicitRoot
+      || currentProject.projectDir
+      || path.join(getDataDir(), "projects", currentProject.projectId || `workspace-${sanitizeUserId(userId)}`),
+    projectId: String(body?.projectId || currentProject.projectId || '').trim() || undefined,
+  };
+}
+
+async function recordSentenceMatchResultsToProjectLedger(input: {
+  body: any;
+  userId: string;
+  workflow: "discussion-writing" | "sentence-search";
+  results: Record<string, any[]>;
+}): Promise<{ filePath: string; added: number; updated: number } | undefined> {
+  const { projectRoot, projectId } = resolveCitationEvidenceProjectRoot(input.body, input.userId);
+  const entries: ProjectCitationEvidenceEntryInput[] = [];
+  for (const [sentence, references] of Object.entries(input.results || {})) {
+    for (const reference of references || []) {
+      const support = reference?.claimSupport || reference?.support;
+      const authors = getRetrievedReferenceAuthor(reference);
+      const firstAuthor = splitReferenceAuthorNames(authors)[0];
+      entries.push({
+        sentence,
+        workflow: input.workflow,
+        sourceLibrary: reference?.source === 'pdfWiki' || reference?.sourceType === 'pdf-wiki'
+          ? 'pdf-wiki'
+          : 'embedding',
+        reference: {
+          title: String(reference?.title || '').trim(),
+          abstract: String(reference?.abstract || '').trim(),
+          authors,
+          firstAuthor,
+          year: String(reference?.year || '').trim(),
+          journal: getRetrievedReferenceJournal(reference),
+          doi: String(reference?.doi || '').trim(),
+          citation: String(reference?.citation || reference?.targetReference || '').trim(),
+        },
+        support: support
+          ? {
+              relation: String(support.relation || '').trim(),
+              score: typeof support.adjustedScore === 'number'
+                ? support.adjustedScore * (support.adjustedScore <= 1 ? 100 : 1)
+                : (typeof support.confidence === 'number' ? support.confidence * 100 : undefined),
+              confidence: typeof support.confidence === 'number' ? support.confidence : undefined,
+              evidenceSnippet: Array.isArray(support.evidenceSnippets) ? support.evidenceSnippets[0] : undefined,
+              reason: String(support.reason || '').trim(),
+            }
+          : undefined,
+        retrieval: {
+          query: String(reference?.retrievalQuery || sentence).trim(),
+          path: String(reference?.retrievalPath || '').trim(),
+          recordId: String(reference?.id || '').trim(),
+        },
+      });
+    }
+  }
+  if (entries.length === 0) return undefined;
+  const saved = await upsertProjectCitationEvidenceEntries({
+    projectRoot,
+    projectId,
+    entries,
+  });
+  return {
+    filePath: saved.filePath,
+    added: saved.added,
+    updated: saved.updated,
+  };
+}
+
 // 句子级文献检索
 app.post("/api/sentence/search", async (req: Request, res: Response) => {
   const { sentences, userId } = req.body;
@@ -24077,6 +25410,15 @@ app.post("/api/sentence/search", async (req: Request, res: Response) => {
       logger.warn("[ResearchSession] Failed to record sentence search provenance:", error);
       return undefined;
     });
+    const citationEvidenceLedger = await recordSentenceMatchResultsToProjectLedger({
+      body: req.body,
+      userId: safeUserId,
+      workflow: "sentence-search",
+      results,
+    }).catch((error) => {
+      logger.warn("[CitationEvidenceLedger] Failed to record sentence.search results:", error);
+      return undefined;
+    });
 
     res.json({ 
       success: true, 
@@ -24084,6 +25426,7 @@ app.post("/api/sentence/search", async (req: Request, res: Response) => {
       totalSentences: sentences.length,
       literatureCount,
       researchSession,
+      citationEvidenceLedger,
     });
     
   } catch (error) {
@@ -24205,6 +25548,15 @@ app.post("/api/sentence/claim-match", async (req: Request, res: Response) => {
       logger.warn("[ResearchSession] Failed to record claim-match provenance:", error);
       return undefined;
     });
+    const citationEvidenceLedger = await recordSentenceMatchResultsToProjectLedger({
+      body: req.body,
+      userId: safeUserId,
+      workflow: "discussion-writing",
+      results,
+    }).catch((error) => {
+      logger.warn("[CitationEvidenceLedger] Failed to record sentence.claim-match results:", error);
+      return undefined;
+    });
 
     res.json({
       success: true,
@@ -24222,6 +25574,7 @@ app.post("/api/sentence/claim-match", async (req: Request, res: Response) => {
       sentences: sentenceDetails,
       results,
       researchSession,
+      citationEvidenceLedger,
     });
   } catch (error) {
     logger.error("[SentenceClaimMatch] Error:", error);
@@ -24459,7 +25812,22 @@ app.post("/api/sentence/claim-match/stream", async (req: Request, res: Response)
       logger.info(`[SentenceClaimMatchStream] "${sentence.substring(0, 40)}..." parser=${parsed.parser}, refs=${visibleRanked.length}, hiddenIrrelevant=${supportCounts.irrelevant}, hiddenLowQuality=${hiddenLowQualityCount}, hiddenInvalidMetadata=${hiddenInvalidMetadataCount}, supports=${supportCounts.supports}, related=${supportCounts.related}, queries=${formatRetrievalQueryVariants(variants)}`);
     }
 
-    send({ type: "log", message: "检索完成，正在渲染结果。", timestamp: new Date().toISOString() });
+    const citationEvidenceLedger = await recordSentenceMatchResultsToProjectLedger({
+      body: req.body,
+      userId: safeUserId,
+      workflow: "discussion-writing",
+      results,
+    }).catch((error) => {
+      logger.warn("[CitationEvidenceLedger] Failed to record streamed claim-match results:", error);
+      return undefined;
+    });
+    send({
+      type: "log",
+      message: citationEvidenceLedger
+        ? `检索完成；项目级引用证据 JSON 已合并 ${citationEvidenceLedger.added + citationEvidenceLedger.updated} 条记录。`
+        : "检索完成，正在渲染结果。",
+      timestamp: new Date().toISOString(),
+    });
     send({
       type: "result",
       data: {
@@ -24477,6 +25845,7 @@ app.post("/api/sentence/claim-match/stream", async (req: Request, res: Response)
         topK,
         sentences: sentenceDetails,
         results,
+        citationEvidenceLedger,
       },
     });
   } catch (error) {
@@ -24704,3 +26073,16 @@ function mapRetrievedReferenceForClient(item: any): Record<string, unknown> {
     citation: formatCitation(normalized),
   };
 }
+
+// Keep the API fallback after every concrete API route. Express matches
+// middleware in registration order, so placing this earlier would turn valid
+// late-registered routes (for example sentence claim streaming) into 404s.
+app.use("/api", (req: Request, res: Response) => {
+  res.status(404).json({
+    success: false,
+    code: "API_ROUTE_NOT_FOUND",
+    message: `本地接口不存在：${req.method} ${req.originalUrl}`,
+    error: "当前本地服务未提供该接口，请检查客户端与本地服务版本是否一致。",
+    recoverable: true,
+  });
+});

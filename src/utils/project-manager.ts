@@ -65,6 +65,7 @@ export interface CurrentProjectInfo {
   backupProjectId?: string;
   writingProfileId?: ProjectWritingProfileId;
   writingProfileLabel?: string;
+  storageMode?: 'legacy' | 'linked';
 }
 
 interface ProjectManifest {
@@ -85,12 +86,24 @@ interface CurrentProjectRecord {
   previousProjectId?: string;
   backupProjectId?: string;
   writingProfileId?: ProjectWritingProfileId;
+  storageMode?: 'legacy' | 'linked';
+}
+
+interface ProjectSwitchJournal {
+  version: 1;
+  targetProjectId: string;
+  nextCurrentProject: CurrentProjectRecord;
+  startedAt: string;
 }
 
 const PROJECT_DIR_PREFIX = 'project';
 
 export class ProjectManager {
-  constructor(private readonly dataDir: string) {}
+  constructor(private readonly dataDir: string) {
+    fs.mkdirSync(this.dataDir, { recursive: true });
+    this.recoverPendingProjectSwitch();
+    this.scheduleExistingTrashCleanup();
+  }
 
   private getProjectsDir(): string {
     const projectsDir = path.join(this.dataDir, 'projects');
@@ -123,6 +136,227 @@ export class ProjectManager {
       { name: 'r-plugin', source: path.join(this.dataDir, 'r-plugin') },
       { name: 'obsidian-vaults', source: path.join(this.dataDir, 'obsidian-vaults') },
     ];
+  }
+
+  private getProjectSwitchJournalPath(): string {
+    return path.join(this.dataDir, 'project-switch.json');
+  }
+
+  private getProjectSwitchTrashDir(): string {
+    return path.join(this.dataDir, '.project-switch-trash');
+  }
+
+  private writeJsonAtomic(filePath: string, value: unknown): void {
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    const temporaryPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+    fs.writeFileSync(temporaryPath, JSON.stringify(value, null, 2), 'utf-8');
+    fs.renameSync(temporaryPath, filePath);
+  }
+
+  private pathExistsIncludingLinks(targetPath: string): boolean {
+    try {
+      fs.lstatSync(targetPath);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  private isDirectoryLink(targetPath: string): boolean {
+    try {
+      return fs.lstatSync(targetPath).isSymbolicLink();
+    } catch {
+      return false;
+    }
+  }
+
+  private normalizeComparablePath(targetPath: string): string {
+    let resolved = path.resolve(targetPath);
+    try {
+      resolved = fs.realpathSync.native(targetPath);
+    } catch {
+      // The path may be a not-yet-created link target. path.resolve is sufficient here.
+    }
+    return process.platform === 'win32' ? resolved.toLocaleLowerCase() : resolved;
+  }
+
+  private isLinkTo(sourcePath: string, targetPath: string): boolean {
+    if (!this.isDirectoryLink(sourcePath)) return false;
+    try {
+      return this.normalizeComparablePath(sourcePath) === this.normalizeComparablePath(targetPath);
+    } catch {
+      return false;
+    }
+  }
+
+  private createDirectoryLink(sourcePath: string, targetPath: string): void {
+    fs.mkdirSync(targetPath, { recursive: true });
+    fs.mkdirSync(path.dirname(sourcePath), { recursive: true });
+    fs.symlinkSync(
+      path.resolve(targetPath),
+      sourcePath,
+      process.platform === 'win32' ? 'junction' : 'dir',
+    );
+  }
+
+  private createTrashBatch(): string {
+    const batch = path.join(
+      this.getProjectSwitchTrashDir(),
+      `${Date.now()}-${process.pid}-${Math.random().toString(36).slice(2, 8)}`,
+    );
+    fs.mkdirSync(batch, { recursive: true });
+    return batch;
+  }
+
+  private movePathToTrash(sourcePath: string, trashBatch: string, preferredName: string): boolean {
+    if (!this.pathExistsIncludingLinks(sourcePath)) return false;
+    fs.mkdirSync(trashBatch, { recursive: true });
+    let target = path.join(trashBatch, preferredName);
+    let suffix = 1;
+    while (this.pathExistsIncludingLinks(target)) {
+      target = path.join(trashBatch, `${preferredName}-${suffix++}`);
+    }
+    fs.renameSync(sourcePath, target);
+    return true;
+  }
+
+  private scheduleTrashCleanup(trashPath: string): void {
+    if (!this.pathExistsIncludingLinks(trashPath)) return;
+    const timer = setTimeout(() => {
+      void fs.promises.rm(trashPath, { recursive: true, force: true }).catch(error => {
+        logger.warn(`[Project] Failed to clean project switch trash: ${trashPath}`, error);
+      });
+    }, 30_000);
+    timer.unref?.();
+  }
+
+  private scheduleExistingTrashCleanup(): void {
+    const trashDir = this.getProjectSwitchTrashDir();
+    if (!fs.existsSync(trashDir)) return;
+    try {
+      for (const entry of fs.readdirSync(trashDir, { withFileTypes: true })) {
+        this.scheduleTrashCleanup(path.join(trashDir, entry.name));
+      }
+    } catch (error) {
+      logger.warn(`[Project] Failed to inspect project switch trash: ${trashDir}`, error);
+    }
+  }
+
+  private removeWorkspacePath(sourcePath: string, trashBatch: string, name: string): void {
+    if (!this.pathExistsIncludingLinks(sourcePath)) return;
+    if (this.isDirectoryLink(sourcePath)) {
+      fs.unlinkSync(sourcePath);
+      return;
+    }
+    this.movePathToTrash(sourcePath, trashBatch, name);
+  }
+
+  private adoptCurrentWorkspaceIntoProject(projectId: string): string[] {
+    const projectDir = this.getProjectDir(projectId);
+    const trashBatch = this.createTrashBatch();
+    const archivedPaths: string[] = [];
+    let usedTrash = false;
+
+    for (const item of this.getProjectOwnedPaths()) {
+      const target = path.join(projectDir, item.name);
+      if (this.isLinkTo(item.source, target)) {
+        archivedPaths.push(item.source);
+        continue;
+      }
+
+      if (!this.pathExistsIncludingLinks(item.source)) {
+        fs.mkdirSync(target, { recursive: true });
+        this.createDirectoryLink(item.source, target);
+        archivedPaths.push(item.source);
+        continue;
+      }
+
+      let activeDataPath = item.source;
+      if (this.isDirectoryLink(item.source)) {
+        try {
+          activeDataPath = fs.realpathSync.native(item.source);
+        } catch {
+          activeDataPath = '';
+        }
+        fs.unlinkSync(item.source);
+      }
+
+      if (!activeDataPath || !this.pathExistsIncludingLinks(activeDataPath)) {
+        fs.mkdirSync(target, { recursive: true });
+      } else if (this.normalizeComparablePath(activeDataPath) !== this.normalizeComparablePath(target)) {
+        if (this.pathExistsIncludingLinks(target)) {
+          usedTrash = this.movePathToTrash(target, trashBatch, item.name) || usedTrash;
+        }
+        fs.mkdirSync(path.dirname(target), { recursive: true });
+        fs.renameSync(activeDataPath, target);
+      }
+
+      this.createDirectoryLink(item.source, target);
+      archivedPaths.push(item.source);
+    }
+
+    if (usedTrash) this.scheduleTrashCleanup(trashBatch);
+    else fs.rmSync(trashBatch, { recursive: true, force: true });
+    return archivedPaths;
+  }
+
+  private activateProjectWorkspace(projectId: string): string[] {
+    const projectDir = this.getProjectDir(projectId);
+    const trashBatch = this.createTrashBatch();
+    const activatedPaths: string[] = [];
+    let usedTrash = false;
+
+    for (const item of this.getProjectOwnedPaths()) {
+      const target = path.join(projectDir, item.name);
+      fs.mkdirSync(target, { recursive: true });
+      if (!this.isLinkTo(item.source, target)) {
+        if (this.pathExistsIncludingLinks(item.source)) {
+          if (this.isDirectoryLink(item.source)) {
+            fs.unlinkSync(item.source);
+          } else {
+            usedTrash = this.movePathToTrash(item.source, trashBatch, item.name) || usedTrash;
+          }
+        }
+        this.createDirectoryLink(item.source, target);
+      }
+      activatedPaths.push(item.source);
+    }
+
+    if (usedTrash) this.scheduleTrashCleanup(trashBatch);
+    else fs.rmSync(trashBatch, { recursive: true, force: true });
+    return activatedPaths;
+  }
+
+  private completeProjectSwitch(projectId: string, nextCurrentProject: CurrentProjectRecord): string[] {
+    const journal: ProjectSwitchJournal = {
+      version: 1,
+      targetProjectId: projectId,
+      nextCurrentProject,
+      startedAt: new Date().toISOString(),
+    };
+    this.writeJsonAtomic(this.getProjectSwitchJournalPath(), journal);
+    const activatedPaths = this.activateProjectWorkspace(projectId);
+    this.writeJsonAtomic(this.getCurrentProjectPath(), nextCurrentProject);
+    fs.rmSync(this.getProjectSwitchJournalPath(), { force: true });
+    return activatedPaths;
+  }
+
+  private recoverPendingProjectSwitch(): void {
+    const journalPath = this.getProjectSwitchJournalPath();
+    if (!fs.existsSync(journalPath)) return;
+    try {
+      const journal = JSON.parse(fs.readFileSync(journalPath, 'utf-8')) as ProjectSwitchJournal;
+      if (journal.version !== 1 || !journal.targetProjectId || !journal.nextCurrentProject) {
+        throw new Error('Invalid project switch journal');
+      }
+      this.getProjectManifest(journal.targetProjectId);
+      this.activateProjectWorkspace(journal.targetProjectId);
+      this.writeJsonAtomic(this.getCurrentProjectPath(), journal.nextCurrentProject);
+      fs.rmSync(journalPath, { force: true });
+      logger.info(`[Project] Recovered interrupted project switch to ${journal.targetProjectId}`);
+    } catch (error) {
+      logger.error(`[Project] Failed to recover pending project switch: ${journalPath}`, error);
+    }
   }
 
   private validateProjectId(projectId: string): string {
@@ -172,19 +406,19 @@ export class ProjectManager {
 
   private clearCurrentWorkspace(): string[] {
     const clearedPaths: string[] = [];
+    const trashBatch = this.createTrashBatch();
+    let usedTrash = false;
 
     for (const item of this.getProjectOwnedPaths()) {
-      if (!fs.existsSync(item.source)) {
-        fs.mkdirSync(item.source, { recursive: true });
-        clearedPaths.push(item.source);
-        continue;
-      }
-
-      fs.rmSync(item.source, { recursive: true, force: true });
+      const wasPhysicalDirectory = this.pathExistsIncludingLinks(item.source) && !this.isDirectoryLink(item.source);
+      this.removeWorkspacePath(item.source, trashBatch, item.name);
+      usedTrash = usedTrash || wasPhysicalDirectory;
       fs.mkdirSync(item.source, { recursive: true });
       clearedPaths.push(item.source);
     }
 
+    if (usedTrash) this.scheduleTrashCleanup(trashBatch);
+    else fs.rmSync(trashBatch, { recursive: true, force: true });
     return clearedPaths;
   }
 
@@ -195,15 +429,15 @@ export class ProjectManager {
 
   private writeNewActiveProject(previousProjectId?: string, writingProfileId?: ProjectWritingProfileId): void {
     const activeProjectId = this.createProjectId();
-    fs.writeFileSync(
+    this.writeJsonAtomic(
       this.getCurrentProjectPath(),
-      JSON.stringify({
+      {
         projectId: activeProjectId,
         createdAt: new Date().toISOString(),
         previousProjectId,
         writingProfileId: normalizeProjectWritingProfileId(writingProfileId),
-      }, null, 2),
-      'utf-8',
+        storageMode: 'legacy',
+      },
     );
   }
 
@@ -211,21 +445,9 @@ export class ProjectManager {
     const safeProjectId = this.validateProjectId(projectId);
     const projectDir = this.getProjectDir(safeProjectId);
     const manifest = this.getProjectManifest(safeProjectId);
-    const archivedPaths: string[] = [];
+    const archivedPaths = this.adoptCurrentWorkspaceIntoProject(safeProjectId);
 
     fs.mkdirSync(projectDir, { recursive: true });
-
-    for (const item of this.getProjectOwnedPaths()) {
-      const target = path.join(projectDir, item.name);
-      fs.rmSync(target, { recursive: true, force: true });
-
-      if (fs.existsSync(item.source)) {
-        fs.cpSync(item.source, target, { recursive: true, force: true });
-        archivedPaths.push(item.source);
-      } else {
-        fs.mkdirSync(target, { recursive: true });
-      }
-    }
 
     if (options.clientState !== undefined) {
       fs.writeFileSync(
@@ -259,18 +481,6 @@ export class ProjectManager {
     const projectDir = path.join(this.getProjectsDir(), projectId);
     fs.mkdirSync(projectDir, { recursive: true });
 
-    const archivedPaths: string[] = [];
-
-    for (const item of this.getProjectOwnedPaths()) {
-      if (!fs.existsSync(item.source)) {
-        continue;
-      }
-
-      const target = path.join(projectDir, item.name);
-      fs.cpSync(item.source, target, { recursive: true, force: true });
-      archivedPaths.push(item.source);
-    }
-
     if (options.clientState !== undefined) {
       fs.writeFileSync(
         path.join(projectDir, 'client-state.json'),
@@ -284,16 +494,23 @@ export class ProjectManager {
       name: options.name?.trim() || `Project ${new Date().toLocaleString('zh-CN')}`,
       userId: options.userId,
       archivedAt: new Date().toISOString(),
-      archivedPaths,
+      archivedPaths: [],
       notes,
       writingProfileId: this.getCurrentWritingProfileId(),
     };
 
-    fs.writeFileSync(
-      path.join(projectDir, 'project.json'),
-      JSON.stringify(manifest, null, 2),
-      'utf-8',
-    );
+    this.writeJsonAtomic(path.join(projectDir, 'project.json'), manifest);
+    this.writeJsonAtomic(this.getCurrentProjectPath(), {
+      projectId,
+      openedAt: new Date().toISOString(),
+      writingProfileId: manifest.writingProfileId,
+      storageMode: 'linked',
+    } satisfies CurrentProjectRecord);
+
+    const archivedPaths = this.adoptCurrentWorkspaceIntoProject(projectId);
+    manifest.archivedPaths = archivedPaths;
+    manifest.lastSavedAt = new Date().toISOString();
+    this.writeProjectManifest(projectId, manifest);
 
     const clearedPaths = this.clearCurrentWorkspace();
     this.writeNewActiveProject(projectId);
@@ -324,7 +541,7 @@ export class ProjectManager {
     const archived = this.archiveCurrentWorkspace(options, 'Archived when the user created a new clean project workspace.');
     const currentRecord = this.readCurrentProjectRecord();
     currentRecord!.writingProfileId = normalizeProjectWritingProfileId(options.writingProfileId);
-    fs.writeFileSync(this.getCurrentProjectPath(), JSON.stringify(currentRecord, null, 2), 'utf-8');
+    this.writeJsonAtomic(this.getCurrentProjectPath(), currentRecord);
     return archived;
   }
 
@@ -336,6 +553,7 @@ export class ProjectManager {
         isArchivedProject: false,
         writingProfileId: profile.id,
         writingProfileLabel: profile.label,
+        storageMode: record?.storageMode || 'legacy',
       };
     }
 
@@ -354,6 +572,7 @@ export class ProjectManager {
         backupProjectId: record.backupProjectId,
         writingProfileId: profile.id,
         writingProfileLabel: profile.label,
+        storageMode: record.storageMode || 'legacy',
       };
     }
 
@@ -371,6 +590,7 @@ export class ProjectManager {
         backupProjectId: record.backupProjectId,
         writingProfileId: profile.id,
         writingProfileLabel: profile.label,
+        storageMode: record.storageMode || 'legacy',
       };
     } catch (error) {
       logger.warn(`[Project] Failed to resolve current project manifest: ${manifestPath}`, error);
@@ -384,6 +604,7 @@ export class ProjectManager {
         backupProjectId: record.backupProjectId,
         writingProfileId: profile.id,
         writingProfileLabel: profile.label,
+        storageMode: record.storageMode || 'legacy',
       };
     }
   }
@@ -396,7 +617,7 @@ export class ProjectManager {
       writingProfileId: profile.id,
     };
 
-    fs.writeFileSync(this.getCurrentProjectPath(), JSON.stringify(updatedRecord, null, 2), 'utf-8');
+    this.writeJsonAtomic(this.getCurrentProjectPath(), updatedRecord);
 
     if (record.projectId) {
       const safeProjectId = path.basename(record.projectId);
@@ -479,38 +700,23 @@ export class ProjectManager {
       );
     }
 
-    const restoredPaths: string[] = [];
-    for (const item of this.getProjectOwnedPaths()) {
-      const source = path.join(projectDir, item.name);
-      fs.rmSync(item.source, { recursive: true, force: true });
-
-      if (fs.existsSync(source)) {
-        fs.cpSync(source, item.source, { recursive: true, force: true });
-        restoredPaths.push(item.source);
-      } else {
-        fs.mkdirSync(item.source, { recursive: true });
-      }
-    }
-
     let clientState: unknown;
     const clientStatePath = path.join(projectDir, 'client-state.json');
     if (fs.existsSync(clientStatePath)) {
       clientState = JSON.parse(fs.readFileSync(clientStatePath, 'utf-8'));
     }
 
-    fs.writeFileSync(
-      this.getCurrentProjectPath(),
-      JSON.stringify({
-        projectId: safeProjectId,
-        openedAt: new Date().toISOString(),
-        backupProjectId: backup?.projectId,
-        previousProjectId: currentProject.projectId,
-        writingProfileId: normalizeProjectWritingProfileId(this.getProjectManifest(safeProjectId).writingProfileId),
-      }, null, 2),
-      'utf-8',
-    );
+    const nextCurrentProject: CurrentProjectRecord = {
+      projectId: safeProjectId,
+      openedAt: new Date().toISOString(),
+      backupProjectId: backup?.projectId,
+      previousProjectId: currentProject.projectId,
+      writingProfileId: normalizeProjectWritingProfileId(this.getProjectManifest(safeProjectId).writingProfileId),
+      storageMode: 'linked',
+    };
+    const restoredPaths = this.completeProjectSwitch(safeProjectId, nextCurrentProject);
 
-    logger.info(`[Project] Restored project ${safeProjectId}; backup=${backup?.projectId || 'skipped'}`);
+    logger.info(`[Project] Activated project ${safeProjectId} without workspace copy; backup=${backup?.projectId || 'skipped'}`);
 
     return {
       projectId: safeProjectId,
@@ -606,6 +812,20 @@ export class ProjectManager {
     const projectDir = this.getProjectDir(safeProjectId);
     if (!fs.existsSync(projectDir)) {
       throw new Error('Project not found');
+    }
+
+    const currentProject = this.getCurrentProject();
+    if (currentProject.isArchivedProject && currentProject.projectId === safeProjectId) {
+      throw new Error('Cannot delete the currently open project');
+    }
+    const projectPath = this.normalizeComparablePath(projectDir);
+    const hasActiveWorkspaceLink = this.getProjectOwnedPaths().some(item => {
+      if (!this.isDirectoryLink(item.source)) return false;
+      const activePath = this.normalizeComparablePath(item.source);
+      return activePath === projectPath || activePath.startsWith(`${projectPath}${path.sep}`);
+    });
+    if (hasActiveWorkspaceLink) {
+      throw new Error('Cannot delete a project that is attached to the active workspace');
     }
 
     fs.rmSync(projectDir, { recursive: true, force: true });

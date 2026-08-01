@@ -223,6 +223,10 @@ export interface AutoResearchLiteratureMapState {
   tags: AutoResearchLiteratureTag[];
   snapshots: AutoResearchLiteratureSnapshot[];
   lastSyncedAt?: string;
+  /** Full-state counts retained when the UI receives a compact node sample. */
+  totalNodeCount?: number;
+  totalEmbeddingCount?: number;
+  nodesTruncated?: boolean;
 }
 
 export interface AutoResearchOperation {
@@ -770,6 +774,66 @@ export class AutoResearchManager {
       await this.saveState(safeUserId, nextState);
     }
     return nextState;
+  }
+
+  /**
+   * Load the compact state used by the Auto Research screen. The full state keeps
+   * every embedding vector for retrieval; the view state intentionally omits those
+   * vectors so opening the screen does not parse and transfer hundreds of MB.
+   */
+  async getViewState(userId: string, project?: AutoResearchProjectContext): Promise<AutoResearchState> {
+    const safeUserId = sanitizeUserId(userId);
+    const statePath = this.getStatePath(safeUserId);
+    const viewPath = this.getViewStatePath(safeUserId);
+    try {
+      const [stateStat, viewStat] = await Promise.all([fs.stat(statePath), fs.stat(viewPath)]);
+      if (viewStat.mtimeMs >= stateStat.mtimeMs) {
+        const parsed = JSON.parse(await fs.readFile(viewPath, 'utf-8')) as Partial<AutoResearchState>;
+        return this.applyProjectContext(this.normalizeState(parsed, safeUserId, project), project);
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+        logger.warn(`[AutoResearch] Failed to read compact view cache for ${safeUserId}:`, error);
+      }
+    }
+
+    const state = await this.getState(safeUserId, project);
+    const viewState = this.toClientState(state);
+    await this.writeViewState(safeUserId, viewState);
+    return viewState;
+  }
+
+  /** Return a transport-safe state without changing the persistent retrieval data. */
+  toClientState(state: AutoResearchState, maxLiteratureNodes = 160): AutoResearchState {
+    const allNodes = Array.isArray(state.literatureMap?.nodes) ? state.literatureMap.nodes : [];
+    const preferredIds = new Set<string>();
+    for (const report of (state.finalReports || []).slice(0, 3)) {
+      for (const id of report.trace?.relevantLiteratureNodeIds || []) preferredIds.add(id);
+    }
+    const selected: AutoResearchLiteratureNode[] = [];
+    const selectedIds = new Set<string>();
+    const appendNode = (node: AutoResearchLiteratureNode): void => {
+      if (!node || selectedIds.has(node.id) || selected.length >= maxLiteratureNodes) return;
+      const { embedding, ...clientNode } = node;
+      void embedding;
+      selected.push(clientNode);
+      selectedIds.add(node.id);
+    };
+    for (const node of allNodes) {
+      if (preferredIds.has(node.id)) appendNode(node);
+    }
+    for (const node of allNodes) appendNode(node);
+
+    return {
+      ...state,
+      literatureMap: {
+        ...state.literatureMap,
+        nodes: selected,
+        totalNodeCount: allNodes.length,
+        totalEmbeddingCount: allNodes.reduce((count, node) => count + (node.hasEmbedding ? 1 : 0), 0),
+        nodesTruncated: selected.length < allNodes.length,
+      },
+    };
   }
 
   async startTask(userId: string, input: StartAutoResearchTaskInput): Promise<AutoResearchState> {
@@ -1955,9 +2019,9 @@ export class AutoResearchManager {
     const gapLines = (report.knowledgeGaps || []).slice(0, 6).map((item, index) => `${index + 1}. ${item}`);
     const planLines = (report.experimentPlan || []).slice(0, 6).map(item => item.replace(/^\d+\.\s*/, ''));
     const methodSource = evidenceContext.pdfWikiEvidenceObjects.length > 0 && evidenceContext.embeddingEvidenceObjects.length > 0
-      ? `本研究同时使用 PDF句子级Wiki论点库和 embedding 文献库，并按 1:1 权重交错纳入证据；PDF Wiki 提供原文句级证据，embedding 文献库提供标题、摘要、作者、年份、期刊和 DOI 的论文级证据。`
+      ? `本研究同时使用 Wiki论点库和 embedding 文献库，并按 1:1 权重交错纳入证据；PDF Wiki 提供原文句级证据，embedding 文献库提供标题、摘要、作者、年份、期刊和 DOI 的论文级证据。`
       : evidenceContext.pdfWikiEvidenceObjects.length > 0
-        ? `本研究使用 PDF句子级Wiki论点库生成的句级证据对象；当前 embedding 文献库未提供可用摘要证据。`
+        ? `本研究使用 Wiki论点库生成的句级证据对象；当前 embedding 文献库未提供可用摘要证据。`
         : `由于当前 PDF Wiki 句级证据不足，本研究使用 embedding 文献库中的标题、摘要、作者、年份、期刊和 DOI 构建论文级证据对象。`;
     const evidenceQuality = `当前等权纳入证据对象 ${evidenceContext.evidenceObjects.length} 个；原始可用 PDF Wiki 句级证据 ${evidenceContext.pdfWikiEvidenceObjects.length} 个，embedding 摘要证据 ${evidenceContext.embeddingEvidenceObjects.length} 个；主题相关文献 ${evidenceContext.literatureNodes.length}/${evidenceContext.allLiteratureNodes.length} 篇。`;
     const keywords = this.uniqueStrings([
@@ -2828,9 +2892,9 @@ export class AutoResearchManager {
     ]).filter(Boolean);
     const executiveSummary = this.cleanText([
       hasPdfWikiEvidence && hasEmbeddingEvidence
-        ? `围绕“${topic}”，AutoResearch 已完成主题文献筛选、PDF Wiki 证据同步、自评检查和结果汇总；本次推理同时使用 PDF句子级Wiki论点库和 embedding 文献库，并按 1:1 权重纳入证据。`
+        ? `围绕“${topic}”，AutoResearch 已完成主题文献筛选、PDF Wiki 证据同步、自评检查和结果汇总；本次推理同时使用 Wiki论点库和 embedding 文献库，并按 1:1 权重纳入证据。`
         : hasPdfWikiEvidence
-          ? `围绕“${topic}”，AutoResearch 已完成主题文献筛选、PDF Wiki 证据同步、自评检查和结果汇总；当前主要使用 PDF句子级Wiki论点库。`
+          ? `围绕“${topic}”，AutoResearch 已完成主题文献筛选、PDF Wiki 证据同步、自评检查和结果汇总；当前主要使用 Wiki论点库。`
           : hasEmbeddingEvidence
             ? `围绕“${topic}”，AutoResearch 已完成主题文献筛选，并使用 embedding 文献库摘要构建论文级证据；由于 PDF Wiki 证据库为空，结果仍属于摘要级预分析。`
             : `围绕“${topic}”，AutoResearch 已完成主题文献筛选和自评检查；但 PDF Wiki 证据库和摘要级证据均为空，因此本结果只能作为预分析。`,
@@ -4470,6 +4534,17 @@ export class AutoResearchManager {
     const statePath = this.getStatePath(userId);
     await fs.mkdir(path.dirname(statePath), { recursive: true });
     await fs.writeFile(statePath, JSON.stringify(state, null, 2), 'utf-8');
+    try {
+      await this.writeViewState(userId, this.toClientState(state));
+    } catch (error) {
+      logger.warn(`[AutoResearch] Failed to update compact view cache for ${userId}:`, error);
+    }
+  }
+
+  private async writeViewState(userId: string, state: AutoResearchState): Promise<void> {
+    const viewPath = this.getViewStatePath(userId);
+    await fs.mkdir(path.dirname(viewPath), { recursive: true });
+    await fs.writeFile(viewPath, JSON.stringify(state), 'utf-8');
   }
 
   private async appendOperation(
@@ -4543,6 +4618,13 @@ export class AutoResearchManager {
         tags: Array.isArray(parsed.literatureMap?.tags) ? parsed.literatureMap.tags : [],
         snapshots: Array.isArray(parsed.literatureMap?.snapshots) ? parsed.literatureMap.snapshots : [],
         lastSyncedAt: parsed.literatureMap?.lastSyncedAt,
+        totalNodeCount: typeof parsed.literatureMap?.totalNodeCount === 'number' && Number.isFinite(parsed.literatureMap.totalNodeCount)
+          ? parsed.literatureMap.totalNodeCount
+          : undefined,
+        totalEmbeddingCount: typeof parsed.literatureMap?.totalEmbeddingCount === 'number' && Number.isFinite(parsed.literatureMap.totalEmbeddingCount)
+          ? parsed.literatureMap.totalEmbeddingCount
+          : undefined,
+        nodesTruncated: parsed.literatureMap?.nodesTruncated === true,
       },
       researchWiki: {
         nodes: Array.isArray(parsed.researchWiki?.nodes) ? parsed.researchWiki.nodes : [],
@@ -4690,6 +4772,10 @@ export class AutoResearchManager {
 
   private getStatePath(userId: string): string {
     return path.join(this.getUserDir(userId), 'state.json');
+  }
+
+  private getViewStatePath(userId: string): string {
+    return path.join(this.getUserDir(userId), 'state-view.json');
   }
 
   private getUserDir(userId: string): string {

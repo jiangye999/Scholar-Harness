@@ -19,6 +19,7 @@ export class VectorRetriever {
   private config: VectorConfig;
   private apiUrl?: string;
   private apiKey?: string;
+  private dirtyEmbeddings = false;
 
   constructor(config: Partial<VectorConfig> = {}, apiConfig?: { url?: string; key?: string }) {
     this.config = {
@@ -32,9 +33,13 @@ export class VectorRetriever {
     this.apiKey = apiConfig?.key;
   }
 
-  updateApiConfig(apiConfig?: { url?: string; key?: string }): void {
+  updateApiConfig(apiConfig?: { url?: string; key?: string; model?: string; dimensions?: number }): void {
     this.apiUrl = apiConfig?.url;
     this.apiKey = apiConfig?.key;
+    if (apiConfig?.model) this.config.model = apiConfig.model;
+    if (apiConfig?.dimensions && Number.isFinite(apiConfig.dimensions)) {
+      this.config.dimensions = apiConfig.dimensions;
+    }
   }
 
   hasApiConfig(): boolean {
@@ -42,7 +47,10 @@ export class VectorRetriever {
   }
 
   async addDocument(lit: UnifiedLiterature): Promise<void> {
-    const text = `${lit.title || ''} ${Array.isArray(lit.keywords) ? lit.keywords.join(' ') : (lit.keywords || '')} ${lit.abstract || ''}`;
+    const text = String(
+      lit.embeddingText
+      || `${lit.title || ''} ${Array.isArray(lit.keywords) ? lit.keywords.join(' ') : (lit.keywords || '')} ${lit.abstract || ''}`
+    ).trim();
     
     const doc: VectorDocument = {
       id: lit.id,
@@ -75,16 +83,14 @@ export class VectorRetriever {
 
   async search(query: string, topN?: number): Promise<SearchResult[]> {
     const limit = topN || this.config.topN;
-    
-    let queryEmbedding: number[] | null;
-    
     if (!this.apiUrl || !this.apiKey) return [];
-    queryEmbedding = await this.getEmbedding(buildSemanticRetrievalQuery(query));
+    const queryEmbedding = await this.getEmbedding(buildSemanticRetrievalQuery(query));
 
     if (!queryEmbedding) {
       return [];
     }
 
+    await this.ensureDocumentEmbeddings(Array.from(this.documents.keys()));
     const scores: SearchResult[] = [];
 
     for (const [id, doc] of this.documents) {
@@ -111,6 +117,7 @@ export class VectorRetriever {
     const queryEmbedding = await this.getEmbedding(buildSemanticRetrievalQuery(query));
     if (!queryEmbedding) return [];
 
+    await this.ensureDocumentEmbeddings(candidateIds);
     const scores: SearchResult[] = [];
     const seen = new Set<string>();
     for (const id of candidateIds) {
@@ -132,19 +139,75 @@ export class VectorRetriever {
   }
 
   private async getEmbedding(text: string): Promise<number[] | null> {
-    if (!this.apiUrl || !this.apiKey) {
-      return this.simpleEmbedding(text);
+    const embeddings = await this.getEmbeddings([text]);
+    return embeddings?.[0] || null;
+  }
+
+  /**
+   * 只为 BM25 粗筛后的候选生成向量。已有向量直接复用，新增向量会标记为待持久化。
+   */
+  private async ensureDocumentEmbeddings(candidateIds: string[]): Promise<void> {
+    const missing: VectorDocument[] = [];
+    const seen = new Set<string>();
+    for (const id of candidateIds) {
+      if (seen.has(id)) continue;
+      seen.add(id);
+      const doc = this.documents.get(id);
+      if (doc && (!doc.embedding || doc.embedding.length === 0) && doc.text) {
+        missing.push(doc);
+      }
     }
 
+    const batchSize = 24;
+    for (let offset = 0; offset < missing.length; offset += batchSize) {
+      const batch = missing.slice(offset, offset + batchSize);
+      const embeddings = await this.getEmbeddings(batch.map(doc => doc.text));
+      if (!embeddings || embeddings.length !== batch.length) continue;
+      batch.forEach((doc, index) => {
+        const embedding = embeddings[index];
+        if (!embedding || embedding.length === 0) return;
+        doc.embedding = embedding;
+        this.dirtyEmbeddings = true;
+      });
+    }
+  }
+
+  /**
+   * Proactively prepare embeddings for a bounded set of documents.
+   *
+   * Normal retrieval keeps embeddings lazy and only vectorizes BM25 candidates.
+   * PDF deep analysis is different: the user explicitly asked to publish newly
+   * derived evidence into the Wiki, so those new evidence records should be
+   * searchable semantically as soon as the analysis finishes.
+   */
+  async prepareDocumentEmbeddings(candidateIds: string[]): Promise<{
+    requestedCount: number;
+    embeddedCount: number;
+  }> {
+    const ids = Array.from(new Set(candidateIds.map(id => String(id || '').trim()).filter(Boolean)))
+      .filter(id => this.documents.has(id));
+    if (ids.length === 0 || !this.hasApiConfig()) {
+      return { requestedCount: ids.length, embeddedCount: 0 };
+    }
+
+    await this.ensureDocumentEmbeddings(ids);
+    return {
+      requestedCount: ids.length,
+      embeddedCount: ids.filter(id => {
+        const embedding = this.documents.get(id)?.embedding;
+        return Array.isArray(embedding) && embedding.length > 0;
+      }).length,
+    };
+  }
+
+  private async getEmbeddings(texts: string[]): Promise<number[][] | null> {
+    if (!this.apiUrl || !this.apiKey || texts.length === 0) return null;
     try {
-      // 构建 API 请求体，包含 dimensions 参数（如果模型支持）
       const requestBody: Record<string, unknown> = {
         model: this.config.model,
-        input: text.slice(0, 8000),
+        input: texts.map(text => text.slice(0, 8000)),
       };
-      
-      // 对于支持自定义维度的模型（如 text-embedding-v3/v4），传递 dimensions 参数
-      // 注意：dimensions 必须在模型支持的范围内
+
       if (this.config.dimensions) {
         requestBody.dimensions = this.config.dimensions;
       }
@@ -164,55 +227,39 @@ export class VectorRetriever {
         return null;
       }
 
-      const data = await response.json() as { data?: Array<{ embedding: number[] }> };
-      const embedding = data.data?.[0]?.embedding;
-      
-      if (!embedding) {
+      const data = await response.json() as { data?: Array<{ embedding: number[]; index?: number }> };
+      const rows = data.data || [];
+      if (rows.length !== texts.length) {
+        console.log(`[VectorRetriever] Embedding response count mismatch: ${rows.length}/${texts.length}`);
+        return null;
+      }
+
+      const ordered = rows.some(row => typeof row.index === 'number')
+        ? [...rows].sort((a, b) => Number(a.index || 0) - Number(b.index || 0))
+        : rows;
+      const embeddings = ordered.map(row => row.embedding);
+      if (embeddings.some(embedding => !Array.isArray(embedding) || embedding.length === 0)) {
         console.log('[VectorRetriever] No embedding in response');
         return null;
       }
-      
-      // 验证返回的 embedding 维度是否与期望一致
-      if (embedding.length !== this.config.dimensions) {
-        console.log(`[VectorRetriever] Warning: API returned ${embedding.length} dimensions, expected ${this.config.dimensions}`);
-        // 仍然使用返回的 embedding，相似度计算会自动处理维度差异
+      const unexpected = embeddings.find(embedding => embedding.length !== this.config.dimensions);
+      if (unexpected) {
+        console.log(`[VectorRetriever] Warning: API returned ${unexpected.length} dimensions, expected ${this.config.dimensions}`);
       }
-      
-      return embedding;
+
+      return embeddings;
     } catch (error) {
       console.log('[VectorRetriever] Embedding API call failed:', error);
       return null;
     }
   }
 
-  private simpleEmbedding(text: string): number[] {
-    const normalized = text.toLowerCase().replace(/[^\w\s\u4e00-\u9fa5]/g, ' ');
-    const tokens = normalized.split(/\s+/).filter(t => t.length > 1);
-    
-    const dimensions = this.config.dimensions;
-    const embedding: number[] = new Array(dimensions).fill(0);
-    
-    const tokenSet = new Set(tokens);
-    
-    for (const token of tokenSet) {
-      let hash = 0;
-      for (let i = 0; i < token.length; i++) {
-        hash = ((hash << 5) - hash) + token.charCodeAt(i);
-        hash = hash & hash;
-      }
-      
-      const index = Math.abs(hash) % dimensions;
-      const tf = tokens.filter(t => t === token).length / tokens.length;
-      embedding[index] = tf;
-    }
-    
-    const magnitude = Math.sqrt(embedding.reduce((sum, val) => sum + val * val, 0));
-    
-    if (magnitude > 0) {
-      return embedding.map(val => val / magnitude);
-    }
-    
-    return embedding;
+  hasDirtyEmbeddings(): boolean {
+    return this.dirtyEmbeddings;
+  }
+
+  markEmbeddingsPersisted(): void {
+    this.dirtyEmbeddings = false;
   }
 
   private cosineSimilarity(a: number[], b: number[]): number {
@@ -250,6 +297,7 @@ export class VectorRetriever {
 
   clear(): void {
     this.documents.clear();
+    this.dirtyEmbeddings = false;
   }
 
   /**
@@ -258,7 +306,7 @@ export class VectorRetriever {
    */
   saveIndex(indexPath: string): void {
     const indexData = {
-      version: 2,
+      version: 3,
       timestamp: Date.now(),
       config: this.config,
       documents: Array.from(this.documents.entries()).map(([id, doc]) => ({
@@ -274,6 +322,7 @@ export class VectorRetriever {
     }
 
     fs.writeFileSync(indexPath, JSON.stringify(indexData), 'utf-8');
+    this.markEmbeddingsPersisted();
     console.log(`[VectorRetriever] Saved index to ${indexPath} (${this.documents.size} documents)`);
   }
 
@@ -292,14 +341,20 @@ export class VectorRetriever {
       const content = fs.readFileSync(indexPath, 'utf-8');
       const indexData = JSON.parse(content);
 
-      if (indexData.version !== 2) {
+      if (indexData.version !== 3) {
         console.log(`[VectorRetriever] Unsupported index version: ${indexData.version}`);
         return false;
       }
 
-      // 恢复配置
-      if (indexData.config) {
-        this.config = { ...this.config, ...indexData.config };
+      if (
+        indexData.config
+        && (
+          indexData.config.model !== this.config.model
+          || Number(indexData.config.dimensions) !== Number(this.config.dimensions)
+        )
+      ) {
+        console.log('[VectorRetriever] Embedding model config changed, will rebuild vector index');
+        return false;
       }
 
       // 恢复文档
@@ -311,6 +366,7 @@ export class VectorRetriever {
           embedding: doc.embedding,
         });
       }
+      this.dirtyEmbeddings = false;
 
       console.log(`[VectorRetriever] Loaded index from ${indexPath} (${this.documents.size} documents, timestamp: ${new Date(indexData.timestamp).toLocaleString()})`);
       return true;

@@ -2,9 +2,31 @@
   "schemaVersion": 1,
   "id": "scholar-harness-core",
   "name": "Scholar Harness Core Skills",
-  "version": "1.0.6",
+  "version": "1.0.7",
   "license": "Proprietary",
   "skills": [
+    {
+      "id": "scholar-harness-configuration",
+      "name": "Scholar Harness 配置与使用向导",
+      "category": "configuration",
+      "description": "由小牛马根据科研目标逐步配置大牛马、Embedding、Codex、本地运行时、Skill、MCP 插件和 WoS/CNKI/PDF 文献导入。",
+      "entry": "skills/configuration/scholar-harness-configuration/SKILL.md",
+      "aliases": [
+        "配置向导",
+        "新手配置",
+        "配置大牛马",
+        "配置小牛马",
+        "Embedding API",
+        "Codex 配置",
+        "插件配置",
+        "Skill 配置",
+        "WoS 导出",
+        "CNKI 导出",
+        "RIS 上传",
+        "使用说明"
+      ],
+      "policyOverlay": "API Key、密码和令牌只能进入本机密码输入框，不得要求用户发到普通聊天或写入日志。登录、注册、付费、验证码和高权限插件安装必须由用户本人确认；配置成功必须重新检测。"
+    },
     {
       "id": "establish-paper-core-argument",
       "name": "论文核心论点奠基",

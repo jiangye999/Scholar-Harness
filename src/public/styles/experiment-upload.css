@@ -1,0 +1,207 @@
+    /* 实验结果上传按钮样式（内置输入框） */
+    .upload-experiment-btn {
+      position: absolute;
+      left: 8px;
+      top: calc(50% - 2px);
+      transform: translateY(-50%);
+      background: transparent;
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      width: 40px;
+      height: 40px;
+      min-width: 40px;
+      min-height: 40px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: all 0.2s ease;
+      font-size: 20px;
+      font-weight: 500;
+      color: var(--text-secondary);
+      flex-shrink: 0;
+      z-index: 5;
+    }
+    .upload-experiment-btn:hover { 
+      background: var(--bg-secondary);
+      border-color: var(--text-secondary);
+    }
+    .upload-experiment-btn.uploading {
+      color: var(--text-secondary);
+      cursor: wait;
+    }
+    
+    /* 已上传文件预览样式 */
+    .uploaded-files-preview {
+      width: 100%;
+      display: none;
+      flex-wrap: wrap;
+      gap: 8px;
+      max-width: 100%;
+      max-height: 70px;
+      overflow-y: auto;
+      padding: 2px 2px 0;
+    }
+    .uploaded-file-preview-item {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 10px;
+      background: var(--bg-secondary);
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      font-size: 12px;
+      max-width: 150px;
+      overflow: hidden;
+    }
+    .uploaded-file-preview-item .file-icon {
+      display: inline-flex;
+      align-items: center;
+      color: var(--text-secondary);
+    }
+    .uploaded-file-preview-item .file-name {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      flex: 1;
+    }
+    .uploaded-file-preview-item .remove-file {
+      cursor: pointer;
+      color: var(--danger-color);
+      opacity: 0.7;
+      display: inline-flex;
+      align-items: center;
+    }
+    .uploaded-file-preview-item .remove-file:hover {
+      opacity: 1;
+    }
+    .experiment-figure-plan-panel {
+      display: none;
+      width: 100%;
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      background: var(--bg-primary);
+      padding: 8px;
+      box-shadow: 0 4px 14px rgba(15, 23, 42, 0.08);
+    }
+    .experiment-figure-plan-panel.active {
+      display: block;
+    }
+    .experiment-figure-plan-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      margin-bottom: 7px;
+      font-size: 12px;
+      color: var(--text-secondary);
+    }
+    .experiment-figure-plan-title {
+      font-weight: 700;
+      color: var(--text-primary);
+    }
+    .experiment-figure-plan-list {
+      display: grid;
+      gap: 7px;
+      max-height: 220px;
+      overflow-y: auto;
+    }
+    .experiment-figure-plan-row {
+      display: grid;
+      grid-template-columns: minmax(120px, 1fr) minmax(0, 2.2fr);
+      gap: 8px;
+      align-items: start;
+      padding: 7px;
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      background: var(--bg-secondary);
+    }
+    .experiment-figure-plan-file {
+      min-width: 0;
+      font-size: 12px;
+      line-height: 1.4;
+      color: var(--text-primary);
+      word-break: break-word;
+    }
+    .experiment-figure-plan-status {
+      display: inline-flex;
+      margin-top: 5px;
+      padding: 2px 6px;
+      border-radius: 999px;
+      border: 1px solid var(--border-color);
+      font-size: 11px;
+      color: var(--text-secondary);
+      background: var(--bg-primary);
+    }
+    .experiment-figure-plan-status.ready {
+      border-color: rgba(16, 163, 127, 0.35);
+      color: var(--accent-color);
+    }
+    .experiment-figure-choice-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 5px;
+      margin-bottom: 6px;
+    }
+    .experiment-figure-choice {
+      border: 1px solid var(--border-color);
+      border-radius: 999px;
+      background: var(--bg-primary);
+      color: var(--text-secondary);
+      cursor: pointer;
+      font-size: 11px;
+      padding: 3px 7px;
+    }
+    .experiment-figure-choice:hover,
+    .experiment-figure-choice.active {
+      border-color: var(--accent-color);
+      color: var(--accent-color);
+    }
+    .experiment-paper-save-toggle {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      min-height: 24px;
+      margin-bottom: 6px;
+      color: var(--text-primary);
+      font-size: 11px;
+      font-weight: 700;
+      cursor: pointer;
+      user-select: none;
+    }
+    .experiment-paper-save-toggle input {
+      width: 14px;
+      height: 14px;
+      margin: 0;
+      accent-color: #111827;
+    }
+    .experiment-figure-plan-fields {
+      display: grid;
+      grid-template-columns: minmax(86px, 0.8fr) minmax(64px, 0.55fr) minmax(140px, 1.6fr);
+      gap: 6px;
+    }
+    .experiment-figure-plan-fields input {
+      width: 100%;
+      min-width: 0;
+      border: 1px solid var(--border-color);
+      border-radius: 7px;
+      background: var(--bg-input);
+      color: var(--text-primary);
+      font-size: 12px;
+      padding: 6px 7px;
+      outline: none;
+    }
+    .experiment-figure-plan-fields input:focus {
+      border-color: var(--accent-color);
+    }
+    .experiment-figure-plan-fields .wide {
+      grid-column: span 2;
+    }
+    @media (max-width: 720px) {
+      .experiment-figure-plan-row {
+        grid-template-columns: 1fr;
+      }
+      .experiment-figure-plan-fields {
+        grid-template-columns: 1fr;
+      }
+    }

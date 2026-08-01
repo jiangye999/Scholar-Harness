@@ -106,6 +106,7 @@ export class RetrievalEngineManager {
       },
     }, this.apiConfig);
     const cacheDir = getIndexCacheDir(userId);
+    engine.setPersistenceDirectory(cacheDir);
     const literatureFile = getUserLiteraturePath(userId);
     
     // 尝试加载缓存的索引

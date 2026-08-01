@@ -94,6 +94,53 @@ async function validateRelatedPayment(
   return { ok: true };
 }
 
+async function resolvePaymentAttribution(
+  userId: string,
+  paymentType: string,
+  relatedId: string | null,
+  referralCode?: string
+): Promise<{ distributorId: string | null; packageType: string }> {
+  const user = await db.queryOne<{ distributor_id: string | null }>(
+    'SELECT distributor_id FROM users WHERE id = $1',
+    [userId]
+  );
+  let distributorId = user?.distributor_id || null;
+
+  // 注册时未绑定分销商的用户，也可以在购买时使用长期分销商邀请码。
+  // 已有注册归因优先，避免用户在不同分销商之间反复切换。
+  if (!distributorId && referralCode) {
+    const distributor = await db.queryOne<{ id: string }>(
+      `SELECT id
+       FROM distributors
+       WHERE UPPER(invite_code) = $1
+         AND status = 'active'
+       LIMIT 1`,
+      [referralCode.trim().toUpperCase()]
+    );
+    distributorId = distributor?.id || null;
+  }
+
+  let packageType = paymentType;
+  if (relatedId && (paymentType === 'subscription' || paymentType === 'renewal')) {
+    const subscription = await db.queryOne<{ plan_type: string }>(
+      'SELECT plan_type FROM subscriptions WHERE id = $1',
+      [relatedId]
+    );
+    packageType = subscription?.plan_type || paymentType;
+  } else if (relatedId && paymentType === 'activation_code') {
+    const activationCode = await db.queryOne<{ code_type: string }>(
+      'SELECT code_type FROM activation_codes WHERE id = $1',
+      [relatedId]
+    );
+    packageType = activationCode?.code_type || paymentType;
+  }
+
+  return {
+    distributorId,
+    packageType,
+  };
+}
+
 async function completePaidOrder(input: {
   client: PgClient;
   paymentId: string;
@@ -274,12 +321,19 @@ router.post('/create', authMiddleware, async (req: AuthenticatedRequest, res: Re
       });
     }
 
+    const attribution = await resolvePaymentAttribution(
+      req.user!.userId,
+      payment_type,
+      relatedId,
+      typeof referral_code === 'string' ? referral_code : undefined
+    );
+
     const sql = `
       INSERT INTO payments (
         user_id, payment_type, related_id, amount, currency,
-        payment_method, status, risk_status, risk_score, metadata
+        payment_method, status, risk_status, risk_score, distributor_id, metadata
       )
-      VALUES ($1, $2, $3, $4, 'CNY', $5, 'pending', 'passed', 0, $6)
+      VALUES ($1, $2, $3, $4, 'CNY', $5, 'pending', 'passed', 0, $6, $7)
       RETURNING *
     `;
 
@@ -289,8 +343,11 @@ router.post('/create', authMiddleware, async (req: AuthenticatedRequest, res: Re
       relatedId,
       normalizedAmount,
       payment_method,
+      attribution.distributorId,
       JSON.stringify({
         referral_code: typeof referral_code === 'string' ? referral_code.trim() : undefined,
+        distributor_id: attribution.distributorId || undefined,
+        package_type: attribution.packageType,
         device_id: req.securityContext?.deviceId || null,
         ip_address: req.securityContext?.ipAddress || null,
         request_id: req.securityContext?.requestId || null,

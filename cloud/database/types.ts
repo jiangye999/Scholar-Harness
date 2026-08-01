@@ -9,6 +9,7 @@ export interface User {
   source: 'cloud' | 'exe';
   referral_code?: string;
   referred_by?: string;
+  distributor_id?: string;
   referral_earnings: number;
   created_at: Date;
   updated_at: Date;
@@ -223,6 +224,22 @@ export interface Payment {
   paid_at?: Date;
   updated_at: Date;
   notes?: string;
+  metadata?: Record<string, any>;
+  distributor_id?: string;
+}
+
+export interface Distributor {
+  id: string;
+  name: string;
+  invite_code: string;
+  contact_name?: string;
+  contact_phone?: string;
+  commission_rate: number;
+  status: 'active' | 'disabled';
+  notes?: string;
+  created_by?: string;
+  created_at: Date;
+  updated_at: Date;
   metadata?: Record<string, any>;
 }
 

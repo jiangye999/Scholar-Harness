@@ -18,6 +18,43 @@ export interface PdfWikiPdfManagementStore {
   updatedAt: string;
 }
 
+function normalizePdfWikiPdfGroupSearchText(value: unknown): string {
+  return String(value || "")
+    .normalize("NFKC")
+    .toLowerCase()
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+export function matchesPdfWikiPdfGroupQuery(searchText: string, query: string): boolean {
+  const text = String(query || "")
+    .normalize("NFKC")
+    .replace(/\band\s*\/\s*or\b/ig, " or ")
+    .replace(/&&/g, " and ")
+    .replace(/\|\|/g, " or ")
+    .replace(/[＋+]/g, " and ")
+    .replace(/[（）()]/g, " ")
+    .replace(/[，,；;]/g, " and ");
+  const groups: string[][] = [];
+  let current: string[] = [];
+  text.replace(/"([^"]+)"|'([^']+)'|(\S+)/g, (_match, doubleQuoted, singleQuoted, rawToken) => {
+    const token = normalizePdfWikiPdfGroupSearchText(doubleQuoted || singleQuoted || rawToken || "");
+    if (!token) return "";
+    if (/^(and|&|与|且|并且|和)$/.test(token)) return "";
+    if (/^(or|或|或者)$/.test(token)) {
+      if (current.length > 0) groups.push(current);
+      current = [];
+      return "";
+    }
+    current.push(token);
+    return "";
+  });
+  if (current.length > 0) groups.push(current);
+  if (groups.length === 0) return false;
+  const haystack = normalizePdfWikiPdfGroupSearchText(searchText);
+  return groups.some(group => group.every(term => haystack.includes(term)));
+}
+
 function createEmptyStore(userId: string): PdfWikiPdfManagementStore {
   return {
     version: 1,
@@ -194,6 +231,65 @@ export function assignPdfWikiPdfGroups(
 
   store.assignments[pdfKey] = normalizedGroupIds;
   return savePdfWikiPdfManagement(dataDir, userId, store);
+}
+
+export function addPdfWikiPdfGroupToPdfs(
+  dataDir: string,
+  userId: string,
+  groupId: string,
+  pdfIds: string[]
+): PdfWikiPdfManagementStore {
+  const normalizedPdfIds = Array.from(new Set(
+    (Array.isArray(pdfIds) ? pdfIds : [])
+      .map(pdfId => String(pdfId || "").trim())
+      .filter(Boolean)
+  ));
+  const additions = Object.fromEntries(
+    normalizedPdfIds.map(pdfId => [pdfId, [String(groupId || "").trim()]])
+  );
+  return addPdfWikiPdfGroupsToPdfs(dataDir, userId, additions);
+}
+
+export function addPdfWikiPdfGroupsToPdfs(
+  dataDir: string,
+  userId: string,
+  additions: Record<string, string[]>
+): PdfWikiPdfManagementStore {
+  const store = loadPdfWikiPdfManagement(dataDir, userId);
+  const validGroupIds = new Set(store.groups.map(group => group.id));
+  const requestedGroupIds = Array.from(new Set(
+    Object.values(additions || {}).flatMap(groupIds => Array.isArray(groupIds) ? groupIds : [])
+      .map(groupId => String(groupId || "").trim())
+      .filter(Boolean)
+  ));
+  const unknownGroupId = requestedGroupIds.find(groupId => !validGroupIds.has(groupId));
+  if (unknownGroupId) {
+    throw new Error("未找到该 PDF 分组");
+  }
+  let changed = false;
+
+  Object.entries(additions || {}).forEach(([rawPdfId, rawGroupIds]) => {
+    const pdfId = String(rawPdfId || "").trim();
+    if (!pdfId) return;
+    const groupIds = Array.from(new Set(
+      (Array.isArray(rawGroupIds) ? rawGroupIds : [])
+        .map(groupId => String(groupId || "").trim())
+        .filter(groupId => validGroupIds.has(groupId))
+    ));
+    if (groupIds.length === 0) return;
+    const currentGroupIds = Array.isArray(store.assignments[pdfId])
+      ? store.assignments[pdfId]
+      : [];
+    const nextGroupIds = Array.from(new Set([...currentGroupIds, ...groupIds]));
+    if (
+      nextGroupIds.length !== currentGroupIds.length
+      || nextGroupIds.some((groupId, index) => groupId !== currentGroupIds[index])
+    ) {
+      store.assignments[pdfId] = nextGroupIds;
+      changed = true;
+    }
+  });
+  return changed ? savePdfWikiPdfManagement(dataDir, userId, store) : store;
 }
 
 export function removePdfWikiPdfAssignments(

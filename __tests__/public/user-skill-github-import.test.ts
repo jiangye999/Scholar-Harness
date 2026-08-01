@@ -3,11 +3,13 @@ import path from 'path';
 
 import { describe, expect, it } from 'vitest';
 
-const html = readFileSync(path.resolve(__dirname, '../../src/public/index.html'), 'utf-8');
+import { readPublicAppSource } from '../helpers/public-app-source';
+
+const html = readPublicAppSource();
 
 describe('GitHub Skill import UI', () => {
   it('explains repository batch import and reports collection counts', () => {
-    expect(html).toContain('仓库/分类目录可批量导入');
+    expect(html).toContain('仓库或分类目录包含多个 Skill 时会批量导入');
     expect(html).toContain('function buildGithubSkillImportStatusHtml(data, prefix)');
     expect(html).toContain("source.importMode === 'collection'");
     expect(html).toContain('新增 ');

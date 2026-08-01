@@ -69,4 +69,37 @@ describe('McpStdioSession', () => {
       session.close();
     }
   });
+
+  it('ignores non-protocol logger lines written to MCP stdout', async () => {
+    const plugin: McpPluginRecord = {
+      id: 'fake-noisy',
+      name: 'Fake Noisy MCP',
+      description: 'Test MCP with logger output on stdout',
+      command: process.execPath,
+      args: [path.resolve(__dirname, '../../fixtures/fake-noisy-mcp-server.cjs')],
+      env: {},
+      enabled: true,
+      source: 'custom',
+      risk: 'read',
+      installedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      status: 'unchecked',
+      tools: [],
+    };
+    const session = new McpStdioSession(plugin, {
+      initializeMs: 2_000,
+      listToolsMs: 2_000,
+    });
+    try {
+      await session.start();
+      const tools = await session.listTools();
+      expect(tools.map(tool => tool.name)).toEqual(['echo_noisy']);
+      await expect(session.callTool('echo_noisy', { text: 'still works' })).resolves.toMatchObject({
+        structuredContent: { echoed: 'still works' },
+        isError: false,
+      });
+    } finally {
+      session.close();
+    }
+  });
 });

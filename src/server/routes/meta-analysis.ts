@@ -12,6 +12,10 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { logger } from '../../utils/logger';
 import { getUserUploadDir, sanitizeUserId } from '../../utils/paths';
+import type { PiSessionRuntime } from '../../types';
+import { prepareWorkspaceOutputDirectory } from '../services/workspace-directory';
+import { piAgentSessionManager } from '../services/pi-agent-session';
+import { AgentExecutionKernel } from '../services/agent-execution-kernel';
 
 export interface MetaAnalysisIntegratedDataTable {
   id: string;
@@ -28,6 +32,7 @@ export interface MetaAnalysisIntegratedDataTable {
 export interface CreateMetaAnalysisRouterOptions {
   getIntegratedDataTablesForExport: (userId: string, pdfIds: string[]) => Promise<MetaAnalysisIntegratedDataTable[]>;
   generateAiPlan?: (input: MetaAnalysisAssistantInput) => Promise<MetaAnalysisAssistantResult>;
+  interruptAiConversation?: (userId: string, conversationId: string) => Promise<void>;
 }
 
 export type VariableType = 'numeric' | 'categorical' | 'empty';
@@ -148,6 +153,8 @@ export interface MetaAnalysisAssistantWorkspace {
   excelJsonPath?: string;
   excelJsonSummary?: Record<string, unknown>;
   excelJsonPacket?: Record<string, unknown>;
+  storageRoot?: string;
+  outputDirectory?: string;
 }
 
 export interface MetaAnalysisAssistantInput {
@@ -157,9 +164,27 @@ export interface MetaAnalysisAssistantInput {
   writingConversationId?: string;
   confirmedByUser?: boolean;
   forceProvider?: 'secondary' | 'primary' | 'codex';
+  codexModel?: string;
+  codexReasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultra';
   query: string;
   chatHistory?: Array<{ role: 'user' | 'assistant'; content: string; createdAt?: string }>;
   recentUserQueries?: string[];
+  /** Server-internal Pi session callbacks. Never accepted directly from the browser. */
+  piSession?: PiSessionRuntime;
+  /** Server-internal cancellation probe for the active Meta Agent run. */
+  isCancelled?: () => boolean;
+  supplementalContext?: {
+    workspaceDirectory?: {
+      enabled: boolean;
+      path: string;
+      permission: 'read-only' | 'workspace-write' | 'danger-full-access';
+      aiWorkRoot?: string;
+    };
+    workspaceFiles: Array<{ name: string; path: string; kind?: string }>;
+    chatAttachments: Array<{ name: string; path: string; type?: string; size?: number }>;
+    selectedContextSources: Record<string, boolean>;
+    selectedSkills: string[];
+  };
   workspace: MetaAnalysisAssistantWorkspace;
   excelJsonPacket?: Record<string, unknown>;
   variables: MetaVariable[];
@@ -291,6 +316,22 @@ export interface MetaAnalysisWritingContext {
   effectRowsCsv: string;
   effectRowsFilename: string;
   contextMarkdown: string;
+  rCode?: string;
+  storageRoot?: string;
+  outputDirectory?: string;
+  outputFiles?: {
+    context: string;
+    effectSizesCsv: string;
+    rScript: string;
+    reportMarkdown: string;
+  };
+  containerDirectory?: string;
+  containerFiles?: {
+    context: string;
+    effectSizesCsv: string;
+    rScript: string;
+    reportMarkdown: string;
+  };
 }
 
 export interface MetaAnalysisPreparedDatasetInfo {
@@ -330,6 +371,9 @@ export interface MetaAnalysisRunData {
   effectRowsCsv: string;
   effectRowsFilename: string;
   preparedDataset?: MetaAnalysisPreparedDatasetInfo;
+  storageRoot?: string;
+  outputDirectory?: string;
+  outputFiles?: MetaAnalysisWritingContext['outputFiles'];
 }
 
 export interface SummaryEstimate {
@@ -349,12 +393,14 @@ interface MetaAnalysisRunScope {
   conversationId?: string;
   workspaceId?: string;
   sourcePdfIds?: string[];
+  storageRoot?: string;
 }
 
 interface MetaWritingContextLookup {
   analysisId?: string;
   conversationId?: string;
   allowLegacyFallback?: boolean;
+  allowContainerFallback?: boolean;
 }
 
 const EFFECT_MEASURES: Array<{ id: EffectMeasure; name: string; description: string }> = [
@@ -454,6 +500,27 @@ function normalizeMetaScopeId(value: unknown, fallback = ''): string {
   return normalized || fallback;
 }
 
+async function resolveMetaAnalysisStorageRoot(workspaceDirectory: unknown): Promise<string | undefined> {
+  const input = workspaceDirectory && typeof workspaceDirectory === 'object' && !Array.isArray(workspaceDirectory)
+    ? workspaceDirectory as Record<string, unknown>
+    : {};
+  const requestedWorkRoot = String(input.aiWorkRoot || input.safeWorkRoot || '').trim();
+  const alreadyScopedToMeta = requestedWorkRoot
+    ? path.basename(path.resolve(requestedWorkRoot)).toLocaleLowerCase() === 'Meta分析'.toLocaleLowerCase()
+    : false;
+  const prepared = await prepareWorkspaceOutputDirectory(
+    workspaceDirectory,
+    alreadyScopedToMeta ? [] : ['Meta分析'],
+  );
+  return prepared?.outputRoot;
+}
+
+function getMetaAnalysisAssistantStorageDir(userId: string, storageRoot?: string): string {
+  return storageRoot
+    ? path.join(path.resolve(storageRoot), 'ai-workspaces')
+    : path.join(getUserUploadDir(userId), 'meta-analysis', 'ai-workspaces');
+}
+
 function getMetaAnalysisActiveUserPath(): string {
   return path.join(path.dirname(getUserUploadDir('web-user')), 'meta-analysis-active-user.json');
 }
@@ -477,6 +544,214 @@ function readMetaAnalysisActiveUser(): string {
   } catch (error) {
     logger.warn('[MetaAnalysis] Failed to read active user pointer:', error);
     return 'web-user';
+  }
+}
+
+export interface MetaAnalysisAgentToolExecutionInput {
+  name: 'meta_inspect_selected_dataset' | 'meta_run_selected_analysis';
+  userId: string;
+  arguments: Record<string, unknown>;
+  context: Record<string, unknown>;
+}
+
+function readMetaAnalysisAgentPageContext(context: Record<string, unknown>): Record<string, unknown> {
+  return context.metaAnalysisAgent && typeof context.metaAnalysisAgent === 'object' && !Array.isArray(context.metaAnalysisAgent)
+    ? context.metaAnalysisAgent as Record<string, unknown>
+    : {};
+}
+
+function buildMetaAnalysisAgentInspection(dataset: FlattenedDataset): {
+  variables: MetaVariable[];
+  candidateOutcomes: CandidateOutcome[];
+  moderatorCandidates: MetaVariable[];
+  recommendedConfig: Required<MetaRunConfig>;
+  warnings: string[];
+} {
+  const variables = inferVariables(dataset);
+  const candidateOutcomes = inferCandidateOutcomes(dataset);
+  const studyIdColumn = pickExistingColumn(dataset.columns, STUDY_ID_CANDIDATES) || 'Study#';
+  const moderatorCandidates = inferModeratorCandidates(variables, candidateOutcomes);
+  const manualReviewColumn = pickExistingColumn(dataset.columns, ['needs_manual_review', 'needsManualReview', '需人工复核', '人工复核']);
+  const recommendedModerators = moderatorCandidates
+    .filter(item => moderatorPreferenceScore(item.name) > 0)
+    .slice(0, 6)
+    .map(item => item.name);
+  const subgroupColumns = moderatorCandidates
+    .filter(item => moderatorPreferenceScore(item.name) > 0)
+    .filter(item => item.type === 'categorical' || item.uniqueCount <= 8)
+    .slice(0, 4)
+    .map(item => item.name);
+  return {
+    variables,
+    candidateOutcomes,
+    moderatorCandidates,
+    recommendedConfig: {
+      model: 'random',
+      method: 'REML',
+      studyIdColumn,
+      clusterBy: studyIdColumn,
+      moderatorColumns: recommendedModerators,
+      subgroupColumns,
+      columnPreprocess: [],
+      minCompleteRows: 2,
+      controlRules: [],
+      excludeManualReview: true,
+      manualReviewColumn,
+      outcomes: candidateOutcomes.map(candidate => ({
+        id: candidate.id,
+        label: candidate.label,
+        measure: candidate.measure,
+        ...candidate.mapping,
+        moderators: recommendedModerators,
+        direction: 1,
+      })),
+    },
+    warnings: buildInspectionWarnings(dataset, candidateOutcomes),
+  };
+}
+
+/**
+ * Native Meta tools used by the shared homepage Agent route. The expensive
+ * dataset read happens only after the model explicitly selects one of these
+ * tools; ordinary Meta chat turns never execute this function.
+ */
+export async function executeMetaAnalysisAgentTool(
+  options: CreateMetaAnalysisRouterOptions,
+  input: MetaAnalysisAgentToolExecutionInput,
+): Promise<Record<string, unknown>> {
+  const userId = sanitizeUserId(input.userId || 'web-user');
+  const pageContext = readMetaAnalysisAgentPageContext(input.context || {});
+  const pdfIds = normalizeStringArray(pageContext.selectedPdfIds);
+  if (pdfIds.length === 0) {
+    return { ok: false, toolName: input.name, summary: 'Meta 工具未执行', error: '当前 Meta 数据范围内没有可用的已提取 PDF。' };
+  }
+  const conversationId = normalizeMetaScopeId(pageContext.conversationId, `meta_agent_${Date.now()}`);
+  const writingConversationId = normalizeMetaScopeId(pageContext.writingConversationId);
+  const supplementalContext = normalizeMetaAssistantSupplementalContext({
+    workspaceDirectory: pageContext.workspaceDirectory,
+    workspaceFiles: pageContext.workspaceFiles,
+    chatAttachments: pageContext.chatAttachments,
+    selectedContextSources: pageContext.selectedContextSources,
+    selectedSkills: pageContext.selectedSkills,
+  });
+
+  try {
+    await rememberMetaAnalysisActiveUser(userId);
+    const dataset = await loadFlattenedDataset(options, userId, pdfIds);
+    if (dataset.rows.length === 0) {
+      return { ok: false, toolName: input.name, summary: 'Meta 数据读取失败', error: '已选 PDF 没有可分析的整合数据行。' };
+    }
+    const inspection = buildMetaAnalysisAgentInspection(dataset);
+    const datasetSummary = {
+      pdfCount: dataset.pdfCount,
+      tableCount: dataset.tables.length,
+      rowCount: dataset.rows.length,
+      columnCount: dataset.columns.length,
+    };
+
+    if (input.name === 'meta_inspect_selected_dataset') {
+      return {
+        ok: true,
+        toolName: input.name,
+        summary: `已按需检查 ${datasetSummary.pdfCount} 篇 PDF：${datasetSummary.rowCount} 行、${datasetSummary.columnCount} 列。`,
+        focus: stringifyCell(input.arguments.focus),
+        dataset: datasetSummary,
+        columns: dataset.columns,
+        variables: inspection.variables.slice(0, 160),
+        candidateOutcomes: inspection.candidateOutcomes,
+        moderatorCandidates: inspection.moderatorCandidates.slice(0, 80),
+        recommendedConfig: inspection.recommendedConfig,
+        warnings: inspection.warnings,
+        sampleRows: dataset.rows.slice(0, 8),
+      };
+    }
+
+    if (input.name !== 'meta_run_selected_analysis') {
+      return { ok: false, toolName: input.name, summary: '未知 Meta 工具', error: `不支持的工具：${input.name}` };
+    }
+
+    const storageRoot = await resolveMetaAnalysisStorageRoot(supplementalContext.workspaceDirectory);
+    const workspace = await saveMetaAnalysisAssistantWorkspace(userId, pdfIds, dataset, {
+      conversationId,
+      storageRoot,
+      variables: inspection.variables,
+      candidateOutcomes: inspection.candidateOutcomes,
+      moderatorCandidates: inspection.moderatorCandidates,
+      recommendedConfig: inspection.recommendedConfig,
+      warnings: inspection.warnings,
+    });
+    const rawOperations = Array.isArray(input.arguments.operations) ? input.arguments.operations : [];
+    const rawConfig = input.arguments.config && typeof input.arguments.config === 'object' && !Array.isArray(input.arguments.config)
+      ? input.arguments.config as Partial<MetaRunConfig>
+      : {};
+    const rawUnderstanding = input.arguments.dataUnderstanding && typeof input.arguments.dataUnderstanding === 'object' && !Array.isArray(input.arguments.dataUnderstanding)
+      ? input.arguments.dataUnderstanding as Record<string, unknown>
+      : {};
+    const assistantInput: MetaAnalysisAssistantInput = {
+      userId,
+      pdfIds,
+      conversationId,
+      writingConversationId,
+      confirmedByUser: true,
+      query: stringifyCell(input.arguments.rationale) || '用户已要求执行当前 Meta 分析。',
+      supplementalContext,
+      workspace,
+      excelJsonPacket: workspace.excelJsonPacket,
+      variables: inspection.variables,
+      candidateOutcomes: inspection.candidateOutcomes,
+      moderatorCandidates: inspection.moderatorCandidates,
+      recommendedConfig: inspection.recommendedConfig,
+      warnings: inspection.warnings,
+    };
+    const plan = sanitizeMetaAssistantResult({
+      provider: 'shared-agent-tool',
+      workflowStage: 'ready_for_analysis',
+      assistantMessage: stringifyCell(input.arguments.rationale) || '执行用户确认的 Meta 分析。',
+      dataUnderstanding: rawUnderstanding,
+      operations: rawOperations as MetaAnalysisAssistantOperation[],
+      suggestedConfig: rawConfig,
+      questions: [],
+      warnings: [],
+    }, assistantInput);
+    const prepared = await prepareMetaAssistantConfirmedDataset(assistantInput, plan);
+    if (!prepared || prepared.config.outcomes.length === 0) {
+      return {
+        ok: false,
+        toolName: input.name,
+        summary: 'Meta 分析未运行',
+        error: '当前字段映射或处理/对照配置不能生成有效效应量；请先检查真实字段并向用户确认。',
+      };
+    }
+    const run = await runMetaAnalysisOnDataset(userId, prepared.dataset, prepared.config, prepared.info, {
+      conversationId: writingConversationId || conversationId,
+      workspaceId: workspace.id,
+      sourcePdfIds: pdfIds,
+      storageRoot: workspace.storageRoot,
+    });
+    return {
+      ok: true,
+      toolName: input.name,
+      summary: `Meta 分析已完成：${run.effectRows.length} 个有效效应量，${run.summaries.length} 个总体汇总，跳过 ${run.skippedCount} 个候选组合。`,
+      analysisId: run.analysisId,
+      dataset: run.dataset,
+      effectRowCount: run.effectRows.length,
+      skippedCount: run.skippedCount,
+      summaries: run.summaries,
+      subgroups: run.subgroups,
+      quality: run.quality,
+      outputDirectory: run.outputDirectory,
+      outputFiles: run.outputFiles,
+      rScriptReady: Boolean(run.rCode),
+      preparedDataset: run.preparedDataset,
+    };
+  } catch (error) {
+    logger.error(`[MetaAnalysisAgentTool] ${input.name} failed:`, error);
+    return {
+      ok: false,
+      toolName: input.name,
+      summary: `${input.name} 执行失败`,
+      error: (error as Error).message || String(error),
+    };
   }
 }
 
@@ -591,7 +866,10 @@ export function createMetaAnalysisRouter(options: CreateMetaAnalysisRouterOption
         res.status(400).json({ success: false, error: '无效的 Meta AI 会话 ID' });
         return;
       }
-      const assistantDir = path.join(getUserUploadDir(userId), 'meta-analysis', 'ai-assistant', conversationId);
+      const storageRoot = await resolveMetaAnalysisStorageRoot(req.body?.workspaceDirectory);
+      const assistantDir = storageRoot
+        ? path.join(storageRoot, 'ai-assistant', conversationId)
+        : path.join(getUserUploadDir(userId), 'meta-analysis', 'ai-assistant', conversationId);
       const sessionPath = path.join(assistantDir, 'codex_session.json');
       let session: Record<string, unknown> | null = null;
       if (fs.existsSync(sessionPath)) {
@@ -617,35 +895,141 @@ export function createMetaAnalysisRouter(options: CreateMetaAnalysisRouterOption
     }
   });
 
+  router.delete('/ai-conversation/:conversationId', async (req: Request, res: Response) => {
+    try {
+      const userId = sanitizeUserId(req.body?.userId || 'web-user');
+      const conversationId = normalizeExistingMetaAssistantConversationId(req.params.conversationId);
+      if (!conversationId) {
+        res.status(400).json({ success: false, error: '无效的 Meta AI 会话 ID' });
+        return;
+      }
+
+      const storageRoot = await resolveMetaAnalysisStorageRoot(req.body?.workspaceDirectory);
+      const workspaceDir = getMetaAnalysisAssistantStorageDir(userId, storageRoot);
+      const legacyAssistantDir = storageRoot
+        ? path.join(storageRoot, 'ai-assistant', conversationId)
+        : path.join(getUserUploadDir(userId), 'meta-analysis', 'ai-assistant', conversationId);
+      const artifactPaths = [
+        path.join(workspaceDir, `${conversationId}.json`),
+        path.join(workspaceDir, `${conversationId}.excel-json.json`),
+        path.join(workspaceDir, `${conversationId}.prepared.json`),
+        legacyAssistantDir,
+      ];
+      const deletionResults = await Promise.all(artifactPaths.map(async artifactPath => {
+        try {
+          await fs.promises.rm(artifactPath, { recursive: true, force: true });
+          return true;
+        } catch (error) {
+          logger.warn(`[MetaAnalysisAI] Failed to delete conversation artifact: ${artifactPath}`, error);
+          return false;
+        }
+      }));
+
+      res.json({
+        success: true,
+        data: {
+          conversationId,
+          deletedArtifactCount: deletionResults.filter(Boolean).length,
+        },
+      });
+    } catch (error) {
+      logger.error('[MetaAnalysisAI] Delete conversation failed:', error);
+      res.status(500).json({ success: false, error: (error as Error).message || '删除 Meta AI 历史会话失败' });
+    }
+  });
+
   router.post('/ai-plan', async (req: Request, res: Response) => {
+    const executionKernel = new AgentExecutionKernel({
+      label: 'MetaAnalysisPi',
+      cancellationErrorName: 'MetaAgentRequestCancelledError',
+    });
+    let piContinuedMessageId = '';
+    let clientDisconnected = false;
+    const isPiRunCancelled = (): boolean => executionKernel.isCancelled();
+    const assertPiRunActive = (): void => executionKernel.assertActive('Meta Agent request was cancelled by the user');
+    res.once('close', () => {
+      if (res.writableEnded) return;
+      clientDisconnected = true;
+      executionKernel.detachTransport('meta-renderer-transport-closed');
+    });
     try {
       const progressLogs: string[] = [];
       const appendProgressLog = (message: string) => {
         progressLogs.push(message);
         logger.info(`[MetaAnalysisAI] ${message}`);
+        executionKernel.appendEvent('status', { message });
       };
       const userId = sanitizeUserId(req.body?.userId || 'web-user');
       await rememberMetaAnalysisActiveUser(userId);
       const conversationId = normalizeMetaAssistantConversationId(req.body?.conversationId);
-      const writingConversationId = normalizeMetaScopeId(req.body?.writingConversationId);
-      const pdfIds = normalizeStringArray(req.body?.pdfIds);
-      const query = stringifyCell(req.body?.query);
       const requestedProvider = stringifyCell(req.body?.forceProvider);
       const forceProvider = requestedProvider === 'secondary' || requestedProvider === 'primary' || requestedProvider === 'codex'
         ? requestedProvider
         : undefined;
+      const codexModel = stringifyCell(req.body?.codexModel).slice(0, 200);
+      const requestedCodexEffort = stringifyCell(req.body?.codexReasoningEffort);
+      const codexReasoningEffort = (['low', 'medium', 'high', 'xhigh', 'max', 'ultra'] as const)
+        .find(effort => effort === requestedCodexEffort);
+      const piQueueMessageId = stringifyCell(req.body?.piQueueMessageId);
+      const piQueueOriginalMessage = stringifyCell(req.body?.piQueueOriginalMessage);
+      if (piQueueMessageId) {
+        const continuationClaim = piAgentSessionManager.validateContinuationClaim(
+          userId,
+          conversationId,
+          piQueueMessageId,
+          piQueueOriginalMessage || stringifyCell(req.body?.query),
+        );
+        if (!continuationClaim) {
+          res.status(409).json({
+            success: false,
+            code: 'PI_QUEUE_CLAIM_INVALID',
+            error: '该 Meta 排队消息的领取状态已经失效，请刷新队列后重试。',
+            state: piAgentSessionManager.getState(userId, conversationId),
+          });
+          return;
+        }
+        piContinuedMessageId = continuationClaim.id;
+      }
+      const piRun = executionKernel.begin(userId, conversationId, requestedProvider || 'auto');
+      if (!piRun.accepted) {
+        res.status(409).json({
+          success: false,
+          code: 'PI_SESSION_RUNNING',
+          error: '当前 Meta 会话仍有 Agent 任务在运行，请将新消息加入“转向当前任务”或“后续执行”队列。',
+          state: piRun.state,
+        });
+        return;
+      }
+      logger.info('[MetaAnalysisPi] Compatibility endpoint attached to shared run kernel:', {
+        conversationId,
+        continuedMessageId: piContinuedMessageId,
+        clientDisconnected,
+      });
+      const writingConversationId = normalizeMetaScopeId(req.body?.writingConversationId);
+      const pdfIds = normalizeStringArray(req.body?.pdfIds);
+      const query = stringifyCell(req.body?.query);
       const chatHistory = normalizeMetaAssistantChatHistory(req.body?.chatHistory);
       const recentUserQueries = normalizeStringArray(req.body?.recentUserQueries).slice(-10);
+      const supplementalContext = normalizeMetaAssistantSupplementalContext(req.body?.supplementalContext);
+      const storageRoot = await resolveMetaAnalysisStorageRoot(supplementalContext.workspaceDirectory);
       const confirmedByUser = isMetaAssistantConversationConfirmed(query, chatHistory);
       if (pdfIds.length === 0) {
-        res.status(400).json({ success: false, error: '请先勾选需要纳入 Meta 分析的 PDF' });
+        const error = '请先勾选需要纳入 Meta 分析的 PDF';
+        executionKernel.complete('error', { error, event: { error } });
+        if (!clientDisconnected && !res.destroyed && !res.writableEnded) {
+          res.status(400).json({ success: false, error });
+        }
         return;
       }
 
       appendProgressLog(`收到 Meta AI 请求：${pdfIds.length} 篇 PDF，正在读取 Meta 编码表。`);
       const dataset = await loadFlattenedDataset(options, userId, pdfIds);
       if (dataset.rows.length === 0) {
-        res.status(404).json({ success: false, error: '未找到可分析的 Meta 整合数据行，请先完成 PDF Meta 数据提取' });
+        const error = '未找到可分析的 Meta 整合数据行，请先完成 PDF Meta 数据提取';
+        executionKernel.complete('error', { error, event: { error } });
+        if (!clientDisconnected && !res.destroyed && !res.writableEnded) {
+          res.status(404).json({ success: false, error });
+        }
         return;
       }
 
@@ -691,6 +1075,7 @@ export function createMetaAnalysisRouter(options: CreateMetaAnalysisRouterOption
       const warnings = buildInspectionWarnings(dataset, candidateOutcomes);
       const workspace = await saveMetaAnalysisAssistantWorkspace(userId, pdfIds, dataset, {
         conversationId,
+        storageRoot,
         variables,
         candidateOutcomes,
         moderatorCandidates,
@@ -715,9 +1100,30 @@ export function createMetaAnalysisRouter(options: CreateMetaAnalysisRouterOption
         writingConversationId,
         confirmedByUser,
         forceProvider,
+        codexModel: codexModel || undefined,
+        codexReasoningEffort,
         query,
         chatHistory,
         recentUserQueries,
+        piSession: {
+          sessionId: conversationId,
+          takeSteeringMessages: async takeOptions => piAgentSessionManager
+            .takeSteeringMessages(userId, conversationId, takeOptions)
+            .map(item => ({
+              id: item.id,
+              message: item.message,
+              chatAttachments: item.chatAttachments,
+              workspaceFileMentions: item.workspaceFileMentions,
+            })),
+          markSteeringApplied: async messageId => {
+            piAgentSessionManager.markApplied(userId, conversationId, messageId, 'steered');
+          },
+          requeueSteeringMessage: async messageId => {
+            piAgentSessionManager.requeueMessage(userId, conversationId, messageId);
+          },
+        },
+        isCancelled: isPiRunCancelled,
+        supplementalContext,
         workspace,
         excelJsonPacket: workspace.excelJsonPacket,
         variables,
@@ -731,10 +1137,13 @@ export function createMetaAnalysisRouter(options: CreateMetaAnalysisRouterOption
       const assistantWarnings: string[] = [];
       if (options.generateAiPlan) {
         try {
+          assertPiRunActive();
           appendProgressLog('正在调用 AI 判断列角色、CK/control、treatment 和副本整理方案。');
           result = sanitizeMetaAssistantResult(await options.generateAiPlan(input), input);
+          assertPiRunActive();
           appendProgressLog(`AI 已返回数据理解结果：${result.provider || 'unknown'}。`);
         } catch (error) {
+          if (isPiRunCancelled()) throw error;
           const message = (error as Error).message || String(error);
           assistantWarnings.push(`AI 规划链路失败，已使用本地规则兜底：${message}`);
           logger.warn('[MetaAnalysis] AI assistant plan failed, using local fallback:', error);
@@ -749,15 +1158,17 @@ export function createMetaAnalysisRouter(options: CreateMetaAnalysisRouterOption
       result.progressLogs = Array.from(new Set([...(result.progressLogs || []), ...progressLogs]));
       result.conversationId = conversationId;
       result = applyMetaAssistantConfirmationState(result, input);
+      assertPiRunActive();
       if (input.confirmedByUser) {
         try {
-          appendProgressLog('用户已确认规则，正在执行副本整理、自动配对和 mean-only 效应量计算。');
+          appendProgressLog('用户已确认规则，正在执行通用副本整理、处理/对照配对和效应量计算。');
           const prepared = await prepareMetaAssistantConfirmedDataset(input, result);
           if (prepared && prepared.config.outcomes.length > 0) {
             const autoRun = await runMetaAnalysisOnDataset(userId, prepared.dataset, prepared.config, prepared.info, {
               conversationId: input.writingConversationId || input.conversationId,
               workspaceId: input.workspace.id,
               sourcePdfIds: input.pdfIds,
+              storageRoot: input.workspace.storageRoot,
             });
             result = {
               ...result,
@@ -779,22 +1190,52 @@ export function createMetaAnalysisRouter(options: CreateMetaAnalysisRouterOption
           result.progressLogs = Array.from(new Set([...(result.progressLogs || []), `自动执行失败：${message}`]));
         }
       }
-      res.json({
-        success: true,
-        data: {
-          conversationId,
-          workspace: {
-            ...workspace,
-            excelJsonPacket: undefined,
-          },
-          excelJsonSummary: workspace.excelJsonSummary,
-          progressLogs: result.progressLogs,
-          ...result,
+      if (piContinuedMessageId) {
+        piAgentSessionManager.markApplied(userId, conversationId, piContinuedMessageId, 'continued');
+        piContinuedMessageId = '';
+      }
+      const responseData = {
+        conversationId,
+        workspace: {
+          ...workspace,
+          excelJsonPacket: undefined,
+        },
+        excelJsonSummary: workspace.excelJsonSummary,
+        progressLogs: result.progressLogs,
+        ...result,
+      };
+      executionKernel.complete('completed', {
+        event: {
+          content: JSON.stringify({ success: true, data: responseData }),
+          provider: result.provider || requestedProvider || 'meta-analysis',
         },
       });
+      if (!clientDisconnected && !res.destroyed && !res.writableEnded) {
+        res.json({
+          success: true,
+          data: responseData,
+        });
+      }
     } catch (error) {
-      logger.error('[MetaAnalysis] AI assistant plan failed:', error);
-      res.status(500).json({ success: false, error: (error as Error).message || 'Meta AI 分析助手失败' });
+      const cancelled = isPiRunCancelled()
+        || (error instanceof Error && /cancel|abort|interrupt/i.test(`${error.name} ${error.message}`));
+      if (cancelled) logger.info('[MetaAnalysisPi] Agent request cancelled by user');
+      else logger.error('[MetaAnalysis] AI assistant plan failed:', error);
+      const errorMessage = cancelled
+        ? 'Meta Agent request cancelled'
+        : ((error as Error).message || 'Meta AI 分析助手失败');
+      executionKernel.complete(cancelled ? 'cancelled' : 'error', {
+        error: errorMessage,
+        event: { error: errorMessage },
+      });
+      if (!clientDisconnected && !res.headersSent && !res.destroyed && !res.writableEnded) {
+        res.status(500).json({
+          success: false,
+          error: errorMessage,
+        });
+      }
+    } finally {
+      executionKernel.settle();
     }
   });
 
@@ -821,10 +1262,12 @@ export function createMetaAnalysisRouter(options: CreateMetaAnalysisRouterOption
         return;
       }
 
+      const storageRoot = await resolveMetaAnalysisStorageRoot(req.body?.workspaceDirectory);
       const runResult = await runMetaAnalysisOnDataset(userId, dataset, config, undefined, {
         conversationId: normalizeMetaScopeId(req.body?.conversationId),
         workspaceId: normalizeMetaScopeId(req.body?.workspaceId),
         sourcePdfIds: pdfIds,
+        storageRoot,
       });
       if (runResult.effectRows.length === 0) {
         res.status(400).json({
@@ -857,12 +1300,13 @@ export function createMetaAnalysisRouter(options: CreateMetaAnalysisRouterOption
         analysisId,
         conversationId,
         allowLegacyFallback: !analysisId && !conversationId,
+        allowContainerFallback: !analysisId,
       });
       if (!context) {
         res.status(404).json({
           success: false,
           error: conversationId
-            ? '当前会话还没有已完成的 Meta 分析结果；不会自动挂载其他会话的旧结果。'
+            ? '当前会话和 Meta 专属结果容器中都没有可用的已完成分析结果。'
             : '未找到已运行的 Meta 分析结果，请先在 Meta 分析向导中点击“运行Meta分析”。',
         });
         return;
@@ -883,6 +1327,7 @@ export function createMetaAnalysisRouter(options: CreateMetaAnalysisRouterOption
         analysisId,
         conversationId,
         allowLegacyFallback: !analysisId && !conversationId,
+        allowContainerFallback: !analysisId,
       });
       if (!context) {
         res.status(404).send('Meta analysis writing context not found');
@@ -907,6 +1352,7 @@ export function createMetaAnalysisRouter(options: CreateMetaAnalysisRouterOption
         analysisId,
         conversationId,
         allowLegacyFallback: !analysisId && !conversationId,
+        allowContainerFallback: !analysisId,
       });
       if (!context) {
         res.status(404).json({ success: false, error: '未找到可更新的 Meta 分析结果，请先运行 Meta 分析。' });
@@ -958,6 +1404,9 @@ async function runMetaAnalysisOnDataset(
   const csv = buildEffectRowsCsv(effectBuild.effectRows);
   const rCode = buildMetaAnalysisRCode(config, effectBuild.effectRows);
   const markdown = buildRunMarkdown(dataset, effectBuild.effectRows, effectBuild.skippedRows, summaries, subgroups, quality, config);
+  const storageRoot = scope.storageRoot ? path.resolve(scope.storageRoot) : undefined;
+  const outputDirectory = getMetaAnalysisRunContextDir(userId, analysisId, storageRoot);
+  const outputFiles = buildMetaAnalysisOutputFiles(outputDirectory);
   const runData: MetaAnalysisRunData = {
     analysisId,
     conversationId: conversationId || undefined,
@@ -982,6 +1431,9 @@ async function runMetaAnalysisOnDataset(
     effectRowsCsv: csv,
     effectRowsFilename: 'meta_effect_sizes.csv',
     preparedDataset,
+    storageRoot,
+    outputDirectory,
+    outputFiles,
   };
   if (effectBuild.effectRows.length > 0) {
     const writingContext = buildMetaAnalysisWritingContext(userId, runData);
@@ -990,20 +1442,63 @@ async function runMetaAnalysisOnDataset(
   return runData;
 }
 
-function getMetaAnalysisWritingContextDir(userId: string): string {
-  return path.join(getUserUploadDir(sanitizeUserId(userId)), 'meta-analysis');
+function getMetaAnalysisWritingContextDir(userId: string, storageRoot?: string): string {
+  return storageRoot
+    ? path.resolve(storageRoot)
+    : path.join(getUserUploadDir(sanitizeUserId(userId)), 'meta-analysis');
 }
 
-function getMetaAnalysisWritingContextPath(userId: string): string {
-  return path.join(getMetaAnalysisWritingContextDir(userId), 'writing-context.json');
+function getMetaAnalysisWritingContextPath(userId: string, storageRoot?: string): string {
+  return path.join(getMetaAnalysisWritingContextDir(userId, storageRoot), 'writing-context.json');
 }
 
-function getMetaAnalysisRunContextPath(userId: string, analysisId: string): string {
-  return path.join(getMetaAnalysisWritingContextDir(userId), 'runs', normalizeMetaScopeId(analysisId, 'unknown'), 'writing-context.json');
+function getMetaAnalysisRunContextDir(userId: string, analysisId: string, storageRoot?: string): string {
+  return path.join(getMetaAnalysisWritingContextDir(userId, storageRoot), 'runs', normalizeMetaScopeId(analysisId, 'unknown'));
 }
 
-function getMetaAnalysisConversationContextPath(userId: string, conversationId: string): string {
-  return path.join(getMetaAnalysisWritingContextDir(userId), 'conversations', `${normalizeMetaScopeId(conversationId, 'unknown')}.json`);
+function getMetaAnalysisRunContextPath(userId: string, analysisId: string, storageRoot?: string): string {
+  return path.join(getMetaAnalysisRunContextDir(userId, analysisId, storageRoot), 'writing-context.json');
+}
+
+function getMetaAnalysisConversationContextPath(userId: string, conversationId: string, storageRoot?: string): string {
+  return path.join(getMetaAnalysisWritingContextDir(userId, storageRoot), 'conversations', `${normalizeMetaScopeId(conversationId, 'unknown')}.json`);
+}
+
+function getMetaAnalysisResultContainerDir(userId: string): string {
+  return path.join(getUserUploadDir(sanitizeUserId(userId)), 'meta-analysis', 'result-container');
+}
+
+function getMetaAnalysisResultContainerLatestPath(userId: string): string {
+  return path.join(getMetaAnalysisResultContainerDir(userId), 'latest-completed.json');
+}
+
+function getMetaAnalysisResultContainerRunDir(userId: string, analysisId: string): string {
+  return path.join(
+    getMetaAnalysisResultContainerDir(userId),
+    'runs',
+    normalizeMetaScopeId(analysisId, 'unknown'),
+  );
+}
+
+function getMetaAnalysisResultContainerRunPath(userId: string, analysisId: string): string {
+  return path.join(getMetaAnalysisResultContainerRunDir(userId, analysisId), 'writing-context.json');
+}
+
+function getMetaAnalysisResultContainerConversationPath(userId: string, conversationId: string): string {
+  return path.join(
+    getMetaAnalysisResultContainerDir(userId),
+    'conversations',
+    `${normalizeMetaScopeId(conversationId, 'unknown')}.json`,
+  );
+}
+
+function buildMetaAnalysisOutputFiles(outputDirectory: string): NonNullable<MetaAnalysisWritingContext['outputFiles']> {
+  return {
+    context: path.join(outputDirectory, 'writing-context.json'),
+    effectSizesCsv: path.join(outputDirectory, 'meta_effect_sizes.csv'),
+    rScript: path.join(outputDirectory, 'meta_analysis.R'),
+    reportMarkdown: path.join(outputDirectory, 'meta_analysis_report.md'),
+  };
 }
 
 function buildMetaDatasetFingerprint(dataset: FlattenedDataset, sourcePdfIds: string[]): string {
@@ -1032,10 +1527,9 @@ async function invalidateMetaAnalysisConversationContext(
     : (fs.existsSync(latestPath) ? latestPath : '');
   if (!sourcePath) return;
   try {
-    const parsed = normalizeStoredMetaAnalysisWritingContext(
-      JSON.parse(await fs.promises.readFile(sourcePath, 'utf-8')) as MetaAnalysisWritingContext,
-      userId,
-    );
+    const sourceContext = readMetaAnalysisContextFile(sourcePath);
+    if (!sourceContext) return;
+    const parsed = normalizeStoredMetaAnalysisWritingContext(sourceContext, userId);
     const currentPdfIds = [...parsed.sourcePdfIds].sort();
     const nextPdfIds = [...sourcePdfIds].sort();
     if (parsed.datasetFingerprint === datasetFingerprint && JSON.stringify(currentPdfIds) === JSON.stringify(nextPdfIds)) return;
@@ -1048,21 +1542,29 @@ async function invalidateMetaAnalysisConversationContext(
     };
     const runArchivePath = getMetaAnalysisRunContextPath(userId, parsed.analysisId);
     if (!fs.existsSync(runArchivePath)) {
-      await fs.promises.mkdir(path.dirname(runArchivePath), { recursive: true });
-      await fs.promises.writeFile(runArchivePath, JSON.stringify(parsed, null, 2), 'utf-8');
+      await writeMetaAnalysisContextAtPath(
+        runArchivePath,
+        getMetaAnalysisRunContextPath(userId, parsed.analysisId, parsed.storageRoot),
+        parsed,
+      );
     }
-    await fs.promises.mkdir(path.dirname(conversationPath), { recursive: true });
-    await fs.promises.writeFile(conversationPath, JSON.stringify({
+    await writeMetaAnalysisContextAtPath(
+      conversationPath,
+      getMetaAnalysisConversationContextPath(userId, conversationId, parsed.storageRoot),
+      {
       ...staleContext,
       conversationId,
-    }, null, 2), 'utf-8');
+      },
+    );
     if (fs.existsSync(latestPath)) {
-      const latest = normalizeStoredMetaAnalysisWritingContext(
-        JSON.parse(await fs.promises.readFile(latestPath, 'utf-8')) as MetaAnalysisWritingContext,
-        userId,
-      );
-      if (latest.analysisId === parsed.analysisId) {
-        await fs.promises.writeFile(latestPath, JSON.stringify(staleContext, null, 2), 'utf-8');
+      const latestSource = readMetaAnalysisContextFile(latestPath);
+      const latest = latestSource ? normalizeStoredMetaAnalysisWritingContext(latestSource, userId) : null;
+      if (latest?.analysisId === parsed.analysisId) {
+        await writeMetaAnalysisContextAtPath(
+          latestPath,
+          getMetaAnalysisWritingContextPath(userId, parsed.storageRoot),
+          staleContext,
+        );
       }
     }
   } catch (error) {
@@ -1070,16 +1572,95 @@ async function invalidateMetaAnalysisConversationContext(
   }
 }
 
+const META_ANALYSIS_CONTEXT_POINTER_SOURCE = 'meta-analysis-writing-context-pointer';
+
+function readMetaAnalysisContextFile(filePath: string): MetaAnalysisWritingContext | null {
+  if (!filePath || !fs.existsSync(filePath)) return null;
+  const parsed = JSON.parse(fs.readFileSync(filePath, 'utf-8')) as Record<string, unknown>;
+  if (parsed?.source === META_ANALYSIS_CONTEXT_POINTER_SOURCE) {
+    const targetPath = stringifyCell(parsed.targetPath);
+    if (!targetPath || !path.isAbsolute(targetPath) || !fs.existsSync(targetPath)) return null;
+    return JSON.parse(fs.readFileSync(targetPath, 'utf-8')) as MetaAnalysisWritingContext;
+  }
+  return parsed as unknown as MetaAnalysisWritingContext;
+}
+
+async function writeMetaAnalysisContextAtPath(
+  logicalPath: string,
+  targetPath: string,
+  context: MetaAnalysisWritingContext,
+): Promise<void> {
+  const resolvedLogicalPath = path.resolve(logicalPath);
+  const resolvedTargetPath = path.resolve(targetPath);
+  await fs.promises.mkdir(path.dirname(resolvedTargetPath), { recursive: true });
+  await fs.promises.writeFile(resolvedTargetPath, JSON.stringify(context, null, 2), 'utf-8');
+  if (resolvedLogicalPath === resolvedTargetPath) return;
+  await fs.promises.mkdir(path.dirname(resolvedLogicalPath), { recursive: true });
+  await fs.promises.writeFile(resolvedLogicalPath, JSON.stringify({
+    source: META_ANALYSIS_CONTEXT_POINTER_SOURCE,
+    targetPath: resolvedTargetPath,
+    analysisId: context.analysisId,
+    conversationId: context.conversationId,
+    updatedAt: new Date().toISOString(),
+  }, null, 2), 'utf-8');
+}
+
 async function saveMetaAnalysisWritingContext(userId: string, context: MetaAnalysisWritingContext): Promise<void> {
-  const dir = getMetaAnalysisWritingContextDir(userId);
-  await fs.promises.mkdir(dir, { recursive: true });
-  const serialized = JSON.stringify(context, null, 2);
-  const paths = [getMetaAnalysisWritingContextPath(userId)];
-  if (context.analysisId) paths.push(getMetaAnalysisRunContextPath(userId, context.analysisId));
-  if (context.conversationId) paths.push(getMetaAnalysisConversationContextPath(userId, context.conversationId));
-  for (const filePath of Array.from(new Set(paths))) {
-    await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
-    await fs.promises.writeFile(filePath, serialized, 'utf-8');
+  const storageRoot = context.storageRoot ? path.resolve(context.storageRoot) : undefined;
+  const outputDirectory = getMetaAnalysisRunContextDir(userId, context.analysisId, storageRoot);
+  const outputFiles = buildMetaAnalysisOutputFiles(outputDirectory);
+  const containerDirectory = getMetaAnalysisResultContainerRunDir(userId, context.analysisId);
+  const containerFiles = buildMetaAnalysisOutputFiles(containerDirectory);
+  const normalizedContext: MetaAnalysisWritingContext = {
+    ...context,
+    storageRoot,
+    outputDirectory,
+    outputFiles,
+    containerDirectory,
+    containerFiles,
+  };
+  normalizedContext.contextMarkdown = buildMetaAnalysisWritingContextMarkdown(normalizedContext);
+
+  const artifactTargets = new Map<string, NonNullable<MetaAnalysisWritingContext['outputFiles']>>();
+  artifactTargets.set(path.resolve(outputDirectory), outputFiles);
+  artifactTargets.set(path.resolve(containerDirectory), containerFiles);
+  await Promise.all([...artifactTargets.entries()].map(async ([directory, files]) => {
+    await fs.promises.mkdir(directory, { recursive: true });
+    await Promise.all([
+      fs.promises.writeFile(files.effectSizesCsv, normalizedContext.effectRowsCsv || '', 'utf-8'),
+      fs.promises.writeFile(files.rScript, normalizedContext.rCode || '', 'utf-8'),
+      fs.promises.writeFile(files.reportMarkdown, normalizedContext.markdown || '', 'utf-8'),
+    ]);
+  }));
+
+  const containerContextTargets = [
+    getMetaAnalysisResultContainerLatestPath(userId),
+    getMetaAnalysisResultContainerRunPath(userId, normalizedContext.analysisId),
+  ];
+  if (normalizedContext.conversationId) {
+    containerContextTargets.push(
+      getMetaAnalysisResultContainerConversationPath(userId, normalizedContext.conversationId),
+    );
+  }
+  await Promise.all([
+    ...containerContextTargets.map(async targetPath => {
+      await fs.promises.mkdir(path.dirname(targetPath), { recursive: true });
+      await fs.promises.writeFile(targetPath, JSON.stringify(normalizedContext, null, 2), 'utf-8');
+    }),
+  ]);
+
+  const pathPairs: Array<[string, string]> = [
+    [getMetaAnalysisWritingContextPath(userId), getMetaAnalysisWritingContextPath(userId, storageRoot)],
+    [getMetaAnalysisRunContextPath(userId, normalizedContext.analysisId), getMetaAnalysisRunContextPath(userId, normalizedContext.analysisId, storageRoot)],
+  ];
+  if (normalizedContext.conversationId) {
+    pathPairs.push([
+      getMetaAnalysisConversationContextPath(userId, normalizedContext.conversationId),
+      getMetaAnalysisConversationContextPath(userId, normalizedContext.conversationId, storageRoot),
+    ]);
+  }
+  for (const [logicalPath, targetPath] of pathPairs) {
+    await writeMetaAnalysisContextAtPath(logicalPath, targetPath, normalizedContext);
   }
 }
 
@@ -1090,19 +1671,91 @@ export function getMetaAnalysisWritingContextForUser(
   try {
     const analysisId = normalizeMetaScopeId(lookup.analysisId);
     const conversationId = normalizeMetaScopeId(lookup.conversationId);
+    const allowContainerFallback = !analysisId && lookup.allowContainerFallback !== false;
     const candidatePaths = [
+      analysisId ? getMetaAnalysisResultContainerRunPath(userId, analysisId) : '',
       analysisId ? getMetaAnalysisRunContextPath(userId, analysisId) : '',
+      conversationId ? getMetaAnalysisResultContainerConversationPath(userId, conversationId) : '',
       conversationId ? getMetaAnalysisConversationContextPath(userId, conversationId) : '',
+      allowContainerFallback
+        ? getMetaAnalysisResultContainerLatestPath(userId)
+        : '',
       (!analysisId && !conversationId) || lookup.allowLegacyFallback ? getMetaAnalysisWritingContextPath(userId) : '',
     ].filter(Boolean);
-    const filePath = candidatePaths.find(candidate => fs.existsSync(candidate));
-    if (!filePath) return null;
-    const parsed = JSON.parse(fs.readFileSync(filePath, 'utf-8')) as MetaAnalysisWritingContext;
-    if (!parsed || parsed.source !== 'meta-analysis-writing-context' || !parsed.available) return null;
-    return normalizeStoredMetaAnalysisWritingContext(parsed, userId);
+    for (const filePath of candidatePaths) {
+      if (!fs.existsSync(filePath)) continue;
+      const parsed = readMetaAnalysisContextFile(filePath);
+      if (!parsed || parsed.source !== 'meta-analysis-writing-context' || !parsed.available) continue;
+      return normalizeStoredMetaAnalysisWritingContext(parsed, userId);
+    }
+
+    if (allowContainerFallback) {
+      const archive = findLatestAvailableMetaAnalysisRunContext(userId);
+      if (archive) return archive;
+    }
+    return null;
   } catch (error) {
     logger.warn('[MetaAnalysis] Failed to read writing context:', error);
     return null;
+  }
+}
+
+function findLatestAvailableMetaAnalysisRunContext(userId: string): MetaAnalysisWritingContext | null {
+  const runsDir = path.join(getMetaAnalysisWritingContextDir(userId), 'runs');
+  if (!fs.existsSync(runsDir)) return null;
+  const candidates = fs.readdirSync(runsDir, { withFileTypes: true })
+    .filter(entry => entry.isDirectory())
+    .map(entry => path.join(runsDir, entry.name, 'writing-context.json'))
+    .filter(filePath => fs.existsSync(filePath))
+    .map(filePath => {
+      try {
+        const parsed = readMetaAnalysisContextFile(filePath);
+        if (!parsed || parsed.source !== 'meta-analysis-writing-context' || !parsed.available) return null;
+        return normalizeStoredMetaAnalysisWritingContext(parsed, userId);
+      } catch {
+        return null;
+      }
+    })
+    .filter((context): context is MetaAnalysisWritingContext => Boolean(context))
+    .sort((left, right) => Date.parse(right.generatedAt) - Date.parse(left.generatedAt));
+  const latest = candidates[0] || null;
+  return latest ? persistMetaAnalysisResultContainerSnapshotSync(userId, latest) : null;
+}
+
+function persistMetaAnalysisResultContainerSnapshotSync(
+  userId: string,
+  context: MetaAnalysisWritingContext,
+): MetaAnalysisWritingContext {
+  try {
+    const containerDirectory = getMetaAnalysisResultContainerRunDir(userId, context.analysisId);
+    const containerFiles = buildMetaAnalysisOutputFiles(containerDirectory);
+    const normalizedContext: MetaAnalysisWritingContext = {
+      ...context,
+      containerDirectory,
+      containerFiles,
+    };
+    normalizedContext.contextMarkdown = buildMetaAnalysisWritingContextMarkdown(normalizedContext);
+    fs.mkdirSync(containerDirectory, { recursive: true });
+    fs.writeFileSync(containerFiles.effectSizesCsv, normalizedContext.effectRowsCsv || '', 'utf-8');
+    fs.writeFileSync(containerFiles.rScript, normalizedContext.rCode || '', 'utf-8');
+    fs.writeFileSync(containerFiles.reportMarkdown, normalizedContext.markdown || '', 'utf-8');
+    const targets = [
+      getMetaAnalysisResultContainerLatestPath(userId),
+      getMetaAnalysisResultContainerRunPath(userId, normalizedContext.analysisId),
+    ];
+    if (normalizedContext.conversationId) {
+      targets.push(
+        getMetaAnalysisResultContainerConversationPath(userId, normalizedContext.conversationId),
+      );
+    }
+    for (const targetPath of targets) {
+      fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+      fs.writeFileSync(targetPath, JSON.stringify(normalizedContext, null, 2), 'utf-8');
+    }
+    return normalizedContext;
+  } catch (error) {
+    logger.warn('[MetaAnalysis] Failed to migrate legacy run into result container:', error);
+    return context;
   }
 }
 
@@ -1159,8 +1812,12 @@ function buildMetaAnalysisWritingContext(
     subgroups: MetaSubgroupSummary[];
     quality: MetaAnalysisWritingContext['quality'];
     markdown: string;
+    rCode: string;
     effectRowsCsv: string;
     effectRowsFilename: string;
+    storageRoot?: string;
+    outputDirectory?: string;
+    outputFiles?: MetaAnalysisWritingContext['outputFiles'];
   },
 ): MetaAnalysisWritingContext {
   const safeUserId = sanitizeUserId(userId);
@@ -1192,6 +1849,10 @@ function buildMetaAnalysisWritingContext(
     },
     effectRowsCsv: runData.effectRowsCsv,
     effectRowsFilename: runData.effectRowsFilename,
+    rCode: runData.rCode,
+    storageRoot: runData.storageRoot,
+    outputDirectory: runData.outputDirectory,
+    outputFiles: runData.outputFiles,
     contextMarkdown: '',
   };
   context.contextMarkdown = buildMetaAnalysisWritingContextMarkdown(context);
@@ -1282,6 +1943,8 @@ function buildMetaAnalysisWritingContextMarkdown(context: MetaAnalysisWritingCon
     '## 导出接口',
     `- 写作上下文 JSON: ${context.exports.writingContextUrl}`,
     `- 已计算效应量 CSV: ${context.exports.effectSizesCsvUrl}`,
+    context.outputDirectory ? `- 本地工作目录: ${context.outputDirectory}` : '',
+    context.containerDirectory ? `- Meta 专属结果容器: ${context.containerDirectory}` : '',
   ].join('\n');
 }
 
@@ -1539,6 +2202,7 @@ async function saveMetaAnalysisAssistantWorkspace(
   dataset: FlattenedDataset,
   context?: {
     conversationId?: string;
+    storageRoot?: string;
     variables: MetaVariable[];
     candidateOutcomes: CandidateOutcome[];
     moderatorCandidates: MetaVariable[];
@@ -1547,7 +2211,7 @@ async function saveMetaAnalysisAssistantWorkspace(
   },
 ): Promise<MetaAnalysisAssistantWorkspace> {
   const workspaceId = context?.conversationId || `meta_ai_chat_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
-  const workspaceDir = path.join(getUserUploadDir(userId), 'meta-analysis', 'ai-workspaces');
+  const workspaceDir = getMetaAnalysisAssistantStorageDir(userId, context?.storageRoot);
   await fs.promises.mkdir(workspaceDir, { recursive: true });
   const storagePath = path.join(workspaceDir, `${workspaceId}.json`);
   const excelJsonPath = path.join(workspaceDir, `${workspaceId}.excel-json.json`);
@@ -1568,6 +2232,8 @@ async function saveMetaAnalysisAssistantWorkspace(
     sampleRows,
     copyStoragePath: storagePath,
     excelJsonPath,
+    storageRoot: context?.storageRoot,
+    outputDirectory: context?.storageRoot ? path.join(context.storageRoot, 'ai-workspaces') : workspaceDir,
   };
   const excelJsonPacket = context
     ? buildMetaAnalysisExcelJsonPacket(workspace, dataset, context)
@@ -2033,7 +2699,595 @@ interface AutoOutcomeSpec {
   controlNColumn: string;
 }
 
+interface MetaDatasetOperationResult {
+  dataset: FlattenedDataset;
+  applied: string[];
+  warnings: string[];
+}
+
+interface GenericMetaPairingResult {
+  dataset: FlattenedDataset;
+  config: Required<MetaRunConfig>;
+  excludedManualReviewCount: number;
+  notes: string[];
+}
+
+function collectMetaOperationOutputColumns(operations: MetaAnalysisAssistantOperation[]): string[] {
+  const columns = new Set<string>();
+  operations.forEach(operation => {
+    const params = operation.params || {};
+    [
+      'target',
+      'targetColumn',
+      'outputColumn',
+      'meanColumn',
+      'targetMeanColumn',
+      'spreadColumn',
+      'sdColumn',
+      'targetSdColumn',
+      'groupColumn',
+    ].forEach(key => {
+      const value = stringifyCell(params[key]);
+      if (value) columns.add(value);
+    });
+    if (isRecord(params.columns)) {
+      Object.keys(params.columns).forEach(column => {
+        if (column) columns.add(column);
+      });
+    }
+  });
+  return Array.from(columns);
+}
+
+function getMetaOperationParamString(params: Record<string, unknown>, keys: string[]): string {
+  for (const key of keys) {
+    const value = stringifyCell(params[key]);
+    if (value) return value;
+  }
+  return '';
+}
+
+function getMetaOperationSourceColumns(params: Record<string, unknown>): string[] {
+  const explicit = normalizeStringArray(params.columns);
+  if (explicit.length > 0) return explicit;
+  const single = getMetaOperationParamString(params, ['sourceColumn', 'column', 'source']);
+  return single ? [single] : [];
+}
+
+function parseMetaMeanSpread(value: unknown): { mean: number; spread?: number } | null {
+  const direct = parseNumeric(value);
+  const text = stringifyCell(value).trim();
+  const match = text.match(/^\s*([-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?)\s*(?:±|\+\s*\/\s*-|\+-)\s*([-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?)\s*$/);
+  if (match) {
+    const meanValue = Number(match[1]);
+    const spreadValue = Number(match[2]);
+    if (Number.isFinite(meanValue) && Number.isFinite(spreadValue)) {
+      return { mean: meanValue, spread: spreadValue };
+    }
+  }
+  return Number.isFinite(direct) ? { mean: direct } : null;
+}
+
+function parseMetaRangeMidpoint(value: unknown): number {
+  const direct = parseNumeric(value);
+  const text = stringifyCell(value).trim();
+  const match = text.match(/^\s*(-?(?:\d+\.?\d*|\.\d+))\s*(?:-|–|—|~|～|至|to)\s*(-?(?:\d+\.?\d*|\.\d+))\s*$/i);
+  if (!match) return direct;
+  const lower = Number(match[1]);
+  const upper = Number(match[2]);
+  return Number.isFinite(lower) && Number.isFinite(upper) ? (lower + upper) / 2 : direct;
+}
+
+function matchMetaOperationFilter(value: unknown, operator: string, expected: unknown, values: string[]): boolean {
+  const actualText = stringifyCell(value);
+  const expectedText = stringifyCell(expected);
+  const actualNumber = parseNumeric(value);
+  const expectedNumber = parseNumeric(expected);
+  const normalizedActual = normalizeAutoMetaKeyValue(actualText);
+  const normalizedExpected = normalizeAutoMetaKeyValue(expectedText);
+  switch (operator) {
+    case 'neq':
+    case '!=':
+      return normalizedActual !== normalizedExpected;
+    case 'in':
+      return values.some(item => normalizeAutoMetaKeyValue(item) === normalizedActual);
+    case 'not_in':
+      return !values.some(item => normalizeAutoMetaKeyValue(item) === normalizedActual);
+    case 'contains':
+      return normalizedActual.includes(normalizedExpected);
+    case 'not_contains':
+      return !normalizedActual.includes(normalizedExpected);
+    case 'truthy':
+      return !isBlank(value) && !['0', 'false', 'no', '否'].includes(normalizedActual);
+    case 'falsey':
+      return isBlank(value) || ['0', 'false', 'no', '否'].includes(normalizedActual);
+    case 'gt':
+      return Number.isFinite(actualNumber) && Number.isFinite(expectedNumber) && actualNumber > expectedNumber;
+    case 'gte':
+      return Number.isFinite(actualNumber) && Number.isFinite(expectedNumber) && actualNumber >= expectedNumber;
+    case 'lt':
+      return Number.isFinite(actualNumber) && Number.isFinite(expectedNumber) && actualNumber < expectedNumber;
+    case 'lte':
+      return Number.isFinite(actualNumber) && Number.isFinite(expectedNumber) && actualNumber <= expectedNumber;
+    case 'eq':
+    case '==':
+    default:
+      return normalizedActual === normalizedExpected;
+  }
+}
+
+function applyMetaAssistantDatasetOperations(
+  sourceDataset: FlattenedDataset,
+  operations: MetaAnalysisAssistantOperation[],
+): MetaDatasetOperationResult {
+  let rows = sourceDataset.rows.map(row => ({ ...row }));
+  const columns = new Set(sourceDataset.columns);
+  const applied: string[] = [];
+  const warnings: string[] = [];
+
+  operations.forEach(operation => {
+    const params = operation.params || {};
+    const sources = getMetaOperationSourceColumns(params);
+    const sourceColumn = sources[0] || '';
+    const operationLabel = operation.title || operation.type;
+    try {
+      if (operation.type === 'split_mean_sd') {
+        if (!sourceColumn || !columns.has(sourceColumn)) throw new Error('缺少有效 sourceColumn');
+        const meanColumn = getMetaOperationParamString(params, ['meanColumn', 'targetMeanColumn', 'targetColumn']) || `${sourceColumn}_mean`;
+        const spreadType = /se|sem/i.test(getMetaOperationParamString(params, ['spreadType', 'dispersionType'])) ? 'se' : 'sd';
+        const spreadColumn = getMetaOperationParamString(params, ['spreadColumn', 'sdColumn', 'targetSdColumn']) || `${sourceColumn}_${spreadType}`;
+        let changed = 0;
+        rows.forEach(row => {
+          const parsed = parseMetaMeanSpread(row[sourceColumn]);
+          if (!parsed) return;
+          row[meanColumn] = parsed.mean;
+          if (Number.isFinite(parsed.spread)) row[spreadColumn] = parsed.spread;
+          changed += 1;
+        });
+        columns.add(meanColumn);
+        columns.add(spreadColumn);
+        applied.push(`${operationLabel}：${sourceColumn} → ${meanColumn} + ${spreadColumn}（${changed} 行）`);
+        return;
+      }
+
+      if (operation.type === 'convert_se_to_sd') {
+        const seColumn = getMetaOperationParamString(params, ['seColumn', 'sourceColumn', 'column']) || sourceColumn;
+        const nColumn = getMetaOperationParamString(params, ['nColumn', 'sampleSizeColumn']);
+        const sdColumn = getMetaOperationParamString(params, ['sdColumn', 'targetSdColumn', 'targetColumn']) || `${seColumn}_SD`;
+        if (!seColumn || !columns.has(seColumn) || !nColumn || !columns.has(nColumn)) throw new Error('需要有效的 seColumn 和 nColumn');
+        let changed = 0;
+        rows.forEach(row => {
+          const se = parseNumeric(row[seColumn]);
+          const n = parseNumeric(row[nColumn]);
+          if (!Number.isFinite(se) || !Number.isFinite(n) || n <= 0) return;
+          row[sdColumn] = se * Math.sqrt(n);
+          changed += 1;
+        });
+        columns.add(sdColumn);
+        applied.push(`${operationLabel}：${seColumn} × sqrt(${nColumn}) → ${sdColumn}（${changed} 行）`);
+        return;
+      }
+
+      if (operation.type === 'unit_convert') {
+        if (!sourceColumn || !columns.has(sourceColumn)) throw new Error('缺少有效 sourceColumn');
+        const targetColumn = getMetaOperationParamString(params, ['targetColumn', 'target', 'outputColumn']) || sourceColumn;
+        const factor = Number(params.factor ?? params.multiplier);
+        const offset = Number(params.offset ?? 0);
+        if (!Number.isFinite(factor)) throw new Error('factor 必须是有限数字');
+        let changed = 0;
+        rows.forEach(row => {
+          const value = parseNumeric(row[sourceColumn]);
+          if (!Number.isFinite(value)) return;
+          row[targetColumn] = value * factor + (Number.isFinite(offset) ? offset : 0);
+          changed += 1;
+        });
+        columns.add(targetColumn);
+        applied.push(`${operationLabel}：${sourceColumn} → ${targetColumn}，factor=${factor}（${changed} 行）`);
+        return;
+      }
+
+      if (operation.type === 'range_midpoint') {
+        if (!sourceColumn || !columns.has(sourceColumn)) throw new Error('缺少有效 sourceColumn');
+        const targetColumn = getMetaOperationParamString(params, ['targetColumn', 'target', 'outputColumn']) || `${sourceColumn}_midpoint`;
+        let changed = 0;
+        rows.forEach(row => {
+          const midpoint = parseMetaRangeMidpoint(row[sourceColumn]);
+          if (!Number.isFinite(midpoint)) return;
+          row[targetColumn] = midpoint;
+          changed += 1;
+        });
+        columns.add(targetColumn);
+        applied.push(`${operationLabel}：${sourceColumn} → ${targetColumn}（${changed} 行）`);
+        return;
+      }
+
+      if (operation.type === 'range_group') {
+        if (!sourceColumn || !columns.has(sourceColumn)) throw new Error('缺少有效 sourceColumn');
+        const targetColumn = getMetaOperationParamString(params, ['targetColumn', 'groupColumn', 'target', 'outputColumn']) || `${sourceColumn}_group`;
+        const spec = stringifyCell(params.spec);
+        const groups = parseRangeGroupSpec(spec);
+        if (groups.length === 0) throw new Error('spec 不是有效范围分组规则');
+        const unmatchedLabel = stringifyCell(params.unmatchedLabel) || '未分组';
+        rows.forEach(row => {
+          const value = parseNumeric(row[sourceColumn]);
+          const group = Number.isFinite(value) ? groups.find(item => isNumericInRangeGroup(value, item)) : undefined;
+          row[targetColumn] = group?.label || unmatchedLabel;
+        });
+        columns.add(targetColumn);
+        applied.push(`${operationLabel}：${sourceColumn} → ${targetColumn}`);
+        return;
+      }
+
+      if (operation.type === 'normalize_labels') {
+        if (!sourceColumn || !columns.has(sourceColumn)) throw new Error('缺少有效 sourceColumn');
+        const targetColumn = getMetaOperationParamString(params, ['targetColumn', 'target', 'outputColumn']) || sourceColumn;
+        const mapping = isRecord(params.mapping) ? params.mapping : {};
+        const normalizedMapping = new Map(Object.entries(mapping).map(([key, value]) => [normalizeAutoMetaKeyValue(key), value]));
+        let changed = 0;
+        rows.forEach(row => {
+          const replacement = normalizedMapping.get(normalizeAutoMetaKeyValue(row[sourceColumn]));
+          row[targetColumn] = replacement === undefined ? row[sourceColumn] : replacement;
+          if (replacement !== undefined) changed += 1;
+        });
+        columns.add(targetColumn);
+        applied.push(`${operationLabel}：${sourceColumn} → ${targetColumn}（${changed} 行标准化）`);
+        return;
+      }
+
+      if (operation.type === 'merge_columns') {
+        const mergeColumns = sources.filter(column => columns.has(column));
+        const targetColumn = getMetaOperationParamString(params, ['targetColumn', 'target', 'outputColumn']);
+        if (!targetColumn || mergeColumns.length === 0) throw new Error('需要 columns 和 targetColumn');
+        rows.forEach(row => {
+          row[targetColumn] = firstNonEmpty(...mergeColumns.map(column => row[column]));
+        });
+        columns.add(targetColumn);
+        applied.push(`${operationLabel}：${mergeColumns.join(' + ')} → ${targetColumn}`);
+        return;
+      }
+
+      if (operation.type === 'filter_rows') {
+        const column = getMetaOperationParamString(params, ['column', 'sourceColumn']);
+        if (!column || !columns.has(column)) throw new Error('缺少有效 column');
+        const operator = stringifyCell(params.operator || 'eq').toLowerCase();
+        const values = normalizeStringArray(params.values);
+        const includeMatches = /include|keep|保留/i.test(stringifyCell(params.mode || params.action));
+        const nextRows = rows.filter(row => {
+          const matched = matchMetaOperationFilter(row[column], operator, params.value, values);
+          return includeMatches ? matched : !matched;
+        });
+        if (nextRows.length === 0 && rows.length > 0) throw new Error('该筛选会删除全部数据，已拒绝执行');
+        const removed = rows.length - nextRows.length;
+        rows = nextRows;
+        applied.push(`${operationLabel}：${column}，移除 ${removed} 行`);
+        return;
+      }
+
+      if (operation.type === 'delete_columns') {
+        const deleteColumns = sources.filter(column => columns.has(column));
+        if (deleteColumns.length === 0) throw new Error('没有有效 columns');
+        rows.forEach(row => deleteColumns.forEach(column => delete row[column]));
+        deleteColumns.forEach(column => columns.delete(column));
+        applied.push(`${operationLabel}：删除 ${deleteColumns.join('、')}`);
+        return;
+      }
+
+      if (operation.type === 'add_columns') {
+        const definitions = isRecord(params.columns) ? params.columns : {};
+        const targetColumn = getMetaOperationParamString(params, ['targetColumn', 'target', 'outputColumn']);
+        if (targetColumn) {
+          const source = getMetaOperationParamString(params, ['sourceColumn', 'source']);
+          rows.forEach(row => {
+            row[targetColumn] = source && columns.has(source) ? row[source] : params.value;
+          });
+          columns.add(targetColumn);
+        }
+        Object.entries(definitions).forEach(([column, value]) => {
+          rows.forEach(row => { row[column] = value; });
+          columns.add(column);
+        });
+        if (!targetColumn && Object.keys(definitions).length === 0) throw new Error('没有待新增的列');
+        applied.push(`${operationLabel}：新增 ${[targetColumn, ...Object.keys(definitions)].filter(Boolean).join('、')}`);
+      }
+    } catch (error) {
+      warnings.push(`${operationLabel} 未执行：${(error as Error).message || String(error)}`);
+    }
+  });
+
+  return {
+    dataset: {
+      ...sourceDataset,
+      rows,
+      columns: Array.from(columns),
+    },
+    applied,
+    warnings,
+  };
+}
+
+function resolveGenericMetaTreatmentColumn(
+  dataset: FlattenedDataset,
+  result: MetaAnalysisAssistantResult,
+): string {
+  const understanding = isRecord(result.dataUnderstanding) ? result.dataUnderstanding : {};
+  const groupCandidates = [
+    ...(Array.isArray(understanding.controlGroups) ? understanding.controlGroups : []),
+    ...(Array.isArray(understanding.treatmentGroups) ? understanding.treatmentGroups : []),
+  ];
+  for (const candidate of groupCandidates) {
+    if (!isRecord(candidate)) continue;
+    const column = stringifyCell(candidate.column);
+    if (column && dataset.columns.includes(column)) return column;
+  }
+  const roleCandidates = Array.isArray(understanding.columnRoleMap) ? understanding.columnRoleMap : [];
+  for (const candidate of roleCandidates) {
+    if (!isRecord(candidate) || !/treatment_group|group|处理/i.test(stringifyCell(candidate.role))) continue;
+    const column = stringifyCell(candidate.column);
+    if (column && dataset.columns.includes(column)) return column;
+  }
+  return pickExistingColumn(dataset.columns, ['Treatment (%)', 'Treatment', '处理', '处理组', '处理名称', 'treatment', 'Group', 'group']);
+}
+
+function pickGenericMetaControlRow(
+  candidates: Array<Record<string, unknown>>,
+  treatmentRow: Record<string, unknown>,
+  treatmentColumn: string,
+  outcome: MetaOutcomeConfig,
+  controlRule?: MetaControlRule,
+): Record<string, unknown> | null {
+  if (candidates.length === 0) return null;
+  const requested = stringifyCell(treatmentRow.control_for_contrast || treatmentRow.controlForContrast || treatmentRow['control for contrast']);
+  const requestedRows = requested
+    ? candidates.filter(row => normalizeAutoMetaKeyValue(row[treatmentColumn]) === normalizeAutoMetaKeyValue(requested))
+    : [];
+  const ruleRows = controlRule
+    ? candidates.filter(row => metaControlRowMatchesRule(row, treatmentColumn, controlRule))
+    : [];
+  const pool = requestedRows.length > 0 ? requestedRows : (ruleRows.length > 0 ? ruleRows : candidates);
+  return pool.find(row => {
+    const primary = parseNumeric(row[outcome.controlMean]);
+    const fallback = parseNumeric(row[outcome.treatmentMean]);
+    return Number.isFinite(primary) || Number.isFinite(fallback);
+  }) || pool[0] || null;
+}
+
+function readGenericMetaPairedValue(
+  treatmentRow: Record<string, unknown>,
+  controlRow: Record<string, unknown> | null,
+  treatmentColumn: string | undefined,
+  controlColumn: string | undefined,
+  role: 'treatment' | 'control',
+): number {
+  if (role === 'treatment') {
+    return treatmentColumn ? parseNumeric(treatmentRow[treatmentColumn]) : Number.NaN;
+  }
+  if (controlColumn && controlColumn !== treatmentColumn) {
+    const explicit = parseNumeric(treatmentRow[controlColumn]);
+    if (Number.isFinite(explicit)) return explicit;
+  }
+  if (!controlRow) return Number.NaN;
+  if (controlColumn) {
+    const configured = parseNumeric(controlRow[controlColumn]);
+    if (Number.isFinite(configured)) return configured;
+  }
+  return treatmentColumn ? parseNumeric(controlRow[treatmentColumn]) : Number.NaN;
+}
+
+function buildGenericMetaPairedDataset(
+  sourceDataset: FlattenedDataset,
+  config: Required<MetaRunConfig>,
+  result: MetaAnalysisAssistantResult,
+): GenericMetaPairingResult | null {
+  const treatmentColumn = resolveGenericMetaTreatmentColumn(sourceDataset, result);
+  if (!treatmentColumn) return null;
+  const nInputColumn = pickExistingColumn(sourceDataset.columns, ['N input (kg N ha-1)', 'N input', '施氮量', '施氮量 (kg N ha-1)']);
+  const cropColumn = pickExistingColumn(sourceDataset.columns, ['Crop', '作物', '作物类型']);
+  const seasonColumn = pickExistingColumn(sourceDataset.columns, ['Season', '季节', 'season']);
+  const defaultMatchColumns = [config.studyIdColumn, cropColumn, seasonColumn].filter((column): column is string => !!column && sourceDataset.columns.includes(column));
+  const explicitControlLabels = new Set(
+    sourceDataset.rows
+      .map(row => stringifyCell(row.control_for_contrast || row.controlForContrast || row['control for contrast']).toLowerCase())
+      .filter(Boolean),
+  );
+  config.controlRules.forEach(rule => rule.controlLabels.forEach(label => explicitControlLabels.add(label.toLowerCase())));
+  const controlRows = sourceDataset.rows.filter(row => isAutoMetaControlRow(
+    row,
+    treatmentColumn,
+    nInputColumn,
+    explicitControlLabels,
+    config.controlRules,
+  ));
+  if (controlRows.length === 0) return null;
+
+  const generatedOutcomes = config.outcomes.map((outcome, index) => {
+    const prefix = `meta_${normalizeOutcomeId(outcome.id || outcome.label || `outcome_${index + 1}`)}`.replace(/[^a-zA-Z0-9_\u4e00-\u9fa5]+/g, '_');
+    return {
+      source: outcome,
+      output: {
+        ...outcome,
+        treatmentMean: `${prefix}_treatment_mean`,
+        treatmentSd: `${prefix}_treatment_sd`,
+        treatmentN: `${prefix}_treatment_n`,
+        controlMean: `${prefix}_control_mean`,
+        controlSd: `${prefix}_control_sd`,
+        controlN: `${prefix}_control_n`,
+      } as MetaOutcomeConfig,
+    };
+  });
+  const preparedRows: Array<Record<string, unknown>> = [];
+  let excludedManualReviewCount = 0;
+
+  sourceDataset.rows.forEach((row, rowIndex) => {
+    const treatmentLabel = stringifyCell(row[treatmentColumn]);
+    const requestedControlLabel = stringifyCell(row.control_for_contrast || row.controlForContrast || row['control for contrast']);
+    const controlRule = selectMetaControlRule(config.controlRules, treatmentLabel);
+    if (isAutoMetaControlRow(row, treatmentColumn, nInputColumn, explicitControlLabels, config.controlRules) && !controlRule && !requestedControlLabel) return;
+    if (config.excludeManualReview && config.manualReviewColumn && isMetaManualReviewRequired(row[config.manualReviewColumn])) {
+      excludedManualReviewCount += 1;
+      return;
+    }
+    const matchColumns = Array.from(new Set([...defaultMatchColumns, ...(controlRule?.matchColumns || [])].filter(column => sourceDataset.columns.includes(column))));
+    const matchKey = buildAutoMetaMatchKey(row, matchColumns);
+    const candidateControls = controlRows.filter(controlRow => buildAutoMetaMatchKey(controlRow, matchColumns) === matchKey);
+    const nextRow: Record<string, unknown> = {
+      ...row,
+      meta_ai_source_row_index: rowIndex + 1,
+      meta_ai_match_key: matchKey,
+      meta_ai_treatment_label: treatmentLabel,
+      meta_ai_contrast_id: controlRule?.id || (requestedControlLabel ? 'row_control_for_contrast' : 'default_control'),
+      meta_ai_contrast_label: controlRule?.label || requestedControlLabel || '默认对照',
+    };
+    let hasOutcome = false;
+
+    generatedOutcomes.forEach(({ source, output }) => {
+      const controlRow = pickGenericMetaControlRow(candidateControls, row, treatmentColumn, source, controlRule);
+      const treatmentMean = readGenericMetaPairedValue(row, controlRow, source.treatmentMean, source.controlMean, 'treatment');
+      const controlMean = readGenericMetaPairedValue(row, controlRow, source.treatmentMean, source.controlMean, 'control');
+      if (!Number.isFinite(treatmentMean) || !Number.isFinite(controlMean)) return;
+      const measure = normalizeEffectMeasure(source.measure);
+      if ((measure === 'lnRR' || measure === 'lnRR_mean_only') && (treatmentMean <= 0 || controlMean <= 0)) return;
+      nextRow[output.treatmentMean] = treatmentMean;
+      nextRow[output.controlMean] = controlMean;
+      const treatmentSd = readGenericMetaPairedValue(row, controlRow, source.treatmentSd, source.controlSd, 'treatment');
+      const controlSd = readGenericMetaPairedValue(row, controlRow, source.treatmentSd, source.controlSd, 'control');
+      const treatmentN = readGenericMetaPairedValue(row, controlRow, source.treatmentN, source.controlN, 'treatment');
+      const controlN = readGenericMetaPairedValue(row, controlRow, source.treatmentN, source.controlN, 'control');
+      if (Number.isFinite(treatmentSd)) nextRow[output.treatmentSd || ''] = treatmentSd;
+      if (Number.isFinite(controlSd)) nextRow[output.controlSd || ''] = controlSd;
+      if (Number.isFinite(treatmentN)) nextRow[output.treatmentN || ''] = treatmentN;
+      if (Number.isFinite(controlN)) nextRow[output.controlN || ''] = controlN;
+      hasOutcome = true;
+    });
+    if (hasOutcome) preparedRows.push(nextRow);
+  });
+  if (preparedRows.length === 0) return null;
+
+  const addedColumns = generatedOutcomes.flatMap(({ output }) => [
+    output.treatmentMean,
+    output.treatmentSd,
+    output.treatmentN,
+    output.controlMean,
+    output.controlSd,
+    output.controlN,
+  ].filter((column): column is string => !!column));
+  const columns = Array.from(new Set([
+    ...sourceDataset.columns,
+    ...addedColumns,
+    'meta_ai_source_row_index',
+    'meta_ai_match_key',
+    'meta_ai_treatment_label',
+    'meta_ai_contrast_id',
+    'meta_ai_contrast_label',
+  ]));
+  const dataset: FlattenedDataset = {
+    tables: [{
+      id: 'meta-ai-generic-prepared',
+      pdfId: 'meta-ai-prepared',
+      pdfName: 'Meta AI generic prepared contrasts',
+      pdfTitle: 'Meta AI generic prepared contrasts',
+      columns,
+      rows: preparedRows,
+      rowCount: preparedRows.length,
+      realRowCount: preparedRows.length,
+    }],
+    rows: preparedRows,
+    columns,
+    pdfCount: sourceDataset.pdfCount,
+  };
+  return {
+    dataset,
+    config: {
+      ...config,
+      outcomes: generatedOutcomes.map(item => item.output),
+    },
+    excludedManualReviewCount,
+    notes: [`通用处理/对照配对：使用 ${treatmentColumn} 识别处理，生成 ${preparedRows.length} 行配对数据。`],
+  };
+}
+
+async function saveGenericMetaPreparedDataset(
+  input: MetaAnalysisAssistantInput,
+  dataset: FlattenedDataset,
+  config: Required<MetaRunConfig>,
+  notes: string[],
+  excludedManualReviewCount = 0,
+): Promise<{ dataset: FlattenedDataset; config: Required<MetaRunConfig>; info: MetaAnalysisPreparedDatasetInfo } | null> {
+  const preview = buildEffectRows(dataset, config);
+  if (preview.effectRows.length === 0) return null;
+  const storagePath = path.join(getMetaAnalysisAssistantStorageDir(input.userId, input.workspace.storageRoot), `${input.workspace.id}.prepared.json`);
+  await fs.promises.mkdir(path.dirname(storagePath), { recursive: true });
+  const info: MetaAnalysisPreparedDatasetInfo = {
+    workspaceId: input.workspace.id,
+    generatedAt: new Date().toISOString(),
+    rowCount: dataset.rows.length,
+    columnCount: dataset.columns.length,
+    effectRowCount: preview.effectRows.length,
+    skippedCandidateCount: preview.skippedRows.length,
+    excludedManualReviewCount,
+    selectedMeasures: Array.from(new Set(config.outcomes.map(outcome => normalizeEffectMeasure(outcome.measure)))),
+    storagePath,
+    notes,
+  };
+  await fs.promises.writeFile(storagePath, JSON.stringify({
+    source: 'meta-analysis-ai-generic-prepared-dataset',
+    info,
+    config,
+    rows: dataset.rows,
+    columns: dataset.columns,
+  }, null, 2), 'utf-8');
+  return { dataset, config, info };
+}
+
 async function prepareMetaAssistantConfirmedDataset(
+  input: MetaAnalysisAssistantInput,
+  result: MetaAnalysisAssistantResult,
+): Promise<{ dataset: FlattenedDataset; config: Required<MetaRunConfig>; info: MetaAnalysisPreparedDatasetInfo } | null> {
+  const sourceDataset = await loadMetaAssistantWorkspaceDataset(input.workspace);
+  if (!sourceDataset || sourceDataset.rows.length === 0) return null;
+  const operationResult = applyMetaAssistantDatasetOperations(sourceDataset, result.operations || []);
+  const transformedDataset = operationResult.dataset;
+  const configInput: MetaRunConfig = {
+    ...input.recommendedConfig,
+    ...(result.suggestedConfig || {}),
+    outcomes: result.suggestedConfig?.outcomes?.length
+      ? result.suggestedConfig.outcomes
+      : input.recommendedConfig.outcomes,
+  };
+  const config = normalizeRunConfig(configInput, transformedDataset, inferCandidateOutcomes(transformedDataset));
+  const treatmentColumn = resolveGenericMetaTreatmentColumn(transformedDataset, result);
+  const requiresPairing = !!treatmentColumn && config.outcomes.some(outcome => (
+    outcome.treatmentMean === outcome.controlMean
+    || (!!outcome.treatmentSd && outcome.treatmentSd === outcome.controlSd)
+    || (!!outcome.treatmentN && outcome.treatmentN === outcome.controlN)
+  ));
+  const operationNotes = [
+    '通用自动整理：按 AI 已确认的 suggestedConfig 处理任意因变量，不修改原始编码表。',
+    ...operationResult.applied,
+    ...operationResult.warnings.map(warning => `操作警告：${warning}`),
+  ];
+
+  if (!requiresPairing) {
+    const direct = await saveGenericMetaPreparedDataset(input, transformedDataset, config, operationNotes);
+    if (direct) return direct;
+  }
+  const paired = buildGenericMetaPairedDataset(transformedDataset, config, result);
+  if (paired) {
+    const saved = await saveGenericMetaPreparedDataset(
+      input,
+      paired.dataset,
+      paired.config,
+      [...operationNotes, ...paired.notes],
+      paired.excludedManualReviewCount,
+    );
+    if (saved) return saved;
+  }
+
+  // Compatibility fallback for historical N2O/NO workspaces created before
+  // the generic operation/config contract existed.
+  return prepareLegacyMetaAssistantConfirmedDataset(input, result);
+}
+
+async function prepareLegacyMetaAssistantConfirmedDataset(
   input: MetaAnalysisAssistantInput,
   result: MetaAnalysisAssistantResult,
 ): Promise<{ dataset: FlattenedDataset; config: Required<MetaRunConfig>; info: MetaAnalysisPreparedDatasetInfo } | null> {
@@ -2245,7 +3499,8 @@ async function prepareMetaAssistantConfirmedDataset(
   };
   if (config.outcomes.length === 0) return null;
 
-  const storagePath = path.join(getUserUploadDir(input.userId), 'meta-analysis', 'ai-workspaces', `${input.workspace.id}.prepared.json`);
+  const storagePath = path.join(getMetaAnalysisAssistantStorageDir(input.userId, input.workspace.storageRoot), `${input.workspace.id}.prepared.json`);
+  await fs.promises.mkdir(path.dirname(storagePath), { recursive: true });
   const effectPreview = buildEffectRows(preparedDataset, config);
   const info: MetaAnalysisPreparedDatasetInfo = {
     workspaceId: input.workspace.id,
@@ -2713,7 +3968,11 @@ function sanitizeMetaAssistantResult(result: MetaAnalysisAssistantResult, input:
     dataUnderstanding: isRecord(record.dataUnderstanding) ? record.dataUnderstanding : buildLocalMetaAssistantDataUnderstanding(input),
     operations,
     rPlan: isRecord(record.rPlan) ? record.rPlan : undefined,
-    suggestedConfig: sanitizeMetaAssistantSuggestedConfig(record.suggestedConfig, input),
+    suggestedConfig: sanitizeMetaAssistantSuggestedConfig(
+      record.suggestedConfig,
+      input,
+      collectMetaOperationOutputColumns(operations),
+    ),
     questions: normalizeStringArray(record.questions).slice(0, 8),
     warnings: normalizeStringArray(record.warnings),
     rawText: stringifyCell(record.rawText),
@@ -2763,9 +4022,13 @@ function applyMetaAssistantConfirmationState(
   };
 }
 
-function sanitizeMetaAssistantSuggestedConfig(input: unknown, context: MetaAnalysisAssistantInput): Partial<MetaRunConfig> {
+function sanitizeMetaAssistantSuggestedConfig(
+  input: unknown,
+  context: MetaAnalysisAssistantInput,
+  operationOutputColumns: string[] = [],
+): Partial<MetaRunConfig> {
   const record = isRecord(input) ? input : {};
-  const columns = context.workspace.columns;
+  const columns = Array.from(new Set([...context.workspace.columns, ...operationOutputColumns]));
   const fallback = context.recommendedConfig;
   const modelInput = stringifyCell(record.model || fallback.model);
   const model: MetaModelType = modelInput === 'fixed' || modelInput === 'mixed' ? modelInput : 'random';
@@ -4196,6 +5459,63 @@ function normalizeStringArray(value: unknown): string[] {
   const text = stringifyCell(value);
   if (!text) return [];
   return text.split(/[;,，；\n]/).map(item => item.trim()).filter(Boolean);
+}
+
+function normalizeMetaAssistantSupplementalContext(
+  value: unknown,
+): NonNullable<MetaAnalysisAssistantInput['supplementalContext']> {
+  const source = value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+  const rawWorkspace = source.workspaceDirectory && typeof source.workspaceDirectory === 'object' && !Array.isArray(source.workspaceDirectory)
+    ? source.workspaceDirectory as Record<string, unknown>
+    : null;
+  const workspacePermission = stringifyCell(rawWorkspace?.permission);
+  const workspacePath = stringifyCell(rawWorkspace?.path).slice(0, 4096);
+  const normalizeFiles = (input: unknown, limit: number) => (Array.isArray(input) ? input : [])
+    .slice(0, limit)
+    .map(item => item && typeof item === 'object' && !Array.isArray(item) ? item as Record<string, unknown> : {})
+    .map(item => ({
+      name: stringifyCell(item.name).slice(0, 512),
+      path: stringifyCell(item.path).slice(0, 4096),
+      type: stringifyCell(item.type).slice(0, 120),
+      kind: stringifyCell(item.kind).slice(0, 120),
+      size: Number.isFinite(Number(item.size)) ? Math.max(0, Number(item.size)) : undefined,
+    }))
+    .filter(item => item.name || item.path);
+  const rawSources = source.selectedContextSources && typeof source.selectedContextSources === 'object' && !Array.isArray(source.selectedContextSources)
+    ? source.selectedContextSources as Record<string, unknown>
+    : {};
+  const selectedContextSources = Object.fromEntries(
+    Object.entries(rawSources)
+      .slice(0, 20)
+      .map(([key, enabled]) => [key.slice(0, 120), enabled === true]),
+  );
+  return {
+    workspaceDirectory: workspacePath
+      ? {
+          enabled: rawWorkspace?.enabled === true,
+          path: workspacePath,
+          permission: workspacePermission === 'workspace-write' || workspacePermission === 'danger-full-access'
+            ? workspacePermission
+            : 'read-only',
+          aiWorkRoot: stringifyCell(rawWorkspace?.aiWorkRoot).slice(0, 4096),
+        }
+      : undefined,
+    workspaceFiles: normalizeFiles(source.workspaceFiles, 20).map(item => ({
+      name: item.name,
+      path: item.path,
+      kind: item.kind,
+    })),
+    chatAttachments: normalizeFiles(source.chatAttachments, 12).map(item => ({
+      name: item.name,
+      path: item.path,
+      type: item.type,
+      size: item.size,
+    })),
+    selectedContextSources,
+    selectedSkills: normalizeStringArray(source.selectedSkills).slice(0, 30),
+  };
 }
 
 function pickExistingColumn(columns: string[], candidates: string[]): string {

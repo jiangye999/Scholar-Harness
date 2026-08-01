@@ -247,13 +247,7 @@ export function filterLiteraturesByKeywords(
 ): KeywordFilterResult {
   const offset = normalizeOffset(options.offset);
   const limit = normalizeLimit(options.limit, 100, 1000);
-  const filtered = papers.filter(paper =>
-    matchesYear(paper, options) &&
-    matchesJournal(paper, options) &&
-    matchesDocumentType(paper, options) &&
-    matchesTextQuery(paper, options.query) &&
-    matchesKeywordFilter(paper, options, config)
-  );
+  const filtered = filterAllLiteraturesByKeywords(papers, options, config);
   const page = filtered.slice(offset, offset + limit);
 
   return {
@@ -261,8 +255,22 @@ export function filterLiteraturesByKeywords(
     offset,
     limit,
     hasMore: offset + page.length < filtered.length,
-    papers: page.map(toLiteraturePreview),
+    papers: page,
   };
+}
+
+export function filterAllLiteraturesByKeywords(
+  papers: LiteratureRecord[],
+  options: KeywordFilterOptions,
+  config: OuterTagsConfig = EMPTY_CONFIG
+): LiteraturePreview[] {
+  return papers.filter(paper =>
+    matchesYear(paper, options) &&
+    matchesJournal(paper, options) &&
+    matchesDocumentType(paper, options) &&
+    matchesTextQuery(paper, options.query) &&
+    matchesKeywordFilter(paper, options, config)
+  ).map(toLiteraturePreview);
 }
 
 export function manualMergeKeywords(

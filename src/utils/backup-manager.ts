@@ -67,16 +67,26 @@ export class BackupManager {
 
       await fs.mkdir(path.dirname(targetDir), { recursive: true });
 
-      if (await this.pathExists(targetDir)) {
+      let effectiveTargetDir = targetDir;
+      try {
+        effectiveTargetDir = await fs.realpath(targetDir);
+      } catch {
+        // A missing target is created below.
+      }
+
+      if (await this.pathExists(effectiveTargetDir)) {
         const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-        const archivePath = `${targetDir}.archive-${timestamp}`;
-        await fs.rename(targetDir, archivePath);
+        const archiveRoot = path.join(this.backupDir, 'restored-data-archives');
+        await fs.mkdir(archiveRoot, { recursive: true });
+        const archivePath = path.join(archiveRoot, `${path.basename(effectiveTargetDir)}-${timestamp}`);
+        await fs.rename(effectiveTargetDir, archivePath);
         logger.info(`[BackupManager] Archived existing data to: ${archivePath}`);
       }
 
-      await this.copyDirectory(backupPath, targetDir);
+      await fs.mkdir(effectiveTargetDir, { recursive: true });
+      await this.copyDirectory(backupPath, effectiveTargetDir);
 
-      logger.info(`[BackupManager] Restored backup: ${backupName} -> ${targetDir}`);
+      logger.info(`[BackupManager] Restored backup: ${backupName} -> ${effectiveTargetDir}`);
       return true;
     } catch (error) {
       logger.error('[BackupManager] Failed to restore backup:', error);

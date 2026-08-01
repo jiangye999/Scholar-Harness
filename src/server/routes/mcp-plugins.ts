@@ -8,8 +8,10 @@ import { chatBridge } from '../../bridge/chat-bridge/chat-bridge';
 import { logger } from '../../utils/logger';
 import { getDataDir } from '../../utils/paths';
 import {
+  BROWSER_ASSIST_PLUGIN_ID,
   discoverMcpPlugin,
   getMcpMarketplaceConfigStatus,
+  installBrowserAssistMcpPlugin,
   listMcpPlugins,
   removeMcpPlugin,
   saveMcpPlugin,
@@ -278,6 +280,26 @@ router.get('/', async (_req, res) => {
   }
 });
 
+router.post('/browser-assist/install', async (_req, res) => {
+  try {
+    const plugin = await installBrowserAssistMcpPlugin();
+    const ready = plugin.status === 'ready' && plugin.enabled && plugin.tools.length > 0;
+    res.status(ready ? 200 : 422).json({
+      success: ready,
+      plugin,
+      error: ready
+        ? undefined
+        : (plugin.error || 'Browser Assist MCP 未发现可用的安全浏览器工具'),
+    });
+  } catch (error) {
+    logger.error('[BrowserAssist] 一键安装失败', error);
+    res.status(500).json({
+      success: false,
+      error: (error as Error).message || 'Browser Assist MCP 安装失败',
+    });
+  }
+});
+
 router.post('/', async (req, res) => {
   try {
     const plugin = await saveMcpPlugin(req.body || {});
@@ -302,7 +324,12 @@ router.post('/:id/toggle', async (req, res) => {
 router.post('/:id/discover', async (req, res) => {
   try {
     const id = idSchema.parse(req.params.id);
-    const plugin = await discoverMcpPlugin(id);
+    const plugin = await discoverMcpPlugin(
+      id,
+      id === BROWSER_ASSIST_PLUGIN_ID
+        ? { initializeTimeoutMs: 180_000, listToolsTimeoutMs: 60_000 }
+        : {},
+    );
     res.status(plugin.status === 'ready' ? 200 : 422).json({
       success: plugin.status === 'ready',
       plugin,

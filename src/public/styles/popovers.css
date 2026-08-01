@@ -1,0 +1,133 @@
+    /* @ 提及下拉菜单样式 */
+    .mention-dropdown {
+      position: absolute;
+      bottom: 100%;
+      left: 0;
+      right: 60px;
+      background: var(--bg-secondary);
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+      z-index: 100;
+      margin-bottom: 8px;
+      overflow-x: hidden;
+      overflow-y: auto;
+      max-height: min(360px, 46vh);
+    }
+    .mention-item {
+      display: flex;
+      align-items: center;
+      padding: 10px 14px;
+      cursor: pointer;
+      transition: background 0.15s ease;
+    }
+    .mention-item:hover, .mention-item.active {
+      background: rgba(135, 206, 250, 0.2);
+    }
+    .mention-item .mention-icon {
+      margin-right: 10px;
+      width: 20px;
+      height: 20px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+    }
+    .mention-item .mention-icon .ui-icon { width: 18px; height: 18px; }
+    .mention-item .mention-name {
+      font-weight: 600;
+      color: var(--text-primary);
+      margin-right: 12px;
+    }
+    .mention-item .mention-desc {
+      font-size: 12px;
+      color: var(--text-secondary);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .workspace-mention-status {
+      padding: 11px 14px;
+      color: var(--text-secondary);
+      font-size: 12px;
+      line-height: 1.45;
+    }
+    .workspace-mention-file-main {
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+    .workspace-mention-file-name {
+      color: var(--text-primary);
+      font-size: 13px;
+      font-weight: 600;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .workspace-mention-file-path {
+      color: var(--text-secondary);
+      font-size: 11px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .slash-item {
+      display: flex;
+      align-items: center;
+      padding: 10px 14px;
+      cursor: pointer;
+      transition: background 0.15s ease;
+    }
+    .slash-item:hover, .slash-item.active {
+      background: rgba(135, 206, 250, 0.2);
+    }
+    .slash-item .mention-icon {
+      margin-right: 10px;
+      width: 20px;
+      height: 20px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+    }
+    .slash-item .mention-icon .ui-icon { width: 18px; height: 18px; }
+    .slash-item .mention-name {
+      font-weight: 600;
+      color: var(--text-primary);
+      margin-right: 12px;
+    }
+    .slash-item .mention-desc {
+      font-size: 12px;
+      color: var(--text-secondary);
+    }
+    .input-wrapper {
+      position: relative;
+    }
+    .chat-placeholder {
+      position: absolute;
+      top: 16px;
+      left: 56px;
+      right: 50px;
+      color: var(--text-secondary);
+      font-size: 16px;
+      pointer-events: none;
+      z-index: 1;
+    }
+    .chat-placeholder .red {
+      color: #ff6b6b;
+      font-weight: 600;
+    }
+    .chat-input:not(:placeholder-shown) + .chat-placeholder {
+      display: none;
+    }
+    .chat-input:focus + .chat-placeholder {
+      display: none !important;
+    }
+    
+    /* 保存按钮脉冲动画 */
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.5; }
+    }

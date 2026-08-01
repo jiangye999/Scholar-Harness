@@ -3,10 +3,9 @@ import * as path from 'path';
 
 import { describe, expect, it } from 'vitest';
 
-const source = fs.readFileSync(
-  path.resolve(__dirname, '../../src/public/index.html'),
-  'utf-8',
-);
+import { readPublicAppSource } from '../helpers/public-app-source';
+
+const source = readPublicAppSource();
 
 function buildListRenderer(): (input: string) => string {
   const start = source.indexOf('function getMarkdownListLevel');
@@ -50,7 +49,28 @@ describe('message ordered-list rendering', () => {
       /\.message\.bot \.content\s*\{[\s\S]*?white-space:\s*normal;/,
     );
     expect(source).toContain("replace(/^([•‣◦])\\s*\\n[ \\t]*(?=\\S)/gm, '$1 ')");
+    expect(source).toContain(".replace(/^(\\s*)(?:`([•‣◦])`|([•‣◦]))\\s+(?=\\S)/gm, '$1- ')");
     expect(source).toContain('Math.min(3, Math.max(1, Math.floor((width - 2) / 2)))');
+  });
+
+  it('keeps mixed scientific emphasis in one horizontal inline flow', () => {
+    const rendered = renderList(
+      '3. **微生物机制方面**：AOB（*amoA-b*）比AOA（*amoA-a*）更敏感；*ureC*丰度下降。',
+    );
+
+    expect(rendered).toContain('<span class="message-list-marker">3.</span>');
+    expect(rendered).toContain(
+      '<span class="message-list-body">**微生物机制方面**：AOB（*amoA-b*）比AOA（*amoA-a*）更敏感；*ureC*丰度下降。</span>',
+    );
+    expect(source).toContain(
+      '.message.bot .message-list-body.message-inline-layout-normalized :where(',
+    );
+    expect(source).toMatch(
+      /\.message-list-body\.message-inline-layout-normalized[\s\S]*?display:\s*inline !important;[\s\S]*?position:\s*static !important;/,
+    );
+    expect(source).toContain(
+      "body.classList.add('message-inline-layout-normalized')",
+    );
   });
 
   it('keeps numbering across indented file metadata continuation lines', () => {

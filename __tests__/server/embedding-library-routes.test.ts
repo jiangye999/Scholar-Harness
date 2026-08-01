@@ -123,4 +123,94 @@ describe("embedding-library routes", () => {
     expect(response.body.total).toBe(2);
     expect(response.body.papers.map((paper: { id: string }) => paper.id)).toEqual(["paper-001", "paper-002"]);
   });
+
+  it("builds a bounded Obsidian graph from the active literature filter", async () => {
+    const app = createTestApp(createRecords(105));
+
+    const response = await request(app)
+      .post("/api/embedding-library/graph")
+      .send({
+        options: { keywords: ["nitrogen"], mode: "OR" },
+        keywordLimit: 20,
+        paperLimit: 40,
+      })
+      .expect(200);
+
+    expect(response.body.success).toBe(true);
+    expect(response.body.total).toBe(2);
+    expect(response.body.graph.paperCount).toBe(2);
+    expect(response.body.graph.keywordCount).toBeGreaterThan(0);
+    expect(response.body.graph.nodes.some((node: { type: string; label: string }) =>
+      node.type === "keyword" && node.label === "nitrogen"
+    )).toBe(true);
+    expect(response.body.graph.edges.every((edge: { source: string; target: string }) =>
+      edge.source.startsWith("keyword:") && edge.target.startsWith("paper:")
+    )).toBe(true);
+  });
+
+  it("uses every matching literature record when aggregating the graph", async () => {
+    const app = createTestApp(createRecords(105));
+
+    const response = await request(app)
+      .post("/api/embedding-library/graph")
+      .send({ keywordLimit: 20, paperLimit: 40 })
+      .expect(200);
+
+    expect(response.body.success).toBe(true);
+    expect(response.body.total).toBe(105);
+    expect(response.body.sampled).toBe(105);
+    expect(response.body.truncated).toBe(false);
+    expect(response.body.graph.paperCount).toBe(105);
+  });
+
+  it("omits untagged papers and never renders a shared untagged keyword node", async () => {
+    const records = createRecords(2);
+    records[1].keywords = [];
+    records[1].aiKeywords = [];
+    const app = createTestApp(records);
+
+    const response = await request(app)
+      .post("/api/embedding-library/graph")
+      .send({})
+      .expect(200);
+
+    expect(response.body.graph.paperCount).toBe(1);
+    expect(response.body.graph.nodes.some((node: { label: string }) =>
+      node.label === "未标注关键词"
+    )).toBe(false);
+    expect(response.body.graph.nodes.some((node: { id: string }) =>
+      node.id === "paper:paper-002"
+    )).toBe(false);
+    expect(response.body.graph.edges.some((edge: { target: string }) =>
+      edge.target === "paper:paper-002"
+    )).toBe(false);
+  });
+
+  it("uses quick-filter merged tags as graph nodes and connects their papers", async () => {
+    const app = createTestApp(createRecords(3), {
+      promotedTags: [],
+      mergedTags: [{
+        name: "nitrogen-system",
+        originalKeywords: ["nitrogen", "maize"],
+        count: 2,
+        literatureIds: ["paper-001", "paper-002"],
+      }],
+    });
+
+    const response = await request(app)
+      .post("/api/embedding-library/graph")
+      .send({})
+      .expect(200);
+
+    const mergedNode = response.body.graph.nodes.find((node: { type: string; label: string }) =>
+      node.type === "keyword" && node.label === "nitrogen-system"
+    );
+    expect(mergedNode).toBeTruthy();
+    expect(response.body.graph.nodes.some((node: { type: string; label: string }) =>
+      node.type === "keyword" && ["nitrogen", "maize"].includes(node.label)
+    )).toBe(false);
+    expect(response.body.graph.edges.filter((edge: { source: string }) =>
+      edge.source === mergedNode.id
+    )).toHaveLength(2);
+  });
 });

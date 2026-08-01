@@ -3,7 +3,9 @@ import path from 'path';
 
 import { describe, expect, it } from 'vitest';
 
-const html = readFileSync(path.resolve(__dirname, '../../src/public/index.html'), 'utf-8');
+import { readPublicAppSource } from '../helpers/public-app-source';
+
+const html = readPublicAppSource();
 const chatBridgeRoute = readFileSync(path.resolve(__dirname, '../../src/server/routes/chat-bridge.ts'), 'utf-8');
 
 describe('target venue peer review Skill UI', () => {
@@ -26,7 +28,8 @@ describe('target venue peer review Skill UI', () => {
   it('auto-loads the full bundled Skill before sending a review request', () => {
     expect(chatBridgeRoute).toContain('if (targetVenueReviewContext?.enabled)');
     expect(chatBridgeRoute).toContain("targetVenueReviewContext.skillId || 'scholar-harness-core:target-venue-peer-review'");
-    expect(chatBridgeRoute).toContain('context.autoAgentSkillPrompt = autoLoadedReviewSkill.content');
+    expect(chatBridgeRoute).toContain('if (autoLoadedReviewSkill.ok && autoLoadedReviewSkill.content)');
+    expect(chatBridgeRoute).toContain('context.autoAgentSkillPrompt = [');
     expect(chatBridgeRoute).toContain('上述内置 Skill 已由应用自动加载');
   });
 });

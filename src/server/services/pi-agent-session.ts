@@ -52,7 +52,30 @@ interface PiPersistedSession {
   conversationId: string;
   pending: PiQueuedMessage[];
   history: PiQueuedMessage[];
+  run?: PiPersistedRun;
   updatedAt: string;
+}
+
+export type PiRunStatus = 'running' | 'cancelling' | 'completed' | 'cancelled' | 'error' | 'interrupted';
+
+export interface PiRunEvent {
+  sequence: number;
+  type: 'status' | 'chunk' | 'complete' | 'error';
+  payload: Record<string, unknown>;
+  createdAt: string;
+}
+
+export interface PiPersistedRun {
+  runId: string;
+  provider: string;
+  startedAt: string;
+  updatedAt: string;
+  status: PiRunStatus;
+  cancellationRequestedAt?: string;
+  completedAt?: string;
+  error?: string;
+  lastEventSequence: number;
+  events: PiRunEvent[];
 }
 
 interface PiActiveRun {
@@ -60,6 +83,7 @@ interface PiActiveRun {
   provider: string;
   startedAt: string;
   cancellationRequestedAt?: string;
+  abortController: AbortController;
 }
 
 export interface PiSessionPublicState {
@@ -72,6 +96,11 @@ export interface PiSessionPublicState {
   startedAt?: string;
   cancellationRequested?: boolean;
   cancellationRequestedAt?: string;
+  runStatus?: PiRunStatus;
+  completedAt?: string;
+  runError?: string;
+  lastEventSequence: number;
+  runEvents: PiRunEvent[];
   pending: PiQueuedMessage[];
   recent: PiQueuedMessage[];
   steeringCount: number;
@@ -86,6 +115,9 @@ const MAX_PENDING_MESSAGES = 100;
 const MAX_HISTORY_MESSAGES = 80;
 const MAX_MESSAGE_LENGTH = 20_000;
 const CONTINUATION_CLAIM_LEASE_MS = 120_000;
+const MAX_RUN_EVENTS = 600;
+const MAX_RUN_EVENT_PAYLOAD_CHARS = 1_500_000;
+const RUN_CHUNK_SAVE_DEBOUNCE_MS = 250;
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -103,6 +135,76 @@ function safeSegment(value: string, fallback: string): string {
 
 function cloneMessage(message: PiQueuedMessage): PiQueuedMessage {
   return JSON.parse(JSON.stringify(message)) as PiQueuedMessage;
+}
+
+function cloneRunEvent(event: PiRunEvent): PiRunEvent {
+  return JSON.parse(JSON.stringify(event)) as PiRunEvent;
+}
+
+function sanitizeRunPayload(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+  const output: Record<string, unknown> = {};
+  for (const [key, raw] of Object.entries(value as Record<string, unknown>).slice(0, 30)) {
+    if (typeof raw === 'string') output[key] = raw.slice(0, MAX_RUN_EVENT_PAYLOAD_CHARS);
+    else if (typeof raw === 'number' && Number.isFinite(raw)) output[key] = raw;
+    else if (typeof raw === 'boolean') output[key] = raw;
+    else if (raw === null) output[key] = null;
+  }
+  return output;
+}
+
+function normalizePersistedRun(value: unknown): PiPersistedRun | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const raw = value as Partial<PiPersistedRun>;
+  const runId = String(raw.runId || '').trim();
+  if (!runId) return undefined;
+  const allowedStatuses: PiRunStatus[] = [
+    'running',
+    'cancelling',
+    'completed',
+    'cancelled',
+    'error',
+    'interrupted',
+  ];
+  const status = allowedStatuses.includes(raw.status as PiRunStatus)
+    ? raw.status as PiRunStatus
+    : 'interrupted';
+  const events = Array.isArray(raw.events)
+    ? raw.events.slice(-MAX_RUN_EVENTS).map((event, index) => {
+        const candidate = event && typeof event === 'object' && !Array.isArray(event)
+          ? event as Partial<PiRunEvent>
+          : {};
+        const type = ['status', 'chunk', 'complete', 'error'].includes(String(candidate.type))
+          ? candidate.type as PiRunEvent['type']
+          : 'status';
+        return {
+          sequence: Number.isFinite(Number(candidate.sequence))
+            ? Math.max(1, Math.floor(Number(candidate.sequence)))
+            : index + 1,
+          type,
+          payload: sanitizeRunPayload(candidate.payload),
+          createdAt: String(candidate.createdAt || nowIso()),
+        };
+      })
+    : [];
+  const lastEventSequence = Math.max(
+    Number(raw.lastEventSequence || 0),
+    events.reduce((maximum, event) => Math.max(maximum, event.sequence), 0),
+  );
+  return {
+    runId,
+    provider: String(raw.provider || 'auto'),
+    startedAt: String(raw.startedAt || nowIso()),
+    updatedAt: String(raw.updatedAt || nowIso()),
+    status,
+    cancellationRequestedAt: raw.cancellationRequestedAt
+      ? String(raw.cancellationRequestedAt)
+      : undefined,
+    completedAt: raw.completedAt ? String(raw.completedAt) : undefined,
+    error: raw.error ? String(raw.error).slice(0, 4000) : undefined,
+    lastEventSequence,
+    events,
+  };
 }
 
 function sanitizeRecordList<T extends Record<string, unknown>>(value: unknown, maxItems: number): T[] {
@@ -129,6 +231,7 @@ function sanitizeRecordList<T extends Record<string, unknown>>(value: unknown, m
 export class PiAgentSessionManager {
   private readonly sessions = new Map<string, PiPersistedSession>();
   private readonly activeRuns = new Map<string, PiActiveRun>();
+  private readonly pendingSaveTimers = new Map<string, NodeJS.Timeout>();
 
   private getKey(userId: string, conversationId: string): string {
     return `${userId}\u0001${conversationId}`;
@@ -170,8 +273,19 @@ export class PiAgentSessionManager {
           conversationId,
           pending: Array.isArray(parsed.pending) ? parsed.pending.slice(0, MAX_PENDING_MESSAGES) : [],
           history: Array.isArray(parsed.history) ? parsed.history.slice(-MAX_HISTORY_MESSAGES) : [],
+          run: normalizePersistedRun(parsed.run),
           updatedAt: String(parsed.updatedAt || nowIso()),
         };
+        // Runtime AbortControllers cannot survive a local-server restart. Keep
+        // the journal for diagnosis/replay, but never advertise a ghost run as
+        // active after the process has restarted.
+        if (session.run?.status === 'running' || session.run?.status === 'cancelling') {
+          session.run.status = 'interrupted';
+          session.run.completedAt = nowIso();
+          session.run.updatedAt = session.run.completedAt;
+          session.run.error = 'Local service restarted before the Agent run settled';
+          recoveredProcessingClaim = true;
+        }
         // A process restart cannot preserve an in-flight claim. Put it back in
         // the queue so a user instruction is never lost after closing the app.
         session.pending.forEach(item => {
@@ -193,6 +307,12 @@ export class PiAgentSessionManager {
   }
 
   private save(session: PiPersistedSession): void {
+    const key = this.getKey(session.userId, session.conversationId);
+    const pendingTimer = this.pendingSaveTimers.get(key);
+    if (pendingTimer) {
+      clearTimeout(pendingTimer);
+      this.pendingSaveTimers.delete(key);
+    }
     session.updatedAt = nowIso();
     const filePath = this.getSessionPath(session.userId, session.conversationId);
     const directory = path.dirname(filePath);
@@ -206,6 +326,17 @@ export class PiAgentSessionManager {
       fs.renameSync(temporaryPath, filePath);
       logger.debug('[PiSession] Replaced queue state after atomic rename fallback', error);
     }
+  }
+
+  private scheduleSave(session: PiPersistedSession): void {
+    const key = this.getKey(session.userId, session.conversationId);
+    if (this.pendingSaveTimers.has(key)) return;
+    const timer = setTimeout(() => {
+      this.pendingSaveTimers.delete(key);
+      this.save(session);
+    }, RUN_CHUNK_SAVE_DEBOUNCE_MS);
+    timer.unref?.();
+    this.pendingSaveTimers.set(key, timer);
   }
 
   private recoverExpiredContinuationClaims(session: PiPersistedSession): void {
@@ -236,11 +367,21 @@ export class PiAgentSessionManager {
       userId,
       conversationId,
       running: Boolean(active),
-      runId: active?.runId,
-      provider: active?.provider,
-      startedAt: active?.startedAt,
-      cancellationRequested: Boolean(active?.cancellationRequestedAt),
-      cancellationRequestedAt: active?.cancellationRequestedAt,
+      runId: active?.runId || session.run?.runId,
+      provider: active?.provider || session.run?.provider,
+      startedAt: active?.startedAt || session.run?.startedAt,
+      cancellationRequested: Boolean(
+        active?.cancellationRequestedAt || session.run?.cancellationRequestedAt
+      ),
+      cancellationRequestedAt:
+        active?.cancellationRequestedAt || session.run?.cancellationRequestedAt,
+      runStatus: active
+        ? (active.cancellationRequestedAt ? 'cancelling' : 'running')
+        : session.run?.status,
+      completedAt: session.run?.completedAt,
+      runError: session.run?.error,
+      lastEventSequence: session.run?.lastEventSequence || 0,
+      runEvents: (session.run?.events || []).map(cloneRunEvent),
       pending: pending.map(cloneMessage),
       recent: session.history.slice(-20).map(cloneMessage),
       steeringCount,
@@ -262,9 +403,79 @@ export class PiAgentSessionManager {
       runId: `pi_run_${randomUUID()}`,
       provider: String(provider || 'auto'),
       startedAt: nowIso(),
+      abortController: new AbortController(),
     };
     this.activeRuns.set(key, active);
+    const session = this.load(userId, conversationId);
+    session.run = {
+      runId: active.runId,
+      provider: active.provider,
+      startedAt: active.startedAt,
+      updatedAt: active.startedAt,
+      status: 'running',
+      lastEventSequence: 0,
+      events: [],
+    };
+    this.save(session);
     return { accepted: true, runId: active.runId, state: this.getState(userId, conversationId) };
+  }
+
+  appendRunEvent(
+    userId: string,
+    conversationId: string,
+    runId: string,
+    type: PiRunEvent['type'],
+    payload: Record<string, unknown>,
+  ): PiRunEvent | null {
+    const session = this.load(userId, conversationId);
+    if (!session.run || session.run.runId !== runId) return null;
+    const event: PiRunEvent = {
+      sequence: session.run.lastEventSequence + 1,
+      type,
+      payload: sanitizeRunPayload(payload),
+      createdAt: nowIso(),
+    };
+    session.run.lastEventSequence = event.sequence;
+    session.run.updatedAt = event.createdAt;
+    session.run.events.push(event);
+    if (session.run.events.length > MAX_RUN_EVENTS) {
+      session.run.events.splice(0, session.run.events.length - MAX_RUN_EVENTS);
+    }
+    let payloadChars = session.run.events.reduce((total, item) => {
+      try {
+        return total + JSON.stringify(item.payload).length;
+      } catch {
+        return total;
+      }
+    }, 0);
+    while (session.run.events.length > 1 && payloadChars > MAX_RUN_EVENT_PAYLOAD_CHARS) {
+      const removed = session.run.events.shift();
+      try {
+        payloadChars -= removed ? JSON.stringify(removed.payload).length : 0;
+      } catch {
+        // The remaining bounded event list is still safe to persist.
+      }
+    }
+    if (type === 'chunk') this.scheduleSave(session);
+    else this.save(session);
+    return cloneRunEvent(event);
+  }
+
+  completeRun(
+    userId: string,
+    conversationId: string,
+    runId: string,
+    outcome: { status: 'completed' | 'cancelled' | 'error'; error?: string },
+  ): PiSessionPublicState {
+    const session = this.load(userId, conversationId);
+    if (session.run?.runId === runId) {
+      session.run.status = outcome.status;
+      session.run.error = outcome.error ? String(outcome.error).slice(0, 4000) : undefined;
+      session.run.completedAt = nowIso();
+      session.run.updatedAt = session.run.completedAt;
+      this.save(session);
+    }
+    return this.getState(userId, conversationId);
   }
 
   settleRun(userId: string, conversationId: string, runId: string): PiSessionPublicState {
@@ -273,14 +484,30 @@ export class PiAgentSessionManager {
     if (active?.runId === runId) this.activeRuns.delete(key);
     const session = this.load(userId, conversationId);
     let changed = false;
-    session.pending.forEach(item => {
-      if (item.status === 'processing') {
-        item.status = 'queued';
-        item.updatedAt = nowIso();
-        delete item.claimedAt;
-        changed = true;
+    if (session.run?.runId === runId) {
+      if (session.run.status === 'running') {
+        session.run.status = 'completed';
+      } else if (session.run.status === 'cancelling') {
+        session.run.status = 'cancelled';
       }
-    });
+      if (!session.run.completedAt) {
+        session.run.completedAt = nowIso();
+      }
+      session.run.updatedAt = nowIso();
+      changed = true;
+    }
+    // A cancelled run can settle after the next run has already started.
+    // Never requeue processing messages owned by that newer active run.
+    if (!this.activeRuns.has(key)) {
+      session.pending.forEach(item => {
+        if (item.status === 'processing') {
+          item.status = 'queued';
+          item.updatedAt = nowIso();
+          delete item.claimedAt;
+          changed = true;
+        }
+      });
+    }
     if (changed) this.save(session);
     return this.getState(userId, conversationId);
   }
@@ -299,6 +526,16 @@ export class PiAgentSessionManager {
       };
     }
     active.cancellationRequestedAt = active.cancellationRequestedAt || nowIso();
+    const session = this.load(userId, conversationId);
+    if (session.run?.runId === active.runId) {
+      session.run.status = 'cancelling';
+      session.run.cancellationRequestedAt = active.cancellationRequestedAt;
+      session.run.updatedAt = active.cancellationRequestedAt;
+      this.save(session);
+    }
+    if (!active.abortController.signal.aborted) {
+      active.abortController.abort(new Error('Pi Agent run cancelled by user'));
+    }
     return {
       requested: true,
       runId: active.runId,
@@ -306,9 +543,15 @@ export class PiAgentSessionManager {
     };
   }
 
+  getRunAbortSignal(userId: string, conversationId: string, runId: string): AbortSignal | undefined {
+    const active = this.activeRuns.get(this.getKey(userId, conversationId));
+    return active?.runId === runId ? active.abortController.signal : undefined;
+  }
+
   isRunCancellationRequested(userId: string, conversationId: string, runId: string): boolean {
     const active = this.activeRuns.get(this.getKey(userId, conversationId));
-    return active?.runId === runId && Boolean(active.cancellationRequestedAt);
+    return active?.runId === runId
+      && (Boolean(active.cancellationRequestedAt) || active.abortController.signal.aborted);
   }
 
   enqueue(input: {

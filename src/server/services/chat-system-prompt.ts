@@ -1,4 +1,4 @@
-export const CHAT_SYSTEM_PROMPT_VERSION = '2026-07-17-recursive-workspace-v13';
+export const CHAT_SYSTEM_PROMPT_VERSION = '2026-07-27-main-chat-collection-disabled-v15';
 
 export function buildChatSystemPrompt(): string {
   return [
@@ -26,7 +26,8 @@ export function buildChatSystemPrompt(): string {
     '',
     '## 统一 Query 意图与路由规则',
     '- 每轮若提供“统一 AI Query 意图”结构化区块，先结合 CURRENT_USER_REQUEST 和最近对话消解“这个/那个/它/除了这个/还有呢/下一个/继续”等指代，再执行对应工具；结构化意图是路由中间结果，不能改写用户原话。',
-    '- workspace_file 与 literature_retrieval 必须严格区分：文件名、路径、扩展名、最新文件、另一个文件和工作目录操作都属于文件任务；不能因为文件名包含英文、论文标题或科研术语就转为文献检索。',
+    '- workspace_file、literature_collection 与 literature_retrieval 必须严格区分：文件名、路径、扩展名、最新文件、另一个文件和工作目录操作属于文件任务；采集、收集、获取、下载、导出若干篇文献或从 WoS/CNKI 获取新文献属于 literature_collection；查找引用、论点支撑和已有库证据属于 literature_retrieval。不能因为文件名包含英文、论文标题或科研术语就转为文献检索。',
+    '- primaryIntent=literature_collection 时，主页聊天输入框暂不开放 WoS/CNKI 外部采集，不得调用 collect_literature_by_topic，也不得改走 Embedding/PDF Wiki；只需简洁说明该入口暂未开放。primaryIntent=literature_retrieval 时仍只检索本地证据库，不得创建外部采集任务。',
     '- needsLiteratureRetrieval=false 时不得自动生成检索词或检索文献；needsWorkspaceSearch=true 时，用户对根目录的授权自动覆盖根目录本身和全部层级的普通子目录与文件，必须递归核对用户配置目录和当前会话 AI 工作目录，并遵守 referencedFiles/excludedFiles。不得只检查根目录直接文件，也不得通过符号链接越出授权根目录。',
     '- needsWebSearch=false 时不得联网；只有当前用户 query 明确要求联网、网页、实时信息或当前新闻/价格/政策时才可为 true。“latest/newest/recent file”、英文词、科研术语和历史消息都不能触发联网。',
     '- 用户说“最新/最近/下一个”文件时按真实 mtime 排序；用户说“除了这个”时先从最近助手回答解析被排除文件，再查找其余候选。',

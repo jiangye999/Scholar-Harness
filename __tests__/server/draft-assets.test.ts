@@ -5,6 +5,8 @@ import {
   insertFigureBlockIntoDraft,
   normalizeDraftAssetChapterKey,
   removeFigureBlockFromDraft,
+  sortDraftFigureAssetsForDisplay,
+  type DraftFigureAsset,
 } from '../../src/server/routes/draft-assets';
 
 describe('draft figure assets', () => {
@@ -82,5 +84,74 @@ describe('draft figure assets', () => {
     expect(next).toContain('Figure to keep.');
     expect(next).toContain('Results text.');
     expect(next).toContain('Closing text.');
+  });
+
+  it('keeps figures from the same Word import in document order', () => {
+    const makeAsset = (
+      id: string,
+      figureLabel: string,
+      figureIndex: number | undefined,
+      createdAt: string,
+    ): DraftFigureAsset => ({
+      id,
+      userId: 'web-user',
+      chapterName: 'Results',
+      chapterKey: 'results',
+      subsectionKey: 'word-import',
+      figureLabel,
+      title: figureLabel,
+      caption: figureLabel,
+      originalFileName: `${id}.png`,
+      fileName: `${id}.png`,
+      filePath: `E:/project/${id}.png`,
+      relativePath: `${id}.png`,
+      url: `/api/draft-assets/figure/web-user/${id}`,
+      source: {
+        kind: 'word-import',
+        documentName: 'paper.docx',
+        importId: 'word_import_1',
+        figureIndex,
+      },
+      draftLinked: false,
+      createdAt,
+    });
+    const figures = [
+      makeAsset('figure-3', 'Figure 3', 2, '2026-07-29T10:00:03.000Z'),
+      makeAsset('figure-1', 'Figure 1', 0, '2026-07-29T10:00:01.000Z'),
+      makeAsset('figure-2', 'Figure 2', 1, '2026-07-29T10:00:02.000Z'),
+    ];
+
+    expect(sortDraftFigureAssetsForDisplay(figures).map(asset => asset.figureLabel))
+      .toEqual(['Figure 1', 'Figure 2', 'Figure 3']);
+  });
+
+  it('repairs the order of legacy Word figures without a stored figure index', () => {
+    const base = {
+      userId: 'web-user',
+      chapterName: 'Results',
+      chapterKey: 'results',
+      subsectionKey: 'word-import',
+      title: '',
+      caption: '',
+      originalFileName: '',
+      fileName: '',
+      filePath: '',
+      relativePath: '',
+      url: '',
+      source: {
+        kind: 'word-import' as const,
+        documentName: 'legacy.docx',
+        importId: 'legacy-import',
+      },
+      draftLinked: false,
+    };
+    const figures: DraftFigureAsset[] = [
+      { ...base, id: 'f10', figureLabel: 'Figure 10', createdAt: '2026-07-29T10:00:10.000Z' },
+      { ...base, id: 'f2', figureLabel: 'Figure 2', createdAt: '2026-07-29T10:00:02.000Z' },
+      { ...base, id: 'f1', figureLabel: 'Figure 1', createdAt: '2026-07-29T10:00:01.000Z' },
+    ];
+
+    expect(sortDraftFigureAssetsForDisplay(figures).map(asset => asset.figureLabel))
+      .toEqual(['Figure 1', 'Figure 2', 'Figure 10']);
   });
 });

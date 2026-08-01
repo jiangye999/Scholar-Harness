@@ -101,6 +101,51 @@ export interface CodexAgentSkillContext {
   allowedRoots: string[];
 }
 
+export interface AgentSkillCatalogOptions {
+  query?: string;
+  maxChars?: number;
+  fullCatalogPath?: string;
+}
+
+export interface AgentSkillCompletionContract {
+  id: string;
+  skillId: string;
+  skillName: string;
+  completeMarker: string;
+  blockedMarker: string;
+}
+
+function readCompletionContractAttribute(attributes: string, name: string): string {
+  const match = attributes.match(new RegExp(`\\b${name}=["']([^"']+)["']`, 'i'));
+  return String(match?.[1] || '').trim();
+}
+
+function parseCompletionContracts(skill: UserAgentSkill): AgentSkillCompletionContract[] {
+  const contracts: AgentSkillCompletionContract[] = [];
+  const tagPattern = /<completion-contract\b([^>]*)\/?>/gi;
+  for (const match of skill.prompt.matchAll(tagPattern)) {
+    const attributes = match[1] || '';
+    const id = readCompletionContractAttribute(attributes, 'id');
+    const completeMarker = readCompletionContractAttribute(attributes, 'complete-marker');
+    const blockedMarker = readCompletionContractAttribute(attributes, 'blocked-marker');
+    if (
+      !/^[a-z0-9][a-z0-9._-]{2,100}$/i.test(id)
+      || !/^[A-Z0-9][A-Z0-9_-]{3,100}$/.test(completeMarker)
+      || !/^[A-Z0-9][A-Z0-9_-]{3,100}$/.test(blockedMarker)
+    ) {
+      continue;
+    }
+    contracts.push({
+      id,
+      skillId: skill.id,
+      skillName: skill.name,
+      completeMarker,
+      blockedMarker,
+    });
+  }
+  return contracts;
+}
+
 const DISCUSSION_AUTO_SKILL_PRIORITY: Record<string, number> = {
   'scientific-writing': 400,
   'scientific-critical-thinking': 300,
@@ -420,25 +465,100 @@ function toCatalogLineText(value: unknown): string {
   return String(value || '').replace(/[\r\n\t]+/g, ' ').replace(/\s{2,}/g, ' ').trim();
 }
 
-function buildCatalogPrompt(descriptors: AgentSkillDescriptor[], codexPaths?: Map<string, string>): string {
+function tokenizeSkillCatalogText(value: unknown): Set<string> {
+  const text = toCatalogLineText(value).normalize('NFKC').toLowerCase();
+  const tokens = new Set<string>();
+  for (const match of text.matchAll(/[a-z0-9][a-z0-9._-]{1,}/g)) {
+    tokens.add(match[0]);
+  }
+  for (const match of text.matchAll(/[\u3400-\u9fff]{2,}/g)) {
+    const chunk = match[0];
+    if (chunk.length <= 4) tokens.add(chunk);
+    for (let index = 0; index < chunk.length - 1; index += 1) {
+      tokens.add(chunk.slice(index, index + 2));
+    }
+  }
+  return tokens;
+}
+
+function rankSkillCatalogDescriptors(
+  descriptors: AgentSkillDescriptor[],
+  query: string,
+): AgentSkillDescriptor[] {
+  const queryText = toCatalogLineText(query).normalize('NFKC').toLowerCase();
+  if (!queryText) return [...descriptors];
+  const queryTokens = tokenizeSkillCatalogText(queryText);
+  return descriptors
+    .map((skill, originalIndex) => {
+      const searchable = [
+        skill.id,
+        skill.name,
+        skill.description,
+        skill.category,
+        ...skill.aliases,
+        skill.manualTrigger || '',
+      ].join(' ').normalize('NFKC').toLowerCase();
+      const skillTokens = tokenizeSkillCatalogText(searchable);
+      let overlap = 0;
+      for (const token of queryTokens) {
+        if (skillTokens.has(token)) overlap += token.length >= 4 ? 4 : 1;
+      }
+      const exactName = skill.name && queryText.includes(skill.name.toLowerCase()) ? 60 : 0;
+      const explicit = skill.explicitlyActive ? 10_000 : 0;
+      const userPreference = skill.source === 'user' ? 4 : 0;
+      return {
+        skill,
+        originalIndex,
+        score: explicit + exactName + overlap + userPreference,
+      };
+    })
+    .sort((left, right) => (
+      right.score - left.score
+      || left.originalIndex - right.originalIndex
+    ))
+    .map(item => item.skill);
+}
+
+export function buildAgentSkillCatalogPrompt(
+  descriptors: AgentSkillDescriptor[],
+  codexPaths?: Map<string, string>,
+  options: AgentSkillCatalogOptions = {},
+): string {
   if (!descriptors.length) return '';
-  const lines = descriptors.map(skill => {
+  const maxChars = Number.isFinite(options.maxChars)
+    ? Math.max(1_500, Math.floor(Number(options.maxChars)))
+    : Number.POSITIVE_INFINITY;
+  const header = [
+    '## 可用 Agent Skills（自动意图识别）',
+    '以下只提供名称与功能，不代表 Skill 已加载。先判断用户意图；某个 Skill 对完成任务有实质帮助时，必须先加载其完整指令，再继续工作。无匹配 Skill 时直接处理，不要为了调用而调用。',
+    codexPaths
+      ? '当前执行者是 Codex CLI 时，请使用 Codex 自带的文件读取工具打开所选 Skill 的入口文件；其他执行者调用 load_skill(skill_id)，需要配套资料时调用 read_skill_resource。不要执行第三方脚本，除非用户任务确实需要且当前权限允许。'
+      : '当前执行者支持原生工具：调用 load_skill(skill_id) 加载所选 Skill；需要配套资料时调用 read_skill_resource。可以组合多个互补 Skill，但不要重复加载。',
+    '只有用户消息的首个非空白字符是 / 且命令匹配时，才算手动启用 Skill；句中出现的 /命令 只是普通文本，不得视为手动调用。有效的手动调用优先级更高，并与自动意图识别并存。Skill 不会扩大文件、网络、Shell 或草稿写入权限。',
+    `Skill 总数：${descriptors.length}。`,
+    options.fullCatalogPath
+      ? `完整目录：${options.fullCatalogPath}（当前摘要未列出所需 Skill 时，读取此文件继续选择）。`
+      : '当前摘要未列出所需 Skill 时，调用 list_available_skills 按关键词或类别检索完整目录。',
+  ].filter(Boolean);
+  const selectedLines: string[] = [];
+  const rankedDescriptors = rankSkillCatalogDescriptors(descriptors, String(options.query || ''));
+  let usedChars = header.join('\n').length;
+  for (const skill of rankedDescriptors) {
     const aliases = skill.aliases.length ? `；别名：${skill.aliases.slice(0, 6).map(toCatalogLineText).join('、')}` : '';
     const manual = skill.manualTrigger ? `；手动命令：${toCatalogLineText(skill.manualTrigger)}` : '';
     const active = skill.explicitlyActive ? '；本轮已由用户手动启用，无需重复加载' : '';
     const filePath = codexPaths?.get(skill.id);
     const location = filePath ? `；入口：${filePath}` : '';
-    return `- [${skill.id}] ${toCatalogLineText(skill.name)}（${toCatalogLineText(skill.category)}/${toCatalogLineText(skill.sourceLabel)}）：${toCatalogLineText(skill.description)}${aliases}${manual}${active}${location}`;
-  });
-  return [
-    '## 可用 Agent Skills（自动意图识别）',
-    '以下只提供名称与功能，不代表 Skill 已加载。先判断用户意图；某个 Skill 对完成任务有实质帮助时，必须先加载其完整指令，再继续工作。无匹配 Skill 时直接处理，不要为了调用而调用。',
-    codexPaths
-      ? '当前执行者是 Codex CLI：请使用 Codex 自带的文件读取工具打开所选 Skill 的入口文件；需要配套资料时继续读取同目录 references/assets/scripts。不要执行第三方脚本，除非用户任务确实需要且当前权限允许。'
-      : '当前执行者支持原生工具：调用 load_skill(skill_id) 加载所选 Skill；需要配套资料时调用 read_skill_resource。可以组合多个互补 Skill，但不要重复加载。',
-    '只有用户消息的首个非空白字符是 / 且命令匹配时，才算手动启用 Skill；句中出现的 /命令 只是普通文本，不得视为手动调用。有效的手动调用优先级更高，并与自动意图识别并存。Skill 不会扩大文件、网络、Shell 或草稿写入权限。',
-    ...lines,
-  ].join('\n');
+    const line = `- [${skill.id}] ${toCatalogLineText(skill.name)}（${toCatalogLineText(skill.category)}/${toCatalogLineText(skill.sourceLabel)}）：${toCatalogLineText(skill.description)}${aliases}${manual}${active}${location}`;
+    if (usedChars + line.length + 1 > maxChars) continue;
+    selectedLines.push(line);
+    usedChars += line.length + 1;
+  }
+  const omittedCount = Math.max(0, descriptors.length - selectedLines.length);
+  const footer = omittedCount > 0
+    ? `本轮目录摘要按 query 排序并省略 ${omittedCount} 项；省略不等于禁用，按需读取完整目录或调用 list_available_skills。`
+    : '';
+  return [...header, ...selectedLines, footer].filter(Boolean).join('\n');
 }
 
 function applyScholarHarnessSkillCompatibility(skill: BundledAgentSkill, rawContent: string): string {
@@ -544,8 +664,19 @@ export class AgentSkillRuntime {
     return this.descriptors.map(skill => ({ ...skill, aliases: [...skill.aliases] }));
   }
 
-  getCatalogPrompt(): string {
-    return buildCatalogPrompt(this.descriptors);
+  getCatalogPrompt(options: AgentSkillCatalogOptions = {}): string {
+    return buildAgentSkillCatalogPrompt(this.descriptors, undefined, options);
+  }
+
+  getActiveCompletionContracts(): AgentSkillCompletionContract[] {
+    const activeSkillIds = new Set([...this.explicitSkillIds, ...this.loadedSkillIds]);
+    const contracts = Array.from(activeSkillIds)
+      .map(skillId => this.skillById.get(skillId))
+      .filter((skill): skill is UserAgentSkill => Boolean(skill && skill.sourceKind === 'user'))
+      .flatMap(skill => parseCompletionContracts(skill));
+    return Array.from(
+      new Map(contracts.map(contract => [`${contract.skillId}:${contract.id}`, contract])).values(),
+    );
   }
 
   getToolDefinitions(): LLMToolDefinition[] {
@@ -592,7 +723,7 @@ export class AgentSkillRuntime {
             type: 'object',
             properties: {
               query: { type: 'string', description: '可选：任务、能力或 Skill 名称关键词。' },
-              category: { type: 'string', description: '可选：writing、research、visualization、user。' },
+              category: { type: 'string', description: '可选：writing、research、visualization、configuration、user。' },
               limit: { type: 'number', description: '最多返回数量，默认 20，最大 50。' },
             },
             required: [],
@@ -607,7 +738,29 @@ export class AgentSkillRuntime {
     try {
       const args = parseToolArguments(call.function.arguments);
       if (toolName === 'load_skill') return await this.loadSkill(args);
-      if (toolName === 'read_skill_resource') return await this.readSkillResource(args);
+      if (toolName === 'read_skill_resource') {
+        const skill = this.resolveSkill(args.skill_id);
+        let autoLoaded: AgentSkillToolResult | null = null;
+        if (!this.loadedSkillIds.has(skill.id) && !this.explicitSkillIds.has(skill.id)) {
+          autoLoaded = await this.loadSkill({
+            skill_id: skill.id,
+            reason: '读取 Skill 配套资源前自动补充加载完整 Skill 指令',
+          });
+          if (!autoLoaded.ok) return autoLoaded;
+        }
+        const resource = await this.readSkillResource(args);
+        if (!autoLoaded || !resource.ok) return resource;
+        return {
+          ...resource,
+          summary: `已自动加载 Skill 并读取资源：${skill.name}`,
+          content: [autoLoaded.content, resource.content].filter(Boolean).join('\n\n'),
+          data: {
+            ...(resource.data || {}),
+            skillId: skill.id,
+            autoLoaded: true,
+          },
+        };
+      }
       if (toolName === 'list_available_skills') return this.listAvailableSkills(args);
       throw new Error(`未知 Skill 工具: ${toolName}`);
     } catch (error) {
@@ -623,7 +776,7 @@ export class AgentSkillRuntime {
     }
   }
 
-  async prepareCodexContext(): Promise<CodexAgentSkillContext> {
+  async prepareCodexContext(options: AgentSkillCatalogOptions = {}): Promise<CodexAgentSkillContext> {
     const codexRoot = path.join(getDataDir(), 'agent-skills', sanitizeUserId(this.userId), 'codex');
     await fs.mkdir(codexRoot, { recursive: true });
     const codexPaths = new Map<string, string>();
@@ -656,8 +809,15 @@ export class AgentSkillRuntime {
       await fs.unlink(path.join(codexRoot, entry.name)).catch(() => undefined);
     }
 
-    const catalogPrompt = buildCatalogPrompt(this.descriptors, codexPaths);
-    await writeAtomic(path.join(codexRoot, 'CATALOG.md'), `${catalogPrompt}\n`);
+    const catalogPath = path.join(codexRoot, 'CATALOG.md');
+    const completeCatalogPrompt = buildAgentSkillCatalogPrompt(this.descriptors, codexPaths, {
+      fullCatalogPath: catalogPath,
+    });
+    await writeAtomic(catalogPath, `${completeCatalogPrompt}\n`);
+    const catalogPrompt = buildAgentSkillCatalogPrompt(this.descriptors, codexPaths, {
+      ...options,
+      fullCatalogPath: catalogPath,
+    });
     return {
       catalogPrompt,
       allowedRoots: uniqueExistingDirectories([...this.packRoots, codexRoot]),
@@ -752,7 +912,7 @@ export class AgentSkillRuntime {
     if (skill.sourceKind !== 'bundled') {
       throw new Error('用户自定义 Skill 没有可读取的配套资源');
     }
-    if (!this.loadedSkillIds.has(skill.id)) {
+    if (!this.loadedSkillIds.has(skill.id) && !this.explicitSkillIds.has(skill.id)) {
       throw new Error('请先调用 load_skill 加载该 Skill');
     }
     const resourcePath = String(args.resource_path || '').trim().replace(/[\\/]+/g, path.sep);

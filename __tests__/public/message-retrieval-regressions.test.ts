@@ -3,19 +3,38 @@ import path from "path";
 
 import { describe, expect, it } from "vitest";
 
+import { readPublicAppSource } from '../helpers/public-app-source';
+
 const repoRoot = path.resolve(__dirname, "..", "..");
 
 describe("chat message and retrieval regressions", () => {
-  it("keeps long inline search expressions in the list content width", () => {
-    const html = readFileSync(path.join(repoRoot, "src/public/index.html"), "utf-8");
+  it("keeps short inline-code chips intact and lets long expressions wrap safely", () => {
+    const html = readPublicAppSource();
 
-    expect(html).toMatch(/\.content code \{[\s\S]*?display: inline;[\s\S]*?overflow-wrap: break-word;/);
+    expect(html).toMatch(/\.content code\.message-inline-code\.is-atomic \{[\s\S]*?display: inline-block;[\s\S]*?white-space: nowrap;[\s\S]*?word-break: keep-all;/);
+    expect(html).toMatch(/\.content code\.message-inline-code\.is-wrap \{[\s\S]*?display: inline;[\s\S]*?overflow-wrap: break-word;/);
+    expect(html).toContain("compactText.length <= 48");
+    expect(html).toContain('<code class="message-inline-code \' + layoutClass + \'">');
     expect(html).toMatch(/\.content pre code \{[\s\S]*?white-space: inherit;/);
     expect(html).toMatch(/\.message-list-body \{[\s\S]*?width: 100%;[\s\S]*?overflow-wrap: break-word;/);
   });
 
+  it("repairs bot prose when a list or bubble collapses to one glyph per line", () => {
+    const html = readPublicAppSource();
+
+    expect(html).toContain(".message.bot:not(.pi-agent-message) > .content");
+    expect(html).toContain("flex: 1 1 0 !important;");
+    expect(html).toContain(".message.bot .message-list-item");
+    expect(html).toContain("flex-flow: row nowrap !important;");
+    expect(html).toContain("writing-mode: horizontal-tb !important;");
+    expect(html).toContain("function repairCollapsedChatMessageLayout(messageElement)");
+    expect(html).toContain("bodyRect.width >= Math.min(120, stableContentWidth * 0.35)");
+    expect(html).toContain("chatMessageLayoutObserver.observe(messagesDiv");
+    expect(html).toContain("chatMessageLayoutResizeObserver.observe(messagesDiv)");
+  });
+
   it("uses the final agent answer and explicitly requests keyword generation", () => {
-    const html = readFileSync(path.join(repoRoot, "src/public/index.html"), "utf-8");
+    const html = readPublicAppSource();
 
     expect(html).toContain("function getRetrievalMessageText(contentDiv)");
     expect(html).toContain("contentDiv.querySelector('.agent-transcript-answer')");
@@ -34,7 +53,7 @@ describe("chat message and retrieval regressions", () => {
   });
 
   it("keeps only the latest literature request and retries transient failures", () => {
-    const html = readFileSync(path.join(repoRoot, "src/public/index.html"), "utf-8");
+    const html = readPublicAppSource();
 
     expect(html).toContain("var literatureLoadSequence = 0;");
     expect(html).toContain("requestId === literatureLoadSequence");
@@ -43,7 +62,7 @@ describe("chat message and retrieval regressions", () => {
   });
 
   it("attaches the exact page writing target to every AI request", () => {
-    const html = readFileSync(path.join(repoRoot, "src/public/index.html"), "utf-8");
+    const html = readPublicAppSource();
 
     expect(html).toContain("function getArticleWritingProgressSnapshot()");
     expect(html).toContain("context.articleWritingProgress = writingProgress;");
@@ -52,7 +71,7 @@ describe("chat message and retrieval regressions", () => {
   });
 
   it("allows the current writing lock to be cleared and restores automatic classification", () => {
-    const html = readFileSync(path.join(repoRoot, "src/public/index.html"), "utf-8");
+    const html = readPublicAppSource();
 
     expect(html).toContain("function clearArticleWritingTarget()");
     expect(html).toContain("function toggleArticleWritingTarget(input, chapterKey, chapterId, subsectionId)");

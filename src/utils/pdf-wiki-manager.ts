@@ -11,6 +11,12 @@ import { logger } from './logger';
 import { extractPdfTextWithFastText, isPdfFastTextAvailable } from './pdf-fast-text';
 import { extractPdfTextWithLiteParse, isLiteParseAvailable } from './pdf-liteparse';
 import { extractPdfTextWithMarker, isPdfMarkerAvailable } from './pdf-marker';
+import {
+  addPdfWikiPdfGroupsToPdfs,
+  loadPdfWikiPdfManagement,
+  matchesPdfWikiPdfGroupQuery,
+} from './pdf-wiki-pdf-management';
+import { isNonScientificPdfFigureRecord } from './pdf-wiki-figure-filter';
 import { sanitizeUserId } from './paths';
 import { buildToolRuntimeEnv } from './tool-runtime-env';
 
@@ -75,6 +81,57 @@ interface PdfWikiQueueStore {
   jobs: PdfWikiQueueJob[];
 }
 
+export type PdfWikiRecognitionQueueItemStatus = 'queued' | 'running' | 'completed' | 'error';
+export type PdfWikiRecognitionQueueMode = 'full' | 'images-only';
+
+export interface PdfWikiRecognitionQueueItem {
+  pdfId: string;
+  pdfName: string;
+  mode: PdfWikiRecognitionQueueMode;
+  status: PdfWikiRecognitionQueueItemStatus;
+  createdAt: string;
+  updatedAt: string;
+  startedAt?: string;
+  completedAt?: string;
+  figureCount?: number;
+  error?: string;
+}
+
+export interface PdfWikiRecognitionQueueJob {
+  id: string;
+  status: PdfWikiQueueJobStatus;
+  items: PdfWikiRecognitionQueueItem[];
+  createdAt: string;
+  updatedAt: string;
+  startedAt?: string;
+  completedAt?: string;
+  error?: string;
+}
+
+export interface PdfWikiRecognitionQueueSnapshot {
+  queuedJobs: number;
+  runningJobs: number;
+  completedJobs: number;
+  failedJobs: number;
+  queuedItems: number;
+  runningItems: number;
+  completedItems: number;
+  failedItems: number;
+  activeJobId?: string;
+  jobs: PdfWikiRecognitionQueueJob[];
+  addedItems?: number;
+  addedJobIds?: string[];
+  skippedActiveItems?: number;
+  skippedMissingItems?: number;
+}
+
+interface PdfWikiRecognitionQueueStore {
+  version: 1;
+  userId: string;
+  updatedAt: string;
+  jobs: PdfWikiRecognitionQueueJob[];
+}
+
 export interface PdfWikiWorkProgress {
   phase: 'preparing' | 'extracting' | 'codex' | 'finalizing' | 'completed';
   phaseLabel: string;
@@ -121,7 +178,22 @@ export interface PdfWikiSourcePdf {
   extractionParser?: 'codex' | 'liteparse' | 'marker' | 'fast-text' | 'textin' | 'grobid' | 'pdf-parse' | 'qwen-long';
   metaData?: Record<string, unknown>;
   metaDataCachedAt?: string;
+  figureExtractionStatus?: 'completed' | 'error';
+  figureExtractionAttemptedAt?: string;
+  figureExtractionError?: string;
   metaExcluded?: boolean;
+}
+
+export interface PdfWikiPdfManagerStoreSnapshot {
+  generatedAt: string;
+  pdfs: PdfWikiSourcePdf[];
+}
+
+export interface PdfWikiViewerStoreSnapshot {
+  generatedAt: string;
+  pdfs: PdfWikiSourcePdf[];
+  entries: PdfWikiEntry[];
+  sentenceCloud: PdfWikiSentenceCloudStore;
 }
 
 export interface PdfWikiReference {
@@ -169,6 +241,41 @@ export interface PdfWikiSentencePoint {
   radius: number;
   matchMethod: 'citation' | 'semantic' | 'ai' | 'citation+semantic' | 'citation+ai' | 'semantic+ai' | 'citation+semantic+ai' | 'none';
   confidence: number;
+  aiTopicAnnotation?: PdfWikiSentenceTopicAnnotation;
+}
+
+export interface PdfWikiSentenceTopicAnnotation {
+  version: 1;
+  sourceHash: string;
+  taxonomyHash: string;
+  subjectTags: string[];
+  trendConclusionTopic: string;
+  annotatedAt: string;
+  provider: 'api' | 'codex';
+  model?: string;
+}
+
+export interface PdfWikiSentenceTopicAnnotationStatus {
+  status: 'idle' | 'processing' | 'completed' | 'error';
+  totalSentences: number;
+  annotatedSentences: number;
+  pendingSentences: number;
+  targetSentences: number;
+  processedSentences: number;
+  failedSentences: number;
+  skippedSentences: number;
+  progress: number;
+  message: string;
+  startedAt?: string;
+  completedAt?: string;
+  updatedAt: string;
+  error?: string;
+}
+
+interface PdfWikiSentenceTopicAnnotationStore {
+  version: 1;
+  updatedAt: string;
+  records: Record<string, PdfWikiSentenceTopicAnnotation>;
 }
 
 export interface PdfWikiSentenceCloud {
@@ -187,6 +294,36 @@ export interface PdfWikiSentenceCloudStore {
   generatedAt: string;
   points: PdfWikiSentencePoint[];
   clouds: PdfWikiSentenceCloud[];
+}
+
+export interface PdfWikiTopicDefinition {
+  id: string;
+  label: string;
+  description: string;
+  aliases: string[];
+  keywords: string[];
+  excludeKeywords: string[];
+  expandedBy: 'ai' | 'manual';
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface PdfWikiTopicCatalog {
+  version: 1;
+  updatedAt: string;
+  topics: PdfWikiTopicDefinition[];
+}
+
+export interface PdfWikiTopicInput {
+  label: string;
+  description?: string;
+}
+
+export interface PdfWikiManualTopicInput extends PdfWikiTopicInput {
+  id?: string;
+  aliases?: string[];
+  keywords?: string[];
+  excludeKeywords?: string[];
 }
 
 export interface PdfWikiReaderChatMessage {
@@ -234,6 +371,14 @@ export interface PdfWikiEntry {
   references: PdfWikiReference[];
   evidenceSnippets: string[];
   sourceEntries?: PdfWikiSourceEntryTrace[];
+  origin?: 'pdf-wiki' | 'manual' | 'deep-analysis';
+  researchUseCategory?: PdfWikiResearchUseCategory;
+  researchUse?: string;
+  supportScope?: string[];
+  limitations?: string[];
+  researchContextKeys?: string[];
+  confidence?: number;
+  sourcePdfMetadata?: PdfWikiDeepAnalysisSourceMetadata;
   updatedAt: string;
 }
 
@@ -339,6 +484,13 @@ export interface PdfWikiReidentifyResult {
   figureCount: number;
   figureError?: string;
   message: string;
+  autoGroupMatch?: PdfWikiAutoGroupMatchResult;
+}
+
+export interface PdfWikiAutoGroupMatchResult {
+  matchedPdfCount: number;
+  addedTagCount: number;
+  matchedGroupNamesByPdf: Record<string, string[]>;
 }
 
 export interface PdfWikiLiteRegisterResult {
@@ -359,6 +511,7 @@ export interface PdfWikiLiteRegisterResult {
     error: string;
   }>;
   message: string;
+  autoGroupMatch?: PdfWikiAutoGroupMatchResult;
 }
 
 interface PdfWikiParsedContent {
@@ -367,6 +520,12 @@ interface PdfWikiParsedContent {
   references: PdfWikiReference[];
   parser: 'codex' | 'liteparse' | 'marker' | 'fast-text' | 'textin' | 'grobid' | 'pdf-parse';
   metaData?: Record<string, unknown>;
+}
+
+interface PdfWikiManagerRecognitionBatchResult {
+  recognizedPdfs: PdfWikiSourcePdf[];
+  failedPdfs: Array<{ pdfId: string; pdfName: string; error: string }>;
+  figureCount: number;
 }
 
 interface PdfWikiCodexConfig {
@@ -414,6 +573,55 @@ export interface PdfWikiUserResearchContextForDeepAnalysis {
   memoryUpdatedAt?: string;
 }
 
+export type PdfWikiResearchUseCategory =
+  | 'background'
+  | 'method'
+  | 'indicator'
+  | 'result-comparison'
+  | 'mechanism'
+  | 'meta-analysis'
+  | 'limitation';
+
+export interface PdfWikiDeepAnalysisSourceMetadata {
+  pdfId: string;
+  originalName: string;
+  title?: string;
+  authors?: string;
+  year?: string;
+  journal?: string;
+  doi?: string;
+}
+
+export interface PdfWikiDeepAnalysisEvidenceItem {
+  id: string;
+  claim: string;
+  evidence: string;
+  category: PdfWikiResearchUseCategory;
+  researchUse: string;
+  supportScope: string[];
+  limitations: string[];
+  keywords: string[];
+  section: string;
+  location: string;
+  confidence: number;
+  evidenceSentenceIds: string[];
+  inTextCitations: string[];
+  referenceIndexes: number[];
+  references: PdfWikiReference[];
+  sourcePdf: PdfWikiDeepAnalysisSourceMetadata;
+  researchContextKeys: string[];
+}
+
+export interface PdfWikiDeepAnalysisWikiSync {
+  status: 'completed' | 'partial' | 'unconfigured' | 'error';
+  itemCount: number;
+  entryIds: string[];
+  embeddedCount: number;
+  embeddingStatus: 'ready' | 'partial' | 'unconfigured' | 'error';
+  syncedAt: string;
+  warning?: string;
+}
+
 export interface PdfWikiDeepAnalysisCache {
   pdfId: string;
   parser: PdfWikiParsedContent['parser'];
@@ -429,12 +637,28 @@ export interface PdfWikiDeepAnalysisCache {
   };
   analysisEngine?: 'codex' | 'api' | 'secondary-api' | 'local';
   overviewDiagram?: PdfWikiOverviewDiagram;
+  usableItems?: PdfWikiDeepAnalysisEvidenceItem[];
+  wikiSync?: PdfWikiDeepAnalysisWikiSync;
   analyzedAt: string;
 }
 
 export interface PdfWikiDeepAnalysisResult extends PdfWikiDeepAnalysisCache {
   pdf: PdfWikiSourcePdf;
   fromCache?: boolean;
+}
+
+interface PdfWikiDeepAnalysisEvidenceDraft {
+  claim?: unknown;
+  evidence?: unknown;
+  category?: unknown;
+  researchUse?: unknown;
+  supportScope?: unknown;
+  limitations?: unknown;
+  keywords?: unknown;
+  section?: unknown;
+  location?: unknown;
+  confidence?: unknown;
+  evidenceSentenceIds?: unknown;
 }
 
 export interface PdfWikiManualSentenceClaimInput {
@@ -503,6 +727,13 @@ export interface PdfWikiMetaDatabase {
 export interface PdfWikiMetaDatabaseOptions {
   includeDetails?: boolean;
   pdfIds?: string[];
+  forceRefreshSummary?: boolean;
+}
+
+interface PdfWikiMetaDatabaseIndexFile {
+  version: 1;
+  sourceSignature: string;
+  database: PdfWikiMetaDatabase;
 }
 
 export interface PdfWikiMetaTableItem {
@@ -621,6 +852,7 @@ interface QwenLongPdfBuildResult {
 interface WikiEngineEntry {
   engine: HybridRetrievalEngine;
   updatedAt: number;
+  vectorConfigKey: string;
 }
 
 const DEFAULT_STATUS: PdfWikiBuildStatus = {
@@ -634,6 +866,9 @@ const DEFAULT_STATUS: PdfWikiBuildStatus = {
 };
 
 const PDF_WIKI_OVERVIEW_DIAGRAM_LAYOUT_VERSION = 7;
+const PDF_WIKI_SENTENCE_TOPIC_ANNOTATION_VERSION = 1 as const;
+const PDF_WIKI_SENTENCE_TOPIC_ANNOTATION_BATCH_SIZE = 20;
+const PDF_WIKI_RETRIEVAL_POLICY_VERSION = 'reference-backed-v1';
 
 const PDF_WIKI_META_ANALYSIS_COLUMNS = [
   'Obs#',
@@ -745,9 +980,748 @@ export class PdfWikiManager {
   private statusWorkProgress = new Map<string, PdfWikiWorkProgress>();
   private queueMutationLocks = new Map<string, Promise<void>>();
   private queueWorkers = new Map<string, Promise<void>>();
+  private recognitionQueueMutationLocks = new Map<string, Promise<void>>();
+  private recognitionQueueWorkers = new Map<string, Promise<void>>();
+  private sentenceTopicAnnotationJobs = new Map<string, Promise<void>>();
+  private metaDatabaseSummaryCache = new Map<string, PdfWikiMetaDatabaseIndexFile>();
+  private pdfManagerStoreSnapshotCache = new Map<string, {
+    mtimeMs: number;
+    size: number;
+    snapshot: PdfWikiPdfManagerStoreSnapshot;
+  }>();
+  private viewerStoreSnapshotCache = new Map<string, {
+    mtimeMs: number;
+    size: number;
+    snapshot: PdfWikiViewerStoreSnapshot;
+  }>();
   private queueRuntimeConfigProvider: (() => PdfWikiLlmConfig) | null = null;
 
   constructor(private readonly dataDir: string) {}
+
+  async getTopicCatalog(userId: string): Promise<PdfWikiTopicCatalog> {
+    const catalogPath = this.getTopicCatalogPath(userId);
+    if (!fs.existsSync(catalogPath)) {
+      return this.createEmptyTopicCatalog();
+    }
+    try {
+      const parsed = JSON.parse(await fs.promises.readFile(catalogPath, 'utf-8')) as Partial<PdfWikiTopicCatalog>;
+      return this.normalizeTopicCatalog(parsed);
+    } catch (error) {
+      logger.warn(`[PdfWiki] Failed to read topic catalog for ${sanitizeUserId(userId)}:`, error);
+      return this.createEmptyTopicCatalog();
+    }
+  }
+
+  async expandAndSaveTopics(
+    userId: string,
+    inputs: PdfWikiTopicInput[],
+    llmConfig: PdfWikiLlmConfig
+  ): Promise<{ catalog: PdfWikiTopicCatalog; reclassifiedPointCount: number }> {
+    const requested = (Array.isArray(inputs) ? inputs : [])
+      .map(input => ({
+        label: this.cleanTopicText(input?.label, 80),
+        description: this.cleanTopicText(input?.description, 500),
+      }))
+      .filter(input => !!input.label)
+      .slice(0, 20);
+    if (requested.length === 0) {
+      throw new Error('请至少输入一个主题名称');
+    }
+
+    const prompt = `你正在为学术 PDF 句子级论点库扩写用户指定的主题。主题名称由用户决定，不得改名，不得增加用户没有提出的新主题。
+
+请为每个主题生成：
+1. description：一句中文用途说明，明确该主题覆盖什么研究问题。
+2. aliases：常见中文别名、英文名称、英文缩写，最多 12 个。
+3. keywords：适合在中英文学术句子中做精确词面匹配的词组，最多 30 个。优先使用有区分度的名词短语，不要放“研究、结果、影响、方法”等泛词。
+4. excludeKeywords：容易造成误匹配、但不属于本主题的词组，最多 12 个。
+
+返回 JSON：
+{"topics":[{"label":"与输入完全一致","description":"...","aliases":["..."],"keywords":["..."],"excludeKeywords":["..."]}]}
+
+用户主题：
+${JSON.stringify(requested, null, 2)}`;
+
+    let parsed: Record<string, unknown>;
+    if (this.canUseCodexCli()) {
+      const codexConfig = this.loadPdfWikiCodexConfig();
+      const taskDir = path.join(this.getWikiDir(userId), 'topic-expansion', `${Date.now()}_${crypto.randomBytes(3).toString('hex')}`);
+      parsed = await this.callCodexJsonTask(codexConfig, taskDir, prompt, 'topic expansion');
+    } else if ((llmConfig.jsonApiUrl || llmConfig.apiUrl) && (llmConfig.jsonApiKey || llmConfig.apiKey)) {
+      parsed = await this.callJsonNormalizer(llmConfig, prompt, 5000, 'topic expansion');
+    } else if (this.canUseCodexCli(true)) {
+      const codexConfig = this.loadPdfWikiCodexConfig();
+      const taskDir = path.join(this.getWikiDir(userId), 'topic-expansion', `${Date.now()}_${crypto.randomBytes(3).toString('hex')}`);
+      parsed = await this.callCodexJsonTask(codexConfig, taskDir, prompt, 'topic expansion');
+    } else {
+      throw new Error('未检测到可用的 Codex CLI 或 PDF Wiki AI API，暂时无法扩写主题');
+    }
+
+    const expandedRecords = Array.isArray(parsed.topics) ? parsed.topics : [];
+    const now = new Date().toISOString();
+    const current = await this.getTopicCatalog(userId);
+    const byLabel = new Map(current.topics.map(topic => [topic.label.toLocaleLowerCase(), topic]));
+    const additions = requested.map((input, index) => {
+      const record = expandedRecords.find(item => {
+        if (!item || typeof item !== 'object') return false;
+        return this.cleanTopicText((item as Record<string, unknown>).label, 80).toLocaleLowerCase() === input.label.toLocaleLowerCase();
+      }) || expandedRecords[index];
+      const data = record && typeof record === 'object' ? record as Record<string, unknown> : {};
+      const existing = byLabel.get(input.label.toLocaleLowerCase());
+      return this.normalizeTopicDefinition({
+        id: existing?.id || this.createTopicId(input.label),
+        label: input.label,
+        description: this.cleanTopicText(data.description, 500) || input.description || existing?.description || '',
+        aliases: this.normalizeTopicTerms(data.aliases, 12),
+        keywords: this.normalizeTopicTerms(data.keywords, 30),
+        excludeKeywords: this.normalizeTopicTerms(data.excludeKeywords, 12),
+        expandedBy: 'ai',
+        createdAt: existing?.createdAt || now,
+        updatedAt: now,
+      });
+    });
+
+    const replacementLabels = new Set(additions.map(topic => topic.label.toLocaleLowerCase()));
+    const catalog = this.normalizeTopicCatalog({
+      version: 1,
+      updatedAt: now,
+      topics: [
+        ...current.topics.filter(topic => !replacementLabels.has(topic.label.toLocaleLowerCase())),
+        ...additions,
+      ],
+    });
+    await this.writeJsonAtomic(this.getTopicCatalogPath(userId), catalog);
+    const reclassifiedPointCount = await this.reclassifySentenceTopics(userId, catalog.topics);
+    return { catalog, reclassifiedPointCount };
+  }
+
+  async saveManualTopicDefinition(
+    userId: string,
+    input: PdfWikiManualTopicInput
+  ): Promise<{ catalog: PdfWikiTopicCatalog; topic: PdfWikiTopicDefinition; reclassifiedPointCount: number }> {
+    const label = this.cleanTopicText(input?.label, 80);
+    if (!label) {
+      throw new Error('请输入主题名称');
+    }
+
+    const current = await this.getTopicCatalog(userId);
+    const requestedId = this.cleanTopicText(input?.id, 80);
+    const existing = requestedId ? current.topics.find(topic => topic.id === requestedId) : undefined;
+    if (requestedId && !existing) {
+      throw new Error('未找到需要修改的主题');
+    }
+    const duplicate = current.topics.find(topic => (
+      topic.id !== requestedId && topic.label.toLocaleLowerCase() === label.toLocaleLowerCase()
+    ));
+    if (duplicate) {
+      throw new Error('已存在同名主题');
+    }
+    if (!existing && current.topics.length >= 50) {
+      throw new Error('用户主题最多保存 50 个');
+    }
+
+    const now = new Date().toISOString();
+    const topic = this.normalizeTopicDefinition({
+      id: existing?.id || this.createTopicId(label),
+      label,
+      description: this.cleanTopicText(input?.description, 500),
+      aliases: this.normalizeTopicTerms(input?.aliases, 12),
+      keywords: this.normalizeTopicTerms(input?.keywords, 30),
+      excludeKeywords: this.normalizeTopicTerms(input?.excludeKeywords, 12),
+      expandedBy: 'manual',
+      createdAt: existing?.createdAt || now,
+      updatedAt: now,
+    });
+    const topics = existing
+      ? current.topics.map(item => item.id === existing.id ? topic : item)
+      : [...current.topics, topic];
+    const catalog = this.normalizeTopicCatalog({ version: 1, updatedAt: now, topics });
+    await this.writeJsonAtomic(this.getTopicCatalogPath(userId), catalog);
+    const reclassifiedPointCount = await this.reclassifySentenceTopics(userId, catalog.topics);
+    return { catalog, topic, reclassifiedPointCount };
+  }
+
+  async deleteTopicDefinition(
+    userId: string,
+    topicId: string
+  ): Promise<{ catalog: PdfWikiTopicCatalog; reclassifiedPointCount: number }> {
+    const current = await this.getTopicCatalog(userId);
+    const topics = current.topics.filter(topic => topic.id !== topicId);
+    if (topics.length === current.topics.length) {
+      throw new Error('未找到需要删除的主题');
+    }
+    const catalog = this.normalizeTopicCatalog({ version: 1, updatedAt: new Date().toISOString(), topics });
+    await this.writeJsonAtomic(this.getTopicCatalogPath(userId), catalog);
+    const reclassifiedPointCount = await this.reclassifySentenceTopics(userId, catalog.topics);
+    return { catalog, reclassifiedPointCount };
+  }
+
+  async reclassifySentenceTopics(
+    userId: string,
+    topicDefinitions?: PdfWikiTopicDefinition[]
+  ): Promise<number> {
+    const catalog = topicDefinitions || (await this.getTopicCatalog(userId)).topics;
+    const store = await this.loadStore(userId);
+    const existingPoints = store.sentenceCloud?.points || [];
+    if (existingPoints.length === 0) return 0;
+    const points = existingPoints.map(point => this.applyTopicDefinitionToPoint(point, catalog));
+    store.sentenceCloud = this.buildSentenceCloudStore(points);
+    await this.persistManualStoreUpdate(userId, store, `已按 ${catalog.length} 个用户主题重新匹配 PDF Wiki 论点句`);
+    return points.length;
+  }
+
+  async getSentenceTopicAnnotationStatus(userId: string): Promise<PdfWikiSentenceTopicAnnotationStatus> {
+    const safeUserId = sanitizeUserId(userId);
+    const [store, catalog, annotations, savedStatus] = await Promise.all([
+      this.loadStore(safeUserId),
+      this.getTopicCatalog(safeUserId),
+      this.loadSentenceTopicAnnotationStore(safeUserId),
+      this.loadSentenceTopicAnnotationStatus(safeUserId),
+    ]);
+    const points = store.sentenceCloud?.points || [];
+    const taxonomyHash = this.getSentenceTopicTaxonomyHash(catalog);
+    const annotatedSentences = points.filter(point => (
+      this.isCurrentSentenceTopicAnnotation(point, annotations.records[point.id], taxonomyHash)
+    )).length;
+    const totalSentences = points.length;
+    const pendingSentences = Math.max(0, totalSentences - annotatedSentences);
+    const now = new Date().toISOString();
+    let status: PdfWikiSentenceTopicAnnotationStatus = savedStatus || {
+      status: totalSentences > 0 ? 'idle' : 'idle',
+      totalSentences,
+      annotatedSentences,
+      pendingSentences,
+      targetSentences: pendingSentences,
+      processedSentences: 0,
+      failedSentences: 0,
+      skippedSentences: annotatedSentences,
+      progress: totalSentences > 0 ? Math.round((annotatedSentences / totalSentences) * 100) : 0,
+      message: totalSentences > 0 ? '尚未启动 AI 句子主题标注' : '句子库为空，请先导入并处理 PDF',
+      updatedAt: now,
+    };
+
+    if (status.status === 'processing' && !this.sentenceTopicAnnotationJobs.has(safeUserId)) {
+      status = {
+        ...status,
+        status: 'error',
+        message: '上一次标注任务随应用退出而中断；已记录的句子不会重复处理，可直接继续。',
+        error: 'INTERRUPTED_SENTENCE_TOPIC_ANNOTATION',
+        updatedAt: now,
+      };
+      await this.saveSentenceTopicAnnotationStatus(safeUserId, status);
+    }
+
+    return {
+      ...status,
+      totalSentences,
+      annotatedSentences,
+      pendingSentences,
+      skippedSentences: status.status === 'processing' ? status.skippedSentences : annotatedSentences,
+      progress: status.status === 'processing' && status.targetSentences > 0
+        ? Math.min(100, Math.round((status.processedSentences / status.targetSentences) * 100))
+        : (totalSentences > 0 ? Math.round((annotatedSentences / totalSentences) * 100) : 0),
+    };
+  }
+
+  async startSentenceTopicAnnotation(
+    userId: string,
+    llmConfig: PdfWikiLlmConfig,
+    options: { force?: boolean } = {}
+  ): Promise<PdfWikiSentenceTopicAnnotationStatus> {
+    const safeUserId = sanitizeUserId(userId);
+    if (this.sentenceTopicAnnotationJobs.has(safeUserId)) {
+      return this.getSentenceTopicAnnotationStatus(safeUserId);
+    }
+
+    const [store, catalog, annotations] = await Promise.all([
+      this.loadStore(safeUserId),
+      this.getTopicCatalog(safeUserId),
+      this.loadSentenceTopicAnnotationStore(safeUserId),
+    ]);
+    const points = store.sentenceCloud?.points || [];
+    if (points.length === 0) {
+      throw new Error('句子库为空，请先上传并完成 PDF Wiki 句子提取');
+    }
+    if (!this.hasSentenceTopicAnnotationProvider(llmConfig)) {
+      throw new Error('未检测到可用的 Codex CLI 或 PDF Wiki AI API，无法进行句子主题标注');
+    }
+
+    const taxonomyHash = this.getSentenceTopicTaxonomyHash(catalog);
+    const force = options.force === true;
+    const pendingPoints = points.filter(point => (
+      force || !this.isCurrentSentenceTopicAnnotation(point, annotations.records[point.id], taxonomyHash)
+    ));
+    const now = new Date().toISOString();
+    if (pendingPoints.length === 0) {
+      const completed: PdfWikiSentenceTopicAnnotationStatus = {
+        status: 'completed',
+        totalSentences: points.length,
+        annotatedSentences: points.length,
+        pendingSentences: 0,
+        targetSentences: 0,
+        processedSentences: 0,
+        failedSentences: 0,
+        skippedSentences: points.length,
+        progress: 100,
+        message: '所有句子均已有有效 AI 主题标签，无需重复处理。',
+        startedAt: now,
+        completedAt: now,
+        updatedAt: now,
+      };
+      await this.saveSentenceTopicAnnotationStatus(safeUserId, completed);
+      return completed;
+    }
+
+    const initialStatus: PdfWikiSentenceTopicAnnotationStatus = {
+      status: 'processing',
+      totalSentences: points.length,
+      annotatedSentences: points.length - pendingPoints.length,
+      pendingSentences: pendingPoints.length,
+      targetSentences: pendingPoints.length,
+      processedSentences: 0,
+      failedSentences: 0,
+      skippedSentences: force ? 0 : points.length - pendingPoints.length,
+      progress: 0,
+      message: `AI 正在标注 ${pendingPoints.length} 个${force ? '句子' : '新增或发生变化的句子'}…`,
+      startedAt: now,
+      updatedAt: now,
+    };
+    await this.saveSentenceTopicAnnotationStatus(safeUserId, initialStatus);
+
+    const job = this.runSentenceTopicAnnotationJob(
+      safeUserId,
+      pendingPoints,
+      catalog,
+      annotations,
+      llmConfig,
+      initialStatus
+    );
+    this.sentenceTopicAnnotationJobs.set(safeUserId, job);
+    const releaseJob = () => {
+      if (this.sentenceTopicAnnotationJobs.get(safeUserId) === job) {
+        this.sentenceTopicAnnotationJobs.delete(safeUserId);
+      }
+    };
+    void job.then(releaseJob, error => {
+      releaseJob();
+      logger.error(`[PdfWiki] Unhandled sentence topic annotation job failure for ${safeUserId}:`, error);
+    });
+    return initialStatus;
+  }
+
+  private async runSentenceTopicAnnotationJob(
+    userId: string,
+    pendingPoints: PdfWikiSentencePoint[],
+    catalog: PdfWikiTopicCatalog,
+    annotationStore: PdfWikiSentenceTopicAnnotationStore,
+    llmConfig: PdfWikiLlmConfig,
+    initialStatus: PdfWikiSentenceTopicAnnotationStatus
+  ): Promise<void> {
+    const taxonomyHash = this.getSentenceTopicTaxonomyHash(catalog);
+    let processedSentences = 0;
+    let failedSentences = 0;
+    let providerLabel = '';
+    try {
+      for (let offset = 0; offset < pendingPoints.length; offset += PDF_WIKI_SENTENCE_TOPIC_ANNOTATION_BATCH_SIZE) {
+        const batch = pendingPoints.slice(offset, offset + PDF_WIKI_SENTENCE_TOPIC_ANNOTATION_BATCH_SIZE);
+        const result = await this.annotateSentenceTopicBatch(userId, batch, catalog, taxonomyHash, llmConfig);
+        providerLabel = result.provider === 'api' ? 'API' : 'Codex';
+        const byId = new Map(result.annotations.map(annotation => [annotation.sentenceId, annotation]));
+        let savedInBatch = 0;
+        for (const point of batch) {
+          const annotation = byId.get(point.id);
+          if (!annotation) continue;
+          annotationStore.records[point.id] = annotation.value;
+          savedInBatch += 1;
+        }
+        processedSentences += batch.length;
+        failedSentences += batch.length - savedInBatch;
+        annotationStore.updatedAt = new Date().toISOString();
+        await this.saveSentenceTopicAnnotationStore(userId, annotationStore);
+
+        const annotatedSentences = pendingPoints.filter(point => (
+          this.isCurrentSentenceTopicAnnotation(point, annotationStore.records[point.id], taxonomyHash)
+        )).length + initialStatus.skippedSentences;
+        const updatedAt = new Date().toISOString();
+        await this.saveSentenceTopicAnnotationStatus(userId, {
+          ...initialStatus,
+          status: 'processing',
+          annotatedSentences,
+          pendingSentences: Math.max(0, initialStatus.totalSentences - annotatedSentences),
+          processedSentences,
+          failedSentences,
+          progress: Math.min(100, Math.round((processedSentences / initialStatus.targetSentences) * 100)),
+          message: `${providerLabel} 已处理 ${processedSentences}/${initialStatus.targetSentences} 个句子，成功记录 ${annotatedSentences} 个；返回未通过校验 ${failedSentences} 个。`,
+          updatedAt,
+        });
+      }
+
+      const [latestStore, latestCatalog] = await Promise.all([
+        this.loadStore(userId),
+        this.getTopicCatalog(userId),
+      ]);
+      const latestPoints = latestStore.sentenceCloud?.points || [];
+      const latestTaxonomyHash = this.getSentenceTopicTaxonomyHash(latestCatalog);
+      const annotatedSentences = latestPoints.filter(point => (
+        this.isCurrentSentenceTopicAnnotation(point, annotationStore.records[point.id], latestTaxonomyHash)
+      )).length;
+      const pendingSentences = Math.max(0, latestPoints.length - annotatedSentences);
+      const completedAt = new Date().toISOString();
+      await this.saveSentenceTopicAnnotationStatus(userId, {
+        ...initialStatus,
+        status: 'completed',
+        totalSentences: latestPoints.length,
+        annotatedSentences,
+        pendingSentences,
+        processedSentences,
+        failedSentences,
+        progress: 100,
+        message: pendingSentences > 0
+          ? `本次标注完成，已记录 ${annotatedSentences} 个句子；${pendingSentences} 个返回未通过校验，可再次点击继续。`
+          : `AI 句子主题标注完成，${annotatedSentences} 个句子均已记录；下次只处理新增或变化的句子。`,
+        completedAt,
+        updatedAt: completedAt,
+      });
+      this.clearEngine(userId);
+    } catch (error) {
+      const updatedAt = new Date().toISOString();
+      const message = this.getErrorMessage(error);
+      const annotatedInRun = pendingPoints.filter(point => (
+        this.isCurrentSentenceTopicAnnotation(point, annotationStore.records[point.id], taxonomyHash)
+      )).length;
+      const annotatedSentences = Math.min(
+        initialStatus.totalSentences,
+        initialStatus.skippedSentences + annotatedInRun
+      );
+      await this.saveSentenceTopicAnnotationStatus(userId, {
+        ...initialStatus,
+        status: 'error',
+        annotatedSentences,
+        pendingSentences: Math.max(0, initialStatus.totalSentences - annotatedSentences),
+        processedSentences,
+        failedSentences,
+        progress: initialStatus.targetSentences > 0
+          ? Math.min(100, Math.round((processedSentences / initialStatus.targetSentences) * 100))
+          : 0,
+        message: `AI 句子主题标注中断：${message}。已完成的句子已经保存，重试时不会重复处理。`,
+        error: message,
+        updatedAt,
+      });
+      logger.error(`[PdfWiki] Sentence topic annotation failed for ${userId}:`, error);
+    }
+  }
+
+  private async annotateSentenceTopicBatch(
+    userId: string,
+    points: PdfWikiSentencePoint[],
+    catalog: PdfWikiTopicCatalog,
+    taxonomyHash: string,
+    llmConfig: PdfWikiLlmConfig
+  ): Promise<{
+    provider: 'api' | 'codex';
+    annotations: Array<{ sentenceId: string; value: PdfWikiSentenceTopicAnnotation }>;
+  }> {
+    const buildPrompt = (batch: PdfWikiSentencePoint[], retry: boolean): string => {
+      const topicCandidates = catalog.topics.map(topic => ({
+        label: topic.label,
+        description: topic.description,
+        aliases: topic.aliases.slice(0, 4),
+      }));
+      return `你正在为学术 PDF 句子级论点库逐句添加多标签。必须只依据每条输入的原句和论点文本，不得补写原文没有的事实。
+
+${retry ? '这是针对上一轮遗漏项的自动校验重试。必须逐条原样返回下面列出的每一个 sentenceId，数量必须与 SENTENCES 完全一致。' : ''}
+
+每个句子必须返回：
+1. subjectTags：1-5 个简洁、具体、可检索的中文学术主题标签；保留 N2O、DNA 等必要缩写。优先使用 USER_TOPICS 中适用的原标签，但可以在没有合适候选时生成更准确的标签。
+2. trendConclusionTopic：恰好 1 个趋势/结论型主题，必须表达该句的方向、关系、变化、限制或结论，例如“增雨提高土壤 N2O 排放”“该效应受土壤含水量限制”；不得只写“趋势”“结论”“研究结果”等泛词。
+3. 不要返回置信度，不要解释，不要合并或遗漏 sentenceId。
+
+只返回 JSON：
+{"annotations":[{"sentenceId":"原 ID","subjectTags":["标签1","标签2"],"trendConclusionTopic":"趋势或结论主题"}]}
+
+USER_TOPICS:
+${JSON.stringify(topicCandidates)}
+
+SENTENCES:
+${JSON.stringify(batch.map(point => ({
+      sentenceId: point.id,
+      section: point.section,
+      sentence: point.sentence.slice(0, 1600),
+      claimText: (point.claimText || '').slice(0, 600),
+      currentTopic: point.topicLabel || '',
+    })))}`;
+    };
+
+    const requestAnnotations = async (
+      batch: PdfWikiSentencePoint[],
+      retry: boolean
+    ): Promise<{ parsed: unknown; provider: 'api' | 'codex'; model: string }> => {
+      const prompt = buildPrompt(batch, retry);
+      if ((llmConfig.jsonApiUrl && llmConfig.jsonApiKey) || (llmConfig.apiUrl && llmConfig.apiKey)) {
+        return {
+          parsed: await this.callJsonNormalizer(
+            llmConfig,
+            prompt,
+            7000,
+            retry ? 'sentence-topic-annotation-retry' : 'sentence-topic-annotation'
+          ),
+          provider: 'api',
+          model: llmConfig.jsonModel || llmConfig.model || '',
+        };
+      }
+      const codexConfig = this.loadPdfWikiCodexConfig();
+      const taskDir = path.join(
+        this.getWikiDir(userId),
+        'sentence-topic-annotation',
+        `${Date.now()}_${crypto.randomBytes(3).toString('hex')}`
+      );
+      return {
+        parsed: await this.callCodexJsonTask(
+          codexConfig,
+          taskDir,
+          prompt,
+          retry ? 'sentence topic annotation retry' : 'sentence topic annotation'
+        ),
+        provider: 'codex',
+        model: codexConfig.model || '',
+      };
+    };
+
+    const firstResponse = await requestAnnotations(points, false);
+    const firstNormalized = this.normalizeSentenceTopicAnnotationResponse(
+      firstResponse.parsed,
+      points,
+      taxonomyHash,
+      firstResponse.provider,
+      firstResponse.model
+    );
+    const annotationsById = new Map(firstNormalized.annotations.map(item => [item.sentenceId, item]));
+    const missingPoints = points.filter(point => !annotationsById.has(point.id));
+    let finalRejectionReasons = firstNormalized.rejectionReasons;
+
+    if (missingPoints.length > 0) {
+      try {
+        const retryResponse = await requestAnnotations(missingPoints, true);
+        const retryNormalized = this.normalizeSentenceTopicAnnotationResponse(
+          retryResponse.parsed,
+          missingPoints,
+          taxonomyHash,
+          retryResponse.provider,
+          retryResponse.model
+        );
+        for (const annotation of retryNormalized.annotations) {
+          annotationsById.set(annotation.sentenceId, annotation);
+        }
+        finalRejectionReasons = retryNormalized.rejectionReasons;
+      } catch (error) {
+        finalRejectionReasons = {
+          ...finalRejectionReasons,
+          'retry-request-error': missingPoints.length,
+        };
+        logger.warn(
+          `[PdfWiki] Sentence topic retry request failed; preserving ${annotationsById.size} valid first-pass record(s)`,
+          error
+        );
+      }
+    }
+
+    const stillMissing = points.filter(point => !annotationsById.has(point.id));
+    if (stillMissing.length > 0) {
+      logger.warn(
+        `[PdfWiki] Sentence topic response validation left ${stillMissing.length}/${points.length} sentence(s) pending`,
+        {
+          sentenceIds: stillMissing.slice(0, 8).map(point => point.id),
+          reasons: finalRejectionReasons,
+        }
+      );
+    }
+    return { provider: firstResponse.provider, annotations: Array.from(annotationsById.values()) };
+  }
+
+  private normalizeSentenceTopicAnnotationResponse(
+    parsed: unknown,
+    points: PdfWikiSentencePoint[],
+    taxonomyHash: string,
+    provider: 'api' | 'codex',
+    model: string
+  ): {
+    annotations: Array<{ sentenceId: string; value: PdfWikiSentenceTopicAnnotation }>;
+    rejectionReasons: Record<string, number>;
+  } {
+    const pointById = new Map(points.map(point => [point.id, point]));
+    const pointIdByLowerCase = new Map(points.map(point => [point.id.toLocaleLowerCase(), point.id]));
+    const responseContainerKeys = ['annotations', 'results', 'items', 'data', 'output', 'result', 'response'];
+    const findRecords = (value: unknown, depth = 0): unknown[] => {
+      if (Array.isArray(value)) return value;
+      if (!value || typeof value !== 'object' || depth > 4) return [];
+      const record = value as Record<string, unknown>;
+      const keyedRecords = Object.entries(record)
+        .filter(([key, item]) => pointIdByLowerCase.has(key.toLocaleLowerCase()) && !!item && typeof item === 'object')
+        .map(([key, item]) => ({ ...(item as Record<string, unknown>), sentenceId: pointIdByLowerCase.get(key.toLocaleLowerCase()) || key }));
+      if (keyedRecords.length > 0) return keyedRecords;
+      for (const key of responseContainerKeys) {
+        if (!(key in record)) continue;
+        const nested = findRecords(record[key], depth + 1);
+        if (nested.length > 0) return nested;
+      }
+      return [];
+    };
+    const records = findRecords(parsed);
+    const rejectionReasons: Record<string, number> = {};
+    const reject = (reason: string): void => {
+      rejectionReasons[reason] = (rejectionReasons[reason] || 0) + 1;
+    };
+    const firstValue = (record: Record<string, unknown>, keys: string[]): unknown => {
+      for (const key of keys) {
+        const value = record[key];
+        if (value !== undefined && value !== null && value !== '') return value;
+      }
+      return undefined;
+    };
+    const normalizeTagInput = (value: unknown): unknown => {
+      if (!Array.isArray(value)) return value;
+      return value.map(item => {
+        if (!item || typeof item !== 'object') return item;
+        return firstValue(item as Record<string, unknown>, ['label', 'name', 'tag', 'topic', 'value']);
+      });
+    };
+    const normalizeTextValue = (value: unknown): unknown => {
+      if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
+      return firstValue(value as Record<string, unknown>, ['label', 'name', 'topic', 'value', 'text']);
+    };
+    const seen = new Set<string>();
+    const annotations: Array<{ sentenceId: string; value: PdfWikiSentenceTopicAnnotation }> = [];
+    records.forEach((raw, index) => {
+      if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+        reject('invalid-record');
+        return;
+      }
+      const record = raw as Record<string, unknown>;
+      const rawId = firstValue(record, ['sentenceId', 'sentence_id', 'sentenceID', 'id', 'pointId', 'point_id']);
+      let sentenceId = this.cleanTopicText(rawId, 180);
+      if (sentenceId && !pointById.has(sentenceId)) {
+        sentenceId = pointIdByLowerCase.get(sentenceId.toLocaleLowerCase()) || '';
+      }
+      if (!sentenceId && rawId !== undefined) {
+        const cleanedRawId = this.cleanTopicText(rawId, 500).toLocaleLowerCase();
+        const wrappedId = points.find(point => cleanedRawId.includes(point.id.toLocaleLowerCase()));
+        sentenceId = wrappedId?.id || '';
+      }
+      if (!sentenceId && rawId === undefined && records.length === points.length) {
+        sentenceId = points[index]?.id || '';
+      }
+      if (!sentenceId) {
+        reject(rawId === undefined ? 'missing-id' : 'unknown-id');
+        return;
+      }
+      const point = pointById.get(sentenceId);
+      if (!point || seen.has(sentenceId)) {
+        reject(point ? 'duplicate-id' : 'unknown-id');
+        return;
+      }
+      const subjectTags = this.normalizeTopicTerms(normalizeTagInput(firstValue(record, [
+        'subjectTags',
+        'subject_tags',
+        'topicTags',
+        'topic_tags',
+        'topics',
+        'tags',
+        'labels',
+        'themeTags',
+        'theme_tags',
+      ])), 5).map(tag => this.cleanTopicText(tag, 80)).filter(Boolean).slice(0, 5);
+      if (subjectTags.length === 0) {
+        reject('missing-subject-tags');
+        return;
+      }
+      const trendConclusionTopic = this.cleanTopicText(normalizeTextValue(firstValue(record, [
+        'trendConclusionTopic',
+        'trend_conclusion_topic',
+        'trendTopic',
+        'trend_topic',
+        'conclusionTopic',
+        'conclusion_topic',
+        'trendConclusion',
+        'trend_conclusion',
+        'summaryTopic',
+        'summary_topic',
+        'directionalTopic',
+        'directional_topic',
+      ])), 120);
+      if (!trendConclusionTopic) {
+        reject('missing-trend-conclusion');
+        return;
+      }
+      seen.add(sentenceId);
+      annotations.push({
+        sentenceId,
+        value: {
+          version: PDF_WIKI_SENTENCE_TOPIC_ANNOTATION_VERSION,
+          sourceHash: this.getSentenceTopicSourceHash(point),
+          taxonomyHash,
+          subjectTags,
+          trendConclusionTopic,
+          annotatedAt: new Date().toISOString(),
+          provider,
+          model: model || undefined,
+        },
+      });
+    });
+    const missingRecordCount = Math.max(0, points.length - annotations.length);
+    if (missingRecordCount > 0) rejectionReasons['missing-or-invalid-record'] = missingRecordCount;
+    return { annotations, rejectionReasons };
+  }
+
+  private hasSentenceTopicAnnotationProvider(llmConfig: PdfWikiLlmConfig): boolean {
+    return !!(
+      (llmConfig.jsonApiUrl && llmConfig.jsonApiKey)
+      || (llmConfig.apiUrl && llmConfig.apiKey)
+      || this.canUseCodexCli()
+      || this.canUseCodexCli(true)
+    );
+  }
+
+  private getSentenceTopicSourceHash(point: PdfWikiSentencePoint): string {
+    return crypto.createHash('sha256')
+      .update([
+        PDF_WIKI_SENTENCE_TOPIC_ANNOTATION_VERSION,
+        point.section,
+        point.sentence,
+        point.claimText || '',
+      ].join('\u0000'))
+      .digest('hex');
+  }
+
+  private getSentenceTopicTaxonomyHash(catalog: PdfWikiTopicCatalog): string {
+    const topics = catalog.topics
+      .map(topic => ({
+        id: topic.id,
+        label: topic.label,
+        description: topic.description,
+        aliases: topic.aliases,
+        keywords: topic.keywords,
+        excludeKeywords: topic.excludeKeywords,
+      }))
+      .sort((a, b) => a.id.localeCompare(b.id));
+    return crypto.createHash('sha256')
+      .update(JSON.stringify({ version: PDF_WIKI_SENTENCE_TOPIC_ANNOTATION_VERSION, topics }))
+      .digest('hex');
+  }
+
+  private isCurrentSentenceTopicAnnotation(
+    point: PdfWikiSentencePoint,
+    annotation: PdfWikiSentenceTopicAnnotation | undefined,
+    taxonomyHash: string
+  ): boolean {
+    return !!(
+      annotation
+      && annotation.version === PDF_WIKI_SENTENCE_TOPIC_ANNOTATION_VERSION
+      && annotation.sourceHash === this.getSentenceTopicSourceHash(point)
+      && annotation.taxonomyHash === taxonomyHash
+      && annotation.subjectTags.length > 0
+      && annotation.trendConclusionTopic
+    );
+  }
 
   setQueueRuntimeConfigProvider(provider: () => PdfWikiLlmConfig): void {
     this.queueRuntimeConfigProvider = provider;
@@ -1287,7 +2261,6 @@ export class PdfWikiManager {
     const registry = this.loadMetaAnalysisUnitRegistry(userId);
     const now = new Date().toISOString();
     let changed = false;
-    let registeredAny = false;
     columns.forEach(column => {
       const parsed = this.parseMetaAnalysisColumnUnit(column);
       if (!parsed.base || !parsed.unit) return;
@@ -1295,14 +2268,266 @@ export class PdfWikiManager {
       if (!entry) return;
       const key = this.normalizeMetaAnalysisColumnKey(entry.base);
       if (!key) return;
-      registeredAny = true;
       const current = registry.columns[key];
-      if (!current || current.unit !== entry.unit || current.base !== entry.base || current.source !== entry.source) {
+      // The template overlay intentionally labels matching columns as "template"
+      // in memory. Do not rewrite the registry merely to toggle that provenance
+      // back to "extracted" on every Meta detail read; only data changes matter.
+      if (!current || current.unit !== entry.unit || current.base !== entry.base) {
         registry.columns[key] = entry;
         changed = true;
       }
     });
-    if (changed || registeredAny) this.saveMetaAnalysisUnitRegistry(userId, registry);
+    if (changed) this.saveMetaAnalysisUnitRegistry(userId, registry);
+  }
+
+  private async autoAssignExistingPdfGroups(
+    userId: string,
+    pdfs: PdfWikiSourcePdf[]
+  ): Promise<PdfWikiAutoGroupMatchResult> {
+    const safeUserId = sanitizeUserId(userId);
+    const management = loadPdfWikiPdfManagement(this.dataDir, safeUserId);
+    const additions: Record<string, string[]> = {};
+    const matchedGroupNamesByPdf: Record<string, string[]> = {};
+    let addedTagCount = 0;
+
+    if (management.groups.length === 0 || pdfs.length === 0) {
+      return { matchedPdfCount: 0, addedTagCount: 0, matchedGroupNamesByPdf };
+    }
+
+    const uniquePdfs = Array.from(new Map(
+      pdfs
+        .filter(pdf => !!pdf?.id)
+        .map(pdf => [pdf.id, pdf])
+    ).values());
+    for (const pdf of uniquePdfs) {
+      if (!pdf.processedAt && !pdf.parsedTextCachedAt && !pdf.metaDataCachedAt) continue;
+      const metaData = this.asRecord(pdf.metaData);
+      let abstractText = this.firstString(
+        metaData.abstract,
+        metaData.abstractText,
+        metaData.abstract_text,
+        metaData.paperAbstract,
+        metaData.paper_abstract,
+        metaData.summaryAbstract,
+        metaData['摘要']
+      );
+      if (!abstractText) {
+        try {
+          const parsed = await this.loadParsedTextCache(safeUserId, pdf);
+          abstractText = parsed
+            ? this.extractSectionByHeading(
+                parsed.text,
+                ['abstract', '摘要'],
+                ['keywords', 'key words', '关键词', 'introduction', '引言', 'materials', 'methods', '方法']
+              ).slice(0, 2400)
+            : '';
+        } catch (error) {
+          logger.debug(
+            `[PdfWiki] Failed to read abstract cache for auto grouping ${pdf.originalName}: ${(error as Error).message}`
+          );
+        }
+      }
+
+      const searchText = [pdf.title, pdf.originalName, abstractText]
+        .filter(Boolean)
+        .join('\n');
+      const currentGroupIds = new Set(management.assignments[pdf.id] || []);
+      const matchedGroups = management.groups.filter(group =>
+        !currentGroupIds.has(group.id)
+        && matchesPdfWikiPdfGroupQuery(searchText, group.name)
+      );
+      if (matchedGroups.length === 0) continue;
+      additions[pdf.id] = matchedGroups.map(group => group.id);
+      matchedGroupNamesByPdf[pdf.id] = matchedGroups.map(group => group.name);
+      addedTagCount += matchedGroups.length;
+    }
+
+    if (addedTagCount > 0) {
+      addPdfWikiPdfGroupsToPdfs(this.dataDir, safeUserId, additions);
+      logger.info(
+        `[PdfWiki] Automatically grouped ${Object.keys(additions).length} recognized PDF(s); added tags=${addedTagCount}`
+      );
+    }
+    return {
+      matchedPdfCount: Object.keys(additions).length,
+      addedTagCount,
+      matchedGroupNamesByPdf,
+    };
+  }
+
+  private recordPdfFigureExtraction(
+    pdf: PdfWikiSourcePdf,
+    result: { figureCount: number; sourceFigures: Record<string, unknown>[]; error?: string }
+  ): void {
+    const attemptedAt = new Date().toISOString();
+    if (result.sourceFigures.length > 0 || !result.error) {
+      pdf.metaData = {
+        ...this.asRecord(pdf.metaData),
+        source_figures: result.sourceFigures,
+      };
+    }
+    pdf.metaDataCachedAt = attemptedAt;
+    pdf.figureExtractionAttemptedAt = attemptedAt;
+    pdf.figureExtractionStatus = result.error ? 'error' : 'completed';
+    pdf.figureExtractionError = result.error || undefined;
+  }
+
+  private async recognizePdfForManager(
+    userId: string,
+    pdf: PdfWikiSourcePdf,
+    options: { extractFigures: boolean }
+  ): Promise<{ pdf: PdfWikiSourcePdf; figureCount: number; figureError?: string }> {
+    let parsed = await this.loadParsedTextCache(userId, pdf)
+      || await this.tryExtractPdfWithLiteParse(userId, pdf);
+    if (!parsed) {
+      try {
+        const text = this.normalizeExtractedText(await this.extractPdfTextWithPdfParse(pdf.filePath));
+        if (text) {
+          const references = this.parseReferences(text, pdf.id, pdf.originalName);
+          const metadata = await this.enrichSourceMetadataWithDoi(
+            this.cleanSourceMetadata(this.inferSourceMetadata(pdf.originalName, text)),
+            text,
+            pdf.originalName
+          );
+          parsed = {
+            text,
+            metadata,
+            references,
+            parser: 'pdf-parse',
+          };
+          await this.saveParsedTextCache(userId, pdf, {
+            parser: 'pdf-parse',
+            markdown: text,
+            text,
+            references,
+            metadata,
+          });
+        }
+      } catch (error) {
+        logger.warn(
+          `[PdfWiki] pdf-parse base recognition failed for ${pdf.originalName}: ${this.getErrorMessage(error)}`
+        );
+      }
+    }
+    if (!parsed || !parsed.text.trim()) {
+      throw new Error('LiteParse 和 pdf-parse 均未提取到可用正文');
+    }
+
+    const recognitionWasComplete = Boolean(
+      pdf.parsedTextCachedAt
+      || (pdf.processedAt && (pdf.extractionParser || Number(pdf.textLength || 0) > 0))
+    );
+    const currentMetadata = this.cleanSourceMetadata(pdf);
+    const metadata = this.mergePdfReidentifiedMetadata(pdf, parsed);
+    if (recognitionWasComplete) {
+      metadata.title = currentMetadata.title || metadata.title;
+      metadata.authors = currentMetadata.authors || metadata.authors;
+      metadata.year = currentMetadata.year || metadata.year;
+      metadata.journal = currentMetadata.journal || metadata.journal;
+      metadata.doi = currentMetadata.doi || metadata.doi;
+    }
+    Object.assign(pdf, metadata);
+    pdf.referenceIndex = this.mergeReferenceIndexes(pdf.referenceIndex || [], parsed.references || []);
+    pdf.textLength = parsed.text.length;
+    pdf.extractionParser = parsed.parser;
+    pdf.processedAt = new Date().toISOString();
+    pdf.metaData = this.buildPdfMetaDataRecord(
+      pdf,
+      parsed,
+      pdf.referenceIndex,
+      this.asRecord(pdf.metaData)
+    );
+    pdf.metaDataCachedAt = pdf.processedAt;
+
+    if (!options.extractFigures) {
+      return { pdf, figureCount: 0 };
+    }
+
+    const existingFigures = this.filterScientificSourceFigures(
+      this.firstArray(
+        this.asRecord(pdf.metaData).source_figures,
+        this.asRecord(pdf.metaData).sourceFigures
+      )
+    );
+    if (existingFigures.length > 0) {
+      pdf.figureExtractionStatus = 'completed';
+      pdf.figureExtractionAttemptedAt = pdf.figureExtractionAttemptedAt
+        || pdf.metaDataCachedAt
+        || pdf.processedAt
+        || new Date().toISOString();
+      pdf.figureExtractionError = undefined;
+      return { pdf, figureCount: existingFigures.length };
+    }
+
+    const figureResult = await this.extractPdfFiguresForManager(userId, pdf);
+    this.recordPdfFigureExtraction(pdf, figureResult);
+    return {
+      pdf,
+      figureCount: figureResult.figureCount,
+      figureError: figureResult.error,
+    };
+  }
+
+  private async recognizeAndPersistPdfsForManager(
+    userId: string,
+    pdfs: PdfWikiSourcePdf[],
+    options: { extractFigures: boolean }
+  ): Promise<PdfWikiManagerRecognitionBatchResult> {
+    const safeUserId = sanitizeUserId(userId);
+    const store = await this.loadStore(safeUserId);
+    const pdfById = new Map(store.pdfs.map(pdf => [pdf.id, pdf]));
+    const recognizedPdfs: PdfWikiSourcePdf[] = [];
+    const failedPdfs: PdfWikiManagerRecognitionBatchResult['failedPdfs'] = [];
+    let figureCount = 0;
+
+    for (const sourcePdf of pdfs) {
+      const existing = pdfById.get(sourcePdf.id);
+      const pdf: PdfWikiSourcePdf = existing
+        ? {
+            ...sourcePdf,
+            ...existing,
+            originalName: existing.originalName || sourcePdf.originalName,
+            fileName: existing.fileName || sourcePdf.fileName,
+            filePath: existing.filePath && fs.existsSync(existing.filePath)
+              ? existing.filePath
+              : sourcePdf.filePath,
+            size: existing.size || sourcePdf.size,
+          }
+        : sourcePdf;
+      try {
+        const recognition = await this.recognizePdfForManager(safeUserId, pdf, options);
+        pdfById.set(pdf.id, recognition.pdf);
+        Object.assign(sourcePdf, recognition.pdf);
+        recognizedPdfs.push(recognition.pdf);
+        figureCount += recognition.figureCount;
+        if (recognition.figureError) {
+          logger.warn(
+            `[PdfWiki] PDF manager image recognition warning for ${pdf.originalName}: ${recognition.figureError}`
+          );
+        }
+      } catch (error) {
+        const message = this.getErrorMessage(error);
+        pdfById.set(pdf.id, pdf);
+        failedPdfs.push({
+          pdfId: pdf.id,
+          pdfName: pdf.originalName,
+          error: message,
+        });
+        logger.warn(`[PdfWiki] Base recognition failed for ${pdf.originalName}: ${message}`);
+      }
+    }
+
+    store.pdfs = this.deduplicatePdfs(Array.from(pdfById.values()));
+    store.referenceIndex = this.mergeReferenceIndexes(
+      store.referenceIndex || [],
+      ...store.pdfs.map(pdf => pdf.referenceIndex || [])
+    );
+    store.generatedAt = new Date().toISOString();
+    await this.saveStore(safeUserId, store);
+    this.clearEngine(safeUserId);
+    this.removeIndexCache(safeUserId);
+
+    return { recognizedPdfs, failedPdfs, figureCount };
   }
 
   async processUploadedPdfs(
@@ -1337,13 +2562,51 @@ export class PdfWikiManager {
           processedChunks: 0,
           entryCount: existing.entries.length,
           sentencePointCount: existing.sentenceCloud?.points?.length || 0,
-          message: '上传的 PDF 已存在于 PDF Wiki 中，且已有对应句子级Wiki论点库',
+          message: '上传的 PDF 已存在于 PDF Wiki 中，且已有对应 Wiki论点库',
           updatedAt: new Date().toISOString(),
         });
         return;
       }
 
-      await this.buildWiki(safeUserId, pending, llmConfig, false);
+      await this.saveStatus(safeUserId, {
+        status: 'processing',
+        taskKind: 'pdf-wiki',
+        totalPdfs: pending.length,
+        processedPdfs: 0,
+        totalChunks: pending.length,
+        processedChunks: 0,
+        entryCount: existing.entries.length,
+        sentencePointCount: existing.sentenceCloud?.points?.length || 0,
+        message: '正在进行 PDF 基础识别并保存标题、作者、正文和参考文献',
+        updatedAt: new Date().toISOString(),
+      });
+      const initialRecognition = await this.recognizeAndPersistPdfsForManager(
+        safeUserId,
+        pending,
+        { extractFigures: false }
+      );
+      logger.info(
+        `[PdfWiki] Persisted base recognition before Wiki build: recognized=${initialRecognition.recognizedPdfs.length}, failed=${initialRecognition.failedPdfs.length}`
+      );
+
+      try {
+        await this.buildWiki(safeUserId, pending, llmConfig, false);
+      } finally {
+        const finalRecognition = await this.recognizeAndPersistPdfsForManager(
+          safeUserId,
+          pending,
+          { extractFigures: true }
+        );
+        const pendingPdfIds = new Set(pending.map(pdf => pdf.id));
+        const refreshedStore = await this.loadStore(safeUserId);
+        await this.autoAssignExistingPdfGroups(
+          safeUserId,
+          refreshedStore.pdfs.filter(pdf => pendingPdfIds.has(pdf.id))
+        );
+        logger.info(
+          `[PdfWiki] Completed PDF manager recognition after Wiki build attempt: recognized=${finalRecognition.recognizedPdfs.length}, failed=${finalRecognition.failedPdfs.length}, figures=${finalRecognition.figureCount}`
+        );
+      }
     });
   }
 
@@ -1487,6 +2750,100 @@ export class PdfWikiManager {
     };
   }
 
+  async enqueuePdfRecognition(
+    userId: string,
+    requestedItems: Array<{ pdfId: string; mode?: PdfWikiRecognitionQueueMode }>
+  ): Promise<PdfWikiRecognitionQueueSnapshot> {
+    const safeUserId = sanitizeUserId(userId);
+    const store = await this.loadStore(safeUserId);
+    const pdfById = new Map(store.pdfs.map(pdf => [pdf.id, pdf]));
+    const requestedByPdfId = new Map<string, PdfWikiRecognitionQueueMode>();
+    for (const item of Array.isArray(requestedItems) ? requestedItems : []) {
+      const pdfId = String(item?.pdfId || '').trim();
+      if (!pdfId) continue;
+      requestedByPdfId.set(pdfId, item?.mode === 'images-only' ? 'images-only' : 'full');
+    }
+    if (requestedByPdfId.size === 0) {
+      throw new Error('没有可加入识别队列的 PDF');
+    }
+
+    let addedItems = 0;
+    let skippedActiveItems = 0;
+    let skippedMissingItems = 0;
+    const addedJobIds: string[] = [];
+    await this.mutateRecognitionQueue(safeUserId, queue => {
+      const activePdfIds = new Set(
+        queue.jobs
+          .filter(job => job.status === 'queued' || job.status === 'running')
+          .flatMap(job => job.items)
+          .filter(item => item.status === 'queued' || item.status === 'running')
+          .map(item => item.pdfId)
+      );
+      const now = new Date().toISOString();
+      const items: PdfWikiRecognitionQueueItem[] = [];
+      for (const [pdfId, mode] of requestedByPdfId.entries()) {
+        const pdf = pdfById.get(pdfId);
+        if (!pdf) {
+          skippedMissingItems++;
+          continue;
+        }
+        if (activePdfIds.has(pdfId)) {
+          skippedActiveItems++;
+          continue;
+        }
+        items.push({
+          pdfId,
+          pdfName: pdf.title || pdf.originalName || pdf.fileName || pdfId,
+          mode,
+          status: 'queued',
+          createdAt: now,
+          updatedAt: now,
+        });
+      }
+      if (items.length > 0) {
+        const jobId = `pdfr_${Date.now()}_${crypto.randomBytes(5).toString('hex')}`;
+        queue.jobs.push({
+          id: jobId,
+          status: 'queued',
+          items,
+          createdAt: now,
+          updatedAt: now,
+        });
+        addedItems = items.length;
+        addedJobIds.push(jobId);
+      }
+      queue.jobs = this.pruneRecognitionQueueJobs(queue.jobs);
+    });
+    if (addedItems > 0) this.startRecognitionQueueWorker(safeUserId);
+    return {
+      ...(await this.getRecognitionQueueSnapshot(safeUserId)),
+      addedItems,
+      addedJobIds,
+      skippedActiveItems,
+      skippedMissingItems,
+    };
+  }
+
+  async getRecognitionQueueSnapshot(userId: string): Promise<PdfWikiRecognitionQueueSnapshot> {
+    const queue = await this.loadRecognitionQueue(sanitizeUserId(userId));
+    const jobs = queue.jobs.slice(-50).reverse();
+    const allItems = queue.jobs.flatMap(job => job.items);
+    const activeJob = queue.jobs.find(job => job.status === 'running')
+      || queue.jobs.find(job => job.status === 'queued');
+    return {
+      queuedJobs: queue.jobs.filter(job => job.status === 'queued').length,
+      runningJobs: queue.jobs.filter(job => job.status === 'running').length,
+      completedJobs: queue.jobs.filter(job => job.status === 'completed').length,
+      failedJobs: queue.jobs.filter(job => job.status === 'error').length,
+      queuedItems: allItems.filter(item => item.status === 'queued').length,
+      runningItems: allItems.filter(item => item.status === 'running').length,
+      completedItems: allItems.filter(item => item.status === 'completed').length,
+      failedItems: allItems.filter(item => item.status === 'error').length,
+      activeJobId: activeJob?.id,
+      jobs,
+    };
+  }
+
   async recoverPersistentQueues(): Promise<void> {
     const uploadsDir = path.join(this.dataDir, 'uploads');
     let userIds: string[] = [];
@@ -1500,18 +2857,42 @@ export class PdfWikiManager {
     }
 
     for (const userId of userIds) {
-      if (!fs.existsSync(this.getQueuePath(userId))) continue;
-      await this.mutateQueue(userId, queue => {
-        const now = new Date().toISOString();
-        for (const job of queue.jobs) {
-          if (job.status !== 'running') continue;
-          job.status = 'queued';
-          job.updatedAt = now;
-          job.error = '软件上次退出时任务尚未完成，现已自动恢复排队';
-          delete job.startedAt;
-        }
-      });
-      this.startQueueWorker(userId);
+      if (fs.existsSync(this.getQueuePath(userId))) {
+        await this.mutateQueue(userId, queue => {
+          const now = new Date().toISOString();
+          for (const job of queue.jobs) {
+            if (job.status !== 'running') continue;
+            job.status = 'queued';
+            job.updatedAt = now;
+            job.error = '软件上次退出时任务尚未完成，现已自动恢复排队';
+            delete job.startedAt;
+          }
+        });
+        this.startQueueWorker(userId);
+      }
+      if (fs.existsSync(this.getRecognitionQueuePath(userId))) {
+        await this.mutateRecognitionQueue(userId, queue => {
+          const now = new Date().toISOString();
+          for (const job of queue.jobs) {
+            let recovered = false;
+            for (const item of job.items) {
+              if (item.status !== 'running') continue;
+              item.status = 'queued';
+              item.updatedAt = now;
+              item.error = '软件上次退出时识别尚未完成，现已自动恢复排队';
+              delete item.startedAt;
+              recovered = true;
+            }
+            if (recovered || job.status === 'running') {
+              job.status = 'queued';
+              job.updatedAt = now;
+              job.error = '软件上次退出时识别尚未完成，现已自动恢复排队';
+              delete job.startedAt;
+            }
+          }
+        });
+        this.startRecognitionQueueWorker(userId);
+      }
     }
   }
 
@@ -1654,6 +3035,158 @@ export class PdfWikiManager {
     }
   }
 
+  private startRecognitionQueueWorker(userId: string): void {
+    const safeUserId = sanitizeUserId(userId);
+    if (this.recognitionQueueWorkers.has(safeUserId)) return;
+    const worker = this.runRecognitionQueueWorker(safeUserId)
+      .catch(error => logger.error(`[PdfWikiRecognitionQueue] Worker failed for ${safeUserId}:`, error))
+      .finally(() => {
+        if (this.recognitionQueueWorkers.get(safeUserId) === worker) {
+          this.recognitionQueueWorkers.delete(safeUserId);
+        }
+      });
+    this.recognitionQueueWorkers.set(safeUserId, worker);
+  }
+
+  private async runRecognitionQueueWorker(userId: string): Promise<void> {
+    while (true) {
+      let next: { jobId: string; item: PdfWikiRecognitionQueueItem } | null = null;
+      await this.mutateRecognitionQueue(userId, queue => {
+        const job = queue.jobs.find(candidate => (
+          candidate.status === 'queued'
+          || candidate.status === 'running'
+        ) && candidate.items.some(item => item.status === 'queued'));
+        if (!job) return;
+        const item = job.items.find(candidate => candidate.status === 'queued');
+        if (!item) return;
+        const now = new Date().toISOString();
+        job.status = 'running';
+        job.startedAt = job.startedAt || now;
+        job.updatedAt = now;
+        delete job.completedAt;
+        delete job.error;
+        item.status = 'running';
+        item.startedAt = now;
+        item.updatedAt = now;
+        delete item.completedAt;
+        delete item.error;
+        next = {
+          jobId: job.id,
+          item: JSON.parse(JSON.stringify(item)) as PdfWikiRecognitionQueueItem,
+        };
+      });
+      if (!next) return;
+
+      const claimed = next as { jobId: string; item: PdfWikiRecognitionQueueItem };
+      try {
+        const result = claimed.item.mode === 'images-only'
+          ? await this.ensurePdfFiguresForManager(userId, claimed.item.pdfId, { force: true })
+          : await this.reidentifyPdfWithLiteParse(userId, claimed.item.pdfId);
+        await this.finishRecognitionQueueItem(
+          userId,
+          claimed.jobId,
+          claimed.item.pdfId,
+          'completed',
+          'figureCount' in result ? Number(result.figureCount || 0) : 0
+        );
+      } catch (error) {
+        const message = (error as Error).message || String(error);
+        logger.error(
+          `[PdfWikiRecognitionQueue] ${claimed.item.mode} failed for ${claimed.item.pdfId}:`,
+          error
+        );
+        await this.finishRecognitionQueueItem(
+          userId,
+          claimed.jobId,
+          claimed.item.pdfId,
+          'error',
+          undefined,
+          message
+        );
+      }
+    }
+  }
+
+  private async finishRecognitionQueueItem(
+    userId: string,
+    jobId: string,
+    pdfId: string,
+    status: 'completed' | 'error',
+    figureCount?: number,
+    error?: string
+  ): Promise<void> {
+    await this.mutateRecognitionQueue(userId, queue => {
+      const job = queue.jobs.find(candidate => candidate.id === jobId);
+      const item = job?.items.find(candidate => candidate.pdfId === pdfId && candidate.status === 'running');
+      if (!job || !item) return;
+      const now = new Date().toISOString();
+      item.status = status;
+      item.updatedAt = now;
+      item.completedAt = now;
+      item.figureCount = figureCount;
+      item.error = error;
+      const pending = job.items.some(candidate => candidate.status === 'queued' || candidate.status === 'running');
+      const failedCount = job.items.filter(candidate => candidate.status === 'error').length;
+      if (pending) {
+        job.status = 'running';
+      } else {
+        job.status = failedCount === job.items.length ? 'error' : 'completed';
+        job.completedAt = now;
+        job.error = failedCount > 0 ? `${failedCount} 个 PDF 识别失败` : undefined;
+      }
+      job.updatedAt = now;
+      queue.jobs = this.pruneRecognitionQueueJobs(queue.jobs);
+    });
+  }
+
+  private pruneRecognitionQueueJobs(jobs: PdfWikiRecognitionQueueJob[]): PdfWikiRecognitionQueueJob[] {
+    const active = jobs.filter(job => job.status === 'queued' || job.status === 'running');
+    const history = jobs.filter(job => job.status === 'completed' || job.status === 'error').slice(-50);
+    return [...history, ...active].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  }
+
+  private async loadRecognitionQueue(userId: string): Promise<PdfWikiRecognitionQueueStore> {
+    const safeUserId = sanitizeUserId(userId);
+    try {
+      const parsed = JSON.parse(
+        await fs.promises.readFile(this.getRecognitionQueuePath(safeUserId), 'utf-8')
+      ) as Partial<PdfWikiRecognitionQueueStore>;
+      return {
+        version: 1,
+        userId: safeUserId,
+        updatedAt: String(parsed.updatedAt || new Date().toISOString()),
+        jobs: Array.isArray(parsed.jobs) ? parsed.jobs : [],
+      };
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+        logger.warn(`[PdfWikiRecognitionQueue] Failed to read queue for ${safeUserId}:`, error);
+      }
+      return { version: 1, userId: safeUserId, updatedAt: new Date().toISOString(), jobs: [] };
+    }
+  }
+
+  private async mutateRecognitionQueue(
+    userId: string,
+    mutation: (queue: PdfWikiRecognitionQueueStore) => void
+  ): Promise<void> {
+    const safeUserId = sanitizeUserId(userId);
+    const previous = this.recognitionQueueMutationLocks.get(safeUserId) || Promise.resolve();
+    const current = previous.catch(() => undefined).then(async () => {
+      const queue = await this.loadRecognitionQueue(safeUserId);
+      mutation(queue);
+      queue.updatedAt = new Date().toISOString();
+      await this.writeJsonAtomic(this.getRecognitionQueuePath(safeUserId), queue);
+    });
+    this.recognitionQueueMutationLocks.set(safeUserId, current);
+    try {
+      await current;
+    } finally {
+      if (this.recognitionQueueMutationLocks.get(safeUserId) === current) {
+        this.recognitionQueueMutationLocks.delete(safeUserId);
+      }
+    }
+  }
+
   async registerUploadedPdfsWithLiteParse(
     userId: string,
     files: UploadedPdfFile[]
@@ -1775,12 +3308,7 @@ export class PdfWikiManager {
           const figureResult = await this.extractPdfFiguresForManager(safeUserId, pdf);
           figureCount += figureResult.figureCount;
           logger.info(`[PdfWiki] Extracted figures for ${pdf.originalName}: figures=${figureResult.figureCount}${figureResult.error ? `, warning=${figureResult.error}` : ''}`);
-          if (figureResult.sourceFigures.length > 0) {
-            pdf.metaData = {
-              ...pdf.metaData,
-              source_figures: figureResult.sourceFigures,
-            };
-          }
+          this.recordPdfFigureExtraction(pdf, figureResult);
           if (figureResult.error) {
             figureErrors.push({
               pdfId: pdf.id,
@@ -1833,7 +3361,11 @@ export class PdfWikiManager {
       this.clearEngine(safeUserId);
       this.removeIndexCache(safeUserId);
 
+      const autoGroupMatch = await this.autoAssignExistingPdfGroups(safeUserId, uploadedStoredPdfs);
       const referenceCount = uploadedStoredPdfs.reduce((sum, pdf) => sum + (pdf.referenceIndex?.length || 0), 0);
+      const autoGroupMessage = autoGroupMatch.addedTagCount > 0
+        ? `；自动归类 ${autoGroupMatch.matchedPdfCount} 篇，新增 ${autoGroupMatch.addedTagCount} 个标签`
+        : '';
       result = {
         pdfs: uploadedStoredPdfs,
         uploadedCount: uploadedPdfs.length,
@@ -1843,7 +3375,8 @@ export class PdfWikiManager {
         figureCount,
         figureErrors,
         errors,
-        message: `LiteParse 快速识别完成：${parsedCount}/${uploadedPdfs.length} 个 PDF 已提取文献信息和图片，图片 ${figureCount} 张`,
+        message: `LiteParse 快速识别完成：${parsedCount}/${uploadedPdfs.length} 个 PDF 已提取文献信息和图片，图片 ${figureCount} 张${autoGroupMessage}`,
+        autoGroupMatch,
       };
 
       await this.saveStatus(safeUserId, {
@@ -1865,6 +3398,105 @@ export class PdfWikiManager {
 
     if (!result) {
       throw new Error('LiteParse 快速识别没有返回结果');
+    }
+    return result;
+  }
+
+  async ensurePdfFiguresForManager(
+    userId: string,
+    pdfId: string,
+    options: { force?: boolean } = {}
+  ): Promise<{ pdf: PdfWikiSourcePdf; figureCount: number; figureError?: string; attempted: boolean }> {
+    const safeUserId = sanitizeUserId(userId);
+    const targetPdfId = String(pdfId || '').trim();
+    if (!targetPdfId) {
+      throw new Error('缺少需要提取图片的 PDF ID');
+    }
+
+    let result: {
+      pdf: PdfWikiSourcePdf;
+      figureCount: number;
+      figureError?: string;
+      attempted: boolean;
+    } | null = null;
+
+    await this.runExclusiveBuild(safeUserId, async () => {
+      const store = await this.loadStore(safeUserId);
+      const pdfIndex = store.pdfs.findIndex(pdf => pdf.id === targetPdfId);
+      if (pdfIndex < 0) {
+        throw new Error('未找到该 PDF，请先上传 PDF');
+      }
+
+      const pdf = store.pdfs[pdfIndex];
+      const existingFigures = this.filterScientificSourceFigures(
+        this.firstArray(
+          this.asRecord(pdf.metaData).source_figures,
+          this.asRecord(pdf.metaData).sourceFigures
+        )
+      );
+      if (existingFigures.length > 0) {
+        let changed = false;
+        if (pdf.figureExtractionStatus !== 'completed') {
+          pdf.figureExtractionStatus = 'completed';
+          changed = true;
+        }
+        if (!pdf.figureExtractionAttemptedAt) {
+          pdf.figureExtractionAttemptedAt = pdf.metaDataCachedAt
+            || pdf.processedAt
+            || new Date().toISOString();
+          changed = true;
+        }
+        if (pdf.figureExtractionError) {
+          pdf.figureExtractionError = undefined;
+          changed = true;
+        }
+        if (changed) {
+          store.pdfs[pdfIndex] = pdf;
+          store.generatedAt = new Date().toISOString();
+          await this.saveStore(safeUserId, store);
+        }
+        result = {
+          pdf,
+          figureCount: existingFigures.length,
+          attempted: false,
+        };
+        return;
+      }
+
+      if (!options.force && (pdf.figureExtractionAttemptedAt || pdf.figureExtractionStatus)) {
+        result = {
+          pdf,
+          figureCount: 0,
+          figureError: pdf.figureExtractionError,
+          attempted: false,
+        };
+        return;
+      }
+
+      if (!pdf.filePath || !fs.existsSync(pdf.filePath)) {
+        throw new Error('PDF 源文件不存在，无法补充提取图片');
+      }
+
+      const figureResult = await this.extractPdfFiguresForManager(safeUserId, pdf);
+      this.recordPdfFigureExtraction(pdf, figureResult);
+      store.pdfs[pdfIndex] = pdf;
+      store.generatedAt = new Date().toISOString();
+      await this.saveStore(safeUserId, store);
+      this.clearEngine(safeUserId);
+      this.removeIndexCache(safeUserId);
+      logger.info(
+        `[PdfWiki] Backfilled legacy PDF figures for ${pdf.originalName}: figures=${figureResult.figureCount}${figureResult.error ? `, warning=${figureResult.error}` : ''}`
+      );
+      result = {
+        pdf,
+        figureCount: figureResult.figureCount,
+        figureError: figureResult.error,
+        attempted: true,
+      };
+    });
+
+    if (!result) {
+      throw new Error('PDF 图片补充提取没有返回结果');
     }
     return result;
   }
@@ -1932,12 +3564,7 @@ export class PdfWikiManager {
 
       const figureResult = await this.extractPdfFiguresForManager(safeUserId, pdf);
       logger.info(`[PdfWiki] Reidentified figures for ${pdf.originalName}: figures=${figureResult.figureCount}${figureResult.error ? `, warning=${figureResult.error}` : ''}`);
-      if (figureResult.sourceFigures.length > 0) {
-        pdf.metaData = {
-          ...pdf.metaData,
-          source_figures: figureResult.sourceFigures,
-        };
-      }
+      this.recordPdfFigureExtraction(pdf, figureResult);
 
       store.pdfs[pdfIndex] = pdf;
       store.referenceIndex = this.mergeReferenceIndexes(store.referenceIndex || [], pdf.referenceIndex || []);
@@ -1946,6 +3573,10 @@ export class PdfWikiManager {
       this.clearEngine(safeUserId);
       this.removeIndexCache(safeUserId);
 
+      const autoGroupMatch = await this.autoAssignExistingPdfGroups(safeUserId, [pdf]);
+      const autoGroupMessage = autoGroupMatch.addedTagCount > 0
+        ? `；自动新增标签：${autoGroupMatch.matchedGroupNamesByPdf[pdf.id].join('、')}`
+        : '';
       result = {
         pdf,
         parser: parsed.parser,
@@ -1953,7 +3584,8 @@ export class PdfWikiManager {
         referenceCount: pdf.referenceIndex?.length || 0,
         figureCount: figureResult.figureCount,
         figureError: figureResult.error,
-        message: `已重新识别 PDF：${this.getParsedContentParserLabel(parsed.parser)}，文字 ${parsed.text.length} 字，图片 ${figureResult.figureCount} 张`,
+        message: `已重新识别 PDF：${this.getParsedContentParserLabel(parsed.parser)}，文字 ${parsed.text.length} 字，图片 ${figureResult.figureCount} 张${autoGroupMessage}`,
+        autoGroupMatch,
       };
 
       await this.saveStatus(safeUserId, {
@@ -2194,6 +3826,38 @@ export class PdfWikiManager {
     };
   }
 
+  /**
+   * Read the persisted progress snapshot without opening and normalizing wiki.json.
+   * Meta list/detail pages only need progress information; loading the complete Wiki
+   * here used to add another 26 MB read to every request.
+   */
+  async getLightweightStatus(userId: string): Promise<PdfWikiBuildStatus> {
+    const safeUserId = sanitizeUserId(userId);
+    const statusPath = this.getStatusPath(safeUserId);
+    const [persistedStatus, queue] = await Promise.all([
+      (async (): Promise<PdfWikiBuildStatus> => {
+        if (!fs.existsSync(statusPath)) return { ...DEFAULT_STATUS };
+        try {
+          const parsed = JSON.parse(await fs.promises.readFile(statusPath, 'utf-8')) as PdfWikiBuildStatus;
+          return this.withStaleProcessingGuard(this.normalizeMetaAnalysisStatus(parsed));
+        } catch (error) {
+          logger.warn(`[PdfWiki] Failed to read lightweight status for ${safeUserId}:`, error);
+          return { ...DEFAULT_STATUS };
+        }
+      })(),
+      this.getQueueSnapshot(safeUserId),
+    ]);
+    const hasActiveQueue = queue.runningJobs > 0 || queue.queuedJobs > 0;
+    return {
+      ...persistedStatus,
+      status: hasActiveQueue && persistedStatus.status !== 'processing' ? 'processing' : persistedStatus.status,
+      message: hasActiveQueue && persistedStatus.status !== 'processing'
+        ? `PDF 队列处理中：运行 ${queue.runningPdfs} 篇，等待 ${queue.queuedPdfs} 篇。${persistedStatus.message}`
+        : persistedStatus.message,
+      queue,
+    };
+  }
+
   private async getStatusWithoutQueue(userId: string): Promise<PdfWikiBuildStatus> {
     const statusPath = this.getStatusPath(userId);
     if (fs.existsSync(statusPath)) {
@@ -2207,7 +3871,7 @@ export class PdfWikiManager {
             entryCount: store.entries.length,
             sentencePointCount,
             message: sentencePointCount > 0
-              ? `PDF句子级Wiki论点库已生成，共 ${sentencePointCount} 个可作论点句子，兼容论点组 ${store.entries.length} 个`
+              ? `Wiki论点库已生成，共 ${sentencePointCount} 个可作论点句子，兼容论点组 ${store.entries.length} 个`
               : (store.entries.length > 0
                 ? `PDF Wiki 已生成，兼容论点组 ${store.entries.length} 个；暂未生成可作论点句子`
                 : 'PDF Wiki 处理完成，但未生成可作论点句子'),
@@ -2231,7 +3895,7 @@ export class PdfWikiManager {
         entryCount: store.entries.length,
         sentencePointCount,
         message: sentencePointCount > 0
-          ? `PDF句子级Wiki论点库已生成，共 ${sentencePointCount} 个可作论点句子`
+          ? `Wiki论点库已生成，共 ${sentencePointCount} 个可作论点句子`
           : `PDF Wiki 已生成，共 ${store.entries.length} 个论点组`,
         updatedAt: store.generatedAt,
       };
@@ -2295,25 +3959,231 @@ export class PdfWikiManager {
   }
 
   async getStore(userId: string): Promise<PdfWikiStore> {
-    return this.loadStore(userId);
+    const safeUserId = sanitizeUserId(userId);
+    const [store, catalog, annotations] = await Promise.all([
+      this.loadStore(safeUserId),
+      this.getTopicCatalog(safeUserId),
+      this.loadSentenceTopicAnnotationStore(safeUserId),
+    ]);
+    const existingPoints = store.sentenceCloud?.points || [];
+    if (existingPoints.length === 0) return this.toReferenceBackedStoreView(store);
+    const points = existingPoints.map(point => this.applyTopicDefinitionToPoint(point, catalog.topics));
+    const changed = points.some((point, index) => (
+      point.topicKey !== existingPoints[index].topicKey
+      || point.topicLabel !== existingPoints[index].topicLabel
+      || point.keywords.join('\u0000') !== existingPoints[index].keywords.join('\u0000')
+    ));
+    if (changed) {
+      store.sentenceCloud = this.buildSentenceCloudStore(points);
+      await this.saveStore(safeUserId, store);
+      this.clearEngine(safeUserId);
+      this.removeIndexCache(safeUserId);
+    }
+    const taxonomyHash = this.getSentenceTopicTaxonomyHash(catalog);
+    const annotatedPoints = points.map(point => {
+      const annotation = annotations.records[point.id];
+      if (!this.isCurrentSentenceTopicAnnotation(point, annotation, taxonomyHash)) return point;
+      return { ...point, aiTopicAnnotation: annotation };
+    });
+    store.sentenceCloud = this.buildSentenceCloudStore(annotatedPoints);
+    return this.toReferenceBackedStoreView(store);
+  }
+
+  /**
+   * PDF 管理列表只需要 PDF 元数据。这里直接读取受信任的本地 store，
+   * 不规范化句子云、不重建主题，也绝不写回 wiki.json。
+   */
+  async getPdfManagerStoreSnapshot(userId: string): Promise<PdfWikiPdfManagerStoreSnapshot> {
+    const safeUserId = sanitizeUserId(userId);
+    const storePath = this.getStorePath(safeUserId);
+    if (!fs.existsSync(storePath)) {
+      this.pdfManagerStoreSnapshotCache.delete(safeUserId);
+      return { generatedAt: new Date(0).toISOString(), pdfs: [] };
+    }
+    try {
+      const stat = await fs.promises.stat(storePath);
+      const cached = this.pdfManagerStoreSnapshotCache.get(safeUserId);
+      if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) {
+        return cached.snapshot;
+      }
+      const parsed = JSON.parse(await fs.promises.readFile(storePath, 'utf-8')) as Partial<PdfWikiStore>;
+      const snapshot: PdfWikiPdfManagerStoreSnapshot = {
+        generatedAt: typeof parsed.generatedAt === 'string' ? parsed.generatedAt : new Date(0).toISOString(),
+        pdfs: (Array.isArray(parsed.pdfs) ? parsed.pdfs : [])
+          .filter((pdf): pdf is PdfWikiSourcePdf => !!pdf && typeof pdf === 'object' && !!pdf.id),
+      };
+      this.pdfManagerStoreSnapshotCache.set(safeUserId, {
+        mtimeMs: stat.mtimeMs,
+        size: stat.size,
+        snapshot,
+      });
+      return snapshot;
+    } catch (error) {
+      logger.warn(`[PdfWiki] Failed to read PDF manager snapshot for ${safeUserId}:`, error);
+      this.pdfManagerStoreSnapshotCache.delete(safeUserId);
+      return { generatedAt: new Date(0).toISOString(), pdfs: [] };
+    }
+  }
+
+  /**
+   * Wiki 论点库首屏只需要已经落盘的论点和句子云。这里跳过主题规则重算、
+   * AI 标签合并及 store 写回；这些工作仍由完整 getStore() 在后台刷新时完成。
+   * 以 wiki.json 的 mtime/size 做进程内缓存，重复打开时不再解析十几 MB 的 JSON。
+   */
+  async getViewerStoreSnapshot(userId: string): Promise<PdfWikiViewerStoreSnapshot> {
+    const safeUserId = sanitizeUserId(userId);
+    const storePath = this.getStorePath(safeUserId);
+    if (!fs.existsSync(storePath)) {
+      this.viewerStoreSnapshotCache.delete(safeUserId);
+      return {
+        generatedAt: new Date(0).toISOString(),
+        pdfs: [],
+        entries: [],
+        sentenceCloud: { generatedAt: new Date(0).toISOString(), points: [], clouds: [] },
+      };
+    }
+    try {
+      const stat = await fs.promises.stat(storePath);
+      const cached = this.viewerStoreSnapshotCache.get(safeUserId);
+      if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) {
+        return cached.snapshot;
+      }
+      const parsed = JSON.parse(await fs.promises.readFile(storePath, 'utf-8')) as Partial<PdfWikiStore>;
+      const generatedAt = typeof parsed.generatedAt === 'string'
+        ? parsed.generatedAt
+        : new Date(0).toISOString();
+      const rawSentenceCloud = parsed.sentenceCloud && typeof parsed.sentenceCloud === 'object'
+        ? parsed.sentenceCloud
+        : undefined;
+      const snapshot: PdfWikiViewerStoreSnapshot = {
+        generatedAt,
+        pdfs: Array.isArray(parsed.pdfs) ? parsed.pdfs : [],
+        entries: this.filterReferenceBackedEntries(Array.isArray(parsed.entries) ? parsed.entries : []),
+        sentenceCloud: {
+          ...this.buildSentenceCloudStore(
+            this.filterPublishableSentencePoints(
+              Array.isArray(rawSentenceCloud?.points) ? rawSentenceCloud.points : []
+            )
+          ),
+          generatedAt: typeof rawSentenceCloud?.generatedAt === 'string'
+            ? rawSentenceCloud.generatedAt
+            : generatedAt,
+        },
+      };
+      this.viewerStoreSnapshotCache.set(safeUserId, {
+        mtimeMs: stat.mtimeMs,
+        size: stat.size,
+        snapshot,
+      });
+      return snapshot;
+    } catch (error) {
+      logger.warn(`[PdfWiki] Failed to read Wiki argument viewer snapshot for ${safeUserId}:`, error);
+      this.viewerStoreSnapshotCache.delete(safeUserId);
+      return {
+        generatedAt: new Date(0).toISOString(),
+        pdfs: [],
+        entries: [],
+        sentenceCloud: { generatedAt: new Date(0).toISOString(), points: [], clouds: [] },
+      };
+    }
+  }
+
+  hasPdfDeepAnalysisSnapshot(userId: string, pdfId: string): boolean {
+    return fs.existsSync(this.getDeepAnalysisPath(sanitizeUserId(userId), pdfId));
+  }
+
+  async getPdfDeepAnalysisSnapshot(userId: string, pdfId: string): Promise<PdfWikiDeepAnalysisCache | null> {
+    return this.loadDeepAnalysisCache(sanitizeUserId(userId), pdfId);
   }
 
   async getMetaDatabase(userId: string, options: PdfWikiMetaDatabaseOptions = {}): Promise<PdfWikiMetaDatabase> {
-    const store = await this.loadStore(userId);
+    const safeUserId = sanitizeUserId(userId);
     const requestedIds = new Set((options.pdfIds || []).map(id => String(id || '').trim()).filter(Boolean));
+    const includeDetails = options.includeDetails !== false;
+    const isCompleteSummaryRequest = requestedIds.size === 0 && !includeDetails;
+    if (isCompleteSummaryRequest && !options.forceRefreshSummary) {
+      const cached = await this.loadMetaDatabaseSummaryIndex(safeUserId);
+      if (cached) return cached;
+    }
+
+    const store = await this.loadStore(safeUserId);
     const pdfs = requestedIds.size > 0
       ? store.pdfs.filter(pdf => requestedIds.has(pdf.id) && pdf.metaExcluded !== true)
       : store.pdfs.filter(pdf => pdf.metaExcluded !== true);
-    const includeDetails = options.includeDetails !== false;
-    const items = (await Promise.all(pdfs.map(pdf => this.buildMetaDatabaseItem(userId, pdf, { includeDetails }))))
+    const items = (await Promise.all(pdfs.map(pdf => this.buildMetaDatabaseItem(safeUserId, pdf, { includeDetails }))))
       .filter((item): item is PdfWikiMetaDatabaseItem => !!item);
-    return {
-      userId,
+    const database: PdfWikiMetaDatabase = {
+      userId: safeUserId,
       generatedAt: store.generatedAt,
       pdfCount: items.length,
       referenceCount: store.referenceIndex.length,
       items: items.sort((a, b) => a.originalName.localeCompare(b.originalName, 'zh-CN')),
     };
+    if (isCompleteSummaryRequest) {
+      await this.saveMetaDatabaseSummaryIndex(safeUserId, database);
+    }
+    return database;
+  }
+
+  private getMetaDatabaseSourceSignature(userId: string): string {
+    return [
+      this.getStorePath(userId),
+      this.getMetaAnalysisTemplatePath(userId),
+    ].map(filePath => {
+      try {
+        const stat = fs.statSync(filePath);
+        const resolvedPath = fs.realpathSync(filePath);
+        return `${resolvedPath}:${stat.size}:${Math.trunc(stat.mtimeMs)}`;
+      } catch {
+        return `${path.basename(filePath)}:missing`;
+      }
+    }).join('|');
+  }
+
+  private async loadMetaDatabaseSummaryIndex(userId: string): Promise<PdfWikiMetaDatabase | null> {
+    const sourceSignature = this.getMetaDatabaseSourceSignature(userId);
+    const memoryCached = this.metaDatabaseSummaryCache.get(userId);
+    if (memoryCached?.sourceSignature === sourceSignature) {
+      return memoryCached.database;
+    }
+
+    const indexPath = this.getMetaDatabaseIndexPath(userId);
+    if (!fs.existsSync(indexPath)) return null;
+    try {
+      const parsed = JSON.parse(await fs.promises.readFile(indexPath, 'utf-8')) as Partial<PdfWikiMetaDatabaseIndexFile>;
+      const database = parsed.database;
+      const storedSignature = String(parsed.sourceSignature || '');
+      const signatureMatches = storedSignature === sourceSignature
+        || storedSignature.startsWith(`${sourceSignature}|`);
+      if (
+        parsed.version !== 1
+        || !signatureMatches
+        || !database
+        || !Array.isArray(database.items)
+      ) {
+        return null;
+      }
+      const cached: PdfWikiMetaDatabaseIndexFile = { version: 1, sourceSignature, database };
+      this.metaDatabaseSummaryCache.set(userId, cached);
+      return database;
+    } catch (error) {
+      logger.warn(`[PdfWiki] Failed to read Meta database summary index for ${userId}:`, error);
+      return null;
+    }
+  }
+
+  private async saveMetaDatabaseSummaryIndex(userId: string, database: PdfWikiMetaDatabase): Promise<void> {
+    const payload: PdfWikiMetaDatabaseIndexFile = {
+      version: 1,
+      sourceSignature: this.getMetaDatabaseSourceSignature(userId),
+      database,
+    };
+    this.metaDatabaseSummaryCache.set(userId, payload);
+    try {
+      await this.writeJsonAtomic(this.getMetaDatabaseIndexPath(userId), payload);
+    } catch (error) {
+      logger.warn(`[PdfWiki] Failed to save Meta database summary index for ${userId}:`, error);
+    }
   }
 
   async deleteMetaDatabaseItems(userId: string, pdfIds: string[]): Promise<{ deletedCount: number; metaCount: number }> {
@@ -2737,6 +4607,8 @@ export class PdfWikiManager {
       userResearchContext: upgraded.userResearchContext,
       analysisEngine: upgraded.analysisEngine,
       overviewDiagram: upgraded.overviewDiagram,
+      usableItems: upgraded.usableItems,
+      wikiSync: upgraded.wikiSync,
       analyzedAt: upgraded.analyzedAt,
     };
   }
@@ -2840,15 +4712,8 @@ export class PdfWikiManager {
     userId: string,
     pdfId: string,
     llmConfig: PdfWikiLlmConfig,
-    options: { force?: boolean } = {}
+    options: { force?: boolean; vectorConfig?: PdfWikiVectorConfig } = {}
   ): Promise<PdfWikiDeepAnalysisResult> {
-    const codexConfig = this.canUseCodexCli() && this.shouldUseCodexForDeepAnalysis(llmConfig)
-      ? this.loadPdfWikiCodexConfig()
-      : null;
-    if ((!llmConfig.apiUrl || !llmConfig.apiKey) && !codexConfig) {
-      throw new Error('请先启用 Codex CLI 优先，或配置可用于深入分析的小牛马 API');
-    }
-
     const store = await this.loadStore(userId);
     const pdf = store.pdfs.find(item => item.id === pdfId);
     if (!pdf) {
@@ -2856,7 +4721,17 @@ export class PdfWikiManager {
     }
 
     const userResearchContext = await this.loadUserResearchContextForDeepAnalysis(userId);
-    const cachedAnalysis = options.force ? null : await this.loadDeepAnalysisCache(userId, pdfId);
+    let cachedAnalysis = options.force ? null : await this.loadDeepAnalysisCache(userId, pdfId);
+    if (cachedAnalysis && !cachedAnalysis.wikiSync) {
+      cachedAnalysis = await this.backfillDeepAnalysisWikiSync(
+        userId,
+        store,
+        pdf,
+        cachedAnalysis,
+        userResearchContext,
+        options.vectorConfig
+      );
+    }
     if (cachedAnalysis) {
       if (this.shouldRebuildOverviewDiagram(cachedAnalysis.overviewDiagram) && cachedAnalysis.summaryMarkdown) {
         const upgraded: PdfWikiDeepAnalysisResult = {
@@ -2887,6 +4762,13 @@ export class PdfWikiManager {
         pdf,
         fromCache: true,
       };
+    }
+
+    const codexConfig = this.canUseCodexCli() && this.shouldUseCodexForDeepAnalysis(llmConfig)
+      ? this.loadPdfWikiCodexConfig()
+      : null;
+    if ((!llmConfig.apiUrl || !llmConfig.apiKey) && !codexConfig) {
+      throw new Error('请先启用 Codex CLI 优先，或配置可用于深入分析的小牛马 API');
     }
 
     const cachedParsed = await this.loadParsedTextCache(userId, pdf);
@@ -2926,12 +4808,14 @@ export class PdfWikiManager {
 
     let summaryMarkdown = '';
     let overviewDiagram: PdfWikiOverviewDiagram | undefined;
+    let evidenceDrafts: PdfWikiDeepAnalysisEvidenceDraft[] = [];
     let analysisEngine: PdfWikiDeepAnalysisCache['analysisEngine'] = 'secondary-api';
     if (codexConfig) {
       try {
         const codexAnalysis = await this.summarizePdfForDeepAnalysisWithCodex(userId, pdf, null, codexConfig, userResearchContext);
         summaryMarkdown = codexAnalysis.summaryMarkdown;
         overviewDiagram = codexAnalysis.overviewDiagram;
+        evidenceDrafts = codexAnalysis.evidenceDrafts || [];
         analysisEngine = 'codex';
       } catch (error) {
         logger.warn(`[PdfWiki] Codex deep analysis failed for ${pdf.originalName}, falling back:`, error);
@@ -2981,6 +4865,37 @@ export class PdfWikiManager {
       await this.saveStore(userId, store);
     }
 
+    if (!parsed) {
+      parsed = cachedParsed || await this.extractPdfTextForDeepAnalysis(userId, pdf).catch(() => null);
+    }
+    if (evidenceDrafts.length === 0 && parsed && llmConfig.apiUrl && llmConfig.apiKey) {
+      try {
+        evidenceDrafts = await this.extractDeepAnalysisEvidenceDrafts(
+          pdf,
+          parsed,
+          summaryMarkdown,
+          llmConfig,
+          userResearchContext
+        );
+      } catch (error) {
+        logger.warn(`[PdfWiki] Structured deep-analysis evidence extraction failed for ${pdf.originalName}:`, error);
+      }
+    }
+    const usableItems = this.buildDeepAnalysisEvidenceItems(
+      pdf,
+      parsed,
+      summaryMarkdown,
+      evidenceDrafts,
+      userResearchContext
+    );
+    const wikiSync = await this.syncDeepAnalysisEvidenceToWiki(
+      userId,
+      store,
+      pdf,
+      usableItems,
+      options.vectorConfig
+    );
+
     const result: PdfWikiDeepAnalysisResult = {
       pdfId: pdf.id,
       pdf,
@@ -2994,6 +4909,8 @@ export class PdfWikiManager {
       userResearchContext: this.toDeepAnalysisUserResearchContextSummary(userResearchContext),
       analysisEngine,
       overviewDiagram,
+      usableItems,
+      wikiSync,
       analyzedAt: new Date().toISOString(),
     };
     await this.saveDeepAnalysisCache(userId, result);
@@ -3175,7 +5092,8 @@ export class PdfWikiManager {
       })),
       8
     );
-    const topic = this.inferSentencePointTopic(sentence);
+    const topicDefinitions = (await this.getTopicCatalog(safeUserId)).topics;
+    const topic = this.inferSentencePointTopic(sentence, topicDefinitions);
     const inferredClaim = this.inferSentenceClaimCandidate(sentence, location.section, references.length, citations);
     const claimText = this.cleanSentencePointText(input.claimText || inferredClaim.claimText || this.deriveSentenceClaimText(sentence));
     const hash = crypto.createHash('md5')
@@ -3220,7 +5138,7 @@ export class PdfWikiManager {
     const existingPoints = (store.sentenceCloud?.points || []).filter(item => item.id !== id);
     store.sentenceCloud = this.buildSentenceCloudStore([...existingPoints, point]);
     const entry = this.sentencePointToEntry(point);
-    await this.persistManualStoreUpdate(safeUserId, store, `已保存 1 句原文到 PDF句子级Wiki论点库`);
+    await this.persistManualStoreUpdate(safeUserId, store, `已保存 1 句原文到 Wiki论点库`);
     return {
       point,
       entry,
@@ -3241,16 +5159,29 @@ export class PdfWikiManager {
   }
 
   async getEngine(userId: string, vectorConfig: PdfWikiVectorConfig): Promise<HybridRetrievalEngine> {
+    const vectorConfigKey = [
+      Boolean(vectorConfig.apiUrl && vectorConfig.apiKey) ? 'remote' : 'bm25-fallback',
+      vectorConfig.apiUrl || '',
+      vectorConfig.model,
+      vectorConfig.dimensions,
+    ].join('|');
     const cached = this.engines.get(userId);
-    if (cached) {
+    if (cached && cached.vectorConfigKey === vectorConfigKey) {
+      cached.engine.updateApiConfig({
+        url: vectorConfig.apiUrl,
+        key: vectorConfig.apiKey,
+        model: vectorConfig.model,
+        dimensions: vectorConfig.dimensions,
+      });
       cached.updatedAt = Date.now();
       return cached.engine;
     }
+    if (cached) this.engines.delete(userId);
 
-    const store = await this.loadStore(userId);
+    const store = await this.getStore(userId);
     const literatures = this.storeToRetrievalLiteratures(store);
     if (literatures.length === 0) {
-      throw new Error('PDF Wiki 文献库为空，请先上传 PDF 并等待句子级Wiki论点库生成完成');
+      throw new Error('PDF Wiki 文献库为空，请先上传 PDF 并等待 Wiki论点库生成完成');
     }
 
     const engine = new HybridRetrievalEngine({
@@ -3266,12 +5197,13 @@ export class PdfWikiManager {
     });
 
     const cacheDir = this.getIndexCacheDir(userId);
+    engine.setPersistenceDirectory(cacheDir);
     if (!engine.loadIndex(cacheDir)) {
       await engine.index(literatures);
       engine.saveIndex(cacheDir);
     }
 
-    this.engines.set(userId, { engine, updatedAt: Date.now() });
+    this.engines.set(userId, { engine, updatedAt: Date.now(), vectorConfigKey });
     return engine;
   }
 
@@ -3382,6 +5314,7 @@ export class PdfWikiManager {
     });
 
     try {
+      const topicDefinitions = (await this.getTopicCatalog(userId)).topics;
       const existingStore = replaceExisting ? this.createEmptyStore(userId) : await this.loadStore(userId);
       const replacingPdfIds = new Set(pdfs.map(pdf => pdf.id));
       const retainedEntries = existingStore.entries.filter(entry => !entry.sourcePdfIds.some(id => replacingPdfIds.has(id)));
@@ -3519,7 +5452,7 @@ export class PdfWikiManager {
                 llmConfig
               );
               pdf.metaDataCachedAt = pdf.processedAt;
-              newSentencePoints.push(...this.buildSentenceCloudPointsFromText(codexBuild.parsedContent.text, pdf, codexBuild.referenceIndex.references));
+              newSentencePoints.push(...this.buildSentenceCloudPointsFromText(codexBuild.parsedContent.text, pdf, codexBuild.referenceIndex.references, topicDefinitions));
               newEntries.push(...codexBuild.entries);
               totalChunks += 1;
               processedChunks += 1;
@@ -3717,6 +5650,11 @@ export class PdfWikiManager {
                 llmConfig,
                 parsedContent,
               });
+          referenceIndex.references = referenceIndex.references.map(reference => ({
+            ...reference,
+            sourcePdfId: pdf.id,
+            sourcePdfName: pdf.originalName,
+          }));
           Object.assign(pdf, referenceIndex.metadata);
           pdf.referenceIndex = referenceIndex.references;
           pdf.extractionParser = parsedContent.parser;
@@ -3736,8 +5674,8 @@ export class PdfWikiManager {
           );
           pdf.metaDataCachedAt = pdf.processedAt;
           const draftSentencePoints = fastCodexSentenceBuild || this.shouldUseApiForSentenceReferenceMatching(llmConfig)
-            ? this.buildSentenceCloudDraftPointsForAi(text, pdf)
-            : this.buildSentenceCloudPointsFromText(text, pdf, referenceIndex.references);
+            ? this.buildSentenceCloudDraftPointsForAi(text, pdf, topicDefinitions)
+            : this.buildSentenceCloudPointsFromText(text, pdf, referenceIndex.references, topicDefinitions);
           let pdfSentencePoints = draftSentencePoints;
           if (fastCodexSentenceBuild && codexConfig) {
             await this.saveStatus(userId, {
@@ -3905,7 +5843,7 @@ export class PdfWikiManager {
           ? '阶段 3/3：正在严格校验 Codex 结果；无明确引用的引言/讨论句不会进入论点库，本文结论将绑定来源论文引用'
           : (this.shouldUseApiForSentenceReferenceMatching(llmConfig) && llmConfig.apiUrl && llmConfig.apiKey
             ? '阶段 3/3：正在使用 AI 校准引言/讨论/结论句子、文末参考文献与可作论点判断'
-            : '阶段 3/3：正在建立引言/讨论/结论句子级Wiki论点库与本地参考文献匹配'),
+            : '阶段 3/3：正在建立 Wiki论点库并匹配本地参考文献'),
         startedAt,
         updatedAt: new Date().toISOString(),
       });
@@ -3931,7 +5869,8 @@ export class PdfWikiManager {
         allReferenceIndex,
         llmConfig
       );
-      const publishableSentencePoints = this.filterPublishableSentencePoints([...retainedSentencePoints, ...refinedNewSentencePoints]);
+      const publishableSentencePoints = this.filterPublishableSentencePoints([...retainedSentencePoints, ...refinedNewSentencePoints])
+        .map(point => this.applyTopicDefinitionToPoint(point, topicDefinitions));
       if (allEntries.length === 0 && publishableSentencePoints.length === 0) {
         await this.saveStatus(userId, {
           status: 'error',
@@ -3987,7 +5926,7 @@ export class PdfWikiManager {
         processedChunks,
         entryCount: groupedEntries.length,
         sentencePointCount: publishableSentencePoints.length,
-        message: '阶段 3/3：正在保存 PDF句子级Wiki论点库',
+        message: '阶段 3/3：正在保存 Wiki论点库',
         startedAt,
         updatedAt: new Date().toISOString(),
       });
@@ -4018,8 +5957,8 @@ export class PdfWikiManager {
         sentencePointCount: store.sentenceCloud?.points?.length || 0,
         workProgress: fastWorkProgress('completed', '已完成', fastWorkTotalUnits),
         message: failedPdfs.length > 0
-          ? `PDF句子级Wiki论点库已生成，共 ${store.sentenceCloud?.points?.length || 0} 个可作论点句子，兼容论点组 ${store.entries.length} 个；${failedPdfs.length} 个 PDF 解析失败，可稍后重建`
-          : `PDF句子级Wiki论点库已生成，共 ${store.sentenceCloud?.points?.length || 0} 个可作论点句子，兼容论点组 ${store.entries.length} 个`,
+          ? `Wiki论点库已生成，共 ${store.sentenceCloud?.points?.length || 0} 个可作论点句子，兼容论点组 ${store.entries.length} 个；${failedPdfs.length} 个 PDF 解析失败，可稍后重建`
+          : `Wiki论点库已生成，共 ${store.sentenceCloud?.points?.length || 0} 个可作论点句子，兼容论点组 ${store.entries.length} 个`,
         startedAt,
         updatedAt: store.generatedAt,
         error: failedPdfs.length > 0 ? 'PARTIAL_PDF_FAILURE' : undefined,
@@ -5943,40 +7882,19 @@ ${content.slice(0, 20000)}`;
   }
 
   private isNonScientificFigureRecord(record: Record<string, unknown>, fileName = ''): boolean {
-    const text = [
-      fileName,
-      record.id,
-      record.figure_id,
-      record.figureId,
-      record.number,
-      record.label,
-      record.name,
-      record.title,
-      record.caption,
-      record.description,
-      record.note,
-      record.ocr_text,
-      record.ocrText,
-      record.source,
-      record.type,
-    ].map(value => this.stringifyTableCellValue(value)).join(' ').replace(/\s+/g, ' ').toLowerCase();
-    if (!text.trim()) return false;
-
-    if (/(elsevier|springer|wiley|mdpi|frontiers|sciencedirect|publisher)\s+(logo|mark|brand)/i.test(text)) return true;
-    if (/(logo|decorative|decoration|ornament|placeholder|misembedded|cover\s+page|journal\s+cover|front\s+cover|cover\s+image)/i.test(text)) return true;
-    if (/(not\s+(?:a\s+)?scientific\s+figure|not\s+the\s+actual\s+figure|not\s+a\s+data\s+figure|not\s+.*with\s+data)/i.test(text)) return true;
-    if (/(no\s+(?:axes|axis|labels?|numerical\s+data|numeric\s+data|data\s+visible|chart|graph|table\s+content)|cannot\s+extract\s+meaningful\s+data|no\s+meaningful\s+data)/i.test(text)) return true;
-
-    const page = this.firstString(record.page, record.pages, record.page_number, record.pageNumber).toLowerCase();
-    const isFirstPage = /^(?:p\.?\s*)?1$|^page\s*1$/.test(page);
-    return isFirstPage && /(cover|logo|publisher|decorative|placeholder|sciencedirect|elsevier)/i.test(text);
+    return isNonScientificPdfFigureRecord(record, fileName);
   }
 
   private filterScientificSourceFigures(values: unknown[]): unknown[] {
+    const seenContentHashes = new Set<string>();
     return values.filter(item => {
       const record = this.asRecord(item);
       const fileName = this.firstString(record.name, record.file, record.path, typeof item === 'string' ? item : '');
-      return !this.isNonScientificFigureRecord(record, fileName);
+      if (this.isNonScientificFigureRecord(record, fileName)) return false;
+      const contentHash = this.firstString(record.contentHash, record.content_hash).toLowerCase();
+      if (contentHash && seenContentHashes.has(contentHash)) return false;
+      if (contentHash) seenContentHashes.add(contentHash);
+      return true;
     });
   }
 
@@ -6278,9 +8196,13 @@ ${content.slice(0, 20000)}`;
     await fs.promises.mkdir(targetFigureDir, { recursive: true });
 
     const sourceFigures: Record<string, unknown>[] = [];
+    const seenContentHashes = new Set<string>();
     for (let index = 0; index < items.length; index++) {
       const item = items[index];
       if (this.isNonScientificFigureRecord(item, this.firstString(item.filename))) continue;
+      const contentHash = this.firstString(item.contentHash, item.content_hash).toLowerCase();
+      if (contentHash && seenContentHashes.has(contentHash)) continue;
+      if (contentHash) seenContentHashes.add(contentHash);
       const sourcePath = this.firstString(item.absolutePath)
         || (this.firstString(item.filename) ? path.join(tempFigureDir, this.firstString(item.filename)) : '');
       if (!sourcePath || !fs.existsSync(sourcePath)) continue;
@@ -6299,6 +8221,14 @@ ${content.slice(0, 20000)}`;
         name: fileName,
         source: this.firstString(item.source),
         confidence: this.firstString(item.confidence),
+        width: Number(item.width || 0),
+        height: Number(item.height || 0),
+        rectX: Number(item.rectX || 0),
+        rectY: Number(item.rectY || 0),
+        rectWidth: Number(item.rectWidth || 0),
+        rectHeight: Number(item.rectHeight || 0),
+        pageAreaRatio: Number(item.pageAreaRatio || 0),
+        contentHash: this.firstString(item.contentHash),
         needs_manual_review: this.firstString(item.confidence) === 'low',
         needs_digitization_with_getdata: true,
       };
@@ -9288,6 +11218,8 @@ ${metaUserRequirements || '未填写额外要求，按模板和默认 Meta 分�
           ? parsed.analysisEngine
           : undefined,
         overviewDiagram: this.normalizeOverviewDiagram(parsed.overviewDiagram),
+        usableItems: this.normalizeCachedDeepAnalysisEvidenceItems(parsed.usableItems),
+        wikiSync: this.normalizeDeepAnalysisWikiSync(parsed.wikiSync),
         analyzedAt: String(parsed.analyzedAt || ''),
       };
     } catch (error) {
@@ -9311,9 +11243,475 @@ ${metaUserRequirements || '未填写额外要求，按模板和默认 Meta 分�
       userResearchContext: result.userResearchContext,
       analysisEngine: result.analysisEngine,
       overviewDiagram: this.normalizeOverviewDiagram(result.overviewDiagram),
+      usableItems: this.normalizeCachedDeepAnalysisEvidenceItems(result.usableItems),
+      wikiSync: this.normalizeDeepAnalysisWikiSync(result.wikiSync),
       analyzedAt: result.analyzedAt,
     };
     await fs.promises.writeFile(cachePath, JSON.stringify(payload, null, 2), 'utf-8');
+  }
+
+  private async extractDeepAnalysisEvidenceDrafts(
+    pdf: PdfWikiSourcePdf,
+    parsed: PdfWikiParsedContent,
+    summaryMarkdown: string,
+    llmConfig: PdfWikiLlmConfig,
+    userResearchContext: PdfWikiUserResearchContextForDeepAnalysis
+  ): Promise<PdfWikiDeepAnalysisEvidenceDraft[]> {
+    const prompt = `请把 PDF 深入分析整理成可写入句子级 Wiki 的研究证据 JSON。
+
+只输出 JSON：
+{
+  "items": [
+    {
+      "claim": "单一、可引用的原子论点",
+      "evidence": "必须逐字摘录下面 PDF 正文中的一至两句英文/中文原文",
+      "category": "background|method|indicator|result-comparison|mechanism|meta-analysis|limitation",
+      "researchUse": "结合用户研究上下文，说明在用户论文中如何使用",
+      "supportScope": ["能够支持的对象、条件、变量或结论范围"],
+      "limitations": ["不适用条件或不能外推的边界"],
+      "keywords": ["3-8 个中英文关键词"],
+      "section": "原文章节",
+      "location": "页码/章节/图表位置",
+      "confidence": 0.0
+    }
+  ]
+}
+
+硬性规则：
+1. evidence 必须是 PDF 正文逐字原句，禁止把分析摘要或你的改写填入 evidence。
+2. 没有可核验原句的条目不要输出；每条只表达一个原子论点。
+3. 优先覆盖与用户研究直接相关的背景、方法、指标、结果对照、机制、Meta 可提取项和局限/边界。
+4. category 只能使用给定枚举；confidence 为 0-1。
+5. 不要猜参考文献编号，系统会根据 evidence 原句中的显式引用完成绑定。
+6. 最多输出 30 条，宁缺毋滥。
+
+PDF 元数据：
+${JSON.stringify({
+  title: pdf.title || parsed.metadata.title || pdf.originalName,
+  authors: pdf.authors || parsed.metadata.authors || '',
+  year: pdf.year || parsed.metadata.year || '',
+  journal: pdf.journal || parsed.metadata.journal || '',
+  doi: pdf.doi || parsed.metadata.doi || '',
+}, null, 2)}
+
+用户研究上下文：
+${this.formatUserResearchContextForPrompt(userResearchContext)}
+
+已生成的深入分析：
+${this.compactPromptText(summaryMarkdown, 18000)}
+
+PDF 正文：
+${this.compactPromptText(this.stripReferenceTail(parsed.text), 70000)}`;
+    const normalized = await this.callJsonNormalizer(llmConfig, prompt, 7000, 'deep-analysis-wiki-evidence');
+    return (Array.isArray(normalized.items) ? normalized.items : [])
+      .filter(item => item && typeof item === 'object') as PdfWikiDeepAnalysisEvidenceDraft[];
+  }
+
+  private buildDeepAnalysisEvidenceItems(
+    pdf: PdfWikiSourcePdf,
+    parsed: PdfWikiParsedContent | null,
+    summaryMarkdown: string,
+    drafts: PdfWikiDeepAnalysisEvidenceDraft[],
+    userResearchContext: PdfWikiUserResearchContextForDeepAnalysis
+  ): PdfWikiDeepAnalysisEvidenceItem[] {
+    const referencePool = parsed?.references || pdf.referenceIndex || [];
+    const bodyText = parsed?.text ? this.stripReferenceTail(parsed.text) : '';
+    const sentenceEvidence = bodyText
+      ? this.sentenceEvidenceMapFromMatches(
+        'FullText',
+        this.matchSectionSentencesToReferences('FullText', bodyText, referencePool, pdf.id, 1800)
+      )
+      : new Map<string, PdfWikiSentenceEvidence>();
+    const sourcePdf = this.toDeepAnalysisSourceMetadata(pdf);
+    const normalizedDrafts = drafts.length > 0
+      ? drafts
+      : this.extractDeepAnalysisDraftsFromMarkdown(summaryMarkdown);
+    const items: PdfWikiDeepAnalysisEvidenceItem[] = [];
+    const seen = new Set<string>();
+
+    for (const draft of normalizedDrafts.slice(0, 60)) {
+      const claim = this.cleanDeepAnalysisItemText(draft.claim, 900);
+      const rawEvidence = this.cleanDeepAnalysisItemText(draft.evidence, 2400);
+      if (!claim || !rawEvidence || sentenceEvidence.size === 0) continue;
+      const resolvedEvidence = this.resolveEvidenceSentences(
+        this.toStringArray(draft.evidenceSentenceIds),
+        rawEvidence,
+        sentenceEvidence
+      );
+      if (resolvedEvidence.length === 0) {
+        logger.warn(`[PdfWiki] Dropped deep-analysis item without a verifiable PDF sentence: ${claim.slice(0, 120)} (${pdf.originalName})`);
+        continue;
+      }
+
+      const evidence = this.unique(resolvedEvidence.map(item => item.sentence)).join(' ');
+      const fingerprint = this.normalizeForEvidenceMatching(`${claim}|${evidence}`);
+      if (!fingerprint || seen.has(fingerprint)) continue;
+      seen.add(fingerprint);
+
+      const category = this.normalizeDeepAnalysisResearchUseCategory(draft.category, `${claim} ${draft.researchUse || ''}`);
+      const boundReferences = this.uniqueReferences(resolvedEvidence.flatMap(item => item.references))
+        .filter(reference => this.isReferenceBackedReference(reference));
+      if (boundReferences.length === 0) {
+        logger.warn(`[PdfWiki] Dropped deep-analysis item without a matched reference: ${claim.slice(0, 120)} (${pdf.originalName})`);
+        continue;
+      }
+      const evidenceSentenceIds = this.unique(resolvedEvidence.map(item => item.id));
+      const inTextCitations = this.unique(resolvedEvidence.flatMap(item => item.citations));
+      const researchUse = this.cleanDeepAnalysisItemText(draft.researchUse, 1000)
+        || this.defaultDeepAnalysisResearchUse(category);
+      const supportScope = this.normalizeDeepAnalysisTextArray(draft.supportScope, 8, 260);
+      const limitations = this.normalizeDeepAnalysisTextArray(draft.limitations, 8, 260);
+      const keywords = this.normalizeDeepAnalysisTextArray(draft.keywords, 12, 80);
+      const section = this.cleanDeepAnalysisItemText(draft.section, 120)
+        || resolvedEvidence[0]?.sectionName
+        || 'FullText';
+      const location = this.cleanDeepAnalysisItemText(draft.location, 180)
+        || evidenceSentenceIds.join(', ');
+      const hash = crypto.createHash('sha256')
+        .update(`${pdf.id}|${category}|${claim}|${evidence}`)
+        .digest('hex')
+        .slice(0, 20);
+
+      items.push({
+        id: `pdfwiki_deep_${hash}`,
+        claim,
+        evidence,
+        category,
+        researchUse,
+        supportScope: supportScope.length > 0 ? supportScope : [this.defaultDeepAnalysisSupportScope(category)],
+        limitations,
+        keywords,
+        section,
+        location,
+        confidence: this.clampDeepAnalysisConfidence(draft.confidence),
+        evidenceSentenceIds,
+        inTextCitations,
+        referenceIndexes: boundReferences
+          .filter(ref => !ref.fallbackSourcePdf && Number.isFinite(ref.index))
+          .map(ref => Number(ref.index)),
+        references: boundReferences,
+        sourcePdf,
+        researchContextKeys: [...userResearchContext.sourceKeys],
+      });
+    }
+
+    return items.slice(0, 40);
+  }
+
+  private async syncDeepAnalysisEvidenceToWiki(
+    userId: string,
+    store: PdfWikiStore,
+    pdf: PdfWikiSourcePdf,
+    items: PdfWikiDeepAnalysisEvidenceItem[],
+    vectorConfig?: PdfWikiVectorConfig
+  ): Promise<PdfWikiDeepAnalysisWikiSync> {
+    const syncedAt = new Date().toISOString();
+    if (items.length === 0) {
+      return {
+        status: 'error',
+        itemCount: 0,
+        entryIds: [],
+        embeddedCount: 0,
+        embeddingStatus: vectorConfig?.apiUrl && vectorConfig.apiKey ? 'error' : 'unconfigured',
+        syncedAt,
+        warning: '没有找到同时具备“可用论点 + PDF 原文证据句 + 可核验参考文献”的条目，未覆盖 Wiki 中已有结果。',
+      };
+    }
+
+    const entries = items.map(item => this.deepAnalysisEvidenceItemToEntry(item, pdf));
+    store.entries = [
+      ...store.entries.filter(entry => !(entry.origin === 'deep-analysis' && entry.sourcePdfIds.includes(pdf.id))),
+      ...entries,
+    ];
+    await this.persistManualStoreUpdate(
+      userId,
+      store,
+      `PDF 深入分析已同步 ${entries.length} 个可用研究条目到 Wiki论点库`
+    );
+
+    if (!vectorConfig?.apiUrl || !vectorConfig.apiKey) {
+      return {
+        status: 'unconfigured',
+        itemCount: entries.length,
+        entryIds: entries.map(entry => entry.id),
+        embeddedCount: 0,
+        embeddingStatus: 'unconfigured',
+        syncedAt,
+        warning: '条目已写入 Wiki；当前未配置 Embedding API，将先使用 BM25，配置后检索时可补齐向量。',
+      };
+    }
+
+    try {
+      const engine = await this.getEngine(userId, vectorConfig);
+      const embedding = await engine.prepareDocumentEmbeddings(entries.map(entry => entry.id));
+      const complete = embedding.embeddedCount === entries.length;
+      return {
+        status: complete ? 'completed' : 'partial',
+        itemCount: entries.length,
+        entryIds: entries.map(entry => entry.id),
+        embeddedCount: embedding.embeddedCount,
+        embeddingStatus: complete ? 'ready' : (embedding.embeddedCount > 0 ? 'partial' : 'error'),
+        syncedAt,
+        warning: complete ? undefined : `已写入 Wiki，但仅完成 ${embedding.embeddedCount}/${entries.length} 条向量化。`,
+      };
+    } catch (error) {
+      logger.warn(`[PdfWiki] Failed to prepare deep-analysis embeddings for ${pdf.originalName}:`, error);
+      return {
+        status: 'partial',
+        itemCount: entries.length,
+        entryIds: entries.map(entry => entry.id),
+        embeddedCount: 0,
+        embeddingStatus: 'error',
+        syncedAt,
+        warning: `条目已写入 Wiki，但增量 Embedding 失败：${this.getErrorMessage(error)}`,
+      };
+    }
+  }
+
+  private deepAnalysisEvidenceItemToEntry(
+    item: PdfWikiDeepAnalysisEvidenceItem,
+    pdf: PdfWikiSourcePdf
+  ): PdfWikiEntry {
+    const stance: PdfWikiViewpoint['stance'] = item.category === 'limitation' ? 'neutral' : 'support';
+    const viewpoint: PdfWikiViewpoint = {
+      stance,
+      summary: item.claim,
+      evidence: item.evidence,
+      section: item.section,
+      location: item.location,
+      inTextCitations: [...item.inTextCitations],
+      evidenceSentenceIds: [...item.evidenceSentenceIds],
+      evidenceSentences: [item.evidence],
+      references: item.references,
+      sourcePdfId: pdf.id,
+      sourcePdfName: pdf.originalName,
+    };
+    return {
+      id: item.id,
+      groupId: `deep_group_${item.id.replace(/^pdfwiki_deep_/, '')}`,
+      claim: item.claim,
+      normalizedClaim: item.claim,
+      displayClaimZh: this.isMostlyChinese(item.claim) ? item.claim : undefined,
+      sourceEntryIds: [item.id],
+      sourcePdfIds: [pdf.id],
+      sourcePdfNames: [pdf.originalName],
+      sections: [item.section],
+      pro: stance === 'support' ? [viewpoint] : [],
+      con: [],
+      neutral: stance === 'neutral' ? [viewpoint] : [],
+      inTextCitations: [...item.inTextCitations],
+      evidenceSentenceIds: [...item.evidenceSentenceIds],
+      references: item.references,
+      evidenceSnippets: [item.evidence],
+      sourceEntries: [{
+        id: item.id,
+        claim: item.claim,
+        normalizedClaim: item.claim,
+        displayClaimZh: this.isMostlyChinese(item.claim) ? item.claim : undefined,
+        sourcePdfIds: [pdf.id],
+        sourcePdfNames: [pdf.originalName],
+        sections: [item.section],
+        proCount: stance === 'support' ? 1 : 0,
+        conCount: 0,
+        neutralCount: stance === 'neutral' ? 1 : 0,
+        evidenceSnippets: [item.evidence],
+      }],
+      origin: 'deep-analysis',
+      researchUseCategory: item.category,
+      researchUse: item.researchUse,
+      supportScope: [...item.supportScope],
+      limitations: [...item.limitations],
+      researchContextKeys: [...item.researchContextKeys],
+      confidence: item.confidence,
+      sourcePdfMetadata: item.sourcePdf,
+      updatedAt: new Date().toISOString(),
+    };
+  }
+
+  private async backfillDeepAnalysisWikiSync(
+    userId: string,
+    store: PdfWikiStore,
+    pdf: PdfWikiSourcePdf,
+    cached: PdfWikiDeepAnalysisCache,
+    userResearchContext: PdfWikiUserResearchContextForDeepAnalysis,
+    vectorConfig?: PdfWikiVectorConfig
+  ): Promise<PdfWikiDeepAnalysisCache> {
+    const parsed = await this.loadParsedTextCache(userId, pdf).catch(() => null);
+    const existingDrafts = store.entries
+      .filter(entry => entry.sourcePdfIds.includes(pdf.id) && entry.origin !== 'deep-analysis')
+      .slice(0, 40)
+      .map(entry => ({
+        claim: entry.displayClaimZh || entry.normalizedClaim || entry.claim,
+        evidence: entry.evidenceSnippets[0] || entry.pro[0]?.evidence || entry.neutral[0]?.evidence || '',
+        category: this.normalizeDeepAnalysisResearchUseCategory(undefined, `${entry.sections.join(' ')} ${entry.claim}`),
+        researchUse: this.defaultDeepAnalysisResearchUse(
+          this.normalizeDeepAnalysisResearchUseCategory(undefined, `${entry.sections.join(' ')} ${entry.claim}`)
+        ),
+        supportScope: entry.sections,
+        limitations: [],
+        keywords: entry.inTextCitations,
+        section: entry.sections[0] || 'FullText',
+        location: entry.pro[0]?.location || entry.neutral[0]?.location || '',
+        confidence: 0.72,
+        evidenceSentenceIds: entry.evidenceSentenceIds || [],
+      }));
+    const usableItems = this.buildDeepAnalysisEvidenceItems(
+      pdf,
+      parsed,
+      cached.summaryMarkdown,
+      existingDrafts,
+      userResearchContext
+    );
+    const wikiSync = await this.syncDeepAnalysisEvidenceToWiki(userId, store, pdf, usableItems, vectorConfig);
+    const upgraded: PdfWikiDeepAnalysisCache = { ...cached, usableItems, wikiSync };
+    await this.saveDeepAnalysisCache(userId, { ...upgraded, pdf });
+    return upgraded;
+  }
+
+  private extractDeepAnalysisDraftsFromMarkdown(markdown: string): PdfWikiDeepAnalysisEvidenceDraft[] {
+    const text = String(markdown || '').replace(/\r/g, '\n');
+    const drafts: PdfWikiDeepAnalysisEvidenceDraft[] = [];
+    let heading = '';
+    for (const rawLine of text.split('\n')) {
+      const line = rawLine.trim();
+      if (!line) continue;
+      const headingMatch = /^#{1,5}\s+(.+)$/.exec(line);
+      if (headingMatch) {
+        heading = headingMatch[1].trim();
+        continue;
+      }
+      const bullet = line.match(/^(?:[-*+]\s+|\d+[.)、]\s+)(.+)$/)?.[1]?.trim();
+      if (!bullet || bullet.length < 24) continue;
+      const category = this.normalizeDeepAnalysisResearchUseCategory(undefined, `${heading} ${bullet}`);
+      drafts.push({
+        claim: this.stripDeepAnalysisMarkdown(bullet),
+        evidence: this.extractQuotedDeepAnalysisEvidence(bullet),
+        category,
+        researchUse: heading.includes('用户') || heading.includes('研究') ? bullet : this.defaultDeepAnalysisResearchUse(category),
+        supportScope: [heading].filter(Boolean),
+        limitations: category === 'limitation' ? [bullet] : [],
+        keywords: [],
+        section: heading,
+        confidence: 0.62,
+      });
+    }
+    return drafts;
+  }
+
+  private extractQuotedDeepAnalysisEvidence(value: string): string {
+    const text = String(value || '');
+    const matches = Array.from(text.matchAll(/[“\"]([^”\"]{24,1200})[”\"]/g));
+    return matches.map(match => match[1].trim()).sort((a, b) => b.length - a.length)[0] || '';
+  }
+
+  private normalizeDeepAnalysisResearchUseCategory(value: unknown, fallbackText = ''): PdfWikiResearchUseCategory {
+    const raw = String(value || '').trim().toLowerCase();
+    const allowed: PdfWikiResearchUseCategory[] = [
+      'background', 'method', 'indicator', 'result-comparison', 'mechanism', 'meta-analysis', 'limitation',
+    ];
+    if (allowed.includes(raw as PdfWikiResearchUseCategory)) return raw as PdfWikiResearchUseCategory;
+    const text = `${raw} ${fallbackText}`.toLowerCase();
+    if (/局限|边界|限制|反证|limitation|boundary|caution/.test(text)) return 'limitation';
+    if (/meta|效应量|均值|标准差|样本量|effect size|sample size/.test(text)) return 'meta-analysis';
+    if (/机制|途径|调控|解释|mechanis|pathway|mediator/.test(text)) return 'mechanism';
+    if (/结果|发现|对照|比较|响应|result|finding|comparison|response/.test(text)) return 'result-comparison';
+    if (/指标|变量|测定|测量|indicator|variable|measurement/.test(text)) return 'indicator';
+    if (/方法|设计|处理|采样|统计|method|design|treatment|sampling/.test(text)) return 'method';
+    return 'background';
+  }
+
+  private defaultDeepAnalysisResearchUse(category: PdfWikiResearchUseCategory): string {
+    const uses: Record<PdfWikiResearchUseCategory, string> = {
+      background: '用于研究背景、问题提出或研究必要性的证据支撑。',
+      method: '用于实验设计、处理设置、采样或分析方法的参照。',
+      indicator: '用于指标选择、变量定义或测定方法的参照。',
+      'result-comparison': '用于结果段的横向比较或讨论段的异同分析。',
+      mechanism: '用于解释结果背后的过程、路径或调控机制。',
+      'meta-analysis': '用于 Meta 分析候选数据项及其提取条件的复核。',
+      limitation: '用于限定结论外推范围、说明反证或讨论研究局限。',
+    };
+    return uses[category];
+  }
+
+  private defaultDeepAnalysisSupportScope(category: PdfWikiResearchUseCategory): string {
+    const scopes: Record<PdfWikiResearchUseCategory, string> = {
+      background: '仅支持原文明确涉及的研究对象和问题背景',
+      method: '仅支持原文实际采用的方法、处理和实验条件',
+      indicator: '仅支持原文定义或测定的指标与变量',
+      'result-comparison': '仅支持原文样本、处理和时空条件下的结果比较',
+      mechanism: '仅支持原文证据能够直接说明的机制链路',
+      'meta-analysis': '仅支持原文可核验且单位、组别明确的数据项',
+      limitation: '用于约束结论边界，不应被改写为正向因果证据',
+    };
+    return scopes[category];
+  }
+
+  private normalizeDeepAnalysisTextArray(value: unknown, maxItems: number, maxChars: number): string[] {
+    const values = Array.isArray(value) ? value : (typeof value === 'string' ? value.split(/[\n;；]+/) : []);
+    return this.unique(values
+      .map(item => this.cleanDeepAnalysisItemText(item, maxChars))
+      .filter(Boolean))
+      .slice(0, maxItems);
+  }
+
+  private cleanDeepAnalysisItemText(value: unknown, maxChars: number): string {
+    return this.stripDeepAnalysisMarkdown(String(value || ''))
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, maxChars);
+  }
+
+  private stripDeepAnalysisMarkdown(value: string): string {
+    return String(value || '')
+      .replace(/^#{1,6}\s+/, '')
+      .replace(/^(?:[-*+]\s+|\d+[.)、]\s+)/, '')
+      .replace(/\*\*([^*]+)\*\*/g, '$1')
+      .replace(/`([^`]+)`/g, '$1')
+      .trim();
+  }
+
+  private clampDeepAnalysisConfidence(value: unknown): number {
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) return 0.75;
+    return Math.max(0, Math.min(1, numeric));
+  }
+
+  private toDeepAnalysisSourceMetadata(pdf: PdfWikiSourcePdf): PdfWikiDeepAnalysisSourceMetadata {
+    return {
+      pdfId: pdf.id,
+      originalName: pdf.originalName,
+      title: pdf.title,
+      authors: pdf.authors,
+      year: pdf.year,
+      journal: pdf.journal,
+      doi: pdf.doi,
+    };
+  }
+
+  private normalizeCachedDeepAnalysisEvidenceItems(value: unknown): PdfWikiDeepAnalysisEvidenceItem[] | undefined {
+    if (!Array.isArray(value)) return undefined;
+    const items = value.filter(item => item && typeof item === 'object') as PdfWikiDeepAnalysisEvidenceItem[];
+    return items.length > 0 ? items : [];
+  }
+
+  private normalizeDeepAnalysisWikiSync(value: unknown): PdfWikiDeepAnalysisWikiSync | undefined {
+    if (!value || typeof value !== 'object') return undefined;
+    const record = value as Partial<PdfWikiDeepAnalysisWikiSync>;
+    const status = record.status === 'completed' || record.status === 'partial' || record.status === 'unconfigured' || record.status === 'error'
+      ? record.status
+      : 'error';
+    const embeddingStatus = record.embeddingStatus === 'ready' || record.embeddingStatus === 'partial' || record.embeddingStatus === 'unconfigured' || record.embeddingStatus === 'error'
+      ? record.embeddingStatus
+      : 'error';
+    return {
+      status,
+      itemCount: Math.max(0, Number(record.itemCount || 0)),
+      entryIds: this.toStringArray(record.entryIds),
+      embeddedCount: Math.max(0, Number(record.embeddedCount || 0)),
+      embeddingStatus,
+      syncedAt: String(record.syncedAt || new Date(0).toISOString()),
+      warning: record.warning ? String(record.warning) : undefined,
+    };
   }
 
   private async loadUserResearchContextForDeepAnalysis(userId: string): Promise<PdfWikiUserResearchContextForDeepAnalysis> {
@@ -10979,7 +13377,8 @@ ${rawText.slice(0, 70000)}
   private buildSentenceCloudPointsFromText(
     text: string,
     pdf: PdfWikiSourcePdf,
-    referenceIndex: PdfWikiReference[]
+    referenceIndex: PdfWikiReference[],
+    topicDefinitions: PdfWikiTopicDefinition[] = []
   ): PdfWikiSentencePoint[] {
     const sectionInputs: Array<{ section: PdfWikiSentenceSection; text: string }> = [
       {
@@ -11006,7 +13405,7 @@ ${rawText.slice(0, 70000)}
         const sentence = this.cleanSentencePointText(match.sentence);
         if (!this.isUsefulSentencePoint(sentence)) continue;
         const references = this.uniqueSentencePointReferences(match.candidates);
-        const topic = this.inferSentencePointTopic(sentence);
+        const topic = this.inferSentencePointTopic(sentence, topicDefinitions);
         const claimInfo = this.inferSentenceClaimCandidate(sentence, input.section, references.length, match.citations);
         const referenceCount = references.length;
         const id = `sent_${crypto.createHash('md5').update(`${pdf.id}:${input.section}:${match.sentenceIndex}:${sentence}`).digest('hex').slice(0, 18)}`;
@@ -11047,7 +13446,8 @@ ${rawText.slice(0, 70000)}
    */
   private buildSentenceCloudDraftPointsForAi(
     text: string,
-    pdf: PdfWikiSourcePdf
+    pdf: PdfWikiSourcePdf,
+    topicDefinitions: PdfWikiTopicDefinition[] = []
   ): PdfWikiSentencePoint[] {
     const sectionInputs: Array<{ section: PdfWikiSentenceSection; text: string }> = [
       { section: 'Introduction', text: this.extractSentenceWikiSection(text, 'Introduction') },
@@ -11059,7 +13459,7 @@ ${rawText.slice(0, 70000)}
       sentences.forEach((rawSentence, sentenceIndex) => {
         const sentence = this.cleanSentencePointText(rawSentence);
         if (!this.isUsefulSentencePoint(sentence)) return;
-        const topic = this.inferSentencePointTopic(sentence);
+        const topic = this.inferSentencePointTopic(sentence, topicDefinitions);
         const id = `sent_${crypto.createHash('md5').update(`${pdf.id}:${input.section}:${sentenceIndex}:${sentence}`).digest('hex').slice(0, 18)}`;
         const positionSeed = this.seededPointPosition(id, topic.key);
         points.push({
@@ -11293,7 +13693,7 @@ B. 本文主要结论整理
 - 只输出一个 JSON 对象，不要 Markdown，不要解释。
 - confidence 为 0-1。
 - claimType 只能是 argument、background、mechanism、result、limitation、method、non_claim。
-- topicLabel 使用 2-10 个中文词，topicKey 使用稳定的英文或拼音短横线键。
+- 不要输出 topicLabel、topicKey 或 keywords。主题由用户主题库和本地代码统一匹配。
 
 返回格式：
 {
@@ -11306,10 +13706,7 @@ B. 本文主要结论整理
       "claimCandidate": true,
       "claimText": "该引用句表达的论点",
       "claimType": "mechanism",
-      "claimReason": "句中/句末显式引用已与文末条目对齐",
-      "topicLabel": "主题名称",
-      "topicKey": "topic-key",
-      "keywords": ["keyword"]
+      "claimReason": "句中/句末显式引用已与文末条目对齐"
     }
   ],
   "conclusions": [
@@ -11317,10 +13714,7 @@ B. 本文主要结论整理
       "sourceSentenceIndexes": [1, 2],
       "conclusionText": "本文的主要结论",
       "confidence": 0.96,
-      "claimType": "result",
-      "topicLabel": "主要结论",
-      "topicKey": "main-conclusion",
-      "keywords": ["keyword"]
+      "claimType": "result"
     }
   ]
 }
@@ -11499,11 +13893,8 @@ ${referenceLines || 'none'}`;
       seen.add(conclusionText.toLowerCase());
       const evidenceSentences = this.unique(sourceIndexes.map(index => conclusionSentences[index - 1]).filter(Boolean));
       if (evidenceSentences.length === 0) continue;
-      const topicLabel = this.firstString(record.topicLabel, record.topic_label, record.topic) || '本文主要结论';
-      const inferredTopic = this.inferSentencePointTopic(`${topicLabel} ${conclusionText}`);
-      const topicKey = this.normalizeSentenceTopicKey(
-        this.firstString(record.topicKey, record.topic_key, topicLabel, inferredTopic.key)
-      );
+      const topicLabel = '未分类';
+      const topicKey = 'unclassified';
       const normalizedClaimType = this.normalizeSentenceClaimType(
         this.firstString(record.claimType, record.claim_type, 'result')
       );
@@ -11532,10 +13923,7 @@ ${referenceLines || 'none'}`;
         claimReason: `Codex 根据 Conclusion 的 ${sourceIndexes.map(index => `C${index}`).join('、')} 归纳本文主要结论；引用绑定到来源论文本身。`,
         topicKey,
         topicLabel,
-        keywords: this.unique([
-          ...this.toStringArray(record.keywords || record.keyword),
-          ...inferredTopic.keywords,
-        ]).slice(0, 8),
+        keywords: [],
         x: positionSeed.x,
         y: positionSeed.y,
         radius: 13,
@@ -11691,7 +14079,7 @@ ${referenceLines || 'none'}`;
 2. 本地没有预先提取引用，也没有提供参考文献候选。请逐字检查 sentence 的句中和句末显式引用，例如 [1,2]、(Author, 2020)、Author et al. (2021)，并将原句中真实存在的引用片段原样返回到 citations。
 3. 如果 sentence 中没有显式引用，必须返回 citations=[]、referenceIndexes=[]；不要根据句子语义、主题相似或参考文献标题猜测匹配。
 4. 不要编造文末不存在的参考文献；referenceIndexes 只能来自下面 REFERENCES 的编号。
-5. topicLabel 用 2-10 个中文词概括该句主题；同一主题尽量用相同标签。
+5. 不要生成或修改主题。主题由用户主题库和本地匹配代码统一决定。
 6. confidence 为 0-1；成功对齐显式引用通常 0.85 以上；没有显式引用时 confidence 不超过 0.2。
 7. claimCandidate 判断该句是否能作为论点：研究空白、机制解释、前人结论、作者发现/解释、限制条件都可以；纯方法步骤、目录性陈述、无明确判断的背景句通常为 false。
 8. claimText 用中文或保留原文概括该句可作为论点的判断，必须只来自该句，不要新增信息；不能作为论点时留空。
@@ -11710,9 +14098,6 @@ ${referenceLines || 'none'}`;
       "claimText": "优化氮肥管理可降低硝态氮积累和 N2O 损失",
       "claimType": "result",
       "claimReason": "该句表达结果判断，并有句尾显式引用",
-      "topicLabel": "氮肥管理",
-      "topicKey": "nitrogen-management",
-      "keywords": ["N2O", "nitrogen fertilizer"],
       "reason": "句中编号引用 [1,3] 对应文末条目"
     }
   ]
@@ -11747,12 +14132,6 @@ ${referenceLines || '未解析到文末参考文献。'}`;
       ...matchedAiRefs,
     ], 8);
     const referenceCount = nextReferences.length;
-    const topicLabel = this.firstString(record.topicLabel, record.topic_label, record.topic, point.topicLabel) || point.topicLabel;
-    const topicKey = this.normalizeSentenceTopicKey(this.firstString(record.topicKey, record.topic_key, topicLabel, point.topicKey));
-    const keywords = this.unique([
-      ...this.toStringArray(record.keywords || record.keyword),
-      ...point.keywords,
-    ]).slice(0, 8);
     const aiClaimCandidate = this.toBoolean(record.claimCandidate ?? record.claim_candidate ?? record.isClaim ?? record.is_claim);
     const claimType = this.normalizeSentenceClaimType(this.firstString(record.claimType, record.claim_type, record.type, point.claimType));
     const claimText = this.firstString(record.claimText, record.claim_text, record.claim, record.argument);
@@ -11769,9 +14148,9 @@ ${referenceLines || '未解析到文末参考文献。'}`;
       claimText: claimText || point.claimText,
       claimType: claimType || point.claimType,
       claimReason: claimReason || point.claimReason,
-      topicKey,
-      topicLabel,
-      keywords,
+      topicKey: point.topicKey,
+      topicLabel: point.topicLabel,
+      keywords: point.keywords,
       radius: Math.min(38, 8 + Math.max(0, referenceCount) * 5),
       matchMethod: this.getSentencePointMatchMethod(nextReferences),
       confidence: Math.round(nextConfidence * 1000) / 1000,
@@ -11899,12 +14278,107 @@ ${referenceLines || '未解析到文末参考文献。'}`;
 
   private isPublishableSentencePoint(point: PdfWikiSentencePoint | null | undefined): point is PdfWikiSentencePoint {
     if (!point) return false;
+    if (!this.hasReferenceBackedReferences(point.references)) return false;
     if (point.claimCandidate !== true) return false;
     const claimType = this.normalizeSentenceClaimType(point.claimType);
     if (claimType === 'method' || claimType === 'non_claim') return false;
     const claimText = this.cleanSentencePointText(point.claimText || point.sentence || '');
     if (!claimText) return false;
     return this.isUsefulSentencePoint(point.sentence || claimText);
+  }
+
+  /**
+   * `fallbackSourcePdf` 只是历史兼容信息，表示“这句话来自哪篇 PDF”，并不表示
+   * 句子已经匹配到可核验的参考文献。展示、导出和写作检索只能使用真正绑定的
+   * 参考文献，避免把无引文句子误当成可引用证据。
+   */
+  private isReferenceBackedReference(reference: PdfWikiReference | null | undefined): reference is PdfWikiReference {
+    if (!reference || reference.fallbackSourcePdf === true) return false;
+    if (/^ref_source_/i.test(String(reference.id || ''))) return false;
+    if (/^\s*来源\s*PDF\s*[:：]/i.test(String(reference.raw || ''))) return false;
+    return Number.isFinite(reference.index)
+      || Boolean(String(reference.doi || '').trim())
+      || Boolean(String(reference.title || '').trim())
+      || Boolean(String(reference.raw || '').trim());
+  }
+
+  private hasReferenceBackedReferences(references: PdfWikiReference[] | null | undefined): boolean {
+    return (Array.isArray(references) ? references : []).some(reference => this.isReferenceBackedReference(reference));
+  }
+
+  private filterReferenceBackedViewpoints(viewpoints: PdfWikiViewpoint[] | null | undefined): PdfWikiViewpoint[] {
+    return (Array.isArray(viewpoints) ? viewpoints : []).flatMap(viewpoint => {
+      const references = this.uniqueReferences(
+        (Array.isArray(viewpoint?.references) ? viewpoint.references : [])
+          .filter(reference => this.isReferenceBackedReference(reference))
+      );
+      if (references.length === 0) return [];
+      return [{
+        ...viewpoint,
+        inTextCitations: this.unique(Array.isArray(viewpoint.inTextCitations) ? viewpoint.inTextCitations : []),
+        evidenceSentenceIds: this.unique(Array.isArray(viewpoint.evidenceSentenceIds) ? viewpoint.evidenceSentenceIds : []),
+        evidenceSentences: this.unique(Array.isArray(viewpoint.evidenceSentences) ? viewpoint.evidenceSentences : []),
+        references,
+      }];
+    });
+  }
+
+  private filterReferenceBackedEntry(entry: PdfWikiEntry | null | undefined): PdfWikiEntry | null {
+    if (!entry) return null;
+    const pro = this.filterReferenceBackedViewpoints(entry.pro);
+    const con = this.filterReferenceBackedViewpoints(entry.con);
+    const neutral = this.filterReferenceBackedViewpoints(entry.neutral);
+    const viewpoints = [...pro, ...con, ...neutral];
+    if (viewpoints.length === 0) return null;
+
+    const references = this.uniqueReferences([
+      ...(Array.isArray(entry.references) ? entry.references : [])
+        .filter(reference => this.isReferenceBackedReference(reference)),
+      ...viewpoints.flatMap(viewpoint => viewpoint.references),
+    ]);
+    if (references.length === 0) return null;
+
+    const evidenceSnippets = this.unique(viewpoints.flatMap(viewpoint => [
+      viewpoint.evidence,
+      ...(viewpoint.evidenceSentences || []),
+    ]).filter(Boolean));
+    const retainedEvidence = new Set(evidenceSnippets.map(item => this.cleanSentencePointText(item)));
+
+    return {
+      ...entry,
+      pro,
+      con,
+      neutral,
+      inTextCitations: this.unique(viewpoints.flatMap(viewpoint => viewpoint.inTextCitations || [])),
+      evidenceSentenceIds: this.unique(viewpoints.flatMap(viewpoint => viewpoint.evidenceSentenceIds || [])),
+      references,
+      evidenceSnippets,
+      sourceEntries: Array.isArray(entry.sourceEntries)
+        ? entry.sourceEntries.map(sourceEntry => ({
+          ...sourceEntry,
+          evidenceSnippets: (sourceEntry.evidenceSnippets || [])
+            .filter(snippet => retainedEvidence.has(this.cleanSentencePointText(snippet))),
+        }))
+        : entry.sourceEntries,
+    };
+  }
+
+  private filterReferenceBackedEntries(entries: PdfWikiEntry[]): PdfWikiEntry[] {
+    return (Array.isArray(entries) ? entries : [])
+      .map(entry => this.filterReferenceBackedEntry(entry))
+      .filter((entry): entry is PdfWikiEntry => !!entry);
+  }
+
+  private toReferenceBackedStoreView(store: PdfWikiStore): PdfWikiStore {
+    const sentenceCloud = this.buildSentenceCloudStore(
+      this.filterPublishableSentencePoints(store.sentenceCloud?.points || [])
+    );
+    sentenceCloud.generatedAt = store.sentenceCloud?.generatedAt || store.generatedAt;
+    return {
+      ...store,
+      entries: this.filterReferenceBackedEntries(store.entries || []),
+      sentenceCloud,
+    };
   }
 
   private inferSentenceClaimCandidate(
@@ -12035,28 +14509,79 @@ ${referenceLines || '未解析到文末参考文献。'}`;
     return 0.1;
   }
 
-  private inferSentencePointTopic(sentence: string): { key: string; label: string; keywords: string[] } {
-    const lower = sentence.toLowerCase().replace(/[₂]/g, '2');
-    const candidates: Array<{ key: string; label: string; patterns: RegExp[] }> = [
-      { key: 'nitrogen-management', label: '氮肥管理', patterns: [/nitrogen fertil/i, /\bn fertilizer/i, /urea/i, /施肥|氮肥|施氮/] },
-      { key: 'n2o-emission', label: 'N2O 排放', patterns: [/n2o|nitrous oxide/i, /氧化亚氮|温室气体|排放/] },
-      { key: 'nitrification-denitrification', label: '硝化/反硝化机制', patterns: [/nitrification|denitrification|amoa|nosz|nir[ks]/i, /硝化|反硝化|微生物|功能基因/] },
-      { key: 'soil-water-climate', label: '水分与气候条件', patterns: [/soil moisture|water|rainfall|precipitation|irrigation|temperature/i, /含水量|降雨|灌溉|温度|气候/] },
-      { key: 'crop-yield-system', label: '作物产量与农田系统', patterns: [/yield|crop|maize|wheat|rice|cropland|farmland/i, /产量|作物|小麦|玉米|水稻|农田/] },
-      { key: 'method-data', label: '方法与数据', patterns: [/meta-analysis|model|measurement|chamber|isotope|dataset/i, /模型|测定|数据|方法|同位素|整合分析/] },
-    ];
-    for (const candidate of candidates) {
-      if (candidate.patterns.some(pattern => pattern.test(lower) || pattern.test(sentence))) {
-        return { key: candidate.key, label: candidate.label, keywords: this.extractSentencePointKeywords(sentence, candidate.label) };
+  private inferSentencePointTopic(
+    sentence: string,
+    topicDefinitions: PdfWikiTopicDefinition[] = []
+  ): { key: string; label: string; keywords: string[] } {
+    const normalizedSentence = this.normalizeTopicMatchText(sentence);
+    let best: { definition: PdfWikiTopicDefinition; score: number; matched: string[] } | null = null;
+
+    for (const definition of topicDefinitions) {
+      const matched: string[] = [];
+      let score = 0;
+      const positiveTerms = [
+        { value: definition.label, weight: 12 },
+        ...definition.aliases.map(value => ({ value, weight: 9 })),
+        ...definition.keywords.map(value => ({ value, weight: 5 })),
+      ];
+      for (const term of positiveTerms) {
+        if (!this.topicTermMatches(normalizedSentence, term.value)) continue;
+        const normalizedTerm = this.normalizeTopicMatchText(term.value);
+        matched.push(term.value);
+        score += term.weight + Math.min(5, Math.max(0, normalizedTerm.length - 3) / 4);
+      }
+      const excluded = definition.excludeKeywords.filter(term => this.topicTermMatches(normalizedSentence, term));
+      if (excluded.length > 0) {
+        score -= excluded.length * 12;
+      }
+      if (score > 0 && (!best || score > best.score)) {
+        best = { definition, score, matched };
       }
     }
-    const keywords = this.extractSentencePointKeywords(sentence);
-    const keyBase = keywords.slice(0, 2).join('-') || 'background';
+
+    if (!best) {
+      return { key: 'unclassified', label: '未分类', keywords: [] };
+    }
     return {
-      key: this.normalizeSentenceTopicKey(keyBase),
-      label: keywords.slice(0, 2).join(' / ') || '背景与问题',
-      keywords,
+      key: this.normalizeSentenceTopicKey(best.definition.id),
+      label: best.definition.label,
+      keywords: this.unique(best.matched).slice(0, 8),
     };
+  }
+
+  private applyTopicDefinitionToPoint(
+    point: PdfWikiSentencePoint,
+    topicDefinitions: PdfWikiTopicDefinition[]
+  ): PdfWikiSentencePoint {
+    const topic = this.inferSentencePointTopic(`${point.sentence}\n${point.claimText || ''}`, topicDefinitions);
+    const position = this.seededPointPosition(point.id, topic.key);
+    return {
+      ...point,
+      topicKey: topic.key,
+      topicLabel: topic.label,
+      keywords: topic.keywords,
+      x: position.x,
+      y: position.y,
+    };
+  }
+
+  private normalizeTopicMatchText(value: unknown): string {
+    return String(value || '')
+      .normalize('NFKC')
+      .toLocaleLowerCase()
+      .replace(/[₂]/g, '2')
+      .replace(/[\s\u00a0]+/g, ' ')
+      .trim();
+  }
+
+  private topicTermMatches(normalizedSentence: string, term: string): boolean {
+    const normalizedTerm = this.normalizeTopicMatchText(term);
+    if (!normalizedTerm || normalizedTerm.length < 2) return false;
+    if (/^[a-z0-9][a-z0-9 +./_-]*$/i.test(normalizedTerm)) {
+      const escaped = normalizedTerm.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\s+/g, '\\s+');
+      return new RegExp(`(^|[^a-z0-9])${escaped}(?=$|[^a-z0-9])`, 'i').test(normalizedSentence);
+    }
+    return normalizedSentence.includes(normalizedTerm);
   }
 
   private extractSentencePointKeywords(sentence: string, preferred?: string): string[] {
@@ -12076,6 +14601,70 @@ ${referenceLines || '未解析到文末参考文献。'}`;
       .replace(/[^a-z0-9\u4e00-\u9fa5]+/g, '-')
       .replace(/^-+|-+$/g, '')
       .slice(0, 80) || 'background';
+  }
+
+  private createEmptyTopicCatalog(): PdfWikiTopicCatalog {
+    return { version: 1, updatedAt: new Date(0).toISOString(), topics: [] };
+  }
+
+  private normalizeTopicCatalog(value: Partial<PdfWikiTopicCatalog> | unknown): PdfWikiTopicCatalog {
+    const record = value && typeof value === 'object' ? value as Partial<PdfWikiTopicCatalog> : {};
+    const seenIds = new Set<string>();
+    const seenLabels = new Set<string>();
+    const topics = (Array.isArray(record.topics) ? record.topics : [])
+      .map(topic => this.normalizeTopicDefinition(topic))
+      .filter(topic => {
+        if (!topic.label) return false;
+        const labelKey = topic.label.toLocaleLowerCase();
+        if (seenIds.has(topic.id) || seenLabels.has(labelKey)) return false;
+        seenIds.add(topic.id);
+        seenLabels.add(labelKey);
+        return true;
+      })
+      .slice(0, 50);
+    return {
+      version: 1,
+      updatedAt: typeof record.updatedAt === 'string' && record.updatedAt ? record.updatedAt : new Date().toISOString(),
+      topics,
+    };
+  }
+
+  private normalizeTopicDefinition(value: Partial<PdfWikiTopicDefinition> | unknown): PdfWikiTopicDefinition {
+    const record = value && typeof value === 'object' ? value as Partial<PdfWikiTopicDefinition> : {};
+    const label = this.cleanTopicText(record.label, 80);
+    const now = new Date().toISOString();
+    return {
+      id: this.cleanTopicText(record.id, 80) || this.createTopicId(label),
+      label,
+      description: this.cleanTopicText(record.description, 500),
+      aliases: this.normalizeTopicTerms(record.aliases, 12),
+      keywords: this.normalizeTopicTerms(record.keywords, 30),
+      excludeKeywords: this.normalizeTopicTerms(record.excludeKeywords, 12),
+      expandedBy: record.expandedBy === 'manual' ? 'manual' : 'ai',
+      createdAt: typeof record.createdAt === 'string' && record.createdAt ? record.createdAt : now,
+      updatedAt: typeof record.updatedAt === 'string' && record.updatedAt ? record.updatedAt : now,
+    };
+  }
+
+  private normalizeTopicTerms(value: unknown, limit: number): string[] {
+    const values = Array.isArray(value) ? value : (typeof value === 'string' ? value.split(/[,;，；\n]+/) : []);
+    return this.unique(values
+      .map(item => this.cleanTopicText(item, 100))
+      .filter(item => item.length >= 2))
+      .slice(0, limit);
+  }
+
+  private cleanTopicText(value: unknown, maxLength: number): string {
+    return String(value || '')
+      .replace(/[\u0000-\u001f\u007f]+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, maxLength);
+  }
+
+  private createTopicId(label: string): string {
+    const normalized = this.normalizeTopicMatchText(label) || crypto.randomBytes(8).toString('hex');
+    return `topic_${crypto.createHash('sha256').update(normalized).digest('hex').slice(0, 16)}`;
   }
 
   private seededPointPosition(id: string, topicKey: string): { x: number; y: number } {
@@ -13313,17 +15902,13 @@ ${rawText.slice(0, 50000)}
         ...con.flatMap(view => view.references),
         ...neutral.flatMap(view => view.references),
       ]);
-      const fallbackRefs = entry.sourcePdfIds.map((sourcePdfId, index) =>
-        this.createSourcePdfFallbackReference(sourcePdfId, entry.sourcePdfNames[index] || sourcePdfId)
-      );
-
       return {
         ...entry,
         pro,
         con,
         neutral,
         inTextCitations: entryCitations,
-        references: entryRefs.length > 0 ? entryRefs : fallbackRefs,
+        references: entryRefs,
       };
     });
   }
@@ -13342,9 +15927,7 @@ ${rawText.slice(0, 50000)}
       return {
         ...viewpoint,
         inTextCitations: citations,
-        references: refs.length > 0
-          ? refs
-          : [this.createSourcePdfFallbackReference(viewpoint.sourcePdfId, viewpoint.sourcePdfName)],
+        references: refs,
       };
     });
   }
@@ -13811,14 +16394,15 @@ ${promptEntries}
 
   private storeToRetrievalLiteratures(store: PdfWikiStore): UnifiedLiterature[] {
     const sentencePoints = this.filterPublishableSentencePoints(store.sentenceCloud?.points || []);
+    const entries = this.filterReferenceBackedEntries(store.entries || []);
     return [
-      ...this.entriesToLiteratures(store.entries, 0),
-      ...this.sentencePointsToLiteratures(sentencePoints, store.entries.length),
+      ...this.entriesToLiteratures(entries, 0),
+      ...this.sentencePointsToLiteratures(sentencePoints, entries.length),
     ];
   }
 
   private entriesToLiteratures(entries: PdfWikiEntry[], offset = 0): UnifiedLiterature[] {
-    return entries.map((entry, index) => {
+    return this.filterReferenceBackedEntries(entries).map((entry, index) => {
       const firstRef = entry.references[0];
       const authors = parseAuthorsToString(firstRef?.authors || entry.sourcePdfNames.join(', '));
       const year = parseInt(firstRef?.year || '', 10) || new Date().getFullYear();
@@ -13833,6 +16417,28 @@ ${promptEntries}
         `证据摘录: ${entry.evidenceSnippets.join('；')}`,
         `文中引用: ${entry.inTextCitations.join('; ')}`,
         `参考文献: ${entry.references.map(ref => this.formatReference(ref)).join('\n')}`,
+        entry.researchUseCategory ? `研究用途类别: ${entry.researchUseCategory}` : '',
+        entry.researchUse ? `在用户研究中的用途: ${entry.researchUse}` : '',
+        entry.supportScope?.length ? `论点支撑范围: ${entry.supportScope.join('；')}` : '',
+        entry.limitations?.length ? `使用边界: ${entry.limitations.join('；')}` : '',
+        entry.sourcePdfMetadata ? `来源PDF详情: ${[
+          entry.sourcePdfMetadata.title,
+          entry.sourcePdfMetadata.authors,
+          entry.sourcePdfMetadata.year,
+          entry.sourcePdfMetadata.journal,
+          entry.sourcePdfMetadata.doi,
+        ].filter(Boolean).join('；')}` : '',
+      ].filter(Boolean).join('\n');
+      const embeddingText = [
+        displayClaim,
+        ...entry.evidenceSnippets,
+        ...entry.pro.map(view => view.summary),
+        ...entry.con.map(view => view.summary),
+        ...entry.neutral.map(view => view.summary),
+        entry.researchUse || '',
+        ...(entry.supportScope || []),
+        ...(entry.limitations || []),
+        entry.sourcePdfMetadata?.title || '',
       ].filter(Boolean).join('\n');
 
       return {
@@ -13843,12 +16449,53 @@ ${promptEntries}
         author: authorsToString(authors),
         year,
         abstract,
-        keywords: this.unique(['pdf-wiki', ...entry.sections, ...entry.inTextCitations]).filter(Boolean),
+        keywords: this.unique([
+          'pdf-wiki',
+          ...(entry.origin === 'deep-analysis' ? ['deep-analysis', entry.researchUseCategory || ''] : []),
+          ...entry.sections,
+          ...entry.inTextCitations,
+          ...(entry.supportScope || []),
+        ]).filter(Boolean),
         journal: 'PDF Wiki',
         documentType: 'article',
         categories: ['pdf-wiki'],
         references: entry.references.map(ref => this.formatReference(ref)),
         source: 'wos',
+        embeddingText,
+        evidenceAttachment: {
+          kind: entry.origin === 'deep-analysis' ? 'pdf-wiki-deep-analysis' : 'pdf-wiki-claim',
+          claim: displayClaim,
+          sourcePdfId: entry.sourcePdfIds[0],
+          sourcePdfName: entry.sourcePdfNames[0],
+          section: entry.sections[0],
+          citations: [...entry.inTextCitations],
+          referenceIndexes: entry.references
+            .filter(ref => !ref.fallbackSourcePdf && Number.isFinite(ref.index))
+            .map(ref => Number(ref.index)),
+          references: entry.references.map(ref => ({
+            id: ref.id,
+            index: ref.index,
+            raw: ref.raw,
+            title: ref.title,
+            authors: ref.authors,
+            year: ref.year,
+            journal: ref.journal,
+            doi: ref.doi,
+            sourcePdfId: ref.sourcePdfId,
+            sourcePdfName: ref.sourcePdfName,
+            fallbackSourcePdf: ref.fallbackSourcePdf,
+          })),
+          researchUseCategory: entry.researchUseCategory,
+          researchUse: entry.researchUse,
+          supportScope: entry.supportScope ? [...entry.supportScope] : undefined,
+          limitations: entry.limitations ? [...entry.limitations] : undefined,
+          researchContextKeys: entry.researchContextKeys ? [...entry.researchContextKeys] : undefined,
+          confidence: entry.confidence,
+          sourcePdfAuthors: entry.sourcePdfMetadata?.authors,
+          sourcePdfYear: entry.sourcePdfMetadata?.year,
+          sourcePdfJournal: entry.sourcePdfMetadata?.journal,
+          sourcePdfDoi: entry.sourcePdfMetadata?.doi,
+        },
       };
     });
   }
@@ -13866,12 +16513,25 @@ ${promptEntries}
         `论点类型: ${point.claimType}`,
         point.claimReason ? `判断原因: ${point.claimReason}` : '',
         `主题: ${point.topicLabel}`,
+        point.aiTopicAnnotation?.subjectTags?.length
+          ? `AI多主题标签: ${point.aiTopicAnnotation.subjectTags.join('；')}`
+          : '',
+        point.aiTopicAnnotation?.trendConclusionTopic
+          ? `趋势/结论主题: ${point.aiTopicAnnotation.trendConclusionTopic}`
+          : '',
         `来源PDF: ${point.sourcePdfName}`,
         `章节: ${point.section} S${point.sentenceIndex}`,
         `文中引用: ${point.citations.join('; ') || '未检测到显式引用'}`,
         references.some(ref => ref.fallbackSourcePdf) ? `引用规则: 该句未匹配到句后引文，写作时引用来源 PDF。` : `引用规则: 该句已匹配句后引文，写作时引用对应参考文献。`,
         `匹配方式: ${point.matchMethod}; confidence=${point.confidence}`,
         `参考文献: ${references.map(ref => this.formatReference(ref)).join('\n')}`,
+      ].filter(Boolean).join('\n');
+      const embeddingText = [
+        point.sentence,
+        point.claimText,
+        point.topicLabel,
+        ...(point.aiTopicAnnotation?.subjectTags || []),
+        point.aiTopicAnnotation?.trendConclusionTopic || '',
       ].filter(Boolean).join('\n');
 
       return {
@@ -13882,12 +16542,55 @@ ${promptEntries}
         author: authorsToString(authors),
         year,
         abstract,
-        keywords: this.unique(['pdf-wiki', 'sentence-claim', point.section, point.topicLabel, point.claimType, ...point.keywords, ...point.citations]).filter(Boolean),
+        keywords: this.unique([
+          'pdf-wiki',
+          'sentence-claim',
+          point.section,
+          point.topicLabel,
+          point.claimType,
+          ...point.keywords,
+          ...(point.aiTopicAnnotation?.subjectTags || []),
+          point.aiTopicAnnotation?.trendConclusionTopic || '',
+          ...point.citations,
+        ]).filter(Boolean),
         journal: 'PDF Wiki Sentence Argument Library',
         documentType: 'article',
         categories: ['pdf-wiki', 'sentence-claim'],
         references: references.map(ref => this.formatReference(ref)),
         source: 'wos',
+        embeddingText,
+        evidenceAttachment: {
+          kind: 'pdf-wiki-sentence',
+          sentenceId: point.id,
+          sentence: point.sentence,
+          claim: point.claimText || point.sentence,
+          claimType: point.claimType,
+          topic: point.topicLabel,
+          sourcePdfId: point.sourcePdfId,
+          sourcePdfName: point.sourcePdfName,
+          sourcePdfTitle: point.sourcePdfTitle,
+          section: point.section,
+          sentenceIndex: point.sentenceIndex,
+          citations: [...point.citations],
+          referenceIndexes: references
+            .filter(ref => !ref.fallbackSourcePdf && Number.isFinite(ref.index))
+            .map(ref => Number(ref.index)),
+          references: references.map(ref => ({
+            id: ref.id,
+            index: ref.index,
+            raw: ref.raw,
+            title: ref.title,
+            authors: ref.authors,
+            year: ref.year,
+            journal: ref.journal,
+            doi: ref.doi,
+            sourcePdfId: ref.sourcePdfId,
+            sourcePdfName: ref.sourcePdfName,
+            fallbackSourcePdf: ref.fallbackSourcePdf,
+          })),
+          matchMethod: point.matchMethod,
+          confidence: point.confidence,
+        },
       };
     });
   }
@@ -13932,17 +16635,7 @@ ${promptEntries}
 
   private getSentencePointCitationReferences(point: PdfWikiSentencePoint): PdfWikiReference[] {
     const allReferences = this.deduplicateSentencePointReferences(point.references || [], 8);
-    const citationRefs = allReferences.filter(ref => !ref.fallbackSourcePdf);
-    if (citationRefs.length > 0) return citationRefs;
-    const sourcePaperReferences = allReferences.filter(ref => ref.fallbackSourcePdf);
-    if (sourcePaperReferences.length > 0) return sourcePaperReferences;
-    return [
-      this.createSourcePdfFallbackReference(
-        point.sourcePdfId,
-        point.sourcePdfName,
-        point.sourcePdfTitle
-      ),
-    ];
+    return allReferences.filter(ref => this.isReferenceBackedReference(ref));
   }
 
   private parseReferences(text: string, sourcePdfId: string, sourcePdfName: string): PdfWikiReference[] {
@@ -14441,7 +17134,11 @@ ${text}`,
     parsed: PdfWikiParsedContent | null,
     config: PdfWikiCodexConfig,
     userResearchContext: PdfWikiUserResearchContextForDeepAnalysis
-  ): Promise<{ summaryMarkdown: string; overviewDiagram?: PdfWikiOverviewDiagram }> {
+  ): Promise<{
+    summaryMarkdown: string;
+    overviewDiagram?: PdfWikiOverviewDiagram;
+    evidenceDrafts?: PdfWikiDeepAnalysisEvidenceDraft[];
+  }> {
     const safePdfId = this.getSafePdfCacheId(pdf);
     const taskDir = this.getCodexPdfWikiAuxTaskDir(userId, `deep_analysis_${safePdfId}`);
     await fs.promises.mkdir(taskDir, { recursive: true });
@@ -14485,6 +17182,7 @@ ${excerpt ? '- fulltext_excerpt.md：系统已解析出的正文摘录，可作�
 1. deep_analysis.md：中文 Markdown 深入分析。
 2. overview_diagram.svg：一张论文一览图 SVG。
 3. overview_diagram.json：结构化一览图信息。
+4. wiki_evidence_items.json：可直接写入 PDF Wiki 的研究证据条目。
 
 deep_analysis.md 必须覆盖：
 - 核心问题
@@ -14531,6 +17229,31 @@ overview_diagram.json 格式：
   "limitations": []
 }
 
+wiki_evidence_items.json 格式：
+{
+  "items": [
+    {
+      "claim": "可直接用于论文写作的原子论点，不能把多个结论拼成一句",
+      "evidence": "必须逐字摘录 source.pdf/fulltext_excerpt.md 中真正支持该论点的一至两句原文",
+      "category": "background|method|indicator|result-comparison|mechanism|meta-analysis|limitation",
+      "researchUse": "结合 user_research_context.md，说明用户论文中具体如何使用",
+      "supportScope": ["该证据能支持的对象、条件、变量或结论范围"],
+      "limitations": ["不能外推的对象、条件或解释边界"],
+      "keywords": ["3-8 个中英文检索词"],
+      "section": "原文章节",
+      "location": "页码/章节/图表位置（不确定时只写章节）",
+      "confidence": 0.0
+    }
+  ]
+}
+
+wiki_evidence_items.json 硬性约束：
+- 每条 evidence 必须是 PDF 原文逐字摘录，禁止把你的中文总结写成 evidence。
+- 每条只表达一个原子论点；优先提取与用户现有研究直接相关且可用于背景、方法、结果比较、机制讨论或边界限定的内容。
+- category 只能使用给定的 7 个枚举值。
+- confidence 取 0-1；找不到可核验原文证据的内容不要输出。
+- 不要根据语义猜文献编号或参考文献；引用关系由系统根据 evidence 原句中的显式引用另行绑定。
+
 PDF 元信息：
 ${JSON.stringify(metadata, null, 2)}
 
@@ -14545,15 +17268,19 @@ ${excerpt ? `正文摘录：\n${excerpt}` : '未提供正文摘录；请直接�
     const summaryMarkdown = (await this.readTextFileIfExists(path.join(taskDir, 'deep_analysis.md'))).trim()
       || lastMessage.trim();
     const rawSvg = await this.readTextFileIfExists(path.join(taskDir, 'overview_diagram.svg'));
+    const rawEvidence = this.asRecord(await this.readJsonFileIfExists(path.join(taskDir, 'wiki_evidence_items.json')));
+    const evidenceDrafts = (Array.isArray(rawEvidence.items) ? rawEvidence.items : [])
+      .filter(item => item && typeof item === 'object') as PdfWikiDeepAnalysisEvidenceDraft[];
     const svg = this.sanitizeOverviewSvg(rawSvg);
     if (!summaryMarkdown) {
       throw new Error('Codex 未生成 deep_analysis.md');
     }
     if (!svg) {
-      return { summaryMarkdown };
+      return { summaryMarkdown, evidenceDrafts };
     }
     return {
       summaryMarkdown,
+      evidenceDrafts,
       overviewDiagram: {
         kind: 'svg',
         engine: 'codex',
@@ -15027,7 +17754,11 @@ ${summary}`,
     summaryMarkdown: string,
     candidate: PdfWikiOverviewDiagram | undefined
   ): PdfWikiOverviewDiagram {
-    if (candidate && this.isUsableOverviewDiagram(candidate)) {
+    if (
+      candidate
+      && candidate.layoutVersion === PDF_WIKI_OVERVIEW_DIAGRAM_LAYOUT_VERSION
+      && this.isUsableOverviewDiagram(candidate)
+    ) {
       return candidate;
     }
     if (candidate) {
@@ -15622,6 +18353,97 @@ ${content.slice(0, 12000)}`;
     });
   }
 
+  private async loadSentenceTopicAnnotationStore(userId: string): Promise<PdfWikiSentenceTopicAnnotationStore> {
+    const filePath = this.getSentenceTopicAnnotationStorePath(userId);
+    if (!fs.existsSync(filePath)) {
+      return { version: 1, updatedAt: new Date(0).toISOString(), records: {} };
+    }
+    try {
+      const parsed = JSON.parse(await fs.promises.readFile(filePath, 'utf-8')) as Partial<PdfWikiSentenceTopicAnnotationStore>;
+      const rawRecords = parsed.records && typeof parsed.records === 'object' ? parsed.records : {};
+      const records: Record<string, PdfWikiSentenceTopicAnnotation> = {};
+      for (const [sentenceId, raw] of Object.entries(rawRecords)) {
+        if (!raw || typeof raw !== 'object') continue;
+        const record = raw as Partial<PdfWikiSentenceTopicAnnotation>;
+        const subjectTags = this.normalizeTopicTerms(record.subjectTags, 5)
+          .map(tag => this.cleanTopicText(tag, 80))
+          .filter(Boolean);
+        const trendConclusionTopic = this.cleanTopicText(record.trendConclusionTopic, 120);
+        const sourceHash = String(record.sourceHash || '').trim();
+        const taxonomyHash = String(record.taxonomyHash || '').trim();
+        if (!sentenceId || !sourceHash || !taxonomyHash || subjectTags.length === 0 || !trendConclusionTopic) continue;
+        records[sentenceId] = {
+          version: PDF_WIKI_SENTENCE_TOPIC_ANNOTATION_VERSION,
+          sourceHash,
+          taxonomyHash,
+          subjectTags,
+          trendConclusionTopic,
+          annotatedAt: String(record.annotatedAt || new Date(0).toISOString()),
+          provider: record.provider === 'codex' ? 'codex' : 'api',
+          model: record.model ? String(record.model) : undefined,
+        };
+      }
+      return {
+        version: 1,
+        updatedAt: String(parsed.updatedAt || new Date(0).toISOString()),
+        records,
+      };
+    } catch (error) {
+      logger.warn(`[PdfWiki] Failed to read sentence topic annotations for ${userId}:`, error);
+      return { version: 1, updatedAt: new Date(0).toISOString(), records: {} };
+    }
+  }
+
+  private async saveSentenceTopicAnnotationStore(
+    userId: string,
+    store: PdfWikiSentenceTopicAnnotationStore
+  ): Promise<void> {
+    await this.writeJsonAtomic(this.getSentenceTopicAnnotationStorePath(userId), {
+      ...store,
+      version: 1,
+      updatedAt: new Date().toISOString(),
+    });
+  }
+
+  private async loadSentenceTopicAnnotationStatus(
+    userId: string
+  ): Promise<PdfWikiSentenceTopicAnnotationStatus | null> {
+    const filePath = this.getSentenceTopicAnnotationStatusPath(userId);
+    if (!fs.existsSync(filePath)) return null;
+    try {
+      const parsed = JSON.parse(await fs.promises.readFile(filePath, 'utf-8')) as Partial<PdfWikiSentenceTopicAnnotationStatus>;
+      const status = parsed.status === 'processing' || parsed.status === 'completed' || parsed.status === 'error'
+        ? parsed.status
+        : 'idle';
+      return {
+        status,
+        totalSentences: Math.max(0, Number(parsed.totalSentences || 0)),
+        annotatedSentences: Math.max(0, Number(parsed.annotatedSentences || 0)),
+        pendingSentences: Math.max(0, Number(parsed.pendingSentences || 0)),
+        targetSentences: Math.max(0, Number(parsed.targetSentences || 0)),
+        processedSentences: Math.max(0, Number(parsed.processedSentences || 0)),
+        failedSentences: Math.max(0, Number(parsed.failedSentences || 0)),
+        skippedSentences: Math.max(0, Number(parsed.skippedSentences || 0)),
+        progress: Math.max(0, Math.min(100, Number(parsed.progress || 0))),
+        message: String(parsed.message || ''),
+        startedAt: parsed.startedAt ? String(parsed.startedAt) : undefined,
+        completedAt: parsed.completedAt ? String(parsed.completedAt) : undefined,
+        updatedAt: String(parsed.updatedAt || new Date(0).toISOString()),
+        error: parsed.error ? String(parsed.error) : undefined,
+      };
+    } catch (error) {
+      logger.warn(`[PdfWiki] Failed to read sentence topic annotation status for ${userId}:`, error);
+      return null;
+    }
+  }
+
+  private async saveSentenceTopicAnnotationStatus(
+    userId: string,
+    status: PdfWikiSentenceTopicAnnotationStatus
+  ): Promise<void> {
+    await this.writeJsonAtomic(this.getSentenceTopicAnnotationStatusPath(userId), status);
+  }
+
   private async loadStore(userId: string): Promise<PdfWikiStore> {
     const storePath = this.getStorePath(userId);
     if (!fs.existsSync(storePath)) {
@@ -15645,8 +18467,11 @@ ${content.slice(0, 12000)}`;
   }
 
   private async saveStore(userId: string, store: PdfWikiStore): Promise<void> {
-    await fs.promises.mkdir(this.getWikiDir(userId), { recursive: true });
-    await this.writeJsonAtomic(this.getStorePath(userId), store);
+    const safeUserId = sanitizeUserId(userId);
+    await fs.promises.mkdir(this.getWikiDir(safeUserId), { recursive: true });
+    await this.writeJsonAtomic(this.getStorePath(safeUserId), store);
+    this.pdfManagerStoreSnapshotCache.delete(safeUserId);
+    this.viewerStoreSnapshotCache.delete(safeUserId);
   }
 
   private async saveStatus(userId: string, status: PdfWikiBuildStatus): Promise<void> {
@@ -15888,7 +18713,7 @@ ${content.slice(0, 12000)}`;
   }
 
   private getIndexCacheDir(userId: string): string {
-    return path.join(this.getWikiDir(userId), 'index-cache');
+    return path.join(this.getWikiDir(userId), 'index-cache', PDF_WIKI_RETRIEVAL_POLICY_VERSION);
   }
 
   private getStorePath(userId: string): string {
@@ -15903,6 +18728,22 @@ ${content.slice(0, 12000)}`;
     return path.join(this.getWikiDir(userId), 'queue.json');
   }
 
+  private getRecognitionQueuePath(userId: string): string {
+    return path.join(this.getWikiDir(userId), 'recognition-queue.json');
+  }
+
+  private getTopicCatalogPath(userId: string): string {
+    return path.join(this.getWikiDir(userId), 'topic-catalog.json');
+  }
+
+  private getSentenceTopicAnnotationStorePath(userId: string): string {
+    return path.join(this.getWikiDir(userId), 'sentence-topic-annotations.json');
+  }
+
+  private getSentenceTopicAnnotationStatusPath(userId: string): string {
+    return path.join(this.getWikiDir(userId), 'sentence-topic-annotation-status.json');
+  }
+
   private getMetaAnalysisTemplatePath(userId: string): string {
     return path.join(this.getWikiDir(userId), 'meta-analysis-template.json');
   }
@@ -15911,8 +18752,12 @@ ${content.slice(0, 12000)}`;
     return path.join(this.getWikiDir(userId), 'meta-analysis-unit-registry.json');
   }
 
+  private getMetaDatabaseIndexPath(userId: string): string {
+    return path.join(this.getWikiDir(userId), 'meta-database-index.json');
+  }
+
   private removeIndexCache(userId: string): void {
-    const cacheDir = this.getIndexCacheDir(userId);
+    const cacheDir = path.join(this.getWikiDir(userId), 'index-cache');
     if (fs.existsSync(cacheDir)) {
       fs.rmSync(cacheDir, { recursive: true, force: true });
     }

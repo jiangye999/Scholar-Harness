@@ -1,30 +1,28 @@
 'use client';
 
-import { Suspense, useEffect, useState } from 'react';
+import { Suspense, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
+import { resetPassword } from '@/lib/auth';
 
 function ResetPasswordPageContent() {
   const searchParams = useSearchParams();
   const router = useRouter();
-  const token = searchParams.get('token');
+  const email = searchParams.get('email');
 
+  const [verificationCode, setVerificationCode] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState('');
+  const [error, setError] = useState(() => email ? '' : '缺少重置邮箱，请重新获取验证码');
   const [success, setSuccess] = useState(false);
-  const [tokenValid, setTokenValid] = useState(true);
-
-  useEffect(() => {
-    // Check if token exists
-    if (!token) {
-      setTokenValid(false);
-      setError('重置链接无效，请重新获取');
-    }
-  }, [token]);
+  const tokenValid = Boolean(email);
 
   const validateForm = () => {
+    if (!verificationCode.trim()) {
+      setError('请输入邮箱验证码');
+      return false;
+    }
     if (!password) {
       setError('请输入新密码');
       return false;
@@ -51,22 +49,13 @@ function ResetPasswordPageContent() {
     setLoading(true);
 
     try {
-      // TODO: Call actual reset password API
-      // const response = await fetch('/api/auth/reset-password', {
-      //   method: 'POST',
-      //   headers: { 'Content-Type': 'application/json' },
-      //   body: JSON.stringify({ token, password })
-      // });
-
-      // Mock success for demo
-      await new Promise(resolve => setTimeout(resolve, 1000));
-      
+      await resetPassword(email!, verificationCode, password);
       setSuccess(true);
       setTimeout(() => {
         router.push('/login');
       }, 3000);
     } catch (err) {
-      setError('重置密码失败，请重试');
+      setError(err instanceof Error ? err.message : '重置密码失败，请重试');
     } finally {
       setLoading(false);
     }
@@ -127,6 +116,23 @@ function ResetPasswordPageContent() {
         {/* Form Card */}
         <div className="bg-white rounded-xl shadow-lg p-8">
           <form onSubmit={handleSubmit} className="space-y-6">
+            <div>
+              <label htmlFor="verificationCode" className="block text-sm font-medium text-gray-700 mb-2">
+                邮箱验证码 <span className="text-red-500">*</span>
+              </label>
+              <input
+                id="verificationCode"
+                type="text"
+                inputMode="numeric"
+                autoComplete="one-time-code"
+                value={verificationCode}
+                onChange={(e) => setVerificationCode(e.target.value)}
+                placeholder="输入邮件中的验证码"
+                className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition"
+                required
+              />
+            </div>
+
             {/* New Password */}
             <div>
               <label htmlFor="password" className="block text-sm font-medium text-gray-700 mb-2">

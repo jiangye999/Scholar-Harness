@@ -3,7 +3,9 @@ import path from 'path';
 
 import { describe, expect, it } from 'vitest';
 
-const indexHtml = readFileSync(path.resolve(__dirname, '../../src/public/index.html'), 'utf-8');
+import { readPublicAppSource } from '../helpers/public-app-source';
+
+const indexHtml = readPublicAppSource();
 const embeddingLibrary = readFileSync(path.resolve(__dirname, '../../src/public/embedding-library.js'), 'utf-8');
 const bibliometrics = readFileSync(path.resolve(__dirname, '../../src/public/bibliometrics.js'), 'utf-8');
 
@@ -30,14 +32,14 @@ describe('workspace child page navigation', () => {
   });
 
   it('closes the active child page before creating a new conversation', () => {
-    const newChatStart = indexHtml.indexOf('function newChat()');
+    const newChatStart = indexHtml.indexOf('function newChat(options)');
     const newChatEnd = indexHtml.indexOf('window.newChat = newChat;', newChatStart);
     const newChatSource = indexHtml.slice(newChatStart, newChatEnd);
 
     expect(newChatStart).toBeGreaterThan(-1);
     expect(newChatSource).toContain("prepareStandaloneWorkspaceSurface('')");
     expect(newChatSource.indexOf("prepareStandaloneWorkspaceSurface('')"))
-      .toBeLessThan(newChatSource.indexOf('currentConversationId = createConversationId()'));
+      .toBeLessThan(newChatSource.indexOf("currentConversationId = chatOptions.scope === 'bibliometrics'"));
   });
 
   it('does not repeat academic workflow navigation inside the research enhancement page', () => {

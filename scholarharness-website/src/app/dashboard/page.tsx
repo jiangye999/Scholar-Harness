@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useCallback, useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import {
   claimInviteTrialReward,
@@ -12,6 +12,7 @@ import {
 } from '@/lib/auth';
 import type { InviteTrialStatus, Subscription, User } from '@/lib/auth';
 import Link from 'next/link';
+import Image from 'next/image';
 
 export default function DashboardPage() {
   const [user, setUser] = useState<User | null>(null);
@@ -22,11 +23,7 @@ export default function DashboardPage() {
   const [inviteCopyMessage, setInviteCopyMessage] = useState('');
   const router = useRouter();
 
-  useEffect(() => {
-    loadData();
-  }, []);
-
-  const loadData = async () => {
+  const loadData = useCallback(async () => {
     setLoading(true);
     try {
       // Load user data
@@ -53,7 +50,14 @@ export default function DashboardPage() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [router]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      void loadData();
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [loadData]);
 
   const handleLogout = () => {
     logout();
@@ -115,8 +119,8 @@ export default function DashboardPage() {
       } else {
         setSubscription(await getSubscription());
       }
-    } catch (error: any) {
-      setInviteCopyMessage(error.message || '领取失败，请稍后重试');
+    } catch (error: unknown) {
+      setInviteCopyMessage(error instanceof Error ? error.message : '领取失败，请稍后重试');
     } finally {
       setClaimLoading(false);
     }
@@ -157,12 +161,15 @@ export default function DashboardPage() {
             <div className="flex items-center justify-between mb-6">
               <h2 className="text-xl font-bold text-gray-900">用户信息</h2>
               {/* 用户头像 */}
-              <div className="w-12 h-12 bg-gradient-to-br from-blue-500 to-purple-600 rounded-full flex items-center justify-center overflow-hidden">
+              <div className="relative w-12 h-12 bg-gradient-to-br from-blue-500 to-purple-600 rounded-full flex items-center justify-center overflow-hidden">
                 {user.avatar_url ? (
-                  <img 
-                    src={user.avatar_url} 
-                    alt="用户头像" 
-                    className="w-full h-full object-cover"
+                  <Image
+                    src={user.avatar_url}
+                    alt="用户头像"
+                    fill
+                    sizes="48px"
+                    unoptimized
+                    className="object-cover"
                   />
                 ) : (
                   <svg className="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">

@@ -1,4 +1,6 @@
 import { Router, type Response } from 'express';
+import * as fs from 'fs/promises';
+import * as path from 'path';
 import { z, ZodError } from 'zod';
 import { logger } from '../../utils/logger';
 import { sanitizeUserId } from '../../utils/paths';
@@ -23,6 +25,7 @@ import {
   type CitationExpansionResult,
   type DoiVerificationResult,
 } from '../../research/literature-review-tools';
+import { prepareWorkspaceOutputDirectory } from '../services/workspace-directory';
 
 const stageIdSchema = z.enum(AUTO_RESEARCH_STAGE_IDS);
 const stageStatusSchema = z.enum(['pending', 'active', 'done', 'blocked']);
@@ -120,6 +123,44 @@ interface AutoResearchProgressState {
 
 const autoResearchProgressByUser = new Map<string, AutoResearchProgressState>();
 
+async function persistAutoResearchWorkspace(
+  workspaceDirectory: unknown,
+  state: AutoResearchState,
+): Promise<string | undefined> {
+  const prepared = await prepareWorkspaceOutputDirectory(
+    workspaceDirectory,
+    ['Auto Research'],
+  );
+  if (!prepared) return undefined;
+
+  const outputRoot = prepared.outputRoot;
+  const reportsDir = path.join(outputRoot, 'reports');
+  const draftsDir = path.join(outputRoot, 'drafts');
+  await Promise.all([
+    fs.mkdir(reportsDir, { recursive: true }),
+    fs.mkdir(draftsDir, { recursive: true }),
+  ]);
+  await fs.writeFile(
+    path.join(outputRoot, 'autoresearch-state.json'),
+    JSON.stringify(state, null, 2),
+    'utf-8',
+  );
+
+  await Promise.all([
+    ...(state.finalReports || []).map(report => fs.writeFile(
+      path.join(reportsDir, `${sanitizeDownloadFilename(report.title || report.id || 'AutoResearch报告')}.md`),
+      report.editedMarkdown || formatFinalReportMarkdown(report),
+      'utf-8',
+    )),
+    ...(state.paperDrafts || []).map(draft => fs.writeFile(
+      path.join(draftsDir, `${sanitizeDownloadFilename(draft.title || draft.id || 'AutoResearch论文草稿')}.md`),
+      draft.editedMarkdown || draft.markdown,
+      'utf-8',
+    )),
+  ]);
+  return outputRoot;
+}
+
 interface AutoResearchRouterDependencies {
   manager: AutoResearchManager;
   pdfWikiManager: PdfWikiManager;
@@ -133,11 +174,14 @@ interface AutoResearchRouterDependencies {
 
 export function createAutoResearchRouter(deps: AutoResearchRouterDependencies): Router {
   const router = Router();
+  const compactState = (state: AutoResearchState): AutoResearchState => deps.manager.toClientState(state);
 
   router.get('/state', async (req, res) => {
     try {
       const userId = sanitizeUserId(req.query.userId || 'web-user');
-      const state = await deps.manager.getState(userId, resolveProjectContext(deps.projectManager));
+      const startedAt = Date.now();
+      const state = await deps.manager.getViewState(userId, resolveProjectContext(deps.projectManager));
+      logger.info(`[AutoResearch] Compact view state loaded for ${userId} in ${Date.now() - startedAt}ms`);
       res.json({ success: true, state });
     } catch (error) {
       sendAutoResearchError(res, error, '[AutoResearch] State route error:');
@@ -185,8 +229,9 @@ export function createAutoResearchRouter(deps: AutoResearchRouterDependencies): 
         goal: body.goal,
         project: resolveProjectContext(deps.projectManager),
       });
+      const workspaceOutputDirectory = await persistAutoResearchWorkspace(req.body?.workspaceDirectory, state);
       pushAutoResearchProgress(userId, runId, 'start', 'completed', 100, 'AutoResearch 任务已启动');
-      res.json({ success: true, state });
+      res.json({ success: true, state: compactState(state), workspaceOutputDirectory });
     } catch (error) {
       if (runId) pushAutoResearchProgress(userId, runId, 'start', 'failed', 100, `启动失败：${(error as Error).message || '未知错误'}`);
       sendAutoResearchError(res, error, '[AutoResearch] Start route error:');
@@ -273,10 +318,15 @@ export function createAutoResearchRouter(deps: AutoResearchRouterDependencies): 
 
       pushAutoResearchProgress(userId, runId, 'run_full', 'running', 98, '阶段7：生成最终 AutoResearch 结果');
       const finalResult = await deps.manager.generateFinalReport(userId, project);
+      const workspaceOutputDirectory = await persistAutoResearchWorkspace(
+        req.body?.workspaceDirectory,
+        finalResult.state,
+      );
       pushAutoResearchProgress(userId, runId, 'run_full', 'completed', 100, `AutoResearch 完成：已生成结果报告 ${finalResult.report.id}`);
       res.json({
         success: true,
-        state: finalResult.state,
+        state: compactState(finalResult.state),
+        workspaceOutputDirectory,
         report: finalResult.report,
         evaluation: evaluationResult.report,
         audit: auditResult.report,
@@ -303,7 +353,8 @@ export function createAutoResearchRouter(deps: AutoResearchRouterDependencies): 
         artifact: body.artifact,
         project: resolveProjectContext(deps.projectManager),
       });
-      res.json({ success: true, state });
+      const workspaceOutputDirectory = await persistAutoResearchWorkspace(req.body?.workspaceDirectory, state);
+      res.json({ success: true, state: compactState(state), workspaceOutputDirectory });
     } catch (error) {
       sendAutoResearchError(res, error, '[AutoResearch] Stage route error:');
     }
@@ -323,7 +374,8 @@ export function createAutoResearchRouter(deps: AutoResearchRouterDependencies): 
         confidence: body.confidence,
         project: resolveProjectContext(deps.projectManager),
       });
-      res.json({ success: true, state });
+      const workspaceOutputDirectory = await persistAutoResearchWorkspace(req.body?.workspaceDirectory, state);
+      res.json({ success: true, state: compactState(state), workspaceOutputDirectory });
     } catch (error) {
       sendAutoResearchError(res, error, '[AutoResearch] Memory route error:');
     }
@@ -337,9 +389,11 @@ export function createAutoResearchRouter(deps: AutoResearchRouterDependencies): 
         recordIds: body.recordIds,
         project: resolveProjectContext(deps.projectManager),
       });
+      const workspaceOutputDirectory = await persistAutoResearchWorkspace(req.body?.workspaceDirectory, result.state);
       res.json({
         success: true,
-        state: result.state,
+        state: compactState(result.state),
+        workspaceOutputDirectory,
         deletedCount: result.deletedCount,
         deletedRecordIds: result.deletedRecordIds,
       });
@@ -359,8 +413,9 @@ export function createAutoResearchRouter(deps: AutoResearchRouterDependencies): 
       const store = await deps.pdfWikiManager.getStore(userId);
       pushAutoResearchProgress(userId, runId, 'sync_pdf_wiki', 'running', 46, describePdfWikiEvidenceReadiness(store));
       const result = await deps.manager.syncPdfWikiStore(userId, store, resolveProjectContext(deps.projectManager));
+      const workspaceOutputDirectory = await persistAutoResearchWorkspace(req.body?.workspaceDirectory, result.state);
       pushAutoResearchProgress(userId, runId, 'sync_pdf_wiki', 'completed', 100, describePdfWikiEvidenceReadiness(store, result.snapshot.evidenceObjectCount));
-      res.json({ success: true, state: result.state, snapshot: result.snapshot });
+      res.json({ success: true, state: compactState(result.state), snapshot: result.snapshot, workspaceOutputDirectory });
     } catch (error) {
       if (runId) pushAutoResearchProgress(userId, runId, 'sync_pdf_wiki', 'failed', 100, `同步证据失败：${(error as Error).message || '未知错误'}`);
       sendAutoResearchError(res, error, '[AutoResearch] PDF Wiki sync route error:');
@@ -391,8 +446,9 @@ export function createAutoResearchRouter(deps: AutoResearchRouterDependencies): 
         deps.saveOuterTagsConfigForUser(userId, outerTags);
       }
       const result = await deps.manager.syncEmbeddingLibrary(userId, papers, outerTags, resolveProjectContext(deps.projectManager));
+      const workspaceOutputDirectory = await persistAutoResearchWorkspace(req.body?.workspaceDirectory, result.state);
       pushAutoResearchProgress(userId, runId, 'sync_embedding_library', 'completed', 100, `文献图谱同步完成：${result.snapshot.literatureCount} 个节点，${result.snapshot.embeddingCount} 个向量节点`);
-      res.json({ success: true, state: result.state, snapshot: result.snapshot });
+      res.json({ success: true, state: compactState(result.state), snapshot: result.snapshot, workspaceOutputDirectory });
     } catch (error) {
       if (runId) pushAutoResearchProgress(userId, runId, 'sync_embedding_library', 'failed', 100, `同步文献库失败：${(error as Error).message || '未知错误'}`);
       sendAutoResearchError(res, error, '[AutoResearch] Embedding library sync route error:');
@@ -409,8 +465,9 @@ export function createAutoResearchRouter(deps: AutoResearchRouterDependencies): 
       pushAutoResearchProgress(userId, runId, 'evaluate', 'running', 12, '开始审稿式自检');
       pushAutoResearchProgress(userId, runId, 'evaluate', 'running', 48, '正在检查引用对齐、证据充分性、创新性与可复现性');
       const result = await deps.manager.evaluate(userId, resolveProjectContext(deps.projectManager));
+      const workspaceOutputDirectory = await persistAutoResearchWorkspace(req.body?.workspaceDirectory, result.state);
       pushAutoResearchProgress(userId, runId, 'evaluate', 'completed', 100, `自检完成：总分 ${Math.round(result.report.overallScore * 100)}`);
-      res.json({ success: true, state: result.state, report: result.report });
+      res.json({ success: true, state: compactState(result.state), report: result.report, workspaceOutputDirectory });
     } catch (error) {
       if (runId) pushAutoResearchProgress(userId, runId, 'evaluate', 'failed', 100, `自检失败：${(error as Error).message || '未知错误'}`);
       sendAutoResearchError(res, error, '[AutoResearch] Evaluate route error:');
@@ -427,8 +484,9 @@ export function createAutoResearchRouter(deps: AutoResearchRouterDependencies): 
       pushAutoResearchProgress(userId, runId, 'research_wiki', 'running', 12, '开始重建研究 Wiki');
       pushAutoResearchProgress(userId, runId, 'research_wiki', 'running', 44, '正在连接文献、论点、证据和知识缺口');
       const result = await deps.manager.rebuildResearchWiki(userId, resolveProjectContext(deps.projectManager));
+      const workspaceOutputDirectory = await persistAutoResearchWorkspace(req.body?.workspaceDirectory, result.state);
       pushAutoResearchProgress(userId, runId, 'research_wiki', 'completed', 100, `研究 Wiki 已重建：${result.wiki.nodes.length} 个节点，${result.wiki.edges.length} 条关系`);
-      res.json({ success: true, state: result.state, researchWiki: result.wiki });
+      res.json({ success: true, state: compactState(result.state), researchWiki: result.wiki, workspaceOutputDirectory });
     } catch (error) {
       if (runId) pushAutoResearchProgress(userId, runId, 'research_wiki', 'failed', 100, `研究 Wiki 重建失败：${(error as Error).message || '未知错误'}`);
       sendAutoResearchError(res, error, '[AutoResearch] Research Wiki route error:');
@@ -445,8 +503,9 @@ export function createAutoResearchRouter(deps: AutoResearchRouterDependencies): 
       pushAutoResearchProgress(userId, runId, 'audit', 'running', 12, '开始引用与论据审计');
       pushAutoResearchProgress(userId, runId, 'audit', 'running', 46, '正在检查引用覆盖、证据强度、反证材料和可回放记录');
       const result = await deps.manager.runAudit(userId, resolveProjectContext(deps.projectManager));
+      const workspaceOutputDirectory = await persistAutoResearchWorkspace(req.body?.workspaceDirectory, result.state);
       pushAutoResearchProgress(userId, runId, 'audit', 'completed', 100, `审计完成：${result.report.verdict.toUpperCase()}，${Math.round(result.report.overallScore * 100)} 分`);
-      res.json({ success: true, state: result.state, report: result.report });
+      res.json({ success: true, state: compactState(result.state), report: result.report, workspaceOutputDirectory });
     } catch (error) {
       if (runId) pushAutoResearchProgress(userId, runId, 'audit', 'failed', 100, `引用与论据审计失败：${(error as Error).message || '未知错误'}`);
       sendAutoResearchError(res, error, '[AutoResearch] Audit route error:');
@@ -474,7 +533,8 @@ export function createAutoResearchRouter(deps: AutoResearchRouterDependencies): 
         markdown: body.markdown,
         project: resolveProjectContext(deps.projectManager),
       });
-      res.json({ success: true, state: result.state, report: result.report });
+      const workspaceOutputDirectory = await persistAutoResearchWorkspace(req.body?.workspaceDirectory, result.state);
+      res.json({ success: true, state: compactState(result.state), report: result.report, workspaceOutputDirectory });
     } catch (error) {
       sendAutoResearchError(res, error, '[AutoResearch] Final report markdown update route error:');
     }
@@ -509,8 +569,9 @@ export function createAutoResearchRouter(deps: AutoResearchRouterDependencies): 
         reportId: req.params.reportId,
         project: resolveProjectContext(deps.projectManager),
       });
+      const workspaceOutputDirectory = await persistAutoResearchWorkspace(req.body?.workspaceDirectory, result.state);
       pushAutoResearchProgress(userId, runId, 'write_paper', 'completed', 100, `论文草稿已生成：约 ${result.draft.wordCountEstimate} 字，参考文献 ${result.draft.referenceCount} 条`);
-      res.json({ success: true, state: result.state, draft: result.draft });
+      res.json({ success: true, state: compactState(result.state), draft: result.draft, workspaceOutputDirectory });
     } catch (error) {
       if (runId) pushAutoResearchProgress(userId, runId, 'write_paper', 'failed', 100, `一键写论文失败：${(error as Error).message || '未知错误'}`);
       sendAutoResearchError(res, error, '[AutoResearch] Write paper route error:');
@@ -537,7 +598,8 @@ export function createAutoResearchRouter(deps: AutoResearchRouterDependencies): 
         markdown: body.markdown,
         project: resolveProjectContext(deps.projectManager),
       });
-      res.json({ success: true, state: result.state, draft: result.draft });
+      const workspaceOutputDirectory = await persistAutoResearchWorkspace(req.body?.workspaceDirectory, result.state);
+      res.json({ success: true, state: compactState(result.state), draft: result.draft, workspaceOutputDirectory });
     } catch (error) {
       sendAutoResearchError(res, error, '[AutoResearch] Paper draft markdown update route error:');
     }
@@ -574,7 +636,8 @@ export function createAutoResearchRouter(deps: AutoResearchRouterDependencies): 
         error: body.error,
         project: resolveProjectContext(deps.projectManager),
       });
-      res.json({ success: true, state });
+      const workspaceOutputDirectory = await persistAutoResearchWorkspace(req.body?.workspaceDirectory, state);
+      res.json({ success: true, state: compactState(state), workspaceOutputDirectory });
     } catch (error) {
       sendAutoResearchError(res, error, '[AutoResearch] Operation route error:');
     }
@@ -981,7 +1044,7 @@ function appendEvidenceSynthesis(lines: string[], items: AutoResearchFinalReport
   });
 }
 
-function buildAutoResearchWritingContext(state: AutoResearchState): {
+export function buildAutoResearchWritingContext(state: AutoResearchState): {
   generatedAt: string;
   source: string;
   available: boolean;

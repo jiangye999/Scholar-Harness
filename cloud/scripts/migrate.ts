@@ -24,7 +24,10 @@ async function main(): Promise<void> {
   try {
     const migrationsDir = resolveMigrationsDir();
     const runner = new MigrationRunner(db, migrationsDir);
-    await runner.runAllPending();
+    const result = await runner.runAllPending();
+    if (result.failed.length > 0) {
+      throw new Error(`Database migrations failed: ${result.failed.join(', ')}`);
+    }
     logger.info('[Migration] Pending migrations completed');
   } finally {
     await db.disconnect();

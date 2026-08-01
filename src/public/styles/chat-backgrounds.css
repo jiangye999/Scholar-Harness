@@ -1,0 +1,480 @@
+/* Chat-only background themes. The image belongs to the full, fixed-size app
+ * workspace instead of the width-changing main column. Sidebars can therefore
+ * open, close or resize without re-cropping or shifting the selected image. */
+body:not(.home-utility-open).chat-background-active .app {
+  position: relative;
+  isolation: isolate;
+  background-color: transparent !important;
+  background-image: none !important;
+}
+
+body:not(.home-utility-open).chat-background-active .app::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  background-image: var(--chat-background-image);
+  background-position: center;
+  background-repeat: no-repeat;
+  background-size: cover;
+  opacity: var(--chat-background-opacity, 1);
+  pointer-events: none;
+}
+
+body:not(.home-utility-open).chat-background-active .app > .main-wrapper,
+body:not(.home-utility-open).chat-background-active .app > .right-sidebar {
+  position: relative;
+  z-index: 1;
+}
+
+body:not(.home-utility-open) .main-wrapper.chat-background-active {
+  position: relative;
+  isolation: isolate;
+  background-color: transparent !important;
+  background-image: none !important;
+}
+
+body:not(.home-utility-open) .main-wrapper.chat-background-active::before {
+  content: none;
+}
+
+body:not(.home-utility-open) .main-wrapper.chat-background-active .main,
+body:not(.home-utility-open) .main-wrapper.chat-background-active #chatContainer,
+body:not(.home-utility-open) .main-wrapper.chat-background-active #mainInputContainer {
+  background-color: transparent !important;
+  background-image: none !important;
+}
+
+/* Sidebars reuse the same theme-tinted glass language as assistant bubbles.
+ * Only the sidebar chrome becomes translucent; document canvases and embedded
+ * browser surfaces retain their own backgrounds for content fidelity. */
+body:not(.home-utility-open).chat-background-active .sidebar,
+body:not(.home-utility-open).chat-background-active .right-sidebar {
+  background:
+    linear-gradient(
+      135deg,
+      color-mix(in srgb, var(--theme-softer) 58%, transparent),
+      color-mix(in srgb, var(--theme-soft) 36%, transparent)
+    ) !important;
+  border-color: color-mix(in srgb, var(--theme-ink) 42%, transparent) !important;
+  -webkit-backdrop-filter: blur(18px) saturate(145%) contrast(1.03);
+  backdrop-filter: blur(18px) saturate(145%) contrast(1.03);
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.52),
+    inset 0 -1px 0 rgb(var(--theme-shadow-rgb) / 0.08),
+    0 10px 26px rgb(var(--theme-shadow-rgb) / 0.08) !important;
+}
+
+body:not(.home-utility-open).chat-background-active .right-sidebar-header,
+body:not(.home-utility-open).chat-background-active .right-sidebar-content,
+body:not(.home-utility-open).chat-background-active .right-sidebar-word-import,
+body:not(.home-utility-open).chat-background-active .right-sidebar-page,
+body:not(.home-utility-open).chat-background-active .chat-avatar-picker-panel,
+body:not(.home-utility-open).chat-background-active .chat-avatar-picker-toolbar,
+body:not(.home-utility-open).chat-background-active .article-progress-panel,
+body:not(.home-utility-open).chat-background-active .paper-figure-library-panel,
+body:not(.home-utility-open).chat-background-active .paper-figure-library-selection,
+body:not(.home-utility-open).chat-background-active .right-sidebar-file-preview-panel,
+body:not(.home-utility-open).chat-background-active .right-sidebar-file-preview-toolbar,
+body:not(.home-utility-open).chat-background-active .right-sidebar-vendor-browser-panel,
+body:not(.home-utility-open).chat-background-active .right-sidebar-vendor-browser-toolbar,
+body:not(.home-utility-open).chat-background-active .right-sidebar-vendor-browser-security {
+  background-color: transparent !important;
+  background-image: none !important;
+}
+
+body:not(.home-utility-open).chat-background-active .right-sidebar-word-import-trigger {
+  background:
+    linear-gradient(
+      135deg,
+      color-mix(in srgb, var(--theme-softer) 44%, transparent),
+      color-mix(in srgb, var(--theme-soft) 24%, transparent)
+    ) !important;
+  border-color: color-mix(in srgb, var(--theme-border) 62%, transparent) !important;
+  -webkit-backdrop-filter: blur(12px) saturate(135%);
+  backdrop-filter: blur(12px) saturate(135%);
+}
+
+body:not(.home-utility-open).chat-background-active .sidebar-panel,
+body:not(.home-utility-open).chat-background-active .sidebar-feedback {
+  background: transparent !important;
+  border-color: transparent !important;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  box-shadow: none !important;
+}
+
+body:not(.home-utility-open).chat-background-active .sidebar .new-chat:hover,
+body:not(.home-utility-open).chat-background-active .sidebar .upload-btn:hover,
+body:not(.home-utility-open).chat-background-active .sidebar .lit-btn:hover,
+body:not(.home-utility-open).chat-background-active .sidebar-panel-toggle:hover,
+body:not(.home-utility-open).chat-background-active .user-avatar-section:hover,
+body:not(.home-utility-open).chat-background-active .right-sidebar-tab:hover,
+body:not(.home-utility-open).chat-background-active .right-sidebar-tab.active {
+  background: color-mix(in srgb, var(--theme-softer) 66%, transparent) !important;
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  body:not(.home-utility-open).chat-background-active .sidebar,
+  body:not(.home-utility-open).chat-background-active .right-sidebar {
+    background: var(--theme-softer) !important;
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+
+  body:not(.home-utility-open).chat-background-active .right-sidebar-word-import-trigger {
+    background: var(--theme-soft) !important;
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+
+  body:not(.home-utility-open).chat-background-active .sidebar-panel,
+  body:not(.home-utility-open).chat-background-active .sidebar-feedback {
+    background: transparent !important;
+  }
+}
+
+/* The composer is positioned over the bottom of the main chat. Clip the scroll
+ * layer just above the composer's measured top edge so an empty landing state
+ * never exposes a stray message border behind the transparent surround. */
+body:not(.home-utility-open) .main-wrapper #chatContainer {
+  clip-path: inset(
+    0
+    0
+    var(--main-composer-clip-height, var(--main-composer-overlay-height, 136px))
+    0
+  );
+}
+
+.theme-picker-tabs {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px;
+  margin: 0 0 9px;
+  padding: 3px;
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--theme-softer) 68%, transparent);
+  -webkit-backdrop-filter: blur(12px) saturate(130%);
+  backdrop-filter: blur(12px) saturate(130%);
+}
+
+.theme-picker-tab {
+  min-width: 0;
+  min-height: 30px;
+  padding: 0 10px !important;
+  border: 0 !important;
+  border-radius: 7px !important;
+  background: transparent !important;
+  color: var(--theme-mid) !important;
+  box-shadow: none !important;
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 680;
+  white-space: nowrap;
+}
+
+.theme-picker-tab:hover {
+  background: rgb(255 255 255 / 0.72) !important;
+  color: var(--theme-primary) !important;
+  transform: none !important;
+}
+
+.theme-picker-tab.active {
+  background: rgb(255 255 255 / 0.68) !important;
+  color: var(--theme-primary) !important;
+  box-shadow: 0 1px 4px rgb(var(--theme-shadow-rgb) / 0.1) !important;
+}
+
+.chat-background-panel[hidden],
+.color-theme-options[hidden] {
+  display: none !important;
+}
+
+.chat-background-panel {
+  max-height: min(388px, calc(100vh - 132px));
+  overflow-y: auto;
+  padding: 0 2px 2px 0;
+  scrollbar-gutter: stable;
+}
+
+.chat-background-toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 116px;
+  align-items: center;
+  gap: 8px;
+  margin: 0 1px 7px 0;
+  padding: 3px;
+  border: 1px solid color-mix(in srgb, var(--theme-border) 76%, transparent);
+  border-radius: 9px;
+  background: color-mix(in srgb, rgb(255 255 255 / 0.7) 82%, var(--theme-softer));
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.42),
+    0 3px 10px rgb(var(--theme-shadow-rgb) / 0.06);
+  -webkit-backdrop-filter: blur(16px) saturate(140%);
+  backdrop-filter: blur(16px) saturate(140%);
+}
+
+.chat-background-opacity-control {
+  z-index: 5;
+  display: grid;
+  grid-template-columns: 26px minmax(64px, 1fr);
+  align-items: center;
+  justify-self: end;
+  gap: 4px;
+  width: 100%;
+  min-height: 32px;
+  margin: 0;
+  padding: 3px 6px;
+  border: 1px solid color-mix(in srgb, var(--theme-primary) 28%, transparent);
+  border-radius: 9px;
+  background:
+    linear-gradient(
+      145deg,
+      color-mix(in srgb, rgb(255 255 255 / 0.74) 84%, var(--theme-softer)),
+      color-mix(in srgb, rgb(255 255 255 / 0.46) 76%, var(--theme-soft))
+    );
+  color: var(--theme-primary);
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.54),
+    0 3px 10px rgb(var(--theme-shadow-rgb) / 0.08);
+  -webkit-backdrop-filter: blur(18px) saturate(145%);
+  backdrop-filter: blur(18px) saturate(145%);
+}
+
+.chat-background-opacity-control input[type="range"] {
+  width: 100%;
+  height: 22px;
+  min-width: 64px;
+  margin: 0;
+  accent-color: var(--theme-primary);
+  cursor: pointer;
+}
+
+.chat-background-opacity-control output {
+  color: var(--theme-primary);
+  font-size: 9px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 720;
+  line-height: 1;
+  text-align: center;
+}
+
+.chat-background-note {
+  margin: 0 1px 7px;
+  color: var(--theme-mid);
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.chat-background-groups {
+  display: flex;
+  min-width: 0;
+  min-height: 32px;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 5px;
+  margin: 0;
+  padding: 0 4px 0 0;
+  overflow-x: auto;
+  background: transparent;
+  scrollbar-width: none;
+}
+
+.chat-background-groups::-webkit-scrollbar {
+  display: none;
+}
+
+.chat-background-group {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 27px;
+  padding: 0 8px !important;
+  border: 1px solid transparent !important;
+  border-radius: 7px !important;
+  background: color-mix(in srgb, var(--theme-softer) 74%, transparent) !important;
+  color: var(--theme-mid) !important;
+  box-shadow: none !important;
+  cursor: pointer;
+  font-size: 10px;
+  font-weight: 660;
+  white-space: nowrap;
+  transition:
+    background-color 180ms ease,
+    border-color 180ms ease,
+    color 180ms ease;
+}
+
+.chat-background-group small {
+  color: inherit;
+  font-size: 8px;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.68;
+}
+
+.chat-background-group:hover {
+  border-color: var(--theme-border) !important;
+  background: rgb(255 255 255 / 0.62) !important;
+  color: var(--theme-primary) !important;
+  transform: none !important;
+}
+
+.chat-background-group.active {
+  border-color: color-mix(in srgb, var(--theme-primary) 48%, transparent) !important;
+  background: var(--theme-primary) !important;
+  color: #ffffff !important;
+}
+
+.chat-background-group:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--theme-primary) 62%, transparent);
+  outline-offset: 2px;
+}
+
+.chat-background-options {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 7px;
+}
+
+@media (min-width: 621px) and (max-width: 900px) {
+  .chat-background-options {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+.chat-background-option {
+  position: relative;
+  min-width: 0;
+  height: 78px;
+  padding: 0 !important;
+  overflow: hidden;
+  border: 1px solid var(--theme-border) !important;
+  border-radius: 9px !important;
+  background: var(--theme-softer) !important;
+  color: var(--theme-ink) !important;
+  box-shadow: none !important;
+  cursor: pointer;
+}
+
+.chat-background-option:hover {
+  border-color: var(--theme-primary) !important;
+  transform: none !important;
+}
+
+.chat-background-option.selected {
+  border-color: var(--theme-primary) !important;
+  box-shadow: inset 0 0 0 2px var(--theme-primary) !important;
+}
+
+.chat-background-option img {
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: cover;
+  pointer-events: none;
+}
+
+.chat-background-option-label {
+  position: absolute;
+  left: 6px;
+  right: 6px;
+  bottom: 6px;
+  min-width: 0;
+  padding: 4px 6px;
+  overflow: hidden;
+  border-radius: 5px;
+  background: rgb(255 255 255 / 0.86);
+  color: var(--theme-ink);
+  font-size: 9px;
+  font-weight: 720;
+  line-height: 1.2;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.chat-background-option-none {
+  background:
+    linear-gradient(
+      145deg,
+      rgb(255 255 255 / 0.68),
+      color-mix(in srgb, var(--theme-softer) 66%, transparent)
+    ) !important;
+  -webkit-backdrop-filter: blur(12px) saturate(130%);
+  backdrop-filter: blur(12px) saturate(130%);
+}
+
+.chat-background-option-none .chat-background-option-label {
+  top: 50%;
+  bottom: auto;
+  background: transparent;
+  color: var(--theme-mid);
+  text-align: center;
+  transform: translateY(-50%);
+}
+
+.chat-background-custom-action {
+  width: 100%;
+  min-height: 34px;
+  margin-top: 9px;
+  padding: 0 12px !important;
+  border: 1px solid var(--theme-border) !important;
+  border-radius: 8px !important;
+  background: rgb(255 255 255 / 0.64) !important;
+  color: var(--theme-primary) !important;
+  box-shadow: none !important;
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 720;
+  -webkit-backdrop-filter: blur(14px) saturate(135%);
+  backdrop-filter: blur(14px) saturate(135%);
+}
+
+.chat-background-custom-action:hover {
+  border-color: var(--theme-primary) !important;
+  background: var(--theme-softer) !important;
+  transform: none !important;
+}
+
+.chat-background-file-input {
+  position: fixed;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+@media (max-width: 620px) {
+  .chat-background-panel {
+    max-height: min(370px, calc(100vh - 160px));
+  }
+
+  .chat-background-toolbar {
+    grid-template-columns: minmax(0, 1fr) 108px;
+  }
+
+  .chat-background-groups {
+    justify-content: flex-start;
+  }
+
+  .chat-background-options {
+    grid-template-columns: 1fr;
+  }
+
+  .chat-background-option {
+    height: 92px;
+  }
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  .chat-background-opacity-control {
+    background: var(--theme-softer);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+}

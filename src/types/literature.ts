@@ -26,6 +26,55 @@ export type DocumentType =
   | 'other';
 
 /**
+ * 随检索单元保存的可信来源附件。
+ *
+ * PDF Wiki 的句子检索不能只保留一段拼接文本；写作和引用校验还需要知道
+ * 该句来自哪篇 PDF、位于哪个章节，以及句中明确绑定了哪些参考文献。
+ */
+export interface LiteratureEvidenceReference {
+  id?: string;
+  index?: number;
+  raw?: string;
+  title?: string;
+  authors?: string;
+  year?: string;
+  journal?: string;
+  doi?: string;
+  sourcePdfId?: string;
+  sourcePdfName?: string;
+  fallbackSourcePdf?: boolean;
+}
+
+export interface LiteratureEvidenceAttachment {
+  kind: 'pdf-wiki-sentence' | 'pdf-wiki-claim' | 'pdf-wiki-deep-analysis' | 'literature';
+  sentenceId?: string;
+  sentence?: string;
+  claim?: string;
+  claimType?: string;
+  topic?: string;
+  sourcePdfId?: string;
+  sourcePdfName?: string;
+  sourcePdfTitle?: string;
+  section?: string;
+  sentenceIndex?: number;
+  pageNumber?: number;
+  citations?: string[];
+  referenceIndexes?: number[];
+  references?: LiteratureEvidenceReference[];
+  matchMethod?: string;
+  confidence?: number;
+  researchUseCategory?: string;
+  researchUse?: string;
+  supportScope?: string[];
+  limitations?: string[];
+  researchContextKeys?: string[];
+  sourcePdfAuthors?: string;
+  sourcePdfYear?: string;
+  sourcePdfJournal?: string;
+  sourcePdfDoi?: string;
+}
+
+/**
  * 统一文献结构
  * 支持 WoS 和知网导入的文献
  */
@@ -51,6 +100,8 @@ export interface UnifiedLiterature {
   source: 'wos' | 'cnki';        // 数据来源
   rawData?: string;              // 原始数据（用于调试）
   embedding?: number[];          // 向量嵌入（用于语义搜索）
+  embeddingText?: string;        // 用于向量化的检索单元文本；PDF Wiki 中为句子级文本
+  evidenceAttachment?: LiteratureEvidenceAttachment; // 句子来源、位置和参考文献附件
   chunks?: string[];             // 文本分块
 }
 
@@ -89,6 +140,7 @@ export interface RerankerConfig {
   enabled: boolean;
   topN: number;
   model?: string;
+  candidateTopN?: number;        // BM25 粗筛后进入向量阶段的候选上限
 }
 
 /**
@@ -147,6 +199,14 @@ export interface RetrievalResult {
   filters?: MetadataFilters;
   totalCount: number;
   results: RetrievedDocument[];
+  pipeline: {
+    strategy: 'bm25' | 'vector' | 'bm25-embedding-reranker' | 'bm25-fallback';
+    bm25CandidateCount: number;
+    vectorCandidateCount: number;
+    rerankedCount: number;
+    embeddingConfigured: boolean;
+    fallbackReason?: 'embedding-not-configured' | 'embedding-empty-or-failed';
+  };
   timing: {
     bm25Ms: number;
     vectorMs: number;

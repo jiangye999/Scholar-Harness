@@ -53,6 +53,13 @@ describe('Electron renderer recovery wiring', () => {
     expect(mainSource).toContain("details.type === 'GPU'");
   });
 
+  it('lets Chromium rebuild a crashed GPU process without reloading the main page', () => {
+    expect(mainSource).toContain('GPU process will be rebuilt by Chromium');
+    expect(mainSource).not.toContain(
+      "scheduleMainWindowRendererRecovery('gpu-process-gone'",
+    );
+  });
+
   it('uses the health-aware main-page reload and a recovery circuit breaker', () => {
     expect(mainSource).toContain('await ensureServerRunning()');
     expect(mainSource).toContain('await window.loadURL(MAIN_WINDOW_URL)');

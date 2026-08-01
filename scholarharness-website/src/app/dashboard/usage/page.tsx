@@ -121,7 +121,6 @@ export default function UsagePage() {
 
   // 计算统计数据
   const totalWordsUsed = dailyStats.reduce((sum: number, record: DailyStat) => sum + record.word_count, 0);
-  const totalFilesUploaded = dailyStats.reduce((sum: number, record: DailyStat) => sum + record.file_count, 0);
   const todayStat = dailyStats.find(s => s.date === new Date().toISOString().split('T')[0]);
   const monthTotal = dailyStats.reduce((sum: number, s: DailyStat) => {
     const date = new Date(s.date);

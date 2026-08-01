@@ -55,6 +55,7 @@ export interface LLMChatRequest {
   tools?: LLMToolDefinition[];
   toolChoice?: "auto" | "none" | "required" | Record<string, unknown>;
   parallelToolCalls?: boolean;
+  signal?: AbortSignal;
 }
 
 interface ChatCompletionResponse {
@@ -96,6 +97,21 @@ type ErrorWithCause = Error & {
 };
 
 const DEFAULT_LLM_REQUEST_TIMEOUT_MS = 300_000;
+const EMPTY_RESPONSE_MAX_ATTEMPTS = 2;
+
+function createAbortError(message = "LLM request was cancelled by the user"): ErrorWithCause {
+  const error = new Error(message) as ErrorWithCause;
+  error.name = "AbortError";
+  error.code = "ABORT_ERR";
+  return error;
+}
+
+function isAbortError(error: unknown): boolean {
+  const record = getErrorRecord(error) as unknown as ErrorWithCause;
+  return record.name === "AbortError"
+    || String(record.code || "").toUpperCase() === "ABORT_ERR"
+    || /cancelled by the user|request was aborted/i.test(String(record.message || ""));
+}
 
 function getHostForLog(endpoint: string): string {
   try {
@@ -181,22 +197,29 @@ async function postChatCompletionHttp(
   apiKey: string,
   bodyPayload: unknown,
   expectStream: boolean,
-  label?: string
+  label?: string,
+  signal?: AbortSignal
 ): Promise<RawChatCompletionHttpResponse> {
+  if (signal?.aborted) {
+    throw createAbortError();
+  }
   const url = new URL(endpoint);
   const body = JSON.stringify(bodyPayload);
   const transport = url.protocol === "https:" ? https : http;
 
   return new Promise((resolve, reject) => {
     let settled = false;
+    let removeAbortListener = () => {};
     const settleResolve = (value: RawChatCompletionHttpResponse) => {
       if (settled) return;
       settled = true;
+      removeAbortListener();
       resolve(value);
     };
     const settleReject = (error: unknown) => {
       if (settled) return;
       settled = true;
+      removeAbortListener();
       reject(error);
     };
 
@@ -246,6 +269,17 @@ async function postChatCompletionHttp(
       req.destroy(new Error(`${label || "LLM"} request timed out after ${Math.round(DEFAULT_LLM_REQUEST_TIMEOUT_MS / 1000)}s`));
     });
     req.on("error", settleReject);
+    const onAbort = () => {
+      req.destroy(createAbortError());
+    };
+    if (signal) {
+      signal.addEventListener("abort", onAbort, { once: true });
+      removeAbortListener = () => signal.removeEventListener("abort", onAbort);
+      if (signal.aborted) {
+        onAbort();
+        return;
+      }
+    }
     req.write(body);
     req.end();
   });
@@ -256,17 +290,23 @@ async function requestChatCompletionHttp(
   apiKey: string,
   bodyPayload: unknown,
   expectStream: boolean,
-  label?: string
+  label?: string,
+  signal?: AbortSignal
 ): Promise<RawChatCompletionHttpResponse> {
   const attempts = expectStream ? 1 : 2;
   let lastError: unknown = null;
 
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    if (signal?.aborted) throw createAbortError();
     try {
       logger.info(`[${label || "LLM"}] Requesting ${getHostForLog(endpoint)} (stream=${expectStream}, attempt=${attempt}/${attempts})`);
-      return await postChatCompletionHttp(endpoint, apiKey, bodyPayload, expectStream, label);
+      return await postChatCompletionHttp(endpoint, apiKey, bodyPayload, expectStream, label, signal);
     } catch (error) {
       lastError = error;
+      if (isAbortError(error) || signal?.aborted) {
+        logger.info(`[${label || "LLM"}] Active request cancelled by user`);
+        throw isAbortError(error) ? error : createAbortError();
+      }
       const details = collectTransportErrorDetails(error).join("；");
       logger.warn(`[${label || "LLM"}] Upstream transport error on attempt ${attempt}/${attempts}: ${details || (error as Error)?.message || String(error)}`);
       if (!isRetryableTransportError(error) || attempt === attempts) {
@@ -320,7 +360,8 @@ function extractToolCalls(data: ChatCompletionResponse): LLMToolCall[] {
 async function readStreamingChatCompletion(
   stream: NodeJS.ReadableStream,
   label?: string,
-  onProgress?: (chunk: string) => void
+  onProgress?: (chunk: string) => void,
+  signal?: AbortSignal
 ): Promise<string> {
   let buffer = "";
   let fullContent = "";
@@ -343,9 +384,11 @@ async function readStreamingChatCompletion(
   };
 
   return new Promise((resolve, reject) => {
+    let removeAbortListener = () => {};
     const finish = () => {
       if (settled) return;
       settled = true;
+      removeAbortListener();
       try {
         if (buffer.trim()) {
           consumeEvent(buffer);
@@ -363,8 +406,24 @@ async function readStreamingChatCompletion(
     const fail = (error: unknown) => {
       if (settled) return;
       settled = true;
+      removeAbortListener();
       reject(error);
     };
+
+    const onAbort = () => {
+      const error = createAbortError();
+      const destroy = (stream as { destroy?: (err?: Error) => void }).destroy;
+      if (typeof destroy === "function") destroy.call(stream, error);
+      fail(error);
+    };
+    if (signal) {
+      signal.addEventListener("abort", onAbort, { once: true });
+      removeAbortListener = () => signal.removeEventListener("abort", onAbort);
+      if (signal.aborted) {
+        onAbort();
+        return;
+      }
+    }
 
     stream.on("data", (chunk) => {
       try {
@@ -472,42 +531,63 @@ export async function callChatCompletion(
   }
 
   const endpoint = normalizeChatCompletionUrl(config.apiUrl);
-  const response = await requestChatCompletionHttp(
-    endpoint,
-    config.apiKey,
-    buildChatCompletionRequestBody(options, config),
-    !!options.stream,
-    config.label
-  );
+  const requestBody = buildChatCompletionRequestBody(options, config);
 
-  if (!response.ok) {
-    const errorText = response.text;
-    if (response.status === 402 && /insufficient\s+balance/i.test(errorText)) {
-      throw new Error(`${config.label || "LLM"} API error: 402 - 上游模型服务余额不足或 Key 所属账户无可用额度。请充值对应模型平台，或更换有余额的 API Key。`);
+  for (let attempt = 1; attempt <= EMPTY_RESPONSE_MAX_ATTEMPTS; attempt += 1) {
+    const response = await requestChatCompletionHttp(
+      endpoint,
+      config.apiKey,
+      requestBody,
+      !!options.stream,
+      config.label,
+      options.signal
+    );
+
+    if (!response.ok) {
+      const errorText = response.text;
+      if (response.status === 402 && /insufficient\s+balance/i.test(errorText)) {
+        throw new Error(`${config.label || "LLM"} API error: 402 - 上游模型服务余额不足或 Key 所属账户无可用额度。请充值对应模型平台，或更换有余额的 API Key。`);
+      }
+      throw new Error(`${config.label || "LLM"} API error: ${response.status} - ${errorText}`);
     }
-    throw new Error(`${config.label || "LLM"} API error: ${response.status} - ${errorText}`);
-  }
 
-  if (options.stream) {
-    if (!response.stream) {
-      throw new Error(`${config.label || "LLM"} API returned a streaming response without a readable body`);
+    if (options.stream) {
+      if (!response.stream) {
+        throw new Error(`${config.label || "LLM"} API returned a streaming response without a readable body`);
+      }
+      try {
+        return await readStreamingChatCompletion(response.stream, config.label, options.onProgress, options.signal);
+      } catch (error) {
+        if (!/returned empty streaming response/i.test((error as Error)?.message || '') || attempt === EMPTY_RESPONSE_MAX_ATTEMPTS) {
+          throw error;
+        }
+        logger.warn(`[${config.label || "LLM"}] Empty streaming response; retrying the same request (${attempt + 1}/${EMPTY_RESPONSE_MAX_ATTEMPTS})`);
+        continue;
+      }
     }
-    return readStreamingChatCompletion(response.stream, config.label, options.onProgress);
-  }
 
-  const data = JSON.parse(response.text || "{}") as ChatCompletionResponse;
-  const content = extractChatCompletionContent(data);
-  if (!content) {
+    const data = JSON.parse(response.text || "{}") as ChatCompletionResponse;
+    const content = extractChatCompletionContent(data);
+    if (content) return content;
+
     const finishReason = data.choices?.[0]?.finish_reason;
+    if (attempt < EMPTY_RESPONSE_MAX_ATTEMPTS) {
+      logger.warn(
+        `[${config.label || "LLM"}] Empty response` +
+        (finishReason ? ` (finish_reason=${finishReason})` : '') +
+        `; retrying the same request (${attempt + 1}/${EMPTY_RESPONSE_MAX_ATTEMPTS})`
+      );
+      continue;
+    }
     const preview = JSON.stringify(data).slice(0, 600);
     throw new Error(
-      `${config.label || "LLM"} API returned empty response` +
+      `${config.label || "LLM"} API returned empty response after retry` +
       (finishReason ? ` (finish_reason=${finishReason})` : "") +
       (preview ? `; response=${preview}` : "")
     );
   }
 
-  return content;
+  throw new Error(`${config.label || "LLM"} API returned empty response after retry`);
 }
 
 export async function callChatCompletionWithTools(
@@ -519,44 +599,59 @@ export async function callChatCompletionWithTools(
   }
 
   const endpoint = normalizeChatCompletionUrl(config.apiUrl);
-  const response = await requestChatCompletionHttp(
-    endpoint,
-    config.apiKey,
-    buildChatCompletionRequestBody({
-      ...options,
-      stream: false,
-    }, config),
-    false,
-    config.label
-  );
+  const requestBody = buildChatCompletionRequestBody({
+    ...options,
+    stream: false,
+  }, config);
 
-  if (!response.ok) {
-    const errorText = response.text;
-    if (response.status === 402 && /insufficient\s+balance/i.test(errorText)) {
-      throw new Error(`${config.label || "LLM"} API error: 402 - 上游模型服务余额不足或 Key 所属账户无可用额度。请充值对应模型平台，或更换有余额的 API Key。`);
+  for (let attempt = 1; attempt <= EMPTY_RESPONSE_MAX_ATTEMPTS; attempt += 1) {
+    const response = await requestChatCompletionHttp(
+      endpoint,
+      config.apiKey,
+      requestBody,
+      false,
+      config.label,
+      options.signal
+    );
+
+    if (!response.ok) {
+      const errorText = response.text;
+      if (response.status === 402 && /insufficient\s+balance/i.test(errorText)) {
+        throw new Error(`${config.label || "LLM"} API error: 402 - 上游模型服务余额不足或 Key 所属账户无可用额度。请充值对应模型平台，或更换有余额的 API Key。`);
+      }
+      throw new Error(`${config.label || "LLM"} API error: ${response.status} - ${errorText}`);
     }
-    throw new Error(`${config.label || "LLM"} API error: ${response.status} - ${errorText}`);
-  }
 
-  const data = JSON.parse(response.text || "{}") as ChatCompletionResponse;
-  const content = extractChatCompletionContent(data);
-  const toolCalls = extractToolCalls(data);
-  const finishReason = data.choices?.[0]?.finish_reason;
-  if (!content && toolCalls.length === 0) {
+    const data = JSON.parse(response.text || "{}") as ChatCompletionResponse;
+    const content = extractChatCompletionContent(data);
+    const toolCalls = extractToolCalls(data);
+    const finishReason = data.choices?.[0]?.finish_reason;
+    if (content || toolCalls.length > 0) {
+      return {
+        content,
+        toolCalls,
+        finishReason,
+        raw: data,
+      };
+    }
+
+    if (attempt < EMPTY_RESPONSE_MAX_ATTEMPTS) {
+      logger.warn(
+        `[${config.label || "LLM"}] Empty tool response` +
+        (finishReason ? ` (finish_reason=${finishReason})` : '') +
+        `; retrying the same request (${attempt + 1}/${EMPTY_RESPONSE_MAX_ATTEMPTS})`
+      );
+      continue;
+    }
     const preview = JSON.stringify(data).slice(0, 600);
     throw new Error(
-      `${config.label || "LLM"} API returned empty response` +
+      `${config.label || "LLM"} API returned empty response after retry` +
       (finishReason ? ` (finish_reason=${finishReason})` : "") +
       (preview ? `; response=${preview}` : "")
     );
   }
 
-  return {
-    content,
-    toolCalls,
-    finishReason,
-    raw: data,
-  };
+  throw new Error(`${config.label || "LLM"} API returned empty response after retry`);
 }
 
 export function createLLMApiClient(config: LLMClientConfig): APIClient {
@@ -572,6 +667,7 @@ export function createLLMApiClient(config: LLMClientConfig): APIClient {
           messages: options.messages,
           temperature: options.temperature,
           maxTokens: options.maxTokens,
+          signal: options.abortSignal,
         }
       );
     },

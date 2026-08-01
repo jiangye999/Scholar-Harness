@@ -2,7 +2,7 @@ import * as crypto from 'crypto';
 import { Router, Request, Response } from 'express';
 import { DatabaseConnection } from '../../database/connection';
 import { User } from '../../database/types';
-import { generateTokenPair } from '../../auth/jwt';
+import { generateTokenPair, verifyRefreshToken } from '../../auth/jwt';
 import { apiKeyEncryption } from '../../auth/encryption';
 import { UserStore } from '../../storage/user-store';
 import { logger } from '../../utils/logger';
@@ -251,6 +251,55 @@ router.post('/login-email', async (req: Request, res: Response) => {
     return res.status(500).json({
       error: 'Internal Server Error',
       message: '管理员登录失败',
+    });
+  }
+});
+
+router.post('/refresh', async (req: Request, res: Response) => {
+  try {
+    const refreshToken = text(req.body?.refreshToken);
+    if (!refreshToken) {
+      return res.status(400).json({
+        error: 'Bad Request',
+        message: 'Refresh token is required',
+      });
+    }
+
+    const payload = verifyRefreshToken(refreshToken);
+    if (!payload) {
+      return res.status(401).json({
+        error: 'Unauthorized',
+        message: 'Invalid or expired refresh token',
+      });
+    }
+
+    if (payload.userId === 'admin-secret') {
+      const tokens = generateTokenPair({
+        userId: 'admin-secret',
+        email: 'admin@scholarharness.local',
+        role: 'admin',
+        source: 'cloud',
+      });
+      return res.json({ message: 'Admin token refreshed', tokens });
+    }
+
+    const user = await userStore.findById(payload.userId);
+    if (!user || user.status !== 'active' || user.role !== 'admin') {
+      return res.status(401).json({
+        error: 'Unauthorized',
+        message: 'Admin account not found or inactive',
+      });
+    }
+
+    return res.json({
+      message: 'Admin token refreshed',
+      tokens: userStore.generateUserTokens(user),
+    });
+  } catch (error) {
+    logger.error('[Admin] Token refresh failed:', error);
+    return res.status(500).json({
+      error: 'Internal Server Error',
+      message: '管理员登录续期失败',
     });
   }
 });

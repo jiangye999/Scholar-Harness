@@ -4,7 +4,9 @@ import * as vm from 'vm';
 
 import { describe, expect, it } from 'vitest';
 
-const html = readFileSync(path.resolve(__dirname, '../../src/public/index.html'), 'utf-8');
+import { readPublicAppSource } from '../helpers/public-app-source';
+
+const html = readPublicAppSource();
 
 type WorkspaceSetting = {
   enabled: boolean;
@@ -52,6 +54,9 @@ function loadWorkspaceDirectoryHelpers() {
     currentUserId: 'web-user',
     currentConversationId: 'conv-a',
     getHistory: () => [{ id: 'conv-a' }, { id: 'conv-b' }],
+    clearWorkspacePreviewSelections: () => {},
+    renderWorkspaceDirectoryPreview: () => {},
+    renderWorkspaceDirectoryUi: () => {},
     Map,
     Date,
   });
@@ -61,7 +66,8 @@ function loadWorkspaceDirectoryHelpers() {
        load: loadWorkspaceDirectorySetting,
        save: saveWorkspaceDirectorySetting,
        initialize: initializeWorkspaceDirectoryForConversation,
-       markActive: markWorkspaceDirectoryConversationActive
+       markActive: markWorkspaceDirectoryConversationActive,
+       activate: activateWorkspaceDirectoryConversation
      };`,
     context,
   );
@@ -72,6 +78,7 @@ function loadWorkspaceDirectoryHelpers() {
         save: (setting: WorkspaceSetting, conversationId: string) => void;
         initialize: (conversationId: string, previousConversationId?: string) => WorkspaceSetting;
         markActive: (conversationId: string) => void;
+        activate: (conversationId: string) => void;
       };
     }).workspaceApi,
     storage,
@@ -144,14 +151,39 @@ describe('conversation-scoped workspace directories', () => {
     expect(api.load('conv-a').path).toBe('D:\\last-active');
   });
 
+  it('inherits the last configured workspace when opening a legacy history without an entry', () => {
+    const { api } = loadWorkspaceDirectoryHelpers();
+    api.save(
+      {
+        enabled: true,
+        path: 'D:\\configured-paper',
+        permission: 'workspace-write',
+        aiWorkRoot: '',
+      },
+      'conv-a',
+    );
+    api.markActive('conv-a');
+
+    api.activate('legacy-history');
+
+    expect(api.load('legacy-history').path).toBe('D:\\configured-paper');
+    expect(api.load('legacy-history').permission).toBe('workspace-write');
+  });
+
   it('wires inheritance, switching, deletion, payloads, and project archives to conversation state', () => {
     expect(html).toMatch(
-      /currentConversationId = createConversationId\(\);\s*initializeWorkspaceDirectoryForConversation\(currentConversationId, oldConvId\);/,
+      /currentConversationId = chatOptions\.scope === 'bibliometrics'[\s\S]*?: createConversationId\(\);[\s\S]*?initializeWorkspaceDirectoryForConversation\(currentConversationId, oldConvId\);/,
     );
-    expect(html).toMatch(
-      /currentConversationId = convId;\s*activateWorkspaceDirectoryConversation\(convId\);/,
-    );
+    const loadConversationStart = html.indexOf('async function loadConversation(convId)');
+    const loadConversationEnd = html.indexOf('async function deleteConversation', loadConversationStart);
+    const loadConversationSource = html.slice(loadConversationStart, loadConversationEnd);
+    expect(loadConversationStart).toBeGreaterThan(-1);
+    expect(loadConversationSource).toContain('currentConversationId = convId;');
+    expect(loadConversationSource).toContain('activateWorkspaceDirectoryConversation(convId);');
+    expect(loadConversationSource.indexOf('currentConversationId = convId;'))
+      .toBeLessThan(loadConversationSource.indexOf('activateWorkspaceDirectoryConversation(convId);'));
     expect(html).toContain('deleteWorkspaceDirectorySetting(convId);');
+    expect(html).toContain('initializeWorkspaceDirectoryForConversation(id);');
     expect(html).toContain('workspaceDirectoryStore: loadWorkspaceDirectoryStore(currentConversationId)');
     expect(html).toContain('workspaceConversationRoots: loadWorkspaceConversationRoots()');
     expect(html).toContain('var inspectionConversationId = ensureCurrentConversationId();');

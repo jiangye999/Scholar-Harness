@@ -105,7 +105,7 @@ router.post('/register', rateLimitMiddleware(5, 60000), async (req: Request, res
     if (!normalizedBetaCode && !normalizedReferralCode) {
       return res.status(400).json({
         error: 'Bad Request',
-        message: '注册必须填写授权码/内测码或好友邀请码',
+        message: '注册必须填写授权码/内测码、好友邀请码或分销商邀请码',
         code: 'AUTH_OR_REFERRAL_CODE_REQUIRED',
       });
     }
@@ -124,27 +124,43 @@ router.post('/register', rateLimitMiddleware(5, 60000), async (req: Request, res
     let isLifetimeBetaCode = false;
     let isUnlimitedUseCode = false;
     let referredBy: string | null = null;
-    let trialSource: 'beta_code' | 'referral_invitee_trial' | null = null;
+    let distributorId: string | null = null;
+    let distributorName: string | null = null;
+    let trialSource: 'beta_code' | 'referral_invitee_trial' | 'distributor_invitee_trial' | null = null;
 
     if (normalizedReferralCode) {
-      const referrerResult = await db.query<User>(
-        `SELECT id
-         FROM users
-         WHERE referral_code = $1
+      const distributorResult = await db.query<{ id: string; name: string }>(
+        `SELECT id, name
+         FROM distributors
+         WHERE UPPER(invite_code) = $1
            AND status = 'active'
          LIMIT 1`,
         [normalizedReferralCode]
       );
 
-      if (referrerResult.length === 0) {
-        return res.status(400).json({
-          error: 'Bad Request',
-          message: '好友邀请码不存在或不可用',
-          code: 'INVALID_REFERRAL_CODE',
-        });
-      }
+      if (distributorResult.length > 0) {
+        distributorId = distributorResult[0].id;
+        distributorName = distributorResult[0].name;
+      } else {
+        const referrerResult = await db.query<User>(
+          `SELECT id
+           FROM users
+           WHERE referral_code = $1
+             AND status = 'active'
+           LIMIT 1`,
+          [normalizedReferralCode]
+        );
 
-      referredBy = referrerResult[0].id;
+        if (referrerResult.length === 0) {
+          return res.status(400).json({
+            error: 'Bad Request',
+            message: '好友或分销商邀请码不存在或不可用',
+            code: 'INVALID_REFERRAL_CODE',
+          });
+        }
+
+        referredBy = referrerResult[0].id;
+      }
     }
 
     if (normalizedBetaCode) {
@@ -183,10 +199,13 @@ router.post('/register', rateLimitMiddleware(5, 60000), async (req: Request, res
       trialSource = 'beta_code';
       
       logger.info(`[Auth] Beta code pre-validated: ${normalizedBetaCode} -> lifetime=${isLifetimeBetaCode}, trialDays=${trialDays}`);
-    } else if (referredBy) {
+    } else if (referredBy || distributorId) {
       trialDays = REFERRAL_INVITEE_TRIAL_DAYS;
-      trialSource = 'referral_invitee_trial';
-      logger.info(`[Auth] Referral code pre-validated: ${normalizedReferralCode} -> inviteeTrialDays=${trialDays}`);
+      trialSource = distributorId ? 'distributor_invitee_trial' : 'referral_invitee_trial';
+      logger.info(
+        `[Auth] ${distributorId ? 'Distributor' : 'Referral'} code pre-validated: `
+        + `${normalizedReferralCode} -> inviteeTrialDays=${trialDays}`
+      );
     }
 
     const verificationResult = await verificationStore.verify(email, String(verification_code).trim(), 'register');
@@ -208,10 +227,10 @@ router.post('/register', rateLimitMiddleware(5, 60000), async (req: Request, res
       const USER_AGREEMENT_VERSION = 'V1.3';
 
       const userResult = await client.query<User>(
-        `INSERT INTO users (email, password_hash, username, phone, source, referral_code, referred_by, role,
+        `INSERT INTO users (email, password_hash, username, phone, source, referral_code, referred_by, distributor_id, role,
           privacy_policy_accepted_at, user_agreement_accepted_at, cross_border_transfer_accepted_at,
           privacy_policy_version, user_agreement_version, email_verified)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
         RETURNING *`,
         [
           email.toLowerCase(),
@@ -221,6 +240,7 @@ router.post('/register', rateLimitMiddleware(5, 60000), async (req: Request, res
           source || 'cloud',
           userReferralCode,
           referredBy,
+          distributorId,
           'user',
           new Date(),
           new Date(),
@@ -274,6 +294,8 @@ router.post('/register', rateLimitMiddleware(5, 60000), async (req: Request, res
               source: trialSource,
               beta_code_id: betaCodeId || undefined,
               referral_code: normalizedReferralCode || undefined,
+              distributor_id: distributorId || undefined,
+              distributor_name: distributorName || undefined,
               referral_invitee_trial_days: betaCodeId ? undefined : trialDays,
             }),
           ]
@@ -328,7 +350,11 @@ router.post('/register', rateLimitMiddleware(5, 60000), async (req: Request, res
     const user = result.user;
     const tokens = userStore.generateUserTokens(user);
 
-    logger.info(`[Auth] User registered: ${user.email} | privacy_accepted=${accept_privacy_policy} | cross_border=${accept_cross_border_transfer} | beta_code=${betaCodeId ? 'used' : 'none'} | referral=${referredBy ? 'used' : 'none'}`);
+    logger.info(
+      `[Auth] User registered: ${user.email} | privacy_accepted=${accept_privacy_policy} `
+      + `| cross_border=${accept_cross_border_transfer} | beta_code=${betaCodeId ? 'used' : 'none'} `
+      + `| referral=${referredBy ? 'used' : 'none'} | distributor=${distributorId || 'none'}`
+    );
 
     return res.status(201).json({
       message: 'User registered successfully',
@@ -351,6 +377,8 @@ router.post('/register', rateLimitMiddleware(5, 60000), async (req: Request, res
           ? '已激活永久免费使用权限'
           : trialSource === 'referral_invitee_trial'
             ? `已通过好友邀请激活${trialDays}天免费试用`
+            : trialSource === 'distributor_invitee_trial'
+              ? `已通过${distributorName || '分销商'}邀请码激活${trialDays}天免费试用`
             : `已激活${trialDays}天免费试用`,
       } : undefined,
     });
@@ -629,17 +657,34 @@ router.get('/me', authMiddleware, async (req: AuthenticatedRequest, res: Respons
 
 router.put('/profile', authMiddleware, async (req: AuthenticatedRequest, res: Response) => {
   try {
-    const { username, avatar_url } = req.body;
+    const username = typeof req.body?.username === 'string' ? req.body.username.trim() : undefined;
+    const avatarUrl = typeof req.body?.avatar_url === 'string' ? req.body.avatar_url.trim() : undefined;
 
-    const user = await userStore.updateProfile(req.user!.userId, { username, avatar_url });
+    if (username !== undefined && (username.length < 1 || username.length > 80)) {
+      return res.status(400).json({
+        error: 'Bad Request',
+        message: '用户名长度必须在1到80个字符之间',
+      });
+    }
+
+    const user = await userStore.updateProfile(req.user!.userId, {
+      username,
+      avatar_url: avatarUrl,
+    });
+    if (!user) {
+      return res.status(404).json({
+        error: 'Not Found',
+        message: 'User not found',
+      });
+    }
 
     return res.json({
       message: 'Profile updated',
       user: {
-        id: user!.id,
-        email: user!.email,
-        username: user!.username,
-        avatar_url: user!.avatar_url,
+        id: user.id,
+        email: user.email,
+        username: user.username,
+        avatar_url: user.avatar_url,
       },
     });
   } catch (error) {
@@ -686,6 +731,67 @@ router.post('/change-password', authMiddleware, async (req: AuthenticatedRequest
     return res.status(500).json({
       error: 'Internal Server Error',
       message: 'Failed to change password',
+    });
+  }
+});
+
+router.post('/reset-password', rateLimitMiddleware(5, 60000), async (req: Request, res: Response) => {
+  try {
+    const email = String(req.body?.email || '').trim().toLowerCase();
+    const verificationCode = String(
+      req.body?.verificationCode || req.body?.verification_code || ''
+    ).trim();
+    const newPassword = String(req.body?.newPassword || req.body?.new_password || '');
+
+    if (!email || !verificationCode || !newPassword) {
+      return res.status(400).json({
+        error: 'Bad Request',
+        message: '邮箱、验证码和新密码均为必填项',
+      });
+    }
+
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      return res.status(400).json({
+        error: 'Bad Request',
+        message: '邮箱格式不正确',
+      });
+    }
+
+    if (newPassword.length < 8) {
+      return res.status(400).json({
+        error: 'Bad Request',
+        message: '新密码至少需要8位',
+      });
+    }
+
+    const verificationResult = await verificationStore.verify(
+      email,
+      verificationCode,
+      'reset_password'
+    );
+    if (!verificationResult.valid) {
+      return res.status(400).json({
+        error: 'Bad Request',
+        message: verificationResult.message,
+      });
+    }
+
+    const updated = await userStore.resetPasswordByEmail(email, newPassword);
+    if (!updated) {
+      return res.status(400).json({
+        error: 'Bad Request',
+        message: '无法重置密码，请重新获取验证码',
+      });
+    }
+
+    return res.json({
+      message: 'Password reset successfully',
+    });
+  } catch (error) {
+    logger.error('[Auth] Reset password failed:', error);
+    return res.status(500).json({
+      error: 'Internal Server Error',
+      message: '重置密码失败，请稍后重试',
     });
   }
 });

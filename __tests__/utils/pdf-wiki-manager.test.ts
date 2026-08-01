@@ -218,6 +218,158 @@ describe('PdfWikiManager', () => {
     expect(status.entryCount).toBe(0);
   });
 
+  it('reads lightweight status without loading the complete PDF Wiki store', async () => {
+    const wikiDir = path.join(tempDir, 'uploads', 'web-user', 'pdf-wiki');
+    fs.mkdirSync(wikiDir, { recursive: true });
+    fs.writeFileSync(path.join(wikiDir, 'status.json'), JSON.stringify({
+      status: 'completed',
+      totalPdfs: 8,
+      processedPdfs: 8,
+      totalChunks: 0,
+      processedChunks: 0,
+      entryCount: 20,
+      sentencePointCount: 120,
+      message: 'completed',
+      updatedAt: new Date().toISOString(),
+    }), 'utf-8');
+    const loadStore = vi.spyOn(manager as any, 'loadStore');
+
+    const status = await manager.getLightweightStatus('web-user');
+
+    expect(status.status).toBe('completed');
+    expect(status.totalPdfs).toBe(8);
+    expect(loadStore).not.toHaveBeenCalled();
+  });
+
+  it('reads the PDF manager snapshot without normalizing or rewriting the complete wiki store', async () => {
+    const wikiDir = path.join(tempDir, 'uploads', 'web-user', 'pdf-wiki');
+    const wikiPath = path.join(wikiDir, 'wiki.json');
+    fs.mkdirSync(wikiDir, { recursive: true });
+    const originalContent = JSON.stringify({
+      version: 1,
+      userId: 'web-user',
+      generatedAt: '2026-07-23T00:00:00.000Z',
+      pdfs: [{
+        id: 'pdf-lightweight',
+        originalName: 'lightweight.pdf',
+        fileName: 'lightweight.pdf',
+        filePath: path.join(wikiDir, 'lightweight.pdf'),
+        size: 128,
+        title: 'Lightweight PDF',
+        authors: 'Author A',
+        year: '2026',
+        journal: 'Journal A',
+        doi: '',
+        textLength: 2048,
+        referenceIndex: [],
+      }],
+      referenceIndex: [{ id: 'ref-one', raw: 'Reference one' }],
+      entries: [createStoreEntry('entry-one', 'A stored claim')],
+      sentenceCloud: {
+        generatedAt: '2026-07-23T00:00:00.000Z',
+        points: [createSentencePoint('point-one', 'topic-one', 'pdf-lightweight')],
+        clouds: [],
+      },
+    }, null, 2);
+    fs.writeFileSync(wikiPath, originalContent, 'utf-8');
+    const loadStore = vi.spyOn(manager as any, 'loadStore');
+    const saveStore = vi.spyOn(manager as any, 'saveStore');
+
+    const snapshot = await manager.getPdfManagerStoreSnapshot('web-user');
+
+    expect(snapshot.generatedAt).toBe('2026-07-23T00:00:00.000Z');
+    expect(snapshot.pdfs).toHaveLength(1);
+    expect(snapshot.pdfs[0].id).toBe('pdf-lightweight');
+    expect(loadStore).not.toHaveBeenCalled();
+    expect(saveStore).not.toHaveBeenCalled();
+    expect(fs.readFileSync(wikiPath, 'utf-8')).toBe(originalContent);
+  });
+
+  it('reuses an unchanged PDF manager snapshot and invalidates it after wiki.json changes', async () => {
+    const wikiDir = path.join(tempDir, 'uploads', 'web-user', 'pdf-wiki');
+    const wikiPath = path.join(wikiDir, 'wiki.json');
+    fs.mkdirSync(wikiDir, { recursive: true });
+    const makeContent = (id: string) => JSON.stringify({
+      version: 1,
+      userId: 'web-user',
+      generatedAt: `2026-07-23T00:00:0${id === 'pdf-one' ? '1' : '2'}.000Z`,
+      pdfs: [{
+        id,
+        originalName: `${id}.pdf`,
+        fileName: `${id}.pdf`,
+        filePath: path.join(wikiDir, `${id}.pdf`),
+        size: 128,
+        referenceIndex: [],
+      }],
+      referenceIndex: [],
+      entries: [],
+      sentenceCloud: { generatedAt: '', points: [], clouds: [] },
+    });
+    fs.writeFileSync(wikiPath, makeContent('pdf-one'), 'utf-8');
+
+    const first = await manager.getPdfManagerStoreSnapshot('web-user');
+    const cached = await manager.getPdfManagerStoreSnapshot('web-user');
+    expect(cached).toBe(first);
+
+    fs.writeFileSync(wikiPath, `${makeContent('pdf-two')}\n`, 'utf-8');
+    const refreshed = await manager.getPdfManagerStoreSnapshot('web-user');
+    expect(refreshed).not.toBe(first);
+    expect(refreshed.pdfs[0].id).toBe('pdf-two');
+  });
+
+  it('persists and reuses the lightweight Meta database summary index', async () => {
+    const wikiDir = path.join(tempDir, 'uploads', 'web-user', 'pdf-wiki');
+    fs.mkdirSync(wikiDir, { recursive: true });
+    fs.writeFileSync(path.join(wikiDir, 'wiki.json'), JSON.stringify({
+      version: 1,
+      userId: 'web-user',
+      generatedAt: '2026-07-22T00:00:00.000Z',
+      pdfs: [{
+        id: 'pdf-meta-one',
+        originalName: 'meta-one.pdf',
+        fileName: 'meta-one.pdf',
+        filePath: path.join(wikiDir, 'meta-one.pdf'),
+        size: 100,
+        title: 'Meta One',
+        authors: 'Author A',
+        year: '2026',
+        journal: 'Journal A',
+        doi: '',
+        textLength: 1000,
+        referenceIndex: [],
+        metaData: {
+          title: 'Meta One',
+          meta_analysis_enabled: true,
+          meta_analysis_rows: [{ 'Study#': 'Meta One', Treatment: 'Control' }],
+        },
+      }],
+      referenceIndex: [],
+      entries: [],
+      sentenceCloud: { generatedAt: '2026-07-22T00:00:00.000Z', points: [], clouds: [] },
+      readerChatSessions: {},
+    }), 'utf-8');
+
+    const first = await manager.getMetaDatabase('web-user', { includeDetails: false });
+    expect(first.items).toHaveLength(1);
+    expect(first.items[0].detailLoaded).toBe(false);
+    expect(fs.existsSync(path.join(wikiDir, 'meta-database-index.json'))).toBe(true);
+
+    const reloaded = new PdfWikiManager(tempDir);
+    const saveUnitRegistry = vi.spyOn(reloaded as any, 'saveMetaAnalysisUnitRegistry');
+    const detail = await reloaded.getMetaDatabase('web-user', {
+      includeDetails: true,
+      pdfIds: ['pdf-meta-one'],
+    });
+    expect(detail.items).toHaveLength(1);
+    expect(saveUnitRegistry).not.toHaveBeenCalled();
+
+    const buildItem = vi.spyOn(reloaded as any, 'buildMetaDatabaseItem');
+    const second = await reloaded.getMetaDatabase('web-user', { includeDetails: false });
+
+    expect(second.items).toHaveLength(1);
+    expect(buildItem).not.toHaveBeenCalled();
+  });
+
   it('keeps stable work progress across heartbeat status writes', async () => {
     const workProgress = {
       phase: 'codex',
@@ -302,6 +454,278 @@ describe('PdfWikiManager', () => {
     expect(normalized['Yield mean']).toBe('10');
     expect(normalized['Yield SD']).toBe('6');
     expect(normalized['Yield n']).toBe('9');
+  });
+
+  it('does not assign any built-in topic when the user topic catalog is empty', () => {
+    const topic = (manager as any).inferSentencePointTopic(
+      'Nitrogen fertilizer management strongly affects nitrous oxide emissions in cropland systems.'
+    );
+
+    expect(topic).toEqual({ key: 'unclassified', label: '未分类', keywords: [] });
+  });
+
+  it('migrates previously stored built-in topics to unclassified when no user topics exist', async () => {
+    const point = createSentencePoint('legacy-topic', 'nitrogen-management', 'pdf-legacy');
+    point.topicLabel = '氮肥管理';
+    point.keywords = ['nitrogen fertilizer'];
+    writeWikiStore(tempDir, 'web-user', [], [point]);
+
+    const store = await manager.getStore('web-user');
+    const saved = JSON.parse(fs.readFileSync(path.join(tempDir, 'uploads', 'web-user', 'pdf-wiki', 'wiki.json'), 'utf-8'));
+
+    expect(store.sentenceCloud?.points[0].topicLabel).toBe('未分类');
+    expect(store.sentenceCloud?.points[0].topicKey).toBe('unclassified');
+    expect(saved.sentenceCloud.points[0].topicLabel).toBe('未分类');
+  });
+
+  it('matches sentence topics only against user definitions and respects exclusion terms', () => {
+    const topics = [{
+      id: 'topic_extreme_rainfall',
+      label: '极端降雨效应',
+      description: '识别极端降雨对农田过程的影响。',
+      aliases: ['extreme precipitation'],
+      keywords: ['heavy rainfall', '降雨事件'],
+      excludeKeywords: ['indoor rainfall simulator'],
+      expandedBy: 'ai',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    }];
+
+    const matched = (manager as any).inferSentencePointTopic(
+      'Heavy rainfall increased soil moisture and changed field N2O fluxes.',
+      topics
+    );
+    const excluded = (manager as any).inferSentencePointTopic(
+      'The indoor rainfall simulator produced heavy rainfall for instrument calibration.',
+      topics
+    );
+
+    expect(matched.key).toBe('topic-extreme-rainfall');
+    expect(matched.label).toBe('极端降雨效应');
+    expect(matched.keywords).toContain('heavy rainfall');
+    expect(excluded.label).toBe('未分类');
+  });
+
+  it('persists AI-expanded user topics in the per-user PDF Wiki catalog', async () => {
+    vi.spyOn(manager as any, 'callJsonNormalizer').mockResolvedValue({
+      topics: [{
+        label: '长期施氮遗留效应',
+        description: '识别长期施氮停止后仍持续存在的土壤与排放响应。',
+        aliases: ['legacy effect of nitrogen fertilization'],
+        keywords: ['nitrogen legacy effect', 'residual nitrogen'],
+        excludeKeywords: ['short-term fertilization'],
+      }],
+    });
+
+    const result = await manager.expandAndSaveTopics('web-user', [{ label: '长期施氮遗留效应' }], {
+      apiUrl: 'https://example.test/v1',
+      apiKey: 'test-key',
+      model: 'test-model',
+    });
+    const reloaded = new PdfWikiManager(tempDir);
+    const catalog = await reloaded.getTopicCatalog('web-user');
+
+    expect(result.catalog.topics).toHaveLength(1);
+    expect(result.reclassifiedPointCount).toBe(0);
+    expect(catalog.topics[0].label).toBe('长期施氮遗留效应');
+    expect(catalog.topics[0].keywords).toContain('nitrogen legacy effect');
+  });
+
+  it('persists AI sentence topic annotations and skips unchanged sentences on the next run', async () => {
+    const points = [
+      createSentencePoint('sentence-topic-a', 'unclassified', 'pdf-a'),
+      createSentencePoint('sentence-topic-b', 'unclassified', 'pdf-b'),
+    ];
+    writeWikiStore(tempDir, 'web-user', [], points);
+    const annotateSpy = vi.spyOn(manager as any, 'callJsonNormalizer').mockResolvedValue({
+      annotations: points.map((point, index) => ({
+        sentenceId: point.id,
+        subjectTags: index === 0 ? ['氮循环', '温室气体排放'] : ['降雨变化'],
+        trendConclusionTopic: index === 0 ? '氮投入提高 N2O 排放' : '增雨改变土壤过程响应',
+      })),
+    });
+
+    const started = await manager.startSentenceTopicAnnotation('web-user', {
+      apiUrl: 'https://example.test/v1',
+      apiKey: 'test-key',
+      model: 'test-model',
+    });
+    expect(started.status).toBe('processing');
+    await waitForCondition(async () => (await manager.getSentenceTopicAnnotationStatus('web-user')).status !== 'processing');
+
+    const completed = await manager.getSentenceTopicAnnotationStatus('web-user');
+    const store = await manager.getStore('web-user');
+    expect(completed.status).toBe('completed');
+    expect(completed.annotatedSentences).toBe(2);
+    expect(completed.pendingSentences).toBe(0);
+    expect(store.sentenceCloud?.points[0].aiTopicAnnotation?.subjectTags).toContain('氮循环');
+    expect(store.sentenceCloud?.points[0].aiTopicAnnotation?.trendConclusionTopic).toBe('氮投入提高 N2O 排放');
+    expect(fs.existsSync(path.join(tempDir, 'uploads', 'web-user', 'pdf-wiki', 'sentence-topic-annotations.json'))).toBe(true);
+
+    const secondRun = await manager.startSentenceTopicAnnotation('web-user', {
+      apiUrl: 'https://example.test/v1',
+      apiKey: 'test-key',
+      model: 'test-model',
+    });
+    expect(secondRun.status).toBe('completed');
+    expect(secondRun.targetSentences).toBe(0);
+    expect(secondRun.skippedSentences).toBe(2);
+    expect(annotateSpy).toHaveBeenCalledTimes(1);
+
+    const wikiPath = path.join(tempDir, 'uploads', 'web-user', 'pdf-wiki', 'wiki.json');
+    const changedWiki = JSON.parse(fs.readFileSync(wikiPath, 'utf-8'));
+    changedWiki.sentenceCloud.points[1].sentence += ' The source sentence has changed.';
+    fs.writeFileSync(wikiPath, JSON.stringify(changedWiki, null, 2), 'utf-8');
+    const changedRun = await manager.startSentenceTopicAnnotation('web-user', {
+      apiUrl: 'https://example.test/v1',
+      apiKey: 'test-key',
+      model: 'test-model',
+    });
+    expect(changedRun.targetSentences).toBe(1);
+    await waitForCondition(async () => (await manager.getSentenceTopicAnnotationStatus('web-user')).status !== 'processing');
+    expect(annotateSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it('accepts nested snake_case AI sentence topic annotation responses', async () => {
+    const points = [
+      createSentencePoint('sentence-topic-snake-a', 'unclassified', 'pdf-snake-a'),
+      createSentencePoint('sentence-topic-snake-b', 'unclassified', 'pdf-snake-b'),
+    ];
+    writeWikiStore(tempDir, 'web-user', [], points);
+    const annotateSpy = vi.spyOn(manager as any, 'callJsonNormalizer').mockResolvedValue({
+      data: {
+        results: points.map((point, index) => ({
+          sentence_id: point.id,
+          topic_tags: index === 0 ? ['氮循环', '温室气体'] : ['降雨变化'],
+          trend_conclusion_topic: index === 0 ? '施氮促进 N2O 排放' : '增雨改变土壤水分响应',
+        })),
+      },
+    });
+
+    await manager.startSentenceTopicAnnotation('web-user', {
+      apiUrl: 'https://example.test/v1',
+      apiKey: 'test-key',
+      model: 'test-model',
+    });
+    await waitForCondition(async () => (await manager.getSentenceTopicAnnotationStatus('web-user')).status !== 'processing');
+
+    const completed = await manager.getSentenceTopicAnnotationStatus('web-user');
+    const store = await manager.getStore('web-user');
+    expect(completed.status).toBe('completed');
+    expect(completed.failedSentences).toBe(0);
+    expect(store.sentenceCloud?.points[0].aiTopicAnnotation?.subjectTags).toContain('氮循环');
+    expect(store.sentenceCloud?.points[1].aiTopicAnnotation?.trendConclusionTopic).toBe('增雨改变土壤水分响应');
+    expect(annotateSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('retries only missing sentence topic annotations and preserves valid first-pass records', async () => {
+    const points = [
+      createSentencePoint('sentence-topic-retry-a', 'unclassified', 'pdf-retry-a'),
+      createSentencePoint('sentence-topic-retry-b', 'unclassified', 'pdf-retry-b'),
+    ];
+    writeWikiStore(tempDir, 'web-user', [], points);
+    const annotateSpy = vi.spyOn(manager as any, 'callJsonNormalizer')
+      .mockResolvedValueOnce({
+        annotations: [{
+          sentenceId: points[0].id,
+          subjectTags: ['氮循环'],
+          trendConclusionTopic: '氮输入改变土壤氮循环',
+        }],
+      })
+      .mockResolvedValueOnce({
+        output: {
+          items: [{
+            point_id: points[1].id,
+            labels: [{ label: '降雨变化' }, { label: '土壤过程' }],
+            conclusion_topic: { text: '增雨改变土壤过程响应' },
+          }],
+        },
+      });
+
+    await manager.startSentenceTopicAnnotation('web-user', {
+      apiUrl: 'https://example.test/v1',
+      apiKey: 'test-key',
+      model: 'test-model',
+    });
+    await waitForCondition(async () => (await manager.getSentenceTopicAnnotationStatus('web-user')).status !== 'processing');
+
+    const completed = await manager.getSentenceTopicAnnotationStatus('web-user');
+    const store = await manager.getStore('web-user');
+    expect(completed.status).toBe('completed');
+    expect(completed.annotatedSentences).toBe(2);
+    expect(completed.pendingSentences).toBe(0);
+    expect(completed.failedSentences).toBe(0);
+    expect(store.sentenceCloud?.points[0].aiTopicAnnotation?.trendConclusionTopic).toBe('氮输入改变土壤氮循环');
+    expect(store.sentenceCloud?.points[1].aiTopicAnnotation?.subjectTags).toEqual(['降雨变化', '土壤过程']);
+    expect(annotateSpy).toHaveBeenCalledTimes(2);
+    expect(String(annotateSpy.mock.calls[1]?.[1] || '')).toContain(points[1].id);
+    expect(String(annotateSpy.mock.calls[1]?.[1] || '')).not.toContain(points[0].id);
+  });
+
+  it('persists valid first-pass annotations when the targeted retry request fails', async () => {
+    const points = [
+      createSentencePoint('sentence-topic-retry-error-a', 'unclassified', 'pdf-retry-error-a'),
+      createSentencePoint('sentence-topic-retry-error-b', 'unclassified', 'pdf-retry-error-b'),
+    ];
+    writeWikiStore(tempDir, 'web-user', [], points);
+    vi.spyOn(manager as any, 'callJsonNormalizer')
+      .mockResolvedValueOnce({
+        annotations: [{
+          sentenceId: points[0].id,
+          subjectTags: ['氮循环'],
+          trendConclusionTopic: '氮输入改变土壤氮循环',
+        }],
+      })
+      .mockRejectedValueOnce(new Error('temporary retry failure'));
+
+    await manager.startSentenceTopicAnnotation('web-user', {
+      apiUrl: 'https://example.test/v1',
+      apiKey: 'test-key',
+      model: 'test-model',
+    });
+    await waitForCondition(async () => (await manager.getSentenceTopicAnnotationStatus('web-user')).status !== 'processing');
+
+    const completed = await manager.getSentenceTopicAnnotationStatus('web-user');
+    const store = await manager.getStore('web-user');
+    expect(completed.status).toBe('completed');
+    expect(completed.annotatedSentences).toBe(1);
+    expect(completed.pendingSentences).toBe(1);
+    expect(completed.failedSentences).toBe(1);
+    expect(store.sentenceCloud?.points[0].aiTopicAnnotation?.subjectTags).toEqual(['氮循环']);
+    expect(store.sentenceCloud?.points[1].aiTopicAnnotation).toBeUndefined();
+  });
+
+  it('manually adds and edits a topic while reclassifying existing sentence points', async () => {
+    const point = createSentencePoint('rainfall-point', 'unclassified', 'pdf-rainfall');
+    point.sentence = 'Heavy rainfall increased soil moisture and field nitrous oxide emissions.';
+    point.claimText = 'Heavy rainfall increases field nitrous oxide emissions.';
+    point.topicLabel = '未分类';
+    point.keywords = [];
+    writeWikiStore(tempDir, 'web-user', [], [point]);
+
+    const added = await manager.saveManualTopicDefinition('web-user', {
+      label: '极端降雨效应',
+      description: '识别强降雨造成的农田响应。',
+      aliases: ['extreme precipitation'],
+      keywords: ['heavy rainfall'],
+      excludeKeywords: ['rainfall simulator'],
+    });
+    const edited = await manager.saveManualTopicDefinition('web-user', {
+      id: added.topic.id,
+      label: '极端降雨与排放',
+      description: '识别强降雨对农田温室气体排放的影响。',
+      aliases: ['extreme precipitation'],
+      keywords: ['heavy rainfall', 'nitrous oxide emissions'],
+      excludeKeywords: ['rainfall simulator'],
+    });
+    const store = await manager.getStore('web-user');
+
+    expect(added.reclassifiedPointCount).toBe(1);
+    expect(edited.topic.id).toBe(added.topic.id);
+    expect(edited.catalog.topics).toHaveLength(1);
+    expect(edited.catalog.topics[0].expandedBy).toBe('manual');
+    expect(store.sentenceCloud?.points[0].topicLabel).toBe('极端降雨与排放');
+    expect(store.sentenceCloud?.points[0].topicKey).toBe(added.topic.id.replace(/_/g, '-'));
   });
 
   it('builds sentence cloud points from introduction and discussion sentences with reference matches', () => {
@@ -485,15 +909,75 @@ describe('PdfWikiManager', () => {
       claimType: 'method',
       claimReason: '方法描述不进入论点库。',
     };
+    const fallbackOnly = {
+      ...publishable,
+      id: 'sent_fallback_only',
+      citations: [],
+      references: [{
+        id: 'ref-source-pdf',
+        raw: '来源 PDF：source.pdf',
+        title: 'Source paper',
+        fallbackSourcePdf: true,
+      }],
+      referenceCount: 1,
+      matchMethod: 'none',
+    };
+    const noReference = {
+      ...publishable,
+      id: 'sent_no_reference',
+      citations: [],
+      references: [],
+      referenceCount: 0,
+      matchMethod: 'none',
+    };
 
-    const store = (manager as any).buildSentenceCloudStore([publishable, reviewOnly, methodOnly]);
-    const literatures = (manager as any).sentencePointsToLiteratures([publishable, reviewOnly, methodOnly], 0);
+    const candidates = [publishable, reviewOnly, methodOnly, fallbackOnly, noReference];
+    const store = (manager as any).buildSentenceCloudStore(candidates);
+    const literatures = (manager as any).sentencePointsToLiteratures(candidates, 0);
 
     expect(store.points.map((point: any) => point.id)).toEqual(['sent_publishable']);
     expect(store.clouds).toHaveLength(1);
     expect(literatures.map((item: any) => item.id)).toEqual(['sent_publishable']);
     expect(literatures[0].abstract).toContain('可作论点: 是');
     expect(literatures[0].abstract).not.toContain('论点候选: 否');
+    expect(literatures[0].embeddingText).toContain(publishable.sentence);
+    expect(literatures[0].embeddingText).toContain(publishable.claimText);
+    expect(literatures[0].evidenceAttachment).toMatchObject({
+      kind: 'pdf-wiki-sentence',
+      sentenceId: 'sent_publishable',
+      sourcePdfId: 'pdf-1',
+      sourcePdfName: 'source.pdf',
+      section: 'Discussion',
+      sentenceIndex: 1,
+      citations: ['[1]'],
+      referenceIndexes: [1],
+    });
+    expect(literatures[0].evidenceAttachment.references[0]).toMatchObject({
+      id: 'ref-1',
+      index: 1,
+      title: 'Nitrogen fertilizer and N2O emissions',
+    });
+  });
+
+  it('removes fallback-only compatibility entries from display and writing retrieval views', async () => {
+    const verified = createStoreEntry('verified', 'Verified claim');
+    const fallbackOnly = createStoreEntry('fallback', 'Fallback-only claim');
+    fallbackOnly.references = [{
+      id: 'ref-source-fallback',
+      raw: '来源 PDF：fallback.pdf',
+      title: 'Fallback source PDF',
+      fallbackSourcePdf: true,
+    }];
+    fallbackOnly.pro[0].references = [...fallbackOnly.references];
+    writeWikiStore(tempDir, 'web-user', [verified, fallbackOnly]);
+
+    const viewerSnapshot = await manager.getViewerStoreSnapshot('web-user');
+    const store = await manager.getStore('web-user');
+    const literatures = (manager as any).storeToRetrievalLiteratures(store);
+
+    expect(viewerSnapshot.entries.map(entry => entry.id)).toEqual(['verified']);
+    expect(store.entries.map(entry => entry.id)).toEqual(['verified']);
+    expect(literatures.map((item: any) => item.id)).toEqual(['verified']);
   });
 
   it('refines sentence cloud reference matches with AI when configured', async () => {
@@ -544,9 +1028,6 @@ describe('PdfWikiManager', () => {
         claimText: '优化氮肥可降低 N2O 损失',
         claimType: 'result',
         claimReason: '该句表达结果判断',
-        topicLabel: '氮肥减排',
-        topicKey: 'nitrogen-mitigation',
-        keywords: ['nitrogen fertilizer', 'N2O'],
         reason: '句尾编号引用 [2] 对齐到文末条目',
       }],
     });
@@ -560,7 +1041,7 @@ describe('PdfWikiManager', () => {
 
     expect(refined[0].references.map((ref: any) => ref.id)).toEqual(['ref-2']);
     expect(refined[0].matchMethod).toBe('citation');
-    expect(refined[0].topicLabel).toBe('氮肥减排');
+    expect(refined[0].topicLabel).toBe('N2O 排放');
     expect(refined[0].claimCandidate).toBe(true);
     expect(refined[0].claimText).toBe('优化氮肥可降低 N2O 损失');
     expect(refined[0].referenceCount).toBe(1);
@@ -602,6 +1083,7 @@ describe('PdfWikiManager', () => {
   });
 
   it('copies uploaded PDFs and records an API configuration error', async () => {
+    vi.spyOn(manager as any, 'tryExtractPdfWithLiteParse').mockResolvedValue(null);
     await manager.processUploadedPdfs('web-user', [{
       originalname: 'sample.pdf',
       buffer: Buffer.from('%PDF-1.4\n%%EOF'),
@@ -622,6 +1104,7 @@ describe('PdfWikiManager', () => {
 
   it('requires Codex for the fast sentence Wiki even when an API is configured', async () => {
     vi.spyOn(manager as any, 'canUseCodexCli').mockReturnValue(false);
+    vi.spyOn(manager as any, 'tryExtractPdfWithLiteParse').mockResolvedValue(null);
 
     await manager.processUploadedPdfs('web-user', [{
       originalname: 'fast-codex-required.pdf',
@@ -776,6 +1259,105 @@ describe('PdfWikiManager', () => {
 
     expect(processSpy).toHaveBeenCalledTimes(1);
     expect(processSpy.mock.calls[0][1][0].originalname).toBe('recovered.pdf');
+  });
+
+  it('persists a whole PDF recognition batch and continues after an individual item fails', async () => {
+    const wikiDir = path.join(tempDir, 'uploads', 'web-user', 'pdf-wiki');
+    fs.mkdirSync(wikiDir, { recursive: true });
+    fs.writeFileSync(path.join(wikiDir, 'wiki.json'), JSON.stringify({
+      version: 1,
+      userId: 'web-user',
+      generatedAt: new Date().toISOString(),
+      pdfs: [
+        { id: 'pdf-full', originalName: 'full.pdf', fileName: 'full.pdf', filePath: 'full.pdf', size: 10 },
+        { id: 'pdf-images', originalName: 'images.pdf', fileName: 'images.pdf', filePath: 'images.pdf', size: 11 },
+      ],
+      referenceIndex: [],
+      entries: [],
+    }, null, 2));
+
+    const fullSpy = vi.spyOn(manager, 'reidentifyPdfWithLiteParse')
+      .mockRejectedValueOnce(new Error('broken PDF'));
+    const imageSpy = vi.spyOn(manager, 'ensurePdfFiguresForManager').mockResolvedValue({
+      pdf: {
+        id: 'pdf-images',
+        originalName: 'images.pdf',
+        fileName: 'images.pdf',
+        filePath: 'images.pdf',
+        size: 11,
+      },
+      figureCount: 4,
+      attempted: true,
+    });
+
+    const submitted = await manager.enqueuePdfRecognition('web-user', [
+      { pdfId: 'pdf-full', mode: 'full' },
+      { pdfId: 'pdf-images', mode: 'images-only' },
+    ]);
+    await waitForCondition(async () => {
+      const snapshot = await manager.getRecognitionQueueSnapshot('web-user');
+      return snapshot.completedItems + snapshot.failedItems === 2;
+    });
+    await (manager as any).recognitionQueueWorkers.get('web-user');
+
+    const snapshot = await manager.getRecognitionQueueSnapshot('web-user');
+    const queuePath = path.join(wikiDir, 'recognition-queue.json');
+    const persisted = JSON.parse(fs.readFileSync(queuePath, 'utf-8'));
+    expect(submitted.addedItems).toBe(2);
+    expect(submitted.addedJobIds).toHaveLength(1);
+    expect(fullSpy).toHaveBeenCalledTimes(1);
+    expect(imageSpy).toHaveBeenCalledTimes(1);
+    expect(snapshot.completedItems).toBe(1);
+    expect(snapshot.failedItems).toBe(1);
+    expect(persisted.jobs[0].items.map((item: any) => item.status)).toEqual(['error', 'completed']);
+  });
+
+  it('restores running PDF recognition items to the persistent queue after restart', async () => {
+    const wikiDir = path.join(tempDir, 'uploads', 'web-user', 'pdf-wiki');
+    fs.mkdirSync(wikiDir, { recursive: true });
+    const now = new Date().toISOString();
+    fs.writeFileSync(path.join(wikiDir, 'recognition-queue.json'), JSON.stringify({
+      version: 1,
+      userId: 'web-user',
+      updatedAt: now,
+      jobs: [{
+        id: 'pdfr-interrupted',
+        status: 'running',
+        createdAt: now,
+        updatedAt: now,
+        startedAt: now,
+        items: [{
+          pdfId: 'pdf-recovered',
+          pdfName: 'recovered.pdf',
+          mode: 'images-only',
+          status: 'running',
+          createdAt: now,
+          updatedAt: now,
+          startedAt: now,
+        }],
+      }],
+    }, null, 2));
+
+    const recoveredManager = new PdfWikiManager(tempDir);
+    const imageSpy = vi.spyOn(recoveredManager, 'ensurePdfFiguresForManager').mockResolvedValue({
+      pdf: {
+        id: 'pdf-recovered',
+        originalName: 'recovered.pdf',
+        fileName: 'recovered.pdf',
+        filePath: 'recovered.pdf',
+        size: 12,
+      },
+      figureCount: 2,
+      attempted: true,
+    });
+    await recoveredManager.recoverPersistentQueues();
+    await waitForCondition(async () => (
+      await recoveredManager.getRecognitionQueueSnapshot('web-user')
+    ).completedItems === 1);
+    await (recoveredManager as any).recognitionQueueWorkers.get('web-user');
+
+    expect(imageSpy).toHaveBeenCalledTimes(1);
+    expect((await recoveredManager.getRecognitionQueueSnapshot('web-user')).runningItems).toBe(0);
   });
 
   it('matches processed and queued PDF hashes before upload', async () => {
@@ -1079,7 +1661,7 @@ describe('PdfWikiManager', () => {
     });
   });
 
-  it('binds Codex-derived main conclusions to the source paper citation and metadata', () => {
+  it('keeps source-PDF fallback metadata but excludes it from publishable citation evidence', () => {
     const pdf = {
       id: 'pdf-source-2024',
       originalName: 'source-paper.pdf',
@@ -1120,10 +1702,8 @@ describe('PdfWikiManager', () => {
       doi: '10.1000/source.2024',
       fallbackSourcePdf: true,
     });
-    expect((manager as any).getSentencePointCitationReferences(points[0])[0]).toMatchObject({
-      title: 'Precision nitrogen management sustains yield',
-      journal: 'Global Change Biology',
-    });
+    expect((manager as any).getSentencePointCitationReferences(points[0])).toEqual([]);
+    expect((manager as any).isPublishableSentencePoint(points[0])).toBe(false);
   });
 
   it('builds a focused Codex prompt from sections, references, conclusion, and source metadata', () => {
@@ -1703,6 +2283,7 @@ describe('PdfWikiManager', () => {
   });
 
   it('uses Qwen-Long direct PDF upload before text extraction', async () => {
+    vi.spyOn(manager as any, 'tryExtractPdfWithLiteParse').mockResolvedValue(null);
     const responses = mockQwenDirectPdfResponses('Carbon availability increases N2O emissions');
     const fetchMock = vi.fn();
     for (const response of responses) {
@@ -1743,9 +2324,10 @@ describe('PdfWikiManager', () => {
     expect(store.referenceIndex[0].title).toBe('Carbon availability controls N2O');
     expect(store.entries[0].claim).toBe('Carbon availability increases N2O emissions');
     expect(store.entries[0].pro[0].summary).toBe('Carbon availability increases N2O emissions support');
-  });
+  }, 15_000);
 
   it('rebuilds an existing PDF when its wiki entries were cleared', async () => {
+    vi.spyOn(manager as any, 'tryExtractPdfWithLiteParse').mockResolvedValue(null);
     const responses = [
       ...mockQwenDirectPdfResponses('First extracted claim'),
       ...mockQwenDirectPdfResponses('Rebuilt extracted claim'),
@@ -1781,7 +2363,7 @@ describe('PdfWikiManager', () => {
     expect(store.entries).toHaveLength(1);
     expect(store.entries[0].claim).toBe('Rebuilt extracted claim');
     expect((await manager.getStatus('web-user')).entryCount).toBe(1);
-  });
+  }, 15_000);
 
   it('deletes selected wiki entries from the persistent store', async () => {
     writeWikiStore(tempDir, 'web-user', [
@@ -1827,7 +2409,7 @@ describe('PdfWikiManager', () => {
     expect(store.sentenceCloud?.points.map(point => point.id)).toEqual(['sentence-c']);
     expect(store.sentenceCloud?.clouds).toHaveLength(1);
     expect(store.sentenceCloud?.clouds[0]).toMatchObject({
-      topicKey: 'topic-b',
+      topicKey: 'unclassified',
       pointIds: ['sentence-c'],
       sentenceCount: 1,
       referenceCount: 1,

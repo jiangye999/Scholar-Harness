@@ -19,7 +19,7 @@ export default function AboutPage() {
             我们确保写作过程既高效又保持学术诚信。
           </p>
           <p className="text-gray-700 leading-relaxed">
-            我们的核心理念是"你是专家，AI是助手"。ScholarHarness不会替您写论文，
+            我们的核心理念是“你是专家，AI是助手”。ScholarHarness不会替您写论文，
             而是提供专业的写作指导和文献支持，让您的研究成果以最佳方式呈现。
           </p>
         </section>

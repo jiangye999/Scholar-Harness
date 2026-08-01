@@ -1,15 +1,14 @@
 'use client';
 
 import { useState } from 'react';
-import { useRouter } from 'next/navigation';
 import Link from 'next/link';
+import { requestPasswordReset } from '@/lib/auth';
 
 export default function ForgotPasswordPage() {
   const [email, setEmail] = useState('');
   const [loading, setLoading] = useState(false);
   const [success, setSuccess] = useState(false);
   const [error, setError] = useState('');
-  const router = useRouter();
 
   const validateEmail = (email: string): boolean => {
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -32,12 +31,10 @@ export default function ForgotPasswordPage() {
 
     setLoading(true);
     try {
-      // TODO: Call actual API when backend is ready
-      // For now, simulate success
-      await new Promise(resolve => setTimeout(resolve, 1000));
+      await requestPasswordReset(email);
       setSuccess(true);
-    } catch (err: any) {
-      setError(err.message || '发送失败，请重试');
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : '发送失败，请重试');
     } finally {
       setLoading(false);
     }
@@ -56,15 +53,15 @@ export default function ForgotPasswordPage() {
                 </svg>
               </div>
             </div>
-            <h2 className="text-3xl font-bold text-gray-900 mb-2">邮件已发送</h2>
+            <h2 className="text-3xl font-bold text-gray-900 mb-2">验证码已发送</h2>
             <p className="text-gray-600 mb-6">
-              重置链接已发送到您的邮箱，请查收
+              密码重置验证码已发送到您的邮箱，请在下一步输入验证码
             </p>
             <Link
-              href="/login"
+              href={`/reset-password?email=${encodeURIComponent(email)}`}
               className="inline-block px-6 py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-medium transition"
             >
-              返回登录
+              输入验证码并重置密码
             </Link>
           </div>
         </div>
@@ -84,7 +81,7 @@ export default function ForgotPasswordPage() {
           </div>
           <h2 className="text-3xl font-bold text-gray-900">忘记密码</h2>
           <p className="mt-2 text-sm text-gray-600">
-            输入您的邮箱地址，我们将发送重置链接
+            输入您的邮箱地址，我们将发送密码重置验证码
           </p>
         </div>
 

@@ -203,6 +203,22 @@ export class UserStore {
     return true;
   }
 
+  async resetPasswordByEmail(email: string, newPassword: string): Promise<boolean> {
+    const user = await this.findByEmail(email);
+    if (!user) {
+      return false;
+    }
+
+    const newHash = await hashPassword(newPassword);
+    await this.db.query(
+      `UPDATE users
+       SET password_hash = $1, updated_at = CURRENT_TIMESTAMP
+       WHERE id = $2`,
+      [newHash, user.id]
+    );
+    return true;
+  }
+
   async updateStatus(userId: string, status: User['status']): Promise<void> {
     await this.db.query(
       'UPDATE users SET status = $1 WHERE id = $2',

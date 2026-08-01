@@ -72,6 +72,28 @@ describe('local output path candidates', () => {
     expect(mirrored).not.toContain(path.join(activeRoot, 'figure.png'));
   });
 
+  it('falls back from a missing AI-workspace artifact to the original project root', () => {
+    const projectRoot = createTempRoot();
+    const activeRoot = path.join(projectRoot, 'ScholarHarness_AI_Workspaces', 'run-active');
+    const missingAiImage = path.join(activeRoot, 'figure1_ncp_map.png');
+    const projectImage = path.join(projectRoot, 'figure1_ncp_map.png');
+    fs.mkdirSync(activeRoot, { recursive: true });
+    fs.writeFileSync(projectImage, 'project-image');
+
+    const mirrored = getMirroredLocalOutputCandidatePaths(
+      missingAiImage,
+      [activeRoot, projectRoot],
+      [projectRoot, activeRoot],
+    );
+
+    expect(mirrored).toContain(path.resolve(projectImage));
+    expect(pickNewestExistingLocalOutputPath(
+      [missingAiImage, ...mirrored],
+      [projectRoot],
+      imageExtensions,
+    )).toBe(path.resolve(projectImage));
+  });
+
   it('rejects candidates outside the allowed roots', () => {
     const allowedRoot = createTempRoot();
     const outsideRoot = createTempRoot();

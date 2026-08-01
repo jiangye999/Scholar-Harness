@@ -220,6 +220,10 @@ export const chatRequestSchema = z.object({
   apiUrl: z.string().optional(),
   apiKey: z.string().optional(),
   model: z.string().optional(),
+  /** Composer-level Codex model override for this request. */
+  codexModel: z.string().max(200).optional(),
+  /** Composer-level Codex reasoning override for this request. */
+  codexReasoningEffort: z.enum(['low', 'medium', 'high', 'xhigh', 'max', 'ultra']).optional(),
   /**
    * 小牛马模型（用于记忆提取、结构化总结等）
    * 来自前端 ⚙️ API 设置中的 secondary model 配置
@@ -276,6 +280,7 @@ export const queryIntentRequestSchema = z.object({
     type: z.string().max(80).optional(),
   }).passthrough()).max(12).optional(),
   explicitParts: z.array(z.record(z.any())).max(30).optional(),
+  contextItems: z.array(z.record(z.any())).max(50).optional(),
   apiUrl: z.string().optional(),
   apiKey: z.string().optional(),
   model: z.string().optional(),

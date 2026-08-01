@@ -20,49 +20,20 @@ export default function LiteraturePage() {
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedFilter, setSelectedFilter] = useState('all');
-  
-  // 文献上传合规声明
-  const [showUploadModal, setShowUploadModal] = useState(false);
-  const [confirmLegalSource, setConfirmLegalSource] = useState(false);
-  const [uploading, setUploading] = useState(false);
 
-  // Mock literature data
-  const mockLiterature: Literature[] = [
-    {
-      id: '1',
-      title: 'Deep Learning for Natural Language Processing: A Survey',
-      authors: ['Zhang, Y.', 'Li, M.', 'Wang, X.'],
-      year: 2024,
-      journal: 'Nature Reviews',
-      uploadDate: '2026-04-08',
-      fileSize: '2.3 MB'
-    },
-    {
-      id: '2',
-      title: 'Transformer Models in Academic Writing: Applications and Challenges',
-      authors: ['Smith, J.', 'Brown, K.'],
-      year: 2023,
-      journal: 'Science Advances',
-      uploadDate: '2026-04-07',
-      fileSize: '1.8 MB'
-    },
-    {
-      id: '3',
-      title: 'AI-Assisted Literature Review: A New Paradigm',
-      authors: ['Liu, W.', 'Chen, H.', 'Zhou, Y.'],
-      year: 2024,
-      journal: 'PLOS ONE',
-      uploadDate: '2026-04-06',
-      fileSize: '3.1 MB'
-    }
-  ];
+  // 文献全文当前只由桌面端保存在用户本地。云端同步 API 上线前，
+  // 这里保持真实空状态，避免用演示数据冒充用户文献。
+  const literature: Literature[] = [];
 
   useEffect(() => {
-    if (!isAuthenticated()) {
-      router.push('/login');
-      return;
-    }
-    setLoading(false);
+    const timer = window.setTimeout(() => {
+      if (!isAuthenticated()) {
+        router.push('/login');
+        return;
+      }
+      setLoading(false);
+    }, 0);
+    return () => window.clearTimeout(timer);
   }, [router]);
 
   if (loading) {
@@ -76,30 +47,10 @@ export default function LiteraturePage() {
     );
   }
 
-  const filteredLiterature = mockLiterature.filter(lit =>
+  const filteredLiterature = literature.filter(lit =>
     lit.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
     lit.authors.some(author => author.toLowerCase().includes(searchQuery.toLowerCase()))
   );
-
-  const handleUploadClick = () => {
-    setShowUploadModal(true);
-    setConfirmLegalSource(false);
-  };
-
-  const handleUploadConfirm = async () => {
-    if (!confirmLegalSource) {
-      alert('请确认文献来源合法性后再上传');
-      return;
-    }
-    
-    setUploading(true);
-    // 实际上传逻辑（此处为示例）
-    setTimeout(() => {
-      setShowUploadModal(false);
-      setUploading(false);
-      alert('文献上传成功（演示）');
-    }, 1000);
-  };
 
   return (
     <div className="min-h-screen bg-gray-50 py-8 px-4 sm:px-6 lg:px-8">
@@ -140,13 +91,15 @@ export default function LiteraturePage() {
               </div>
             </div>
 
-            <button 
-              onClick={handleUploadClick}
-              className="px-6 py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-medium transition flex items-center justify-center gap-2">
+            <button
+              type="button"
+              disabled
+              title="文献全文当前在桌面端本地管理，云端同步尚未开放"
+              className="px-6 py-3 bg-gray-300 text-gray-600 rounded-lg font-medium flex items-center justify-center gap-2 cursor-not-allowed">
               <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
               </svg>
-              上传文献
+              请在桌面端导入
             </button>
           </div>
           
@@ -157,66 +110,6 @@ export default function LiteraturePage() {
             </p>
           </div>
         </div>
-
-        {/* Upload Modal */}
-        {showUploadModal && (
-          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-            <div className="bg-white rounded-xl shadow-xl max-w-md w-full p-6">
-              <h2 className="text-xl font-bold text-gray-900 mb-4">上传文献</h2>
-              
-              {/* 合规声明 */}
-              <div className="mb-4 p-4 bg-gray-50 rounded-lg border border-gray-200">
-                <h3 className="text-sm font-medium text-gray-900 mb-3">来源合法性声明</h3>
-                
-                <div className="flex items-start mb-3">
-                  <input
-                    id="confirmLegalSource"
-                    type="checkbox"
-                    checked={confirmLegalSource}
-                    onChange={(e) => setConfirmLegalSource(e.target.checked)}
-                    className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded mt-1"
-                  />
-                  <label htmlFor="confirmLegalSource" className="ml-3 text-sm text-gray-600">
-                    我确认上传的文献来自<strong>合法授权渠道</strong>（如机构订阅、个人购买、开放获取期刊等），未侵犯他人版权
-                    <span className="text-red-500 ml-1">*</span>
-                  </label>
-                </div>
-                
-                <p className="text-xs text-gray-500">
-                  * 根据《著作权法》规定，未经授权获取和使用他人作品可能构成侵权。用户需自行承担上传文献的版权合规责任。
-                </p>
-              </div>
-              
-              {/* 文件选择（示例） */}
-              <div className="mb-4">
-                <label className="block text-sm font-medium text-gray-700 mb-2">选择文献文件</label>
-                <input
-                  type="file"
-                  accept=".txt,.csv,.ris,.bib"
-                  className="w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-medium file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100"
-                />
-                <p className="mt-1 text-xs text-gray-500">支持 .txt, .csv, .ris, .bib 格式</p>
-              </div>
-              
-              {/* 按钮 */}
-              <div className="flex gap-3">
-                <button
-                  onClick={() => setShowUploadModal(false)}
-                  className="flex-1 py-2 bg-gray-200 hover:bg-gray-300 text-gray-700 rounded-lg font-medium transition"
-                >
-                  取消
-                </button>
-                <button
-                  onClick={handleUploadConfirm}
-                  disabled={!confirmLegalSource || uploading}
-                  className="flex-1 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-400 text-white rounded-lg font-medium transition"
-                >
-                  {uploading ? '上传中...' : '确认上传'}
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
 
         {/* Filter Tabs */}
         <div className="flex gap-2 mb-6">
@@ -282,8 +175,8 @@ export default function LiteraturePage() {
               <svg className="w-16 h-16 text-gray-300 mx-auto mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
               </svg>
-              <h3 className="text-lg font-medium text-gray-900 mb-2">暂无文献</h3>
-              <p className="text-gray-600">上传您的第一篇文献开始使用</p>
+              <h3 className="text-lg font-medium text-gray-900 mb-2">云端文献同步尚未开放</h3>
+              <p className="text-gray-600">请在 Scholar Harness 桌面端导入和管理文献，文件默认保存在您的本地工作目录。</p>
             </div>
           )}
         </div>

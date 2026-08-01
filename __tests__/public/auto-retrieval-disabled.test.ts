@@ -2,15 +2,17 @@ import { readFileSync } from "fs";
 import path from "path";
 import { describe, expect, it } from "vitest";
 
+import { readPublicAppSource } from '../helpers/public-app-source';
+
 const repoRoot = path.resolve(__dirname, "..", "..");
 
 describe("autonomous literature and file retrieval defaults", () => {
   it("lets AI generate keywords and execute local evidence retrieval before answering", () => {
-    const html = readFileSync(path.join(repoRoot, "src/public/index.html"), "utf-8");
+    const html = readPublicAppSource();
 
     expect(html).toContain("var AUTO_LITERATURE_CONTEXT_ENABLED = true;");
     expect(html).toContain("var AUTO_RETRIEVAL_DETECTION_ENABLED = true;");
-    expect(html).toContain("async function runAutonomousRetrievalForMessage(message, onProgress, queryIntent, recentHistory)");
+    expect(html).toContain("async function runAutonomousRetrievalForMessage(message, onProgress, queryIntent, recentHistory, abortSignal)");
     expect(html).toContain("queryIntent.needsLiteratureRetrieval !== true");
     expect(html).toContain("fetch('/api/retrieval/detect'");
     expect(html).toContain("fetch('/api/retrieval/execute'");
@@ -20,7 +22,7 @@ describe("autonomous literature and file retrieval defaults", () => {
   });
 
   it("keeps the manual gear action as an explicit force-generate fallback", () => {
-    const html = readFileSync(path.join(repoRoot, "src/public/index.html"), "utf-8");
+    const html = readPublicAppSource();
 
     expect(html).toContain('onclick="generateKeywordsFromMessage(this)"');
     expect(html).toContain("window.generateKeywordsFromMessage = async function(btn)");

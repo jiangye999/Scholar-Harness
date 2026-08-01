@@ -4,7 +4,9 @@ import * as vm from 'vm';
 
 import { describe, expect, it } from 'vitest';
 
-const html = readFileSync(path.resolve(__dirname, '../../src/public/index.html'), 'utf-8');
+import { readPublicAppSource } from '../helpers/public-app-source';
+
+const html = readPublicAppSource();
 
 function loadThumbnailCacheKeyHelper(): (img: unknown, sourceUrl: string) => string {
   const match = html.match(/function getOutputAttachmentThumbnailCacheKey\(img, sourceUrl\) \{[\s\S]*?\n    \}/);

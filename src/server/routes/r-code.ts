@@ -5,7 +5,7 @@
 
 import { spawn } from 'child_process';
 import { randomUUID } from 'crypto';
-import { createWriteStream, existsSync } from 'fs';
+import { createWriteStream, existsSync, readFileSync } from 'fs';
 import * as http from 'http';
 import * as https from 'https';
 import * as zlib from 'zlib';
@@ -20,6 +20,7 @@ import { logger } from '../../utils/logger';
 import { getDataDir, getMemoryDir, sanitizeUserId } from '../../utils/paths';
 import { buildToolRuntimeEnv } from '../../utils/tool-runtime-env';
 import { researchSessionManager } from '../../research/research-session-manager';
+import { prepareWorkspaceOutputDirectory } from '../services/workspace-directory';
 
 const router = Router();
 
@@ -338,6 +339,9 @@ const rExecuteSchema = z.object({
   dataFilename: z.string().optional(),
   sourceDataFilePath: z.string().optional(),
   researchSessionId: z.string().optional(),
+  workspaceDirectory: z.string().max(20_000).optional(),
+  workspaceOutputType: z.enum(['meta-analysis', 'bibliometrics']).optional(),
+  workspaceOutputId: z.string().max(160).optional(),
   timeoutMs: z.coerce.number().int().min(10_000).max(600_000).optional(),
 });
 
@@ -1213,6 +1217,61 @@ function getRPluginRoot(userId: string): string {
 
 function getRDesktopArtifactRoot(userId: string): string {
   return path.join(os.homedir(), 'Desktop', 'Scholar Harness R图表', sanitizeUserId(userId));
+}
+
+interface RJobLocationRecord {
+  userId: string;
+  workDir: string;
+  updatedAt: string;
+}
+
+interface RJobLocationRegistry {
+  jobs: Record<string, RJobLocationRecord>;
+}
+
+let rJobLocationRegistryWriteChain: Promise<void> = Promise.resolve();
+
+function getRJobLocationRegistryPath(): string {
+  return path.join(getDataDir(), 'r-plugin', 'job-locations.json');
+}
+
+function readRJobLocationRegistry(): RJobLocationRegistry {
+  try {
+    const parsed = JSON.parse(readFileSync(getRJobLocationRegistryPath(), 'utf-8')) as Partial<RJobLocationRegistry>;
+    return { jobs: parsed.jobs && typeof parsed.jobs === 'object' ? parsed.jobs : {} };
+  } catch {
+    return { jobs: {} };
+  }
+}
+
+async function rememberRJobLocation(userId: string, jobId: string, workDir: string): Promise<void> {
+  const writeTask = rJobLocationRegistryWriteChain
+    .catch(() => undefined)
+    .then(async () => {
+      const registry = readRJobLocationRegistry();
+      registry.jobs[jobId] = {
+        userId: sanitizeUserId(userId),
+        workDir: path.resolve(workDir),
+        updatedAt: new Date().toISOString(),
+      };
+      const entries = Object.entries(registry.jobs)
+        .sort(([, left], [, right]) => right.updatedAt.localeCompare(left.updatedAt))
+        .slice(0, 1000);
+      const registryPath = getRJobLocationRegistryPath();
+      await fs.mkdir(path.dirname(registryPath), { recursive: true });
+      await fs.writeFile(registryPath, JSON.stringify({ jobs: Object.fromEntries(entries) }, null, 2), 'utf-8');
+    });
+  rJobLocationRegistryWriteChain = writeTask;
+  await writeTask;
+}
+
+function parseRWorkspaceDirectory(value: string | undefined): unknown {
+  if (!value) return null;
+  try {
+    return JSON.parse(value);
+  } catch {
+    throw new Error('工作目录参数不是合法 JSON');
+  }
 }
 
 function createRJobId(): string {
@@ -2186,6 +2245,13 @@ function resolveRJobDir(userId: string, jobId: string): string {
   if (!safeJobId) {
     throw new Error('无效的 R 图表任务 ID');
   }
+  const registered = readRJobLocationRegistry().jobs[safeJobId];
+  if (registered && sanitizeUserId(registered.userId) === safeUserId) {
+    const registeredDir = path.resolve(registered.workDir);
+    if (path.basename(registeredDir) === safeJobId && existsSync(registeredDir)) {
+      return registeredDir;
+    }
+  }
   const desktopDir = path.resolve(getRDesktopArtifactRoot(safeUserId), safeJobId);
   if (existsSync(desktopDir)) return desktopDir;
   return path.resolve(getRPluginRoot(safeUserId), safeJobId);
@@ -2551,9 +2617,31 @@ router.post('/execute', upload.single('file'), async (req, res) => {
     }
 
     const jobId = createRJobId();
-    const jobDir = path.join(getRDesktopArtifactRoot(userId), jobId);
+    let jobParentDir = getRDesktopArtifactRoot(userId);
+    if (parsed.workspaceDirectory && parsed.workspaceOutputType === 'meta-analysis') {
+      const outputId = String(parsed.workspaceOutputId || '')
+        .replace(/[^a-zA-Z0-9_-]+/g, '_')
+        .replace(/^_+|_+$/g, '')
+        .slice(0, 120);
+      if (!outputId) {
+        return res.status(400).json({ success: false, error: 'Meta 分析 R 输出缺少有效的分析 ID' });
+      }
+      const preparedWorkspace = await prepareWorkspaceOutputDirectory(
+        parseRWorkspaceDirectory(parsed.workspaceDirectory),
+        ['Meta分析', 'runs', outputId, 'R图表'],
+      );
+      if (preparedWorkspace) jobParentDir = preparedWorkspace.outputRoot;
+    } else if (parsed.workspaceDirectory && parsed.workspaceOutputType === 'bibliometrics') {
+      const preparedWorkspace = await prepareWorkspaceOutputDirectory(
+        parseRWorkspaceDirectory(parsed.workspaceDirectory),
+        ['文献计量分析', 'R图表'],
+      );
+      if (preparedWorkspace) jobParentDir = preparedWorkspace.outputRoot;
+    }
+    const jobDir = path.join(jobParentDir, jobId);
     await fs.mkdir(jobDir, { recursive: true });
     await fs.mkdir(path.join(jobDir, 'plots'), { recursive: true });
+    await rememberRJobLocation(userId, jobId, jobDir);
 
     const filename = sanitizeRFilename(parsed.filename);
     const scriptPath = path.join(jobDir, filename);

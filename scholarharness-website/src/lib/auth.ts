@@ -203,7 +203,7 @@ export async function register(
   const normalizedBetaCode = betaCode?.trim().toUpperCase() || '';
   const normalizedReferralCode = referralCode?.trim().toUpperCase() || '';
   if (!normalizedBetaCode && !normalizedReferralCode) {
-    throw new Error('注册必须填写授权码/内测码或好友邀请码');
+    throw new Error('注册必须填写授权码/内测码、好友邀请码或分销商邀请码');
   }
 
   // 合规验证：必须提供同意选项
@@ -351,6 +351,60 @@ export async function getCurrentUser(): Promise<User | null> {
   }
 }
 
+export async function updateProfile(username: string): Promise<User> {
+  const current = getStoredUser();
+  const data = await parseApiResponse<{ user: Partial<User> }>(
+    await authedFetch('/auth/profile', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: username.trim() }),
+    }),
+    '更新个人信息失败'
+  );
+  const user = { ...current, ...data.user } as User;
+  saveUser(user);
+  return user;
+}
+
+export async function changePassword(oldPassword: string, newPassword: string): Promise<void> {
+  await parseApiResponse(
+    await authedFetch('/auth/change-password', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ oldPassword, newPassword }),
+    }),
+    '修改密码失败'
+  );
+}
+
+export async function deleteAccount(): Promise<void> {
+  await parseApiResponse(
+    await authedFetch('/auth/account', { method: 'DELETE' }),
+    '删除账户失败'
+  );
+  logout();
+}
+
+export async function requestPasswordReset(email: string): Promise<void> {
+  const result = await sendEmailVerificationCode(email, 'reset_password');
+  if (!result.success) {
+    throw new Error(result.message);
+  }
+}
+
+export async function resetPassword(
+  email: string,
+  verificationCode: string,
+  newPassword: string
+): Promise<void> {
+  const response = await fetch(`${API_BASE_URL}/auth/reset-password`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email, verificationCode, newPassword }),
+  });
+  await parseApiResponse(response, '重置密码失败');
+}
+
 /**
  * 获取用户订阅信息
  */
@@ -465,8 +519,8 @@ export async function getPlans(): Promise<Plan[]> {
  * 购买套餐
  */
 export async function purchasePlan(planType: string, paymentMethod: string): Promise<{
-  subscription: any;
-  payment: any;
+  subscription: Record<string, unknown>;
+  payment: Record<string, unknown>;
   pay_url?: string;
 }> {
   const token = getAccessToken();

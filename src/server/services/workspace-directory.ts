@@ -101,6 +101,13 @@ export interface WorkspaceDirectoryContext {
   warning?: string;
 }
 
+export interface PreparedWorkspaceOutputDirectory {
+  workspaceRoot: string;
+  aiWorkRoot: string;
+  outputRoot: string;
+  permission: Exclude<WorkspaceDirectoryPermission, 'read-only'>;
+}
+
 export interface WorkspaceToolRunResult {
   processedResponse: string;
   toolResults: string[];
@@ -335,6 +342,53 @@ export async function resolveWorkspaceDirectoryRoot(input: WorkspaceDirectoryInp
   if (resolved.stat.isDirectory()) return resolved.absolutePath;
   if (resolved.stat.isFile()) return path.dirname(resolved.absolutePath);
   throw new Error('工作目录路径不是文件夹或文件');
+}
+
+/**
+ * Resolve and create a workflow output directory without scanning the whole
+ * workspace. This is for backend workflows (Meta/R/etc.) that must write all
+ * artifacts into the same conversation-scoped directory selected in the
+ * composer.
+ */
+export async function prepareWorkspaceOutputDirectory(
+  value: unknown,
+  relativeSegments: string[] = [],
+): Promise<PreparedWorkspaceOutputDirectory | null> {
+  const input = normalizeWorkspaceDirectoryInput(value);
+  if (!input?.enabled) return null;
+  const permission = normalizePermission(input.permission);
+  if (permission === 'read-only') {
+    throw new Error('当前工作目录是只读模式；Meta 分析需要将数据、脚本和图表保存到该目录，请将目录权限改为“可写”或“完全访问”');
+  }
+
+  const workspaceRoot = await resolveWorkspaceDirectoryRoot(input);
+  const aiWorkRoot = resolveConversationAiWorkRoot(workspaceRoot, input);
+  if (!aiWorkRoot) {
+    throw new Error('工作目录缺少会话标识，无法建立安全的 AI 工作文件夹');
+  }
+
+  const safeSegments = relativeSegments.map(segment => String(segment || '').trim());
+  if (safeSegments.some(segment => (
+    !segment
+    || segment === '.'
+    || segment === '..'
+    || path.isAbsolute(segment)
+    || /[\\/]/.test(segment)
+  ))) {
+    throw new Error('工作流输出子目录名无效');
+  }
+
+  const outputRoot = path.resolve(aiWorkRoot, ...safeSegments);
+  if (!isSubPath(aiWorkRoot, outputRoot)) {
+    throw new Error('工作流输出目录超出当前会话的 AI 工作文件夹');
+  }
+  await fs.mkdir(outputRoot, { recursive: true });
+  return {
+    workspaceRoot,
+    aiWorkRoot,
+    outputRoot,
+    permission,
+  };
 }
 
 function isTextLikeFile(filePath: string, size: number): boolean {

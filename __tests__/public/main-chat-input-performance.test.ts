@@ -3,10 +3,9 @@ import path from 'path';
 
 import { describe, expect, it } from 'vitest';
 
-const html = readFileSync(
-  path.resolve(__dirname, '../../src/public/index.html'),
-  'utf-8',
-);
+import { readPublicAppSource } from '../helpers/public-app-source';
+
+const html = readPublicAppSource();
 
 describe('main chat input responsiveness', () => {
   it('keeps native IME composition off synchronous layout work', () => {
@@ -22,7 +21,7 @@ describe('main chat input responsiveness', () => {
   it('defers textarea measurement until after the committed character can paint', () => {
     expect(html).toContain('MAIN_CHAT_INPUT_RESIZE_DELAY_MS = 48');
     expect(html).toContain('scheduleMainChatInputHeight(MAIN_CHAT_INPUT_RESIZE_DELAY_MS)');
-    expect(html).toContain("userInput.style.height = '24px'");
+    expect(html).toContain("userInput.style.height = '46px'");
     expect(html).toContain('if (mainChatInputNeedsShrinkMeasurement)');
     expect(html).toContain("userInput.style.overflowY = contentHeight > 128 ? 'auto' : 'hidden'");
   });

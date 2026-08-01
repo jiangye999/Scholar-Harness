@@ -91,13 +91,16 @@ export default function RegisterPage() {
   const verificationCodeCountdownTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const referral = params.get('ref') || params.get('invite') || params.get('referral_code');
-    if (referral) {
-      setReferralCode(referral.trim().toUpperCase());
-    }
+    const referralTimer = window.setTimeout(() => {
+      const params = new URLSearchParams(window.location.search);
+      const referral = params.get('ref') || params.get('invite') || params.get('referral_code');
+      if (referral) {
+        setReferralCode(referral.trim().toUpperCase());
+      }
+    }, 0);
 
     return () => {
+      window.clearTimeout(referralTimer);
       if (verificationCodeCountdownTimerRef.current !== null) {
         window.clearInterval(verificationCodeCountdownTimerRef.current);
       }
@@ -361,7 +364,7 @@ export default function RegisterPage() {
     const normalizedBetaCode = betaCode.trim().toUpperCase();
     const normalizedReferralCode = referralCode.trim().toUpperCase();
     if (!normalizedBetaCode && !normalizedReferralCode) {
-      setError('注册必须填写授权码/内测码或好友邀请码');
+      setError('注册必须填写授权码/内测码、好友邀请码或分销商邀请码');
       return;
     }
     if (normalizedBetaCode && betaCodeValid === false) {
@@ -467,8 +470,8 @@ export default function RegisterPage() {
             <div className="flex flex-col gap-4 sm:flex-row sm:items-center">
               <div className="shrink-0 overflow-hidden rounded-md border border-white bg-white p-2 shadow-sm">
                 <Image
-                  src="/beta-group-qr.png"
-                  alt="Scholar Harness 内测群二维码"
+                  src="/customer-service-qr.jpg"
+                  alt="Scholar Harness 客服二维码"
                   width={132}
                   height={144}
                   unoptimized
@@ -476,9 +479,9 @@ export default function RegisterPage() {
                 />
               </div>
               <div>
-                <div className="text-sm font-semibold text-gray-900">Scholar Harness 内测群</div>
+                <div className="text-sm font-semibold text-gray-900">Scholar Harness 客服</div>
                 <p className="mt-2 text-sm leading-6 text-gray-600">
-                  购买后如需获取卡密、确认授权或咨询注册问题，可以扫码加入内测群。
+                  购买后如需获取卡密、确认授权或咨询注册问题，可以扫码添加客服。
                 </p>
               </div>
             </div>
@@ -645,14 +648,14 @@ export default function RegisterPage() {
                 </p>
               )}
               <p className="mt-1 text-xs text-gray-500">
-                授权码/内测码和好友邀请码至少填写一个；已有账号登录时可选填授权码激活使用权限
+                授权码/内测码、好友邀请码和分销商邀请码至少填写一个；已有账号登录时可选填授权码激活使用权限
               </p>
             </div>
 
             {/* Referral Code */}
             <div>
               <label htmlFor="referralCode" className="block text-sm font-medium text-gray-700 mb-2">
-                邀请码 <span className="text-gray-400">(与授权码二选一)</span>
+                好友/分销商邀请码 <span className="text-gray-400">(与授权码二选一)</span>
               </label>
               <input
                 id="referralCode"
@@ -660,11 +663,11 @@ export default function RegisterPage() {
                 value={referralCode}
                 onChange={(e) => setReferralCode(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 20))}
                 className="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-md focus:ring-2 focus:ring-emerald-700/15 focus:border-emerald-700 transition font-mono uppercase"
-                placeholder="好友邀请码"
+                placeholder="好友邀请码或分销商邀请码"
                 maxLength={20}
               />
               <p className="mt-1 text-xs text-gray-500">
-                通过好友邀请链接进入时会自动填写；使用邀请码注册可获得10天免费试用，并计入好友邀请进度
+                通过邀请链接进入时会自动填写；好友邀请码计入邀请进度，分销商邀请码会长期绑定注册归因并统计后续每笔套餐购买
               </p>
             </div>
 

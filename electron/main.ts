@@ -1,4 +1,4 @@
-import { app, BrowserWindow, Menu, shell, dialog, ipcMain } from 'electron';
+import { app, BrowserWindow, Menu, shell, dialog, ipcMain, WebContentsView, clipboard } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as http from 'http';
@@ -13,6 +13,9 @@ let mainWindow: BrowserWindow | null = null;
 let loginWindow: BrowserWindow | null = null;
 let activationWindow: BrowserWindow | null = null;
 let userInfoWindow: BrowserWindow | null = null;
+let vendorConfigView: WebContentsView | null = null;
+let vendorConfigViewAttached = false;
+let activeVendorConfigId = '';
 let serverProcess: ChildProcess | null = null;
 let serverStartPromise: Promise<void> | null = null;
 let windowTransitionInProgress = false;
@@ -27,6 +30,63 @@ const RENDERER_UNRESPONSIVE_GRACE_MS = 15_000;
 const RENDERER_RECOVERY_RETRY_DELAY_MS = 1_500;
 const RENDERER_RECOVERY_STABLE_MS = 30_000;
 const rendererRecoveryPolicy = new RendererRecoveryPolicy(3, 120_000);
+
+const VENDOR_CONFIG_SITES = {
+  openrouter: {
+    id: 'openrouter',
+    name: 'OpenRouter',
+    url: 'https://openrouter.ai/keys',
+  },
+  dashscope: {
+    id: 'dashscope',
+    name: '阿里云百炼 / 通义千问',
+    url: 'https://bailian.console.aliyun.com/?apiKey=1#/api-key',
+  },
+  qwen: {
+    id: 'qwen',
+    name: '阿里云百炼 / 通义千问',
+    url: 'https://bailian.console.aliyun.com/?apiKey=1#/api-key',
+  },
+  deepseek: {
+    id: 'deepseek',
+    name: 'DeepSeek',
+    url: 'https://platform.deepseek.com/api_keys',
+  },
+  zhipu: {
+    id: 'zhipu',
+    name: '智谱 GLM',
+    url: 'https://open.bigmodel.cn/usercenter/proj-mgmt/apikeys',
+  },
+  moonshot: {
+    id: 'moonshot',
+    name: 'Kimi / Moonshot',
+    url: 'https://platform.moonshot.cn/console/api-keys',
+  },
+  volcengine: {
+    id: 'volcengine',
+    name: '火山方舟',
+    url: 'https://console.volcengine.com/ark/region:ark+cn-beijing/apiKey',
+  },
+  baidu: {
+    id: 'baidu',
+    name: '百度千帆',
+    url: 'https://console.bce.baidu.com/qianfan/ais/console/applicationConsole/application',
+  },
+  tencent: {
+    id: 'tencent',
+    name: '腾讯混元',
+    url: 'https://console.cloud.tencent.com/hunyuan/api-key',
+  },
+} as const;
+
+type VendorConfigSiteId = keyof typeof VENDOR_CONFIG_SITES;
+
+interface VendorConfigBounds {
+  x?: number;
+  y?: number;
+  width?: number;
+  height?: number;
+}
 
 let rendererRecoveryInProgress = false;
 let rendererRecoveryPromptOpen = false;
@@ -84,6 +144,119 @@ function getDataDir(): string {
   }
   
   return dataDir;
+}
+
+function getVendorConfigSite(providerId: unknown) {
+  const normalized = String(providerId || '').trim().toLowerCase() as VendorConfigSiteId;
+  return VENDOR_CONFIG_SITES[normalized] || null;
+}
+
+function isMainWindowSender(sender: Electron.WebContents): boolean {
+  return Boolean(mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents === sender);
+}
+
+function normalizeVendorConfigBounds(raw: VendorConfigBounds | undefined): Electron.Rectangle | null {
+  if (!mainWindow || mainWindow.isDestroyed()) return null;
+  const contentBounds = mainWindow.getContentBounds();
+  const x = Math.max(0, Math.round(Number(raw?.x || 0)));
+  const y = Math.max(0, Math.round(Number(raw?.y || 0)));
+  const width = Math.max(1, Math.min(Math.round(Number(raw?.width || 0)), Math.max(1, contentBounds.width - x)));
+  const height = Math.max(1, Math.min(Math.round(Number(raw?.height || 0)), Math.max(1, contentBounds.height - y)));
+  if (width < 40 || height < 40) return null;
+  return { x, y, width, height };
+}
+
+function emitVendorConfigBrowserState(patch: Record<string, unknown> = {}): void {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  const site = getVendorConfigSite(activeVendorConfigId);
+  const contents = vendorConfigView && !vendorConfigView.webContents.isDestroyed()
+    ? vendorConfigView.webContents
+    : null;
+  mainWindow.webContents.send('vendor-config-browser-state', {
+    providerId: site?.id || activeVendorConfigId,
+    name: site?.name || '',
+    url: contents?.getURL() || site?.url || '',
+    canGoBack: contents?.navigationHistory.canGoBack() || false,
+    loading: contents?.isLoading() || false,
+    ...patch,
+  });
+}
+
+function detachVendorConfigView(): void {
+  if (!mainWindow || mainWindow.isDestroyed() || !vendorConfigView || !vendorConfigViewAttached) return;
+  try {
+    mainWindow.contentView.removeChildView(vendorConfigView);
+  } catch (error) {
+    console.warn('[VendorConfigBrowser] Failed to detach view:', error);
+  }
+  vendorConfigViewAttached = false;
+}
+
+function destroyVendorConfigView(): void {
+  detachVendorConfigView();
+  if (vendorConfigView && !vendorConfigView.webContents.isDestroyed()) {
+    vendorConfigView.webContents.close();
+  }
+  vendorConfigView = null;
+  vendorConfigViewAttached = false;
+  activeVendorConfigId = '';
+}
+
+function ensureVendorConfigView(): WebContentsView {
+  if (vendorConfigView && !vendorConfigView.webContents.isDestroyed()) return vendorConfigView;
+
+  vendorConfigView = new WebContentsView({
+    webPreferences: {
+      nodeIntegration: false,
+      contextIsolation: true,
+      sandbox: true,
+      webSecurity: true,
+      allowRunningInsecureContent: false,
+      partition: 'persist:scholar-harness-vendor-config',
+    },
+  });
+  vendorConfigView.setBackgroundColor('#ffffff');
+  const contents = vendorConfigView.webContents;
+  contents.session.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false));
+  contents.setWindowOpenHandler(({ url }) => {
+    if (/^https:\/\//i.test(url)) {
+      void shell.openExternal(url);
+    }
+    return { action: 'deny' };
+  });
+  contents.on('will-navigate', (event, url) => {
+    if (!/^https:\/\//i.test(url)) {
+      event.preventDefault();
+      emitVendorConfigBrowserState({ error: '已阻止不安全的非 HTTPS 页面跳转。' });
+    }
+  });
+  contents.on('did-start-loading', () => emitVendorConfigBrowserState({ loading: true, error: '' }));
+  contents.on('did-stop-loading', () => emitVendorConfigBrowserState({ loading: false, error: '' }));
+  contents.on('did-navigate', () => emitVendorConfigBrowserState({ loading: contents.isLoading(), error: '' }));
+  contents.on('did-navigate-in-page', () => emitVendorConfigBrowserState({ loading: contents.isLoading(), error: '' }));
+  contents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL, isMainFrame) => {
+    if (!isMainFrame || errorCode === -3) return;
+    emitVendorConfigBrowserState({
+      loading: false,
+      error: `厂商页面加载失败（${errorCode}）：${errorDescription}`,
+      url: validatedURL,
+    });
+  });
+  return vendorConfigView;
+}
+
+function attachVendorConfigView(bounds: Electron.Rectangle): WebContentsView {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    throw new Error('主窗口不可用');
+  }
+  const view = ensureVendorConfigView();
+  if (!vendorConfigViewAttached) {
+    mainWindow.contentView.addChildView(view);
+    vendorConfigViewAttached = true;
+  }
+  view.setBounds(bounds);
+  view.setVisible(true);
+  return view;
 }
 
 /**
@@ -1072,6 +1245,29 @@ function createWindow(): void {
     show: false,
   });
   const createdMainWindow = mainWindow;
+  const mainSession = createdMainWindow.webContents.session;
+  const isTrustedMainWindowContents = (contents: Electron.WebContents | null): boolean => {
+    if (!contents || contents.id !== createdMainWindow.webContents.id) return false;
+    try {
+      return new URL(contents.getURL()).origin === new URL(MAIN_WINDOW_URL).origin;
+    } catch {
+      return false;
+    }
+  };
+  mainSession.setPermissionCheckHandler((webContents, permission) => (
+    permission === 'media' && isTrustedMainWindowContents(webContents)
+  ));
+  mainSession.setPermissionRequestHandler((webContents, permission, callback, details) => {
+    const mediaTypes = 'mediaTypes' in details && Array.isArray(details.mediaTypes)
+      ? details.mediaTypes
+      : [];
+    const requestsAudioOnly = mediaTypes.includes('audio') && !mediaTypes.includes('video');
+    callback(
+      permission === 'media'
+      && requestsAudioOnly
+      && isTrustedMainWindowContents(webContents),
+    );
+  });
   installMainWindowResilience(createdMainWindow);
 
   mainWindow.setAutoHideMenuBar(true);
@@ -1229,6 +1425,7 @@ function createWindow(): void {
   
   mainWindow.on('closed', () => {
     if (mainWindow === createdMainWindow) {
+      destroyVendorConfigView();
       mainWindow = null;
       clearRendererRecoveryTimers();
       rendererRecoveryInProgress = false;
@@ -1288,7 +1485,15 @@ app.on('child-process-gone', (_event, details) => {
   );
 
   if (details.type === 'GPU') {
-    scheduleMainWindowRendererRecovery('gpu-process-gone', context, 750);
+    // Chromium owns GPU-process recovery and normally recreates it without
+    // losing the renderer. Reloading the main page here used to sever the
+    // active chat stream and was incorrectly interpreted as a user cancel.
+    // A genuinely unhealthy renderer is still covered by render-process-gone
+    // and the sustained unresponsive grace timer above.
+    startupLog(
+      '[RendererRecovery] GPU process will be rebuilt by Chromium; '
+      + 'main-page reload intentionally skipped',
+    );
   }
 });
 
@@ -1996,6 +2201,96 @@ ipcMain.handle('open-external', async (event, url: string) => {
   }
 });
 
+ipcMain.handle('vendor-config-browser-open', async (event, providerId: string, rawBounds?: VendorConfigBounds) => {
+  try {
+    if (!isMainWindowSender(event.sender)) {
+      return { success: false, error: '不允许从当前窗口打开厂商配置页' };
+    }
+    const site = getVendorConfigSite(providerId);
+    if (!site) {
+      return { success: false, error: '不支持的模型厂商' };
+    }
+    const bounds = normalizeVendorConfigBounds(rawBounds);
+    if (!bounds) {
+      return { success: false, error: '右侧边栏尚未准备好' };
+    }
+    const view = attachVendorConfigView(bounds);
+    const providerChanged = activeVendorConfigId !== site.id;
+    activeVendorConfigId = site.id;
+    emitVendorConfigBrowserState({ loading: providerChanged || view.webContents.isLoading(), error: '' });
+    if (providerChanged || !view.webContents.getURL()) {
+      void view.webContents.loadURL(site.url).catch((error) => {
+        console.error('[VendorConfigBrowser] Failed to load vendor page:', error);
+        emitVendorConfigBrowserState({
+          loading: false,
+          error: error instanceof Error ? error.message : '厂商页面加载失败',
+        });
+      });
+    }
+    return {
+      success: true,
+      providerId: site.id,
+      name: site.name,
+      url: site.url,
+    };
+  } catch (error) {
+    console.error('[VendorConfigBrowser] Open failed:', error);
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : '打开厂商配置页失败',
+    };
+  }
+});
+
+ipcMain.handle('vendor-config-browser-bounds', async (event, rawBounds?: VendorConfigBounds) => {
+  if (!isMainWindowSender(event.sender)) return { success: false, error: '不允许从当前窗口调整厂商配置页' };
+  const bounds = normalizeVendorConfigBounds(rawBounds);
+  if (!bounds || !vendorConfigView || !vendorConfigViewAttached) {
+    return { success: false, error: '厂商配置页尚未打开' };
+  }
+  vendorConfigView.setBounds(bounds);
+  return { success: true };
+});
+
+ipcMain.handle('vendor-config-browser-hide', async (event) => {
+  if (!isMainWindowSender(event.sender)) return { success: false, error: '不允许从当前窗口关闭厂商配置页' };
+  detachVendorConfigView();
+  emitVendorConfigBrowserState({ hidden: true, loading: false });
+  return { success: true };
+});
+
+ipcMain.handle('vendor-config-browser-command', async (event, command: string) => {
+  try {
+    if (!isMainWindowSender(event.sender)) {
+      return { success: false, error: '不允许从当前窗口操作厂商配置页' };
+    }
+    const contents = vendorConfigView && !vendorConfigView.webContents.isDestroyed()
+      ? vendorConfigView.webContents
+      : null;
+    if (!contents) return { success: false, error: '厂商配置页尚未打开' };
+    if (command === 'back') {
+      if (contents.navigationHistory.canGoBack()) contents.navigationHistory.goBack();
+    } else if (command === 'reload') {
+      contents.reload();
+    } else if (command === 'external') {
+      const targetUrl = contents.getURL() || getVendorConfigSite(activeVendorConfigId)?.url || '';
+      if (!/^https:\/\//i.test(targetUrl)) return { success: false, error: '当前页面地址不可外部打开' };
+      await shell.openExternal(targetUrl);
+    } else if (command === 'close') {
+      detachVendorConfigView();
+    } else {
+      return { success: false, error: '不支持的厂商页面操作' };
+    }
+    emitVendorConfigBrowserState({ loading: contents.isLoading(), hidden: command === 'close' });
+    return { success: true };
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : '厂商页面操作失败',
+    };
+  }
+});
+
 /**
  * 检查服务器发布的最新安装包版本
  */
@@ -2080,6 +2375,28 @@ ipcMain.handle('open-containing-folder', async (event, targetPath: string) => {
     return {
       success: false,
       error: error instanceof Error ? error.message : 'Failed to open folder',
+    };
+  }
+});
+
+/**
+ * 通过主进程写系统剪贴板。
+ * 主窗口启用了 sandbox，renderer 的 navigator.clipboard 可能因权限或焦点状态失败。
+ */
+ipcMain.handle('clipboard-write-text', async (event, rawText: unknown) => {
+  try {
+    if (!isMainWindowSender(event.sender)) {
+      return { success: false, error: '不允许从当前窗口写入剪贴板' };
+    }
+    const text = typeof rawText === 'string' ? rawText : String(rawText ?? '');
+    if (!text) return { success: false, error: '没有可复制的内容' };
+    clipboard.writeText(text);
+    return { success: true };
+  } catch (error) {
+    console.error('[Electron] Failed to write clipboard text:', error);
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : '写入剪贴板失败',
     };
   }
 });

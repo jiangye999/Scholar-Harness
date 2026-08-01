@@ -6,13 +6,16 @@ import * as path from "path";
 import {
   computeKeywordGroups,
   computeKeywordTags,
+  filterAllLiteraturesByKeywords,
   filterLiteraturesByKeywords,
   getPaperKeywords,
   manualMergeKeywords,
   paginateKeywordTags,
+  splitKeywordInput,
   summarizeEmbeddingLibrary,
   toLiteraturePreview,
   type KeywordFilterOptions,
+  type LiteraturePreview,
   type LiteratureRecord,
   type OuterTagsConfig,
 } from "../../literature/keyword-library";
@@ -113,6 +116,174 @@ export function paginateLiteratureRecords(
     limit,
     hasMore: offset + page.length < papers.length,
     papers: page.map(toLiteraturePreview),
+  };
+}
+
+export interface EmbeddingLibraryGraphNode {
+  id: string;
+  type: "keyword" | "paper";
+  label: string;
+  value: number;
+  color: string;
+  paperId?: string;
+  title?: string;
+  author?: string;
+  year?: string;
+  journal?: string;
+  doi?: string;
+  abstract?: string;
+  keywords?: string[];
+  favorite?: boolean;
+  documentFrequency?: number;
+}
+
+export interface EmbeddingLibraryGraphEdge {
+  source: string;
+  target: string;
+  weight: number;
+}
+
+export interface EmbeddingLibraryGraph {
+  nodes: EmbeddingLibraryGraphNode[];
+  edges: EmbeddingLibraryGraphEdge[];
+  keywordCount: number;
+  paperCount: number;
+  omittedPaperCount: number;
+}
+
+function normalizeGraphKeyword(value: unknown): string {
+  return String(value || "").trim().toLowerCase();
+}
+
+export function buildEmbeddingLibraryGraph(
+  papers: Array<LiteraturePreview & { favorite?: boolean }>,
+  requestedKeywordLimit = 60,
+  requestedPaperLimit = 220,
+  outerTagsConfig: OuterTagsConfig = { mergedTags: [], promotedTags: [] }
+): EmbeddingLibraryGraph {
+  const keywordLimit = Math.max(10, Math.min(20_000, Math.floor(requestedKeywordLimit || 60)));
+  const paperLimit = Math.max(20, Math.min(50_000, Math.floor(requestedPaperLimit || 220)));
+  const keywordStats = new Map<string, { label: string; count: number }>();
+  const paperKeywords = new Map<string, string[]>();
+  const mergedKeywordLookup = new Map<string, { key: string; label: string }>();
+
+  for (const mergedTag of outerTagsConfig.mergedTags || []) {
+    const label = String(mergedTag.name || "").trim();
+    const key = normalizeGraphKeyword(label);
+    if (!key) continue;
+    const mergedKeyword = { key, label };
+    mergedKeywordLookup.set(key, mergedKeyword);
+    for (const originalKeyword of mergedTag.originalKeywords || []) {
+      const originalKey = normalizeGraphKeyword(originalKeyword);
+      if (originalKey) mergedKeywordLookup.set(originalKey, mergedKeyword);
+    }
+  }
+
+  papers.forEach(paper => {
+    const paperId = String(paper.id || paper.doi || paper.title || "").trim();
+    if (!paperId) return;
+    const seen = new Set<string>();
+    const normalizedKeywords: string[] = [];
+    [
+      ...splitKeywordInput(paper.keywords),
+      ...splitKeywordInput(paper.aiKeywords),
+    ].forEach(keyword => {
+      const originalKey = normalizeGraphKeyword(keyword);
+      const mergedKeyword = mergedKeywordLookup.get(originalKey);
+      const key = mergedKeyword?.key || originalKey;
+      if (!key || seen.has(key)) return;
+      seen.add(key);
+      normalizedKeywords.push(key);
+      const current = keywordStats.get(key);
+      if (current) {
+        current.count += 1;
+      } else {
+        keywordStats.set(key, {
+          label: mergedKeyword?.label || String(keyword).trim(),
+          count: 1,
+        });
+      }
+    });
+    paperKeywords.set(paperId, normalizedKeywords);
+  });
+
+  const topKeywords = Array.from(keywordStats.entries())
+    .sort((a, b) => b[1].count - a[1].count || a[1].label.localeCompare(b[1].label))
+    .slice(0, keywordLimit);
+  const topKeywordKeys = new Set(topKeywords.map(([key]) => key));
+  const rankedPapers = papers
+    .map(paper => {
+      const paperId = String(paper.id || paper.doi || paper.title || "").trim();
+      const originalKeywords = paperKeywords.get(paperId) || [];
+      const matchedKeywords = originalKeywords.filter(keyword => topKeywordKeys.has(keyword));
+      return {
+        paper,
+        paperId,
+        matchedKeywords,
+        score: matchedKeywords.length * 20 + (paper.favorite ? 8 : 0) + (paper.abstract ? 1 : 0),
+      };
+    })
+    .filter(item => item.paperId && item.matchedKeywords.length > 0)
+    .sort((a, b) => b.score - a.score || String(a.paper.title || "").localeCompare(String(b.paper.title || "")))
+    .slice(0, paperLimit);
+
+  const selectedKeywordCounts = new Map<string, number>();
+  rankedPapers.forEach(item => {
+    item.matchedKeywords.forEach(keyword => {
+      selectedKeywordCounts.set(keyword, (selectedKeywordCounts.get(keyword) || 0) + 1);
+    });
+  });
+
+  const keywordNodes: EmbeddingLibraryGraphNode[] = topKeywords
+    .filter(([key]) => (selectedKeywordCounts.get(key) || 0) > 0)
+    .map(([key, stat]) => ({
+      id: `keyword:${encodeURIComponent(key)}`,
+      type: "keyword",
+      label: stat.label,
+      value: selectedKeywordCounts.get(key) || 0,
+      documentFrequency: stat.count,
+      color: "#2de2e6",
+    }));
+  const keywordNodeIds = new Map(
+    topKeywords.map(([key]) => [key, `keyword:${encodeURIComponent(key)}`] as const)
+  );
+  const paperNodes: EmbeddingLibraryGraphNode[] = rankedPapers.map(item => ({
+    id: `paper:${encodeURIComponent(item.paperId)}`,
+    type: "paper",
+    label: String(item.paper.title || "未命名文献"),
+    value: Math.max(1, item.matchedKeywords.length),
+    color: item.paper.favorite ? "#f6c453" : "#7c6cff",
+    paperId: item.paperId,
+    title: String(item.paper.title || ""),
+    author: String(item.paper.author || ""),
+    year: String(item.paper.year || ""),
+    journal: String(item.paper.journal || ""),
+    doi: item.paper.doi ? String(item.paper.doi) : undefined,
+    abstract: String(item.paper.abstract || "").slice(0, 600),
+    keywords: item.matchedKeywords
+      .map(keyword => keywordStats.get(keyword)?.label || keyword)
+      .filter(Boolean),
+    favorite: Boolean(item.paper.favorite),
+  }));
+  const edges: EmbeddingLibraryGraphEdge[] = [];
+  rankedPapers.forEach(item => {
+    item.matchedKeywords.forEach(keyword => {
+      const keywordNodeId = keywordNodeIds.get(keyword);
+      if (!keywordNodeId) return;
+      edges.push({
+        source: keywordNodeId,
+        target: `paper:${encodeURIComponent(item.paperId)}`,
+        weight: 1,
+      });
+    });
+  });
+
+  return {
+    nodes: [...keywordNodes, ...paperNodes],
+    edges,
+    keywordCount: keywordNodes.length,
+    paperCount: paperNodes.length,
+    omittedPaperCount: Math.max(0, papers.length - paperNodes.length),
   };
 }
 
@@ -1033,6 +1204,44 @@ export function createEmbeddingLibraryRouter(options: EmbeddingLibraryRoutesOpti
       res.json({ success: true, ...computeKeywordGroups(userVisiblePapers(options, userId), maxGroups) });
     } catch (error) {
       logger.error("[EmbeddingLibrary] Groups route error:", error);
+      res.status(500).json({ success: false, error: (error as Error).message });
+    }
+  });
+
+  router.post("/graph", (req: Request, res: Response) => {
+    try {
+      const body = req.body as Record<string, unknown>;
+      const userId = String(body.userId || "web-user");
+      const rawFilterOptions = body.options && typeof body.options === "object"
+        ? body.options as KeywordFilterOptions
+        : {};
+      const papers = userVisiblePapers(options, userId);
+      const outerTagsConfig = options.loadOuterTagsConfigForUser(userId);
+      const filtered = filterAllLiteraturesByKeywords(
+        papers,
+        rawFilterOptions,
+        outerTagsConfig
+      );
+      const favoriteIds = getLibraryFavoriteSet(userId, "embedding");
+      const previews = withEmbeddingFavoriteFlags(filtered, favoriteIds);
+      const includeAll = body.includeAll !== false;
+      const keywordLimit = includeAll
+        ? 20_000
+        : (parsePageNumber(body.keywordLimit, 60, 80) || 60);
+      const paperLimit = includeAll
+        ? 50_000
+        : (parsePageNumber(body.paperLimit, 220, 300) || 220);
+      const graph = buildEmbeddingLibraryGraph(previews, keywordLimit, paperLimit, outerTagsConfig);
+
+      res.json({
+        success: true,
+        graph,
+        total: filtered.length,
+        sampled: filtered.length,
+        truncated: false,
+      });
+    } catch (error) {
+      logger.error("[EmbeddingLibrary] Graph route error:", error);
       res.status(500).json({ success: false, error: (error as Error).message });
     }
   });

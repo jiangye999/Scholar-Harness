@@ -3,7 +3,7 @@ export interface ChatPromptHistoryMessage {
   content?: unknown;
 }
 
-function normalizeQueryForComparison(value: unknown): string {
+export function normalizeQueryForComparison(value: unknown): string {
   return String(value ?? '')
     .replace(/\r\n/g, '\n')
     .replace(/\r/g, '\n')
@@ -11,6 +11,38 @@ function normalizeQueryForComparison(value: unknown): string {
     .replace(/[ \t]+/g, ' ')
     .replace(/\n{2,}/g, '\n')
     .toLowerCase();
+}
+
+/**
+ * Recent-query memory is useful for continuity, but the current history is
+ * already rendered as its own prompt section. Remove only exact normalized
+ * copies so no unique earlier query is lost.
+ */
+export function omitQueriesAlreadyRepresentedInHistory(
+  queries: readonly string[] | undefined,
+  history: readonly ChatPromptHistoryMessage[] | undefined,
+  currentRequests: readonly string[] = [],
+): string[] {
+  const represented = new Set<string>();
+  for (const message of Array.isArray(history) ? history : []) {
+    if (String(message?.role || '').toLowerCase() !== 'user') continue;
+    const normalized = normalizeQueryForComparison(message.content);
+    if (normalized) represented.add(normalized);
+  }
+  for (const request of currentRequests) {
+    const normalized = normalizeQueryForComparison(request);
+    if (normalized) represented.add(normalized);
+  }
+
+  const unique: string[] = [];
+  const seen = new Set<string>();
+  for (const query of Array.isArray(queries) ? queries : []) {
+    const normalized = normalizeQueryForComparison(query);
+    if (!normalized || represented.has(normalized) || seen.has(normalized)) continue;
+    seen.add(normalized);
+    unique.push(String(query).trim());
+  }
+  return unique;
 }
 
 /**

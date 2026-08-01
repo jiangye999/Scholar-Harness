@@ -99,7 +99,6 @@ function getFastTextCandidateRoots(): Array<{ root: string; source: PdfFastTextS
     { root: process.env.PDF_MARKER_MD_DIR || '', source: 'env' },
     { root: process.env.PDF_FAST_TEXT_ROOT || '', source: 'env' },
     { root: path.resolve(process.cwd(), '..', 'pdf-marker-md'), source: 'dev' },
-    { root: 'E:\\AI_projects\\pdf-marker-md', source: 'dev' },
   ];
 }
 

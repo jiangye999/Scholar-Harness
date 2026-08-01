@@ -2,12 +2,14 @@ import { randomUUID } from 'crypto';
 import { Router } from 'express';
 import * as fsSync from 'fs';
 import * as fs from 'fs/promises';
+import multer from 'multer';
 import * as os from 'os';
 import * as path from 'path';
 import { z } from 'zod';
 import { SessionStore, sanitizeDraftChapterName } from '../../storage/session-store';
 import { getDataDir, getUserUploadDir, sanitizeUserId } from '../../utils/paths';
 import { logger } from '../../utils/logger';
+import { parseWordSidebarDocument } from '../services/word-sidebar-import';
 
 const MANIFEST_VERSION = 1;
 const DEFAULT_SUBSECTION_KEY = 'section';
@@ -31,12 +33,15 @@ export interface DraftFigureAsset {
   relativePath: string;
   url: string;
   source: {
-    kind: 'r-code' | 'experiment-results' | 'chat-upload' | 'merged-library';
+    kind: 'r-code' | 'experiment-results' | 'chat-upload' | 'merged-library' | 'word-import';
     jobId?: string;
     relativePath?: string;
     originalPath?: string;
     url?: string;
     sourceAssetIds?: string[];
+    documentName?: string;
+    importId?: string;
+    figureIndex?: number;
   };
   draftLinked: boolean;
   createdAt: string;
@@ -93,6 +98,27 @@ const mergePaperFiguresSchema = z.object({
   title: z.string().max(500).optional().default(''),
   caption: z.string().max(2000).optional().default(''),
   dataUrl: z.string().max(48 * 1024 * 1024),
+});
+
+const importWordSidebarSchema = z.object({
+  userId: z.string().optional(),
+  mode: z.enum(['preview', 'overwrite']).optional().default('preview'),
+});
+
+const wordSidebarUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    files: 1,
+    fileSize: 64 * 1024 * 1024,
+  },
+  fileFilter: (_req, file, callback) => {
+    const extension = path.extname(String(file.originalname || '')).toLowerCase();
+    if (extension !== '.docx') {
+      callback(new Error('只支持导入 .docx Word 文件'));
+      return;
+    }
+    callback(null, true);
+  },
 });
 
 export function normalizeDraftAssetChapterKey(value: unknown): string {
@@ -167,6 +193,58 @@ async function saveDraftFigureManifest(userId: string, manifest: DraftFigureMani
     await fs.rm(manifestPath, { force: true });
     await fs.rename(temporaryPath, manifestPath);
   }
+}
+
+function getDraftFigureTimestamp(asset: DraftFigureAsset): number {
+  const timestamp = new Date(asset.createdAt || 0).getTime();
+  return Number.isFinite(timestamp) ? timestamp : 0;
+}
+
+function getWordImportGroupKey(asset: DraftFigureAsset): string {
+  if (asset.source?.kind !== 'word-import') return '';
+  return String(asset.source.importId || asset.source.documentName || '').trim().toLowerCase();
+}
+
+function compareFigureLabels(a: DraftFigureAsset, b: DraftFigureAsset): number {
+  const aIndex = Number(a.source?.figureIndex);
+  const bIndex = Number(b.source?.figureIndex);
+  const aHasIndex = Number.isInteger(aIndex) && aIndex >= 0;
+  const bHasIndex = Number.isInteger(bIndex) && bIndex >= 0;
+  if (aHasIndex && bHasIndex && aIndex !== bIndex) return aIndex - bIndex;
+  if (aHasIndex !== bHasIndex) return aHasIndex ? -1 : 1;
+  return String(a.figureLabel || a.fileName || '').localeCompare(
+    String(b.figureLabel || b.fileName || ''),
+    'en',
+    { numeric: true, sensitivity: 'base' }
+  );
+}
+
+export function sortDraftFigureAssetsForDisplay(assets: DraftFigureAsset[]): DraftFigureAsset[] {
+  const wordImportTimestamps = new Map<string, number>();
+  for (const asset of assets) {
+    const groupKey = getWordImportGroupKey(asset);
+    if (!groupKey) continue;
+    wordImportTimestamps.set(
+      groupKey,
+      Math.max(wordImportTimestamps.get(groupKey) || 0, getDraftFigureTimestamp(asset))
+    );
+  }
+
+  return assets.slice().sort((a, b) => {
+    const aGroup = getWordImportGroupKey(a);
+    const bGroup = getWordImportGroupKey(b);
+    if (aGroup && aGroup === bGroup) {
+      return compareFigureLabels(a, b);
+    }
+    const aTimestamp = aGroup
+      ? wordImportTimestamps.get(aGroup) || getDraftFigureTimestamp(a)
+      : getDraftFigureTimestamp(a);
+    const bTimestamp = bGroup
+      ? wordImportTimestamps.get(bGroup) || getDraftFigureTimestamp(b)
+      : getDraftFigureTimestamp(b);
+    return bTimestamp - aTimestamp
+      || String(a.id || '').localeCompare(String(b.id || ''), 'en', { numeric: true });
+  });
 }
 
 async function withDraftFigureManifestLock<T>(userId: string, task: () => Promise<T>): Promise<T> {
@@ -275,6 +353,27 @@ export function buildDraftFigureFileStem(figureLabel: unknown, title: unknown, r
 
 function toManifestRelativePath(assetRoot: string, filePath: string): string {
   return path.relative(assetRoot, filePath).replace(/\\/g, '/');
+}
+
+function sanitizeImportedDocumentName(value: unknown): string {
+  const raw = path.basename(String(value || 'paper.docx')).replace(/[<>:"/\\|?*\x00-\x1F]/g, '_');
+  return (raw || 'paper.docx').slice(0, 220);
+}
+
+function getWordImageExtension(contentType: string): string {
+  const normalized = String(contentType || '').toLowerCase();
+  if (normalized === 'image/jpeg' || normalized === 'image/jpg') return '.jpg';
+  if (normalized === 'image/gif') return '.gif';
+  if (normalized === 'image/webp') return '.webp';
+  if (normalized === 'image/svg+xml') return '.svg';
+  if (normalized === 'image/tiff') return '.tiff';
+  if (normalized === 'image/bmp') return '.bmp';
+  return '.png';
+}
+
+function isSupportedWordImage(contentType: string, buffer: Buffer): boolean {
+  if (!buffer.length || buffer.length > 40 * 1024 * 1024) return false;
+  return /^(?:image\/(?:png|jpe?g|gif|webp|svg\+xml|tiff|bmp))$/i.test(String(contentType || ''));
 }
 
 function latexEscape(value: string): string {
@@ -462,6 +561,207 @@ export function createDraftAssetsRouter(options: {
     const requested = sanitizeUserId(value || 'web-user');
     return sanitizeUserId(options.resolveUserId ? await options.resolveUserId(requested) : requested);
   };
+
+  router.post('/import-word', wordSidebarUpload.single('file'), async (req, res) => {
+    let createdImportDir = '';
+    try {
+      const body = importWordSidebarSchema.parse(req.body || {});
+      const userId = await resolveDraftAssetUserId(body.userId);
+      const upload = req.file;
+      if (!upload?.buffer?.length) {
+        res.status(400).json({ success: false, error: '请选择要导入的 .docx Word 文件' });
+        return;
+      }
+      const documentName = sanitizeImportedDocumentName(upload.originalname);
+      const parsed = await parseWordSidebarDocument(upload.buffer);
+      const existingSections = await Promise.all(parsed.sections.map(async section => ({
+        ...section,
+        exists: Boolean(String((await options.sessionStore.loadDraft(userId, section.key))?.content || '').trim()),
+      })));
+      const supportedImages = parsed.images.filter(image => isSupportedWordImage(image.contentType, image.buffer));
+      const skippedImageCount = parsed.images.length - supportedImages.length;
+
+      if (body.mode === 'preview') {
+        res.json({
+          success: true,
+          preview: true,
+          documentName,
+          sections: existingSections.map(section => ({
+            key: section.key,
+            title: section.title,
+            chars: section.content.length,
+            exists: section.exists,
+          })),
+          figures: supportedImages.map(image => ({
+            figureLabel: image.figureLabel,
+            caption: image.caption,
+            chapterKey: image.chapterKey,
+            chapterTitle: image.chapterTitle,
+            bytes: image.buffer.length,
+            contentType: image.contentType,
+          })),
+          warnings: [
+            ...parsed.warnings,
+            ...(skippedImageCount ? [`有 ${skippedImageCount} 张嵌入图片因格式或大小不受支持而跳过。`] : []),
+          ],
+          conflictCount: existingSections.filter(section => section.exists).length,
+        });
+        return;
+      }
+
+      if (parsed.sections.length === 0 && supportedImages.length === 0) {
+        res.status(400).json({
+          success: false,
+          error: 'Word 中没有识别到标准章节或可导入图片，请检查文档是否使用了章节标题及嵌入图片。',
+          warnings: parsed.warnings,
+        });
+        return;
+      }
+
+      const importId = `word_${Date.now()}_${randomUUID().replace(/-/g, '').slice(0, 8)}`;
+      const assetRoot = getDraftAssetRoot(userId);
+      createdImportDir = path.join(assetRoot, 'paper-figures', 'word-import', importId);
+      const documentDir = path.join(assetRoot, 'word-import', 'documents');
+      const backupDir = path.join(assetRoot, 'word-import', 'backups', importId);
+      await Promise.all([
+        fs.mkdir(createdImportDir, { recursive: true }),
+        fs.mkdir(documentDir, { recursive: true }),
+        fs.mkdir(backupDir, { recursive: true }),
+      ]);
+
+      const backupRecords = existingSections
+        .filter(section => section.exists)
+        .map(section => ({
+          key: section.key,
+          title: section.title,
+          content: String(section.content || ''),
+        }));
+      const currentDraftBackups = await Promise.all(backupRecords.map(async section => ({
+        key: section.key,
+        title: section.title,
+        content: String((await options.sessionStore.loadDraft(userId, section.key))?.content || ''),
+      })));
+      await fs.writeFile(
+        path.join(backupDir, 'overwritten-drafts.json'),
+        JSON.stringify({
+          version: 1,
+          documentName,
+          importedAt: new Date().toISOString(),
+          chapters: currentDraftBackups,
+        }, null, 2),
+        'utf-8'
+      );
+      const storedDocumentName = `${importId}-${documentName}`;
+      await fs.writeFile(path.join(documentDir, storedDocumentName), upload.buffer);
+
+      const createdAssets: DraftFigureAsset[] = [];
+      const importedAt = new Date().toISOString();
+      for (let index = 0; index < supportedImages.length; index += 1) {
+        const image = supportedImages[index];
+        const extension = getWordImageExtension(image.contentType);
+        const id = `fig_${randomUUID().replace(/-/g, '').slice(0, 16)}`;
+        const stem = buildDraftFigureFileStem(
+          image.figureLabel || `Figure ${index + 1}`,
+          image.caption,
+          `${path.parse(documentName).name}-${image.figureLabel || `Figure-${index + 1}`}`
+        );
+        const fileName = `${stem}${extension}`;
+        const filePath = path.join(createdImportDir, fileName);
+        await fs.writeFile(filePath, image.buffer);
+        const chapterKey = normalizeDraftAssetChapterKey(image.chapterKey || 'paper-figures');
+        createdAssets.push({
+          id,
+          userId,
+          chapterName: normalizeDisplayText(image.chapterTitle, chapterKey, 160),
+          chapterKey,
+          subsectionId: '',
+          subsectionTitle: '',
+          subsectionKey: 'word-import',
+          figureLabel: normalizeDisplayText(image.figureLabel, `Figure ${index + 1}`, 120),
+          title: normalizeDisplayText(image.caption, image.figureLabel || `Figure ${index + 1}`, 500),
+          caption: normalizeDisplayText(image.caption, image.figureLabel || `Figure ${index + 1}`, 2000),
+          originalFileName: fileName,
+          fileName,
+          filePath,
+          relativePath: toManifestRelativePath(assetRoot, filePath),
+          url: `/api/draft-assets/figure/${encodeURIComponent(userId)}/${encodeURIComponent(id)}`,
+          source: {
+            kind: 'word-import',
+            documentName,
+            importId,
+            figureIndex: index,
+            relativePath: toManifestRelativePath(assetRoot, filePath),
+          },
+          draftLinked: false,
+          createdAt: importedAt,
+        });
+      }
+
+      for (const section of parsed.sections) {
+        await options.sessionStore.updateDraft(userId, section.key, () => section.content);
+      }
+
+      let replacedAssets: DraftFigureAsset[] = [];
+      await withDraftFigureManifestLock(userId, async () => {
+        const manifest = await loadDraftFigureManifest(userId);
+        replacedAssets = manifest.figures.filter(asset =>
+          asset.source?.kind === 'word-import'
+          && String(asset.source.documentName || '').toLowerCase() === documentName.toLowerCase()
+        );
+        manifest.figures = manifest.figures
+          .filter(asset => !replacedAssets.some(previous => previous.id === asset.id))
+          .concat(createdAssets);
+        await saveDraftFigureManifest(userId, manifest);
+      });
+
+      await Promise.all(replacedAssets.map(async asset => {
+        try {
+          await fs.rm(resolveScopedFile(assetRoot, asset.relativePath), { force: true });
+        } catch (error) {
+          logger.warn(`[DraftAssets] Could not remove replaced Word figure ${asset.relativePath}: ${(error as Error).message}`);
+        }
+      }));
+      for (const section of parsed.sections) {
+        if (options.onDraftUpdated) await options.onDraftUpdated(userId, section.key);
+      }
+
+      logger.info(
+        `[DraftAssets] Imported Word ${documentName} for ${userId}; `
+        + `chapters=${parsed.sections.length}, figures=${createdAssets.length}, overwritten=${existingSections.filter(section => section.exists).length}`
+      );
+      res.json({
+        success: true,
+        preview: false,
+        documentName,
+        importedSections: parsed.sections.map(section => ({
+          key: section.key,
+          title: section.title,
+          chars: section.content.length,
+          overwritten: existingSections.some(existing => existing.key === section.key && existing.exists),
+        })),
+        importedFigures: createdAssets.map(asset => ({
+          id: asset.id,
+          figureLabel: asset.figureLabel,
+          caption: asset.caption,
+          chapterKey: asset.chapterKey,
+          url: asset.url,
+        })),
+        replacedFigureCount: replacedAssets.length,
+        backupPath: toManifestRelativePath(assetRoot, path.join(backupDir, 'overwritten-drafts.json')),
+        warnings: [
+          ...parsed.warnings,
+          ...(skippedImageCount ? [`有 ${skippedImageCount} 张嵌入图片因格式或大小不受支持而跳过。`] : []),
+        ],
+      });
+    } catch (error) {
+      if (createdImportDir) {
+        await fs.rm(createdImportDir, { recursive: true, force: true }).catch(() => undefined);
+      }
+      logger.error('[DraftAssets] Import Word into sidebar failed:', error);
+      const status = error instanceof z.ZodError ? 400 : 500;
+      res.status(status).json({ success: false, error: (error as Error).message || '导入 Word 失败' });
+    }
+  });
 
   router.post('/figures', async (req, res) => {
     try {
@@ -734,11 +1034,11 @@ export function createDraftAssetsRouter(options: {
       const userId = await resolveDraftAssetUserId(req.query.userId);
       const chapterKey = req.query.chapterName ? normalizeDraftAssetChapterKey(req.query.chapterName) : '';
       const subsectionKey = req.query.subsectionId ? sanitizeDraftChapterName(req.query.subsectionId) : '';
-      const figures = (await loadDraftFigureManifest(userId)).figures.filter(asset => {
+      const figures = sortDraftFigureAssetsForDisplay((await loadDraftFigureManifest(userId)).figures.filter(asset => {
         if (chapterKey && asset.chapterKey !== chapterKey) return false;
         if (subsectionKey && asset.subsectionKey !== subsectionKey) return false;
         return true;
-      }).sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime());
+      }));
       res.json({ success: true, figures });
     } catch (error) {
       logger.error('[DraftAssets] List figures failed:', error);
