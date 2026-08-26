@@ -17,7 +17,7 @@ import * as fs from 'fs/promises';
 import * as os from 'os';
 import { z } from 'zod';
 import { logger } from '../../utils/logger';
-import { getDataDir, getMemoryDir, sanitizeUserId } from '../../utils/paths';
+import { getDataDir, getMemoryDir, getProjectOwnedDataDir, sanitizeUserId } from '../../utils/paths';
 import { buildToolRuntimeEnv } from '../../utils/tool-runtime-env';
 import { researchSessionManager } from '../../research/research-session-manager';
 import { prepareWorkspaceOutputDirectory } from '../services/workspace-directory';
@@ -1212,7 +1212,7 @@ ${significance ? significance.slice(0, 12000) : '{}'}
 }
 
 function getRPluginRoot(userId: string): string {
-  return path.join(getDataDir(), 'r-plugin', sanitizeUserId(userId));
+  return path.join(getProjectOwnedDataDir('r-plugin'), sanitizeUserId(userId));
 }
 
 function getRDesktopArtifactRoot(userId: string): string {
@@ -1232,7 +1232,7 @@ interface RJobLocationRegistry {
 let rJobLocationRegistryWriteChain: Promise<void> = Promise.resolve();
 
 function getRJobLocationRegistryPath(): string {
-  return path.join(getDataDir(), 'r-plugin', 'job-locations.json');
+  return path.join(getProjectOwnedDataDir('r-plugin'), 'job-locations.json');
 }
 
 function readRJobLocationRegistry(): RJobLocationRegistry {
@@ -2494,7 +2494,7 @@ router.get('/plugin/status', async (req, res) => {
       success: true,
       data: {
         ...status,
-        workRoot: path.join(getDataDir(), 'r-plugin'),
+        workRoot: getProjectOwnedDataDir('r-plugin'),
         runtimeRoot: getRRuntimeRoot(),
         configPath: getRPluginConfigPath(),
       },

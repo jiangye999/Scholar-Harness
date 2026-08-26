@@ -1,6 +1,6 @@
 /**
  * 本地服务器认证守卫
- * 负责验证session、转发登录请求到云端、检查使用量
+ * 负责验证 session、转发登录请求到云端并检查订阅有效期
  * 
  * v2: 完整移植 exe/session-manager.ts 的加密/解密逻辑
  * 使开发模式也能正常保存和读取云端账号session
@@ -35,8 +35,11 @@ export interface SessionData {
   subscription?: {
     plan_type: string;
     status: string;
-    quota_remaining: number;
-    quota_total: number;
+    /** @deprecated 仅用于读取旧 session；套餐不再按字符额度授权。 */
+    quota_remaining?: number;
+    /** @deprecated 仅用于读取旧 session；固定视为无限。 */
+    quota_total?: number;
+    /** @deprecated 仅作历史用量统计。 */
     quota_used?: number;
     end_date?: string;
   };
@@ -310,9 +313,9 @@ export class AuthGuard {
       
       const data = response.data as { subscription?: SessionData['subscription'] };
       
-      // 检查订阅状态
+      // 旧服务可能仍返回 exhausted；数字额度已经退出授权逻辑，将其按有效订阅恢复。
       if (data.subscription?.status === 'exhausted') {
-        return { valid: false, reason: '额度已耗尽', subscription: data.subscription };
+        data.subscription.status = data.subscription.plan_type === 'trial' ? 'trial' : 'active';
       }
       
       if (data.subscription?.status === 'expired') {
@@ -510,46 +513,19 @@ export class AuthGuard {
   }
   
   /**
-   * 检查额度是否足够
+   * 兼容旧调用：只检查订阅是否有效，不再比较字符额度。
    */
-  async hasEnoughQuota(accessToken: string, requiredAmount: number): Promise<boolean> {
-    try {
-      const response = await axios.get(`${this.cloudApiUrl}/subscription/me`, {
-        headers: {
-          'Authorization': `Bearer ${accessToken}`,
-        },
-        timeout: 10000,
-      });
-      
-      const data = response.data as { subscription?: { quota_remaining?: number; quota_total?: number } };
-      const remaining = data.subscription?.quota_remaining ?? 0;
-      
-      // -1表示无限额度
-      if (data.subscription?.quota_total === -1) return true;
-      
-      return remaining >= requiredAmount;
-    } catch (error: any) {
-      logger.error('[AuthGuard] Check quota failed:', error?.message || error);
-      
-      // 网络错误时，检查本地缓存的额度
-      const session = await this.getSession();
-      if (session?.subscription) {
-        if (session.subscription.quota_total === -1) return true;
-        return session.subscription.quota_remaining >= requiredAmount;
-      }
-      
-      return false;
-    }
+  async hasEnoughQuota(accessToken: string, _requiredAmount: number): Promise<boolean> {
+    const validation = await this.validateSession(accessToken);
+    return validation.valid;
   }
   
   /**
-   * 获取剩余额度
+   * 兼容旧调用：-1 表示订阅期内不限字符数。
    */
   async getRemainingQuota(): Promise<number> {
     const session = await this.getSession();
-    if (!session?.subscription) return 0;
-    
-    return session.subscription.quota_remaining;
+    return session?.subscription ? -1 : 0;
   }
 
   private getFirstMacAddress(): string {

@@ -18,6 +18,26 @@ export interface AgentContextBudgetOptions {
   minimumSectionChars?: number;
 }
 
+export interface ResolveAgentContextBudgetOptions {
+  profile?: AgentContextProfile;
+  query?: string;
+  primaryIntent?: string;
+  secondaryIntents?: string[];
+  needsWorkspaceSearch?: boolean;
+  needsLiteratureRetrieval?: boolean;
+  hasExplicitSkill?: boolean;
+  hasSelectedText?: boolean;
+  hasAttachments?: boolean;
+  hasDiscussionFramework?: boolean;
+  hasAutonomousRetrieval?: boolean;
+}
+
+export interface ResolvedAgentContextBudget {
+  maxChars: number;
+  tier: 'compact' | 'standard' | 'extended' | 'heavy';
+  reasons: string[];
+}
+
 export interface AgentContextBudgetDiagnostics {
   profile: AgentContextProfile;
   maxChars: number;
@@ -85,6 +105,71 @@ const DEFAULT_PROFILE_BUDGETS: Record<AgentContextProfile, number> = {
   'meta-analysis': 110_000,
   specialized: 120_000,
 };
+
+/**
+ * Selects the provider-visible context envelope from the actual request. The
+ * envelope is deliberately generous for research/writing turns, while simple
+ * chat no longer pays for the maximum 150k-character context on every call.
+ * Full resources remain available through tools and are not discarded here.
+ */
+export function resolveAgentContextBudget(
+  options: ResolveAgentContextBudgetOptions = {},
+): ResolvedAgentContextBudget {
+  const profile = options.profile || 'main-chat';
+  const reasons: string[] = [`profile:${profile}`];
+  let maxChars = profile === 'meta-analysis'
+    ? 68_000
+    : (profile === 'specialized' ? 56_000 : 44_000);
+
+  const query = String(options.query || '');
+  const intents = [
+    String(options.primaryIntent || ''),
+    ...(Array.isArray(options.secondaryIntents) ? options.secondaryIntents : []),
+  ].join(' ').toLowerCase();
+
+  if (options.hasExplicitSkill) {
+    maxChars += 12_000;
+    reasons.push('explicit-skill');
+  }
+  if (options.hasSelectedText || options.hasAttachments) {
+    maxChars += 8_000;
+    reasons.push('user-material');
+  }
+  if (options.needsWorkspaceSearch) {
+    maxChars += 14_000;
+    reasons.push('workspace-search');
+  }
+  if (options.needsLiteratureRetrieval) {
+    maxChars += 20_000;
+    reasons.push('literature-retrieval');
+  }
+  if (/writ|draft|paper|manuscript|review|analysis|meta|bibliometric|research|citation|figure|code|file/.test(intents)) {
+    maxChars += 12_000;
+    reasons.push('research-or-writing');
+  }
+  if (options.hasDiscussionFramework) {
+    maxChars += 8_000;
+    reasons.push('discussion-framework');
+  }
+  if (options.hasAutonomousRetrieval) {
+    maxChars += 16_000;
+    reasons.push('retrieval-results');
+  }
+  if (query.length > 8_000) {
+    maxChars += 12_000;
+    reasons.push('long-query');
+  } else if (query.length > 3_000) {
+    maxChars += 6_000;
+    reasons.push('medium-query');
+  }
+
+  const cap = profile === 'meta-analysis' ? 128_000 : (profile === 'specialized' ? 120_000 : 112_000);
+  maxChars = Math.max(32_000, Math.min(cap, maxChars));
+  const tier: ResolvedAgentContextBudget['tier'] = maxChars <= 52_000
+    ? 'compact'
+    : (maxChars <= 76_000 ? 'standard' : (maxChars <= 100_000 ? 'extended' : 'heavy'));
+  return { maxChars, tier, reasons };
+}
 
 const SECTION_HEADING_PATTERN = /^##\s+(.+)$/gm;
 
@@ -406,8 +491,8 @@ export function precomputeAgentContext(
   // provider-visible index compact while load_skill/read_skill_resource and
   // the on-disk CATALOG.md retain access to the complete content.
   const catalogLimit = Math.min(8_000, Math.max(4_000, Math.floor(maxChars * 0.06)));
-  const explicitSkillLimit = Math.min(30_000, Math.max(6_000, Math.floor(maxChars * 0.16)));
-  const handoffLimit = Math.min(20_000, Math.max(4_000, Math.floor(maxChars * 0.12)));
+  const explicitSkillLimit = Math.min(30_000, Math.max(12_000, Math.floor(maxChars * 0.22)));
+  const handoffLimit = Math.min(12_000, Math.max(3_000, Math.floor(maxChars * 0.08)));
 
   const catalogPrompt = compactStandalonePrompt(
     String(options.catalogPrompt || ''),
@@ -422,7 +507,7 @@ export function precomputeAgentContext(
 
   const promptNormalized = normalizeComparableContext(options.prompt);
   const handoffCandidates = Array.isArray(options.conversationHandoff)
-    ? options.conversationHandoff.slice(-8)
+    ? options.conversationHandoff.slice(-4)
     : [];
   const selectedHandoff: AgentConversationHandoffMessage[] = [];
   let handoffChars = 0;
@@ -432,7 +517,14 @@ export function precomputeAgentContext(
     const rawContent = String(message?.content || '').trim();
     if (!rawContent) continue;
     const comparable = normalizeComparableContext(rawContent);
-    if (comparable.length >= 80 && promptNormalized.includes(comparable)) {
+    const comparablePrefix = comparable.slice(0, Math.min(600, comparable.length));
+    if (
+      comparable.length >= 80
+      && (
+        promptNormalized.includes(comparable)
+        || (comparablePrefix.length >= 160 && promptNormalized.includes(comparablePrefix))
+      )
+    ) {
       omittedDuplicateHandoffMessages += 1;
       continue;
     }
@@ -440,7 +532,7 @@ export function precomputeAgentContext(
     if (remaining < 500) break;
     const content = compactSectionContent(
       rawContent,
-      Math.min(4_000, remaining),
+      Math.min(2_500, remaining),
       '对话交接消息',
     );
     selectedHandoff.unshift({

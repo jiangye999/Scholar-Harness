@@ -33,6 +33,7 @@ export interface PiQueuedMessage {
   id: string;
   userId: string;
   conversationId: string;
+  projectId?: string;
   message: string;
   behavior: PiQueueBehavior;
   status: PiQueueMessageStatus;
@@ -50,6 +51,7 @@ interface PiPersistedSession {
   version: 1;
   userId: string;
   conversationId: string;
+  projectId?: string;
   pending: PiQueuedMessage[];
   history: PiQueuedMessage[];
   run?: PiPersistedRun;
@@ -60,7 +62,7 @@ export type PiRunStatus = 'running' | 'cancelling' | 'completed' | 'cancelled' |
 
 export interface PiRunEvent {
   sequence: number;
-  type: 'status' | 'chunk' | 'complete' | 'error';
+  type: 'status' | 'chunk' | 'thinking' | 'complete' | 'error';
   payload: Record<string, unknown>;
   createdAt: string;
 }
@@ -79,9 +81,12 @@ export interface PiPersistedRun {
 }
 
 interface PiActiveRun {
+  userId: string;
+  conversationId: string;
   runId: string;
   provider: string;
   startedAt: string;
+  projectId?: string;
   cancellationRequestedAt?: string;
   abortController: AbortController;
 }
@@ -90,6 +95,7 @@ export interface PiSessionPublicState {
   version: 1;
   userId: string;
   conversationId: string;
+  projectId?: string;
   running: boolean;
   runId?: string;
   provider?: string;
@@ -174,7 +180,7 @@ function normalizePersistedRun(value: unknown): PiPersistedRun | undefined {
         const candidate = event && typeof event === 'object' && !Array.isArray(event)
           ? event as Partial<PiRunEvent>
           : {};
-        const type = ['status', 'chunk', 'complete', 'error'].includes(String(candidate.type))
+        const type = ['status', 'chunk', 'thinking', 'complete', 'error'].includes(String(candidate.type))
           ? candidate.type as PiRunEvent['type']
           : 'status';
         return {
@@ -233,36 +239,35 @@ export class PiAgentSessionManager {
   private readonly activeRuns = new Map<string, PiActiveRun>();
   private readonly pendingSaveTimers = new Map<string, NodeJS.Timeout>();
 
-  private getKey(userId: string, conversationId: string): string {
-    return `${userId}\u0001${conversationId}`;
+  private getKey(userId: string, conversationId: string, projectId = ''): string {
+    return `${userId}\u0001${projectId || 'current-workspace'}\u0001${conversationId}`;
   }
 
-  private getSessionPath(userId: string, conversationId: string): string {
-    return path.join(
-      getDataDir(),
-      'pi-agent-sessions',
-      safeSegment(userId, 'web-user'),
-      `${safeSegment(conversationId, 'conversation')}.json`,
-    );
+  private getSessionPath(userId: string, conversationId: string, projectId = ''): string {
+    const base = path.join(getDataDir(), 'pi-agent-sessions');
+    return projectId
+      ? path.join(base, 'projects', safeSegment(projectId, 'project'), safeSegment(userId, 'web-user'), `${safeSegment(conversationId, 'conversation')}.json`)
+      : path.join(base, safeSegment(userId, 'web-user'), `${safeSegment(conversationId, 'conversation')}.json`);
   }
 
-  private createSession(userId: string, conversationId: string): PiPersistedSession {
+  private createSession(userId: string, conversationId: string, projectId = ''): PiPersistedSession {
     return {
       version: 1,
       userId,
       conversationId,
+      projectId: projectId || undefined,
       pending: [],
       history: [],
       updatedAt: nowIso(),
     };
   }
 
-  private load(userId: string, conversationId: string): PiPersistedSession {
-    const key = this.getKey(userId, conversationId);
+  private load(userId: string, conversationId: string, projectId = ''): PiPersistedSession {
+    const key = this.getKey(userId, conversationId, projectId);
     const cached = this.sessions.get(key);
     if (cached) return cached;
-    const filePath = this.getSessionPath(userId, conversationId);
-    let session = this.createSession(userId, conversationId);
+    const filePath = this.getSessionPath(userId, conversationId, projectId);
+    let session = this.createSession(userId, conversationId, projectId);
     let recoveredProcessingClaim = false;
     try {
       if (fs.existsSync(filePath)) {
@@ -271,6 +276,7 @@ export class PiAgentSessionManager {
           version: 1,
           userId,
           conversationId,
+          projectId: projectId || String(parsed.projectId || '').trim() || undefined,
           pending: Array.isArray(parsed.pending) ? parsed.pending.slice(0, MAX_PENDING_MESSAGES) : [],
           history: Array.isArray(parsed.history) ? parsed.history.slice(-MAX_HISTORY_MESSAGES) : [],
           run: normalizePersistedRun(parsed.run),
@@ -299,7 +305,7 @@ export class PiAgentSessionManager {
       }
     } catch (error) {
       logger.warn('[PiSession] Failed to load persisted queue; starting with an empty queue:', error);
-      session = this.createSession(userId, conversationId);
+      session = this.createSession(userId, conversationId, projectId);
     }
     this.sessions.set(key, session);
     if (recoveredProcessingClaim) this.save(session);
@@ -307,14 +313,14 @@ export class PiAgentSessionManager {
   }
 
   private save(session: PiPersistedSession): void {
-    const key = this.getKey(session.userId, session.conversationId);
+    const key = this.getKey(session.userId, session.conversationId, session.projectId);
     const pendingTimer = this.pendingSaveTimers.get(key);
     if (pendingTimer) {
       clearTimeout(pendingTimer);
       this.pendingSaveTimers.delete(key);
     }
     session.updatedAt = nowIso();
-    const filePath = this.getSessionPath(session.userId, session.conversationId);
+    const filePath = this.getSessionPath(session.userId, session.conversationId, session.projectId);
     const directory = path.dirname(filePath);
     fs.mkdirSync(directory, { recursive: true });
     const temporaryPath = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
@@ -329,7 +335,7 @@ export class PiAgentSessionManager {
   }
 
   private scheduleSave(session: PiPersistedSession): void {
-    const key = this.getKey(session.userId, session.conversationId);
+    const key = this.getKey(session.userId, session.conversationId, session.projectId);
     if (this.pendingSaveTimers.has(key)) return;
     const timer = setTimeout(() => {
       this.pendingSaveTimers.delete(key);
@@ -340,7 +346,7 @@ export class PiAgentSessionManager {
   }
 
   private recoverExpiredContinuationClaims(session: PiPersistedSession): void {
-    if (this.activeRuns.has(this.getKey(session.userId, session.conversationId))) return;
+    if (this.activeRuns.has(this.getKey(session.userId, session.conversationId, session.projectId))) return;
     const cutoff = Date.now() - CONTINUATION_CLAIM_LEASE_MS;
     let changed = false;
     session.pending.forEach(item => {
@@ -355,10 +361,10 @@ export class PiAgentSessionManager {
     if (changed) this.save(session);
   }
 
-  getState(userId: string, conversationId: string): PiSessionPublicState {
-    const session = this.load(userId, conversationId);
+  getState(userId: string, conversationId: string, projectId = ''): PiSessionPublicState {
+    const session = this.load(userId, conversationId, projectId);
     this.recoverExpiredContinuationClaims(session);
-    const active = this.activeRuns.get(this.getKey(userId, conversationId));
+    const active = this.activeRuns.get(this.getKey(userId, conversationId, projectId));
     const pending = session.pending.filter(item => item.status === 'queued' || item.status === 'processing');
     const steeringCount = pending.filter(item => item.behavior === 'steer').length;
     const followUpCount = pending.filter(item => item.behavior === 'follow_up').length;
@@ -366,6 +372,7 @@ export class PiAgentSessionManager {
       version: 1,
       userId,
       conversationId,
+      projectId: projectId || undefined,
       running: Boolean(active),
       runId: active?.runId || session.run?.runId,
       provider: active?.provider || session.run?.provider,
@@ -393,20 +400,23 @@ export class PiAgentSessionManager {
     };
   }
 
-  beginRun(userId: string, conversationId: string, provider = 'auto'): { accepted: boolean; runId: string; state: PiSessionPublicState } {
-    const key = this.getKey(userId, conversationId);
+  beginRun(userId: string, conversationId: string, provider = 'auto', projectId = ''): { accepted: boolean; runId: string; state: PiSessionPublicState } {
+    const key = this.getKey(userId, conversationId, projectId);
     const existing = this.activeRuns.get(key);
     if (existing) {
-      return { accepted: false, runId: existing.runId, state: this.getState(userId, conversationId) };
+      return { accepted: false, runId: existing.runId, state: this.getState(userId, conversationId, projectId) };
     }
     const active: PiActiveRun = {
+      userId,
+      conversationId,
       runId: `pi_run_${randomUUID()}`,
       provider: String(provider || 'auto'),
       startedAt: nowIso(),
+      projectId: projectId || undefined,
       abortController: new AbortController(),
     };
     this.activeRuns.set(key, active);
-    const session = this.load(userId, conversationId);
+    const session = this.load(userId, conversationId, projectId);
     session.run = {
       runId: active.runId,
       provider: active.provider,
@@ -417,7 +427,16 @@ export class PiAgentSessionManager {
       events: [],
     };
     this.save(session);
-    return { accepted: true, runId: active.runId, state: this.getState(userId, conversationId) };
+    return { accepted: true, runId: active.runId, state: this.getState(userId, conversationId, projectId) };
+  }
+
+  listActiveStates(userId?: string): PiSessionPublicState[] {
+    const states: PiSessionPublicState[] = [];
+    for (const active of this.activeRuns.values()) {
+      if (userId && active.userId !== userId) continue;
+      states.push(this.getState(active.userId, active.conversationId, active.projectId));
+    }
+    return states.sort((left, right) => String(left.startedAt || '').localeCompare(String(right.startedAt || '')));
   }
 
   appendRunEvent(
@@ -426,8 +445,9 @@ export class PiAgentSessionManager {
     runId: string,
     type: PiRunEvent['type'],
     payload: Record<string, unknown>,
+    projectId = '',
   ): PiRunEvent | null {
-    const session = this.load(userId, conversationId);
+    const session = this.load(userId, conversationId, projectId);
     if (!session.run || session.run.runId !== runId) return null;
     const event: PiRunEvent = {
       sequence: session.run.lastEventSequence + 1,
@@ -466,8 +486,9 @@ export class PiAgentSessionManager {
     conversationId: string,
     runId: string,
     outcome: { status: 'completed' | 'cancelled' | 'error'; error?: string },
+    projectId = '',
   ): PiSessionPublicState {
-    const session = this.load(userId, conversationId);
+    const session = this.load(userId, conversationId, projectId);
     if (session.run?.runId === runId) {
       session.run.status = outcome.status;
       session.run.error = outcome.error ? String(outcome.error).slice(0, 4000) : undefined;
@@ -475,14 +496,14 @@ export class PiAgentSessionManager {
       session.run.updatedAt = session.run.completedAt;
       this.save(session);
     }
-    return this.getState(userId, conversationId);
+    return this.getState(userId, conversationId, projectId);
   }
 
-  settleRun(userId: string, conversationId: string, runId: string): PiSessionPublicState {
-    const key = this.getKey(userId, conversationId);
+  settleRun(userId: string, conversationId: string, runId: string, projectId = ''): PiSessionPublicState {
+    const key = this.getKey(userId, conversationId, projectId);
     const active = this.activeRuns.get(key);
     if (active?.runId === runId) this.activeRuns.delete(key);
-    const session = this.load(userId, conversationId);
+    const session = this.load(userId, conversationId, projectId);
     let changed = false;
     if (session.run?.runId === runId) {
       if (session.run.status === 'running') {
@@ -509,24 +530,25 @@ export class PiAgentSessionManager {
       });
     }
     if (changed) this.save(session);
-    return this.getState(userId, conversationId);
+    return this.getState(userId, conversationId, projectId);
   }
 
   requestRunCancellation(
     userId: string,
     conversationId: string,
     expectedRunId?: string,
+    projectId = '',
   ): { requested: boolean; runId?: string; state: PiSessionPublicState } {
-    const active = this.activeRuns.get(this.getKey(userId, conversationId));
+    const active = this.activeRuns.get(this.getKey(userId, conversationId, projectId));
     if (!active || (expectedRunId && active.runId !== expectedRunId)) {
       return {
         requested: false,
         runId: active?.runId,
-        state: this.getState(userId, conversationId),
+        state: this.getState(userId, conversationId, projectId),
       };
     }
     active.cancellationRequestedAt = active.cancellationRequestedAt || nowIso();
-    const session = this.load(userId, conversationId);
+    const session = this.load(userId, conversationId, projectId);
     if (session.run?.runId === active.runId) {
       session.run.status = 'cancelling';
       session.run.cancellationRequestedAt = active.cancellationRequestedAt;
@@ -539,17 +561,17 @@ export class PiAgentSessionManager {
     return {
       requested: true,
       runId: active.runId,
-      state: this.getState(userId, conversationId),
+      state: this.getState(userId, conversationId, projectId),
     };
   }
 
-  getRunAbortSignal(userId: string, conversationId: string, runId: string): AbortSignal | undefined {
-    const active = this.activeRuns.get(this.getKey(userId, conversationId));
+  getRunAbortSignal(userId: string, conversationId: string, runId: string, projectId = ''): AbortSignal | undefined {
+    const active = this.activeRuns.get(this.getKey(userId, conversationId, projectId));
     return active?.runId === runId ? active.abortController.signal : undefined;
   }
 
-  isRunCancellationRequested(userId: string, conversationId: string, runId: string): boolean {
-    const active = this.activeRuns.get(this.getKey(userId, conversationId));
+  isRunCancellationRequested(userId: string, conversationId: string, runId: string, projectId = ''): boolean {
+    const active = this.activeRuns.get(this.getKey(userId, conversationId, projectId));
     return active?.runId === runId
       && (Boolean(active.cancellationRequestedAt) || active.abortController.signal.aborted);
   }
@@ -557,13 +579,14 @@ export class PiAgentSessionManager {
   enqueue(input: {
     userId: string;
     conversationId: string;
+    projectId?: string;
     message: string;
     behavior: PiQueueBehavior;
     clientMessageId?: string;
     chatAttachments?: unknown;
     workspaceFileMentions?: unknown;
   }): PiQueuedMessage {
-    const session = this.load(input.userId, input.conversationId);
+    const session = this.load(input.userId, input.conversationId, input.projectId);
     const requestedId = String(input.clientMessageId || '').trim();
     const safeRequestedId = /^pi_msg_[a-zA-Z0-9_-]{8,120}$/.test(requestedId) ? requestedId : '';
     if (safeRequestedId) {
@@ -581,6 +604,7 @@ export class PiAgentSessionManager {
       id: safeRequestedId || `pi_msg_${randomUUID()}`,
       userId: input.userId,
       conversationId: input.conversationId,
+      projectId: input.projectId || undefined,
       message: text,
       behavior: input.behavior === 'steer' ? 'steer' : 'follow_up',
       status: 'queued',
@@ -597,8 +621,8 @@ export class PiAgentSessionManager {
   updateMessage(userId: string, conversationId: string, messageId: string, input: {
     message?: string;
     behavior?: PiQueueBehavior;
-  }): PiQueuedMessage | null {
-    const session = this.load(userId, conversationId);
+  }, projectId = ''): PiQueuedMessage | null {
+    const session = this.load(userId, conversationId, projectId);
     const item = session.pending.find(candidate => candidate.id === messageId);
     if (!item || item.status !== 'queued') return null;
     if (input.message !== undefined) {
@@ -612,8 +636,8 @@ export class PiAgentSessionManager {
     return cloneMessage(item);
   }
 
-  cancelMessage(userId: string, conversationId: string, messageId: string): PiQueuedMessage | null {
-    const session = this.load(userId, conversationId);
+  cancelMessage(userId: string, conversationId: string, messageId: string, projectId = ''): PiQueuedMessage | null {
+    const session = this.load(userId, conversationId, projectId);
     const index = session.pending.findIndex(candidate => candidate.id === messageId);
     if (index < 0 || session.pending[index].status !== 'queued') return null;
     const [item] = session.pending.splice(index, 1);
@@ -626,9 +650,9 @@ export class PiAgentSessionManager {
     return cloneMessage(item);
   }
 
-  claimNextForContinuation(userId: string, conversationId: string): PiQueuedMessage | null {
-    if (this.activeRuns.has(this.getKey(userId, conversationId))) return null;
-    const session = this.load(userId, conversationId);
+  claimNextForContinuation(userId: string, conversationId: string, projectId = ''): PiQueuedMessage | null {
+    if (this.activeRuns.has(this.getKey(userId, conversationId, projectId))) return null;
+    const session = this.load(userId, conversationId, projectId);
     this.recoverExpiredContinuationClaims(session);
     const item = session.pending.find(candidate => candidate.status === 'queued' && candidate.behavior === 'steer')
       || session.pending.find(candidate => candidate.status === 'queued' && candidate.behavior === 'follow_up');
@@ -645,8 +669,9 @@ export class PiAgentSessionManager {
     conversationId: string,
     messageId: string,
     message: string,
+    projectId = '',
   ): PiQueuedMessage | null {
-    const session = this.load(userId, conversationId);
+    const session = this.load(userId, conversationId, projectId);
     this.recoverExpiredContinuationClaims(session);
     const item = session.pending.find(candidate => candidate.id === messageId && candidate.status === 'processing');
     const normalizedMessage = String(message || '').trim().slice(0, MAX_MESSAGE_LENGTH);
@@ -654,9 +679,9 @@ export class PiAgentSessionManager {
     return cloneMessage(item);
   }
 
-  takeSteeringMessages(userId: string, conversationId: string, options?: { allowAttachments?: boolean }): PiQueuedMessage[] {
-    if (!this.activeRuns.has(this.getKey(userId, conversationId))) return [];
-    const session = this.load(userId, conversationId);
+  takeSteeringMessages(userId: string, conversationId: string, options?: { allowAttachments?: boolean }, projectId = ''): PiQueuedMessage[] {
+    if (!this.activeRuns.has(this.getKey(userId, conversationId, projectId))) return [];
+    const session = this.load(userId, conversationId, projectId);
     const item = session.pending.find(candidate => {
       if (candidate.status !== 'queued' || candidate.behavior !== 'steer') return false;
       if (options?.allowAttachments === false && candidate.chatAttachments.length > 0) return false;
@@ -670,8 +695,8 @@ export class PiAgentSessionManager {
     return [cloneMessage(item)];
   }
 
-  markApplied(userId: string, conversationId: string, messageId: string, completionMode: 'steered' | 'continued'): PiQueuedMessage | null {
-    const session = this.load(userId, conversationId);
+  markApplied(userId: string, conversationId: string, messageId: string, completionMode: 'steered' | 'continued', projectId = ''): PiQueuedMessage | null {
+    const session = this.load(userId, conversationId, projectId);
     const index = session.pending.findIndex(candidate => candidate.id === messageId);
     if (index < 0 || session.pending[index].status !== 'processing') return null;
     const [item] = session.pending.splice(index, 1);
@@ -685,8 +710,8 @@ export class PiAgentSessionManager {
     return cloneMessage(item);
   }
 
-  requeueMessage(userId: string, conversationId: string, messageId: string): PiQueuedMessage | null {
-    const session = this.load(userId, conversationId);
+  requeueMessage(userId: string, conversationId: string, messageId: string, projectId = ''): PiQueuedMessage | null {
+    const session = this.load(userId, conversationId, projectId);
     const item = session.pending.find(candidate => candidate.id === messageId);
     if (!item || item.status !== 'processing') return null;
     item.status = 'queued';
@@ -696,11 +721,11 @@ export class PiAgentSessionManager {
     return cloneMessage(item);
   }
 
-  clear(userId: string, conversationId: string): void {
-    const key = this.getKey(userId, conversationId);
+  clear(userId: string, conversationId: string, projectId = ''): void {
+    const key = this.getKey(userId, conversationId, projectId);
     this.sessions.delete(key);
     this.activeRuns.delete(key);
-    const filePath = this.getSessionPath(userId, conversationId);
+    const filePath = this.getSessionPath(userId, conversationId, projectId);
     if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
   }
 }

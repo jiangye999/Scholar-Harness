@@ -2,6 +2,7 @@ import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { getProjectRuntimeContext } from './project-runtime-context';
 import { spawn } from 'child_process';
 import { PDFParse } from 'pdf-parse';
 import { HybridRetrievalEngine } from '../literature/retrieval';
@@ -9,7 +10,7 @@ import type { UnifiedLiterature } from '../types/literature';
 import { authorsToString, parseAuthorsToString } from './literature-helpers';
 import { logger } from './logger';
 import { extractPdfTextWithFastText, isPdfFastTextAvailable } from './pdf-fast-text';
-import { extractPdfTextWithLiteParse, isLiteParseAvailable } from './pdf-liteparse';
+import { extractPdfTextWithLiteParse, isLiteParseAvailable, PdfLiteParseWorkerError } from './pdf-liteparse';
 import { extractPdfTextWithMarker, isPdfMarkerAvailable } from './pdf-marker';
 import {
   addPdfWikiPdfGroupsToPdfs,
@@ -997,6 +998,10 @@ export class PdfWikiManager {
   private queueRuntimeConfigProvider: (() => PdfWikiLlmConfig) | null = null;
 
   constructor(private readonly dataDir: string) {}
+
+  private getRuntimeDataDir(): string {
+    return getProjectRuntimeContext()?.projectRoot || this.dataDir;
+  }
 
   async getTopicCatalog(userId: string): Promise<PdfWikiTopicCatalog> {
     const catalogPath = this.getTopicCatalogPath(userId);
@@ -2285,7 +2290,7 @@ ${JSON.stringify(batch.map(point => ({
     pdfs: PdfWikiSourcePdf[]
   ): Promise<PdfWikiAutoGroupMatchResult> {
     const safeUserId = sanitizeUserId(userId);
-    const management = loadPdfWikiPdfManagement(this.dataDir, safeUserId);
+    const management = loadPdfWikiPdfManagement(this.getRuntimeDataDir(), safeUserId);
     const additions: Record<string, string[]> = {};
     const matchedGroupNamesByPdf: Record<string, string[]> = {};
     let addedTagCount = 0;
@@ -2343,7 +2348,7 @@ ${JSON.stringify(batch.map(point => ({
     }
 
     if (addedTagCount > 0) {
-      addPdfWikiPdfGroupsToPdfs(this.dataDir, safeUserId, additions);
+      addPdfWikiPdfGroupsToPdfs(this.getRuntimeDataDir(), safeUserId, additions);
       logger.info(
         `[PdfWiki] Automatically grouped ${Object.keys(additions).length} recognized PDF(s); added tags=${addedTagCount}`
       );
@@ -2845,7 +2850,7 @@ ${JSON.stringify(batch.map(point => ({
   }
 
   async recoverPersistentQueues(): Promise<void> {
-    const uploadsDir = path.join(this.dataDir, 'uploads');
+    const uploadsDir = path.join(this.getRuntimeDataDir(), 'uploads');
     let userIds: string[] = [];
     try {
       userIds = (await fs.promises.readdir(uploadsDir, { withFileTypes: true }))
@@ -2893,6 +2898,40 @@ ${JSON.stringify(batch.map(point => ({
         });
         this.startRecognitionQueueWorker(userId);
       }
+      await this.recoverInterruptedBuildStatus(userId);
+    }
+  }
+
+  private async recoverInterruptedBuildStatus(userId: string): Promise<void> {
+    const safeUserId = sanitizeUserId(userId);
+    const statusPath = this.getStatusPath(safeUserId);
+    if (!fs.existsSync(statusPath)) return;
+
+    const [queue, recognitionQueue] = await Promise.all([
+      this.getQueueSnapshot(safeUserId),
+      this.getRecognitionQueueSnapshot(safeUserId),
+    ]);
+    const hasActiveQueue = queue.runningJobs > 0
+      || queue.queuedJobs > 0
+      || recognitionQueue.runningItems > 0
+      || recognitionQueue.queuedItems > 0;
+    if (hasActiveQueue) return;
+
+    try {
+      const persisted = JSON.parse(await fs.promises.readFile(statusPath, 'utf-8')) as PdfWikiBuildStatus;
+      if (persisted.status !== 'processing' || persisted.taskKind === 'meta-analysis') return;
+      const now = new Date().toISOString();
+      await this.saveStatus(safeUserId, {
+        ...persisted,
+        status: 'error',
+        message: '上次 PDF 任务因本地服务退出而中断，请重新提交该任务',
+        updatedAt: now,
+        error: 'PDF_TASK_INTERRUPTED_BY_SERVER_RESTART',
+        stalled: true,
+      });
+      logger.warn(`[PdfWiki] Recovered interrupted PDF task status for ${safeUserId}`);
+    } catch (error) {
+      logger.warn(`[PdfWiki] Failed to recover interrupted status for ${safeUserId}:`, error);
     }
   }
 
@@ -3510,17 +3549,21 @@ ${JSON.stringify(batch.map(point => ({
 
     let result: PdfWikiReidentifyResult | null = null;
     await this.runExclusiveBuild(safeUserId, async () => {
-      await this.saveStatus(safeUserId, {
-        status: 'processing',
-        totalPdfs: 1,
-        processedPdfs: 0,
-        totalChunks: 1,
-        processedChunks: 0,
-        entryCount: 0,
-        sentencePointCount: 0,
-        message: '正在使用 LiteParse 重新识别 PDF 标题、作者、正文和图片',
-        updatedAt: new Date().toISOString(),
-      });
+      const startedAt = new Date().toISOString();
+      try {
+        await this.saveStatus(safeUserId, {
+          status: 'processing',
+          taskKind: 'pdf-wiki',
+          totalPdfs: 1,
+          processedPdfs: 0,
+          totalChunks: 1,
+          processedChunks: 0,
+          entryCount: 0,
+          sentencePointCount: 0,
+          message: '正在使用 LiteParse 重新识别 PDF 标题、作者、正文和图片',
+          startedAt,
+          updatedAt: startedAt,
+        });
 
       const store = await this.loadStore(safeUserId);
       const pdfIndex = store.pdfs.findIndex(pdf => pdf.id === targetPdfId);
@@ -3588,17 +3631,38 @@ ${JSON.stringify(batch.map(point => ({
         autoGroupMatch,
       };
 
-      await this.saveStatus(safeUserId, {
-        status: 'completed',
-        totalPdfs: store.pdfs.length,
-        processedPdfs: store.pdfs.length,
-        totalChunks: 1,
-        processedChunks: 1,
-        entryCount: store.entries.length,
-        sentencePointCount: store.sentenceCloud?.points?.length || 0,
-        message: result.message + (figureResult.error ? `；图片提取提示：${figureResult.error}` : ''),
-        updatedAt: store.generatedAt,
-      });
+        await this.saveStatus(safeUserId, {
+          status: 'completed',
+          taskKind: 'pdf-wiki',
+          totalPdfs: store.pdfs.length,
+          processedPdfs: store.pdfs.length,
+          totalChunks: 1,
+          processedChunks: 1,
+          entryCount: store.entries.length,
+          sentencePointCount: store.sentenceCloud?.points?.length || 0,
+          message: result.message + (figureResult.error ? `；图片提取提示：${figureResult.error}` : ''),
+          startedAt,
+          updatedAt: store.generatedAt,
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        await this.saveStatus(safeUserId, {
+          status: 'error',
+          taskKind: 'pdf-wiki',
+          totalPdfs: 1,
+          processedPdfs: 0,
+          failedPdfs: 1,
+          totalChunks: 1,
+          processedChunks: 0,
+          entryCount: 0,
+          sentencePointCount: 0,
+          message: `PDF 重新识别失败：${message}`,
+          startedAt,
+          updatedAt: new Date().toISOString(),
+          error: message,
+        });
+        throw error;
+      }
     });
 
     if (!result) {
@@ -4714,6 +4778,15 @@ ${JSON.stringify(batch.map(point => ({
     llmConfig: PdfWikiLlmConfig,
     options: { force?: boolean; vectorConfig?: PdfWikiVectorConfig } = {}
   ): Promise<PdfWikiDeepAnalysisResult> {
+    return this.runExclusiveBuild(userId, () => this.analyzePdfDeepUnlocked(userId, pdfId, llmConfig, options));
+  }
+
+  private async analyzePdfDeepUnlocked(
+    userId: string,
+    pdfId: string,
+    llmConfig: PdfWikiLlmConfig,
+    options: { force?: boolean; vectorConfig?: PdfWikiVectorConfig } = {}
+  ): Promise<PdfWikiDeepAnalysisResult> {
     const store = await this.loadStore(userId);
     const pdf = store.pdfs.find(item => item.id === pdfId);
     if (!pdf) {
@@ -5215,16 +5288,17 @@ ${JSON.stringify(batch.map(point => ({
     this.engines.clear();
   }
 
-  private async runExclusiveBuild(userId: string, task: () => Promise<void>): Promise<void> {
+  private async runExclusiveBuild<T>(userId: string, task: () => Promise<T>): Promise<T> {
     const safeUserId = sanitizeUserId(userId);
     const previous = this.buildLocks.get(safeUserId) || Promise.resolve();
     const current = previous.catch(() => undefined).then(task);
-    this.buildLocks.set(safeUserId, current);
+    const tracked = current.then(() => undefined, () => undefined);
+    this.buildLocks.set(safeUserId, tracked);
 
     try {
-      await current;
+      return await current;
     } finally {
-      if (this.buildLocks.get(safeUserId) === current) {
+      if (this.buildLocks.get(safeUserId) === tracked) {
         this.buildLocks.delete(safeUserId);
       }
     }
@@ -6775,6 +6849,10 @@ ${JSON.stringify(batch.map(point => ({
         parser: 'liteparse',
       };
     } catch (error) {
+      if (error instanceof PdfLiteParseWorkerError) {
+        logger.error(`[PdfWiki] LiteParse worker isolation stopped unsafe in-process fallback for ${pdf.originalName}:`, error);
+        throw new Error(`PDF 识别子进程异常，已阻止在主服务内重复解析以保护文献库和当前会话：${error.message}`);
+      }
       logger.warn(`[PdfWiki] LiteParse parse failed for ${pdf.originalName}, falling back: ${(error as Error).message}`);
       return null;
     }
@@ -11718,7 +11796,7 @@ ${this.compactPromptText(this.stripReferenceTail(parsed.text), 70000)}`;
     const safeUserId = sanitizeUserId(userId || 'web-user');
     const candidateUserIds = Array.from(new Set([safeUserId, safeUserId === 'web-user' ? '' : 'web-user'].filter(Boolean)));
     for (const candidateUserId of candidateUserIds) {
-      const memoryPath = path.join(this.dataDir, 'memory', candidateUserId, 'memory.json');
+      const memoryPath = path.join(this.getRuntimeDataDir(), 'memory', candidateUserId, 'memory.json');
       if (!fs.existsSync(memoryPath)) continue;
       try {
         const parsed = JSON.parse(await fs.promises.readFile(memoryPath, 'utf-8')) as {
@@ -18692,7 +18770,7 @@ ${content.slice(0, 12000)}`;
   }
 
   private getWikiDir(userId: string): string {
-    return path.join(this.dataDir, 'uploads', sanitizeUserId(userId), 'pdf-wiki');
+    return path.join(this.getRuntimeDataDir(), 'uploads', sanitizeUserId(userId), 'pdf-wiki');
   }
 
   private getSourcePdfDir(userId: string): string {

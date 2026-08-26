@@ -20,18 +20,18 @@
     "api_url": "",
     "api_key": "",
     "model": "claude-sonnet-4-5",
-    "description": "大牛马 - 规划、Skill生成、写作"
+    "description": "Grass - OpenRouter 免费模型"
   },
   "secondary": {
     "api_url": "",
     "api_key": "",
     "model": "gpt-4o",
-    "description": "小牛马 - 引用验证、更新记忆"
+    "description": "Little corse - 引用验证、更新记忆"
   },
   "secondary_vision": {
     "api_url": "",
     "api_key": "",
     "model": "gpt-4o",
-    "description": "小牛马视觉 - 图片、图表截图、多模态输入"
+    "description": "Little corse 视觉 - 图片、图表截图、多模态输入"
   }
 }

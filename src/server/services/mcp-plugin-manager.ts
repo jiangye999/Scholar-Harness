@@ -175,7 +175,7 @@ async function searchNpmMcpPlugins(query: string): Promise<McpMarketplaceCandida
   const text = query ? `${query} mcp` : 'academic research literature citation paper mcp';
   const url = `https://registry.npmjs.org/-/v1/search?text=${encodeURIComponent(text)}&size=20`;
   const response = await fetch(url, {
-    headers: { accept: 'application/json', 'user-agent': 'Scholar-Harness/1.0.8' },
+    headers: { accept: 'application/json', 'user-agent': 'Scholar-Harness/1.0.9' },
     signal: AbortSignal.timeout(10_000),
   });
   if (!response.ok) throw new Error(`npm Registry 返回 HTTP ${response.status}`);
@@ -195,7 +195,7 @@ async function searchNpmMcpPlugins(query: string): Promise<McpMarketplaceCandida
       const metadataResponse = await fetch(
         `https://registry.npmjs.org/${encodeURIComponent(String(pkg.name))}/latest`,
         {
-          headers: { accept: 'application/json', 'user-agent': 'Scholar-Harness/1.0.8' },
+          headers: { accept: 'application/json', 'user-agent': 'Scholar-Harness/1.0.9' },
           signal: AbortSignal.timeout(8_000),
         },
       );
@@ -260,7 +260,7 @@ async function searchGithubMcpPlugins(query: string): Promise<McpMarketplaceCand
   const headers: Record<string, string> = {
     accept: 'application/vnd.github+json',
     'x-github-api-version': '2022-11-28',
-    'user-agent': 'Scholar-Harness/1.0.8',
+    'user-agent': 'Scholar-Harness/1.0.9',
   };
   const githubToken = String(process.env.GITHUB_TOKEN || process.env.GH_TOKEN || '').trim();
   if (githubToken) headers.authorization = `Bearer ${githubToken}`;
@@ -346,13 +346,13 @@ async function searchSmitheryMcpPlugins(query: string, config: McpMarketplaceCon
 async function searchGlamaMcpPlugins(query: string): Promise<McpMarketplaceCandidate[]> {
   const url = `https://glama.ai/api/mcp/v1/servers?query=${encodeURIComponent(query || 'academic research')}&first=20`;
   const response = await fetch(url, {
-    headers: { accept: 'application/json', 'user-agent': 'Scholar-Harness/1.0.8' },
+    headers: { accept: 'application/json', 'user-agent': 'Scholar-Harness/1.0.9' },
     signal: AbortSignal.timeout(10_000),
   });
   if (!response.ok) throw new Error(`Glama 返回 HTTP ${response.status}`);
   const payload = await response.json();
   const githubHeaders: Record<string, string> = {
-    'user-agent': 'Scholar-Harness/1.0.8',
+    'user-agent': 'Scholar-Harness/1.0.9',
     'x-github-api-version': '2022-11-28',
   };
   const githubToken = String(process.env.GITHUB_TOKEN || process.env.GH_TOKEN || '').trim();
@@ -420,7 +420,7 @@ async function searchPulseMcpPlugins(query: string, config: McpMarketplaceConfig
 async function searchMcpSoPlugins(query: string): Promise<McpMarketplaceCandidate[]> {
   const url = `https://mcp.so/servers?q=${encodeURIComponent(query || 'academic research')}`;
   const response = await fetch(url, {
-    headers: { accept: 'text/html', 'user-agent': 'Scholar-Harness/1.0.8' },
+    headers: { accept: 'text/html', 'user-agent': 'Scholar-Harness/1.0.9' },
     signal: AbortSignal.timeout(10_000),
   });
   if (!response.ok) throw new Error(`MCP.so 返回 HTTP ${response.status}`);
@@ -805,7 +805,7 @@ export class McpStdioSession {
       await this.request('initialize', {
         protocolVersion: '2024-11-05',
         capabilities: {},
-        clientInfo: { name: 'scholar-harness', version: '1.0.8' },
+        clientInfo: { name: 'scholar-harness', version: '1.0.9' },
       }, this.timeouts.initializeMs === undefined ? 60_000 : this.timeouts.initializeMs);
       this.notify('notifications/initialized', {});
       this.initialized = true;
@@ -1150,6 +1150,134 @@ export async function getEnabledMcpToolDefinitions(): Promise<LLMToolDefinition[
       parameters: tool.inputSchema,
     },
   })));
+}
+
+const USER_MCP_LIST_TOOL = 'list_user_mcp_tools';
+const USER_MCP_INVOKE_TOOL = 'invoke_user_mcp_tool';
+
+/**
+ * Keep user MCP plugins available without placing every discovered schema in
+ * every model request. The model first searches this compact gateway and then
+ * invokes one selected exposed tool by name.
+ */
+export function getMcpGatewayToolDefinitions(): LLMToolDefinition[] {
+  return [
+    {
+      type: 'function',
+      function: {
+        name: USER_MCP_LIST_TOOL,
+        description: '按需查询当前已启用的用户 MCP 插件工具。仅在任务确实需要用户插件时调用；返回可传给 invoke_user_mcp_tool 的 tool_name 与参数 schema。',
+        parameters: {
+          type: 'object',
+          properties: {
+            query: {
+              type: 'string',
+              description: '可选。按插件名、用途、工具名或工具描述筛选。',
+            },
+            plugin_id: {
+              type: 'string',
+              description: '可选。只列出指定插件 ID 的工具。',
+            },
+            limit: {
+              type: 'integer',
+              minimum: 1,
+              maximum: 40,
+              default: 12,
+            },
+          },
+          additionalProperties: false,
+        },
+      },
+    },
+    {
+      type: 'function',
+      function: {
+        name: USER_MCP_INVOKE_TOOL,
+        description: '调用 list_user_mcp_tools 已确认的一个用户 MCP 工具。写入或命令类插件仍受原插件权限和确认策略约束。',
+        parameters: {
+          type: 'object',
+          properties: {
+            tool_name: {
+              type: 'string',
+              description: 'list_user_mcp_tools 返回的完整 exposedName。',
+            },
+            arguments: {
+              type: 'object',
+              description: '目标 MCP 工具的参数对象，必须符合查询结果中的 inputSchema。',
+              additionalProperties: true,
+            },
+          },
+          required: ['tool_name'],
+          additionalProperties: false,
+        },
+      },
+    },
+  ];
+}
+
+export function isMcpGatewayToolName(name: string): boolean {
+  return name === USER_MCP_LIST_TOOL || name === USER_MCP_INVOKE_TOOL;
+}
+
+export async function executeMcpGatewayToolCall(call: LLMToolCall): Promise<unknown> {
+  let args: Record<string, unknown> = {};
+  try {
+    const parsed = JSON.parse(call.function.arguments || '{}');
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      args = parsed as Record<string, unknown>;
+    }
+  } catch {
+    return { ok: false, error: '用户 MCP 网关参数不是有效 JSON' };
+  }
+
+  if (call.function.name === USER_MCP_LIST_TOOL) {
+    const query = String(args.query || '').trim().toLowerCase();
+    const pluginId = String(args.plugin_id || '').trim();
+    const limit = Math.max(1, Math.min(40, Math.floor(Number(args.limit) || 12)));
+    const plugins = (await readStore()).plugins.filter(plugin => (
+      plugin.enabled && plugin.status === 'ready' && plugin.tools.length > 0
+    ));
+    const tools = plugins.flatMap(plugin => plugin.tools.map(tool => ({
+      exposedName: exposedToolName(plugin.id, tool.name),
+      pluginId: plugin.id,
+      pluginName: plugin.name,
+      risk: plugin.risk,
+      name: tool.name,
+      description: tool.description || tool.name,
+      inputSchema: tool.inputSchema,
+    }))).filter(tool => {
+      if (pluginId && tool.pluginId !== pluginId) return false;
+      if (!query) return true;
+      return [tool.pluginId, tool.pluginName, tool.name, tool.description]
+        .some(value => String(value || '').toLowerCase().includes(query));
+    }).slice(0, limit);
+    return {
+      ok: true,
+      count: tools.length,
+      tools,
+      hint: tools.length === limit ? '结果已达到 limit；可使用更具体的 query 或 plugin_id 缩小范围。' : '',
+    };
+  }
+
+  if (call.function.name === USER_MCP_INVOKE_TOOL) {
+    const toolName = String(args.tool_name || '').trim();
+    const toolArguments = args.arguments && typeof args.arguments === 'object' && !Array.isArray(args.arguments)
+      ? args.arguments as Record<string, unknown>
+      : {};
+    if (!toolName || !isMcpPluginToolName(toolName)) {
+      return { ok: false, error: 'tool_name 必须来自 list_user_mcp_tools 返回的 exposedName' };
+    }
+    return executeMcpPluginToolCall({
+      id: call.id,
+      type: 'function',
+      function: {
+        name: toolName,
+        arguments: JSON.stringify(toolArguments),
+      },
+    });
+  }
+
+  return { ok: false, error: `未知用户 MCP 网关工具：${call.function.name}` };
 }
 
 export async function getEnabledMcpPluginCatalogPrompt(): Promise<string> {

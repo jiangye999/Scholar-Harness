@@ -1,4 +1,5 @@
 import {
+  existsSync,
   mkdtempSync,
   mkdirSync,
   readFileSync,
@@ -15,6 +16,11 @@ import {
   type WorkspaceDirectoryContext,
 } from '../../../src/server/services/workspace-directory';
 import { createWorkspaceToolRuntime } from '../../../src/server/services/workspace-tools';
+import {
+  AI_WORKBENCH_OUTPUT_DIRECTORIES,
+  USER_VIEW_DIRECTORY_NAME,
+  USER_VIEW_OUTPUT_DIRECTORIES,
+} from '../../../src/server/services/workspace-workbench';
 
 describe('recursive workspace authorization', () => {
   const roots: string[] = [];
@@ -46,14 +52,14 @@ describe('recursive workspace authorization', () => {
     return { root, deepDir, workspace };
   }
 
-  it('searches files in every descendant directory, including formerly skipped folder names', async () => {
+  it('searches ordinary descendant directories without entering dependency trees', async () => {
     const { root } = createWorkspace();
 
     const deepResult = await searchWorkspaceFiles(root, 'deep-evidence', 20);
     const dependencyResult = await searchWorkspaceFiles(root, 'dependency-source', 20);
 
     expect(deepResult.results[0]?.path).toBe('level-1/level-2/target-folder/deep-evidence.txt');
-    expect(dependencyResult.results[0]?.path).toBe('node_modules/example-package/lib/dependency-source.js');
+    expect(dependencyResult.results).toEqual([]);
   });
 
   it('recursively lists directories and files by default', async () => {
@@ -104,7 +110,7 @@ describe('recursive workspace authorization', () => {
     };
 
     expect(result.ok).toBe(true);
-    expect(data.scope).toBe('recursive');
+    expect(data.scope).toBe('current');
     expect(data.directoriesSearched).toBeGreaterThan(0);
     expect(data.filesSearched).toBeGreaterThan(0);
     expect(data.results).toEqual(expect.arrayContaining([
@@ -147,10 +153,47 @@ describe('recursive workspace authorization', () => {
       },
     });
     expect(writeResult.ok).toBe(true);
+    const safeWorkRoot = writeRuntime.getSafeWorkInfo().root as string;
+    const generatedRelativePath = path.join(
+      AI_WORKBENCH_OUTPUT_DIRECTORIES.other,
+      'level-1',
+      'level-2',
+      'target-folder',
+      'generated-result.txt',
+    );
     expect(readFileSync(
-      path.join(writable.root, 'level-1', 'level-2', 'target-folder', 'generated-result.txt'),
+      path.join(safeWorkRoot, generatedRelativePath),
       'utf-8'
     )).toBe('generated in nested folder');
+    expect(() => readFileSync(
+      path.join(writable.root, 'level-1', 'level-2', 'target-folder', 'generated-result.txt'),
+      'utf-8'
+    )).toThrow();
+
+    const publishResult = await writeRuntime.executeToolCall({
+      id: 'nested-publish',
+      type: 'function',
+      function: {
+        name: 'publish_workspace_artifacts',
+        arguments: JSON.stringify({
+          paths: [generatedRelativePath],
+        }),
+      },
+    });
+    expect(publishResult.ok).toBe(true);
+    expect(() => readFileSync(
+      path.join(writable.root, 'level-1', 'level-2', 'target-folder', 'generated-result.txt'),
+      'utf-8'
+    )).toThrow();
+    expect(existsSync(path.join(
+      writable.root,
+      USER_VIEW_DIRECTORY_NAME,
+      USER_VIEW_OUTPUT_DIRECTORIES.other,
+      'level-1',
+      'level-2',
+      'target-folder',
+      `generated-result.txt${process.platform === 'win32' ? '.lnk' : ''}`,
+    ))).toBe(true);
 
     const outsideResult = await readRuntime.executeToolCall({
       id: 'outside-read',

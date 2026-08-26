@@ -3,7 +3,11 @@ import { PassThrough } from 'stream';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { codexAppServerManager } from '../../src/bridge/chat-bridge/codex-app-server';
+import {
+  CodexModelCapacityError,
+  codexAppServerManager,
+  isCodexModelCapacityError,
+} from '../../src/bridge/chat-bridge/codex-app-server';
 import type { CodexBridgeToolSet } from '../../src/types';
 
 interface FakeProcess extends EventEmitter {
@@ -17,6 +21,7 @@ function createFakeAppServer(
   onMethod?: (method: string, params?: any) => void,
   turnCompletionDelayMs = 0,
   availableTools: string[] = ['echo_tool'],
+  turnFailureMessage = '',
 ): FakeProcess {
   const child = new EventEmitter() as FakeProcess;
   child.stdin = new PassThrough();
@@ -80,6 +85,14 @@ function createFakeAppServer(
           activeTurnId = '';
         }
       } else if (request.method === 'turn/start') {
+        if (turnFailureMessage) {
+          send({
+            jsonrpc: '2.0',
+            id: request.id,
+            error: { code: -32001, message: turnFailureMessage },
+          });
+          continue;
+        }
         turn += 1;
         const turnId = `turn-${turn}`;
         activeTurnId = turnId;
@@ -134,6 +147,51 @@ describe('Codex App Server lifecycle', () => {
     for (const key of conversationKeys.splice(0)) {
       codexAppServerManager.disposeConversation(key, true);
     }
+  });
+
+  it('classifies model capacity separately and only retries before observable activity', () => {
+    const safeError = new CodexModelCapacityError('Selected model is at capacity. Please try a different model.', {
+      assistantOutputObserved: false,
+      sideEffectObserved: false,
+      toolReceiptCount: 0,
+      turnStarted: true,
+    });
+    const unsafeError = new CodexModelCapacityError('Selected model is at capacity. Please try a different model.', {
+      assistantOutputObserved: false,
+      sideEffectObserved: true,
+      toolReceiptCount: 1,
+      turnStarted: true,
+    });
+
+    expect(isCodexModelCapacityError(safeError)).toBe(true);
+    expect(isCodexModelCapacityError(new Error('model temporarily unavailable due to high demand'))).toBe(true);
+    expect(isCodexModelCapacityError(new Error('Codex App Server executable not found'))).toBe(false);
+    expect(safeError.retrySafe).toBe(true);
+    expect(unsafeError.retrySafe).toBe(false);
+  });
+
+  it('wraps an App Server capacity response with retry-safety metadata', async () => {
+    const conversationKey = `vitest-capacity-${Date.now()}-${Math.random()}`;
+    conversationKeys.push(conversationKey);
+
+    const error = await codexAppServerManager.runTurn({
+      conversationKey,
+      cwd: process.cwd(),
+      prompt: 'capacity test',
+      model: 'gpt-5.6-sol',
+      sandbox: 'read-only',
+      timeoutMs: 10_000,
+      spawnAppServer: () => createFakeAppServer(
+        undefined,
+        0,
+        [],
+        'Selected model is at capacity. Please try a different model.',
+      ) as any,
+    }).catch(caught => caught);
+
+    expect(error).toBeInstanceOf(CodexModelCapacityError);
+    expect(error.retrySafe).toBe(true);
+    expect(error.activity.toolReceiptCount).toBe(0);
   });
 
   it('reuses one process and one thread for consecutive Scholar Harness turns', async () => {

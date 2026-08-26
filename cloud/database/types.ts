@@ -60,14 +60,13 @@ export interface Subscription {
   trial_start?: Date;
   trial_end?: Date;
   
-  // 使用额度（按使用量计费）
-  quota_total: number;        // 总额度（字数），-1表示无限
-  quota_used: number;         // 已使用额度（字数）
-  quota_remaining: number;    // 剩余额度（字数）
-  
-  // 文件上传限制
-  max_file_upload: number;    // 最大文件上传数，-1表示无限
-  file_upload_used: number;   // 已上传文件数
+  // 兼容旧数据库/旧客户端的观测字段。订阅不再按字符数或文件数限额；
+  // quota_total/quota_remaining/max_file_upload 固定为 -1。
+  quota_total: number;
+  quota_used: number;
+  quota_remaining: number;
+  max_file_upload: number;
+  file_upload_used: number;
   
   created_at: Date;
   updated_at: Date;
@@ -305,9 +304,6 @@ export interface CreateSubscriptionInput {
   payment_method: 'wechat' | 'alipay' | 'stripe' | 'beta_code' | 'invite_trial';
   auto_renew?: boolean;
   
-  // 额度配置（可选，默认使用策略配置）
-  quota_total?: number;
-  max_file_upload?: number;
 }
 
 export interface CreateActivationCodeInput {

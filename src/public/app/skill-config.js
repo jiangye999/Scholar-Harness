@@ -369,7 +369,7 @@
                 '<span style="font-size:13px;font-weight:850;color:var(--text-primary);">Skill 优化实验室</span>' +
                 '<span style="font-size:10px;font-weight:800;color:var(--accent-color);">验证门控 · 本地版本</span>' +
               '</div>' +
-              '<div style="margin-top:3px;font-size:11px;color:var(--text-secondary);line-height:1.5;">从真实聊天轨迹中生成候选 Skill，分别用小牛马、大牛马或 Codex 复测；只有候选分数严格高于当前版本才允许启用。</div>' +
+              '<div style="margin-top:3px;font-size:11px;color:var(--text-secondary);line-height:1.5;">从真实聊天轨迹中生成候选 Skill，分别用 Little corse、Grass 或 Codex 复测；只有候选分数严格高于当前版本才允许启用。</div>' +
             '</div>' +
             '<div style="display:flex;align-items:center;gap:8px;flex:1 1 320px;justify-content:flex-end;">' +
               '<select id="skillOptimizationEntrySelect" ' + (skills.length ? '' : 'disabled') + ' style="min-width:190px;max-width:320px;height:34px;padding:0 8px;border:1px solid var(--border-color);border-radius:7px;background:var(--bg-input);color:var(--text-primary);font-size:11px;">' + (options || '<option>请先创建用户 Skill</option>') + '</select>' +
@@ -599,9 +599,9 @@
     window.showUserSkillDialog = showUserSkillDialog;
 
     function skillOptimizationProviderLabel(value) {
-      if (value === 'primary') return '大牛马';
+      if (value === 'primary') return 'Grass';
       if (value === 'codex') return 'Codex';
-      return '小牛马';
+      return 'Little corse';
     }
 
     function skillOptimizationOutcomeLabel(value) {
@@ -685,7 +685,7 @@
         ? skillOptimizationLabState.candidates.slice(0, 12)
         : [];
       if (!candidates.length) {
-        return '<div style="padding:12px;border:1px dashed var(--border-color);border-radius:8px;color:var(--text-secondary);font-size:11px;line-height:1.6;">复核至少一条轨迹后，使用大牛马生成受控修改的候选 Skill。</div>';
+        return '<div style="padding:12px;border:1px dashed var(--border-color);border-radius:8px;color:var(--text-secondary);font-size:11px;line-height:1.6;">复核至少一条轨迹后，使用 Grass 生成受控修改的候选 Skill。</div>';
       }
       return candidates.map(function(candidate) {
         var evaluation = candidate.evaluation || null;
@@ -742,7 +742,7 @@
         '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:11px;">' +
           '<select id="skillOptimizationSkillSelect" onchange="changeSkillOptimizationLab(this.value)" style="flex:1 1 260px;min-width:220px;height:36px;padding:0 9px;border:1px solid var(--border-color);border-radius:7px;background:var(--bg-input);color:var(--text-primary);font-size:12px;">' + skillOptions + '</select>' +
           '<select id="skillOptimizationTargetProvider" style="height:36px;padding:0 9px;border:1px solid var(--border-color);border-radius:7px;background:var(--bg-input);color:var(--text-primary);font-size:11px;">' +
-            '<option value="secondary">小牛马验证</option><option value="primary">大牛马验证</option><option value="codex">Codex 验证</option>' +
+            '<option value="secondary">Little corse 验证</option><option value="primary">Grass 验证</option><option value="codex">Codex 验证</option>' +
           '</select>' +
           '<button type="button" id="skillOptimizationGenerateBtn" onclick="generateSkillOptimizationCandidateFromLab()" style="height:36px;padding:0 11px;border:1px solid var(--accent-color);border-radius:7px;background:var(--accent-color);color:white;cursor:pointer;font-size:11px;font-weight:800;">生成候选版本</button>' +
         '</div>' +
@@ -883,7 +883,7 @@
       if (!skill) return;
       var targetProvider = document.getElementById('skillOptimizationTargetProvider')?.value || 'secondary';
       if (button) { button.disabled = true; button.textContent = '优化中...'; }
-      setSkillOptimizationStatus('大牛马正在分析已复核的成功/失败轨迹，并生成受控候选版本...');
+      setSkillOptimizationStatus('Grass 正在分析已复核的成功/失败轨迹，并生成受控候选版本...');
       try {
         skillOptimizationLabState = await requestSkillOptimization(getSkillOptimizationApiBase(skill.id) + '/candidates', {
           method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ optimizerProvider: 'primary', targetProvider: targetProvider })
@@ -1358,6 +1358,7 @@
     window.deleteUserSkillFromDialog = deleteUserSkillFromDialog;
 
     var FIRST_RUN_ONBOARDING_KEY = 'scholarharness_first_run_onboarding_v1';
+    var FIRST_RUN_ONBOARDING_STEPS = ['secondary', 'embedding', 'plugins'];
     var firstRunOnboardingReadiness = null;
     var firstRunOnboardingChecking = false;
     var firstRunOnboardingScheduled = false;
@@ -1369,20 +1370,69 @@
 
     function loadFirstRunOnboardingState() {
       try {
-        return JSON.parse(localStorage.getItem(getFirstRunOnboardingStorageKey()) || '{}');
+        var parsed = JSON.parse(localStorage.getItem(getFirstRunOnboardingStorageKey()) || '{}');
+        var visited = parsed && parsed.visited && typeof parsed.visited === 'object'
+          ? parsed.visited
+          : {};
+        return {
+          status: String(parsed?.status || ''),
+          visited: {
+            secondary: !!visited.secondary,
+            embedding: !!visited.embedding,
+            plugins: !!visited.plugins
+          },
+          version: String(parsed?.version || ''),
+          updatedAt: String(parsed?.updatedAt || '')
+        };
       } catch (e) {
-        return {};
+        return {
+          status: '',
+          visited: { secondary: false, embedding: false, plugins: false },
+          version: '',
+          updatedAt: ''
+        };
       }
     }
 
-    function saveFirstRunOnboardingState(status) {
+    function saveFirstRunOnboardingState(status, visited) {
       try {
+        var current = loadFirstRunOnboardingState();
+        var nextVisited = visited && typeof visited === 'object' ? visited : current.visited;
         localStorage.setItem(getFirstRunOnboardingStorageKey(), JSON.stringify({
           status: status,
-          version: '1.0.8',
+          visited: {
+            secondary: !!nextVisited.secondary,
+            embedding: !!nextVisited.embedding,
+            plugins: !!nextVisited.plugins
+          },
+          version: '1.0.9',
           updatedAt: new Date().toISOString()
         }));
       } catch (e) {}
+    }
+
+    function hasCompletedFirstRunOnboardingSteps(visited) {
+      return FIRST_RUN_ONBOARDING_STEPS.every(function(step) {
+        return !!(visited && visited[step]);
+      });
+    }
+
+    function removeFirstRunOnboardingBubble() {
+      var bubble = document.getElementById('firstRunOnboardingBubble');
+      if (!bubble) return;
+      bubble.classList.remove('show');
+      setTimeout(function() {
+        if (bubble.parentNode) bubble.parentNode.removeChild(bubble);
+      }, 180);
+    }
+
+    function markFirstRunOnboardingStepVisited(step) {
+      var state = loadFirstRunOnboardingState();
+      if (FIRST_RUN_ONBOARDING_STEPS.indexOf(step) < 0) return state;
+      state.visited[step] = true;
+      state.status = hasCompletedFirstRunOnboardingSteps(state.visited) ? 'completed' : 'in-progress';
+      saveFirstRunOnboardingState(state.status, state.visited);
+      return state;
     }
 
     function hasPriorChatUsageForOnboarding() {
@@ -1476,63 +1526,102 @@
     }
 
     function renderFirstRunOnboardingContent() {
-      var readiness = firstRunOnboardingReadiness;
-      if (!readiness || firstRunOnboardingChecking) {
-        return '<div class="first-run-intro"><div><h2 class="first-run-intro-title">正在检查可用环境</h2><div class="first-run-intro-copy">自动识别 AI 引擎和本地工具，不需要手动寻找安装路径。</div></div><span class="first-run-required-badge">首次使用</span></div>' +
-          '<div style="padding:42px 0;text-align:center;color:var(--text-secondary);font-size:12px;">正在自动检测 Codex、R、Python 和 OfficeCLI...</div>';
-      }
-      var runtimeReadyCount = [readiness.rReady, readiness.pythonReady, readiness.officeReady].filter(Boolean).length;
-      var primaryLabel = readiness.secondaryReady
-        ? '让小牛马继续配置本项目'
-        : '先配置小牛马（约 2 分钟）';
+      var state = loadFirstRunOnboardingState();
+      var completedCount = FIRST_RUN_ONBOARDING_STEPS.filter(function(step) {
+        return !!state.visited[step];
+      }).length;
+      var stepMeta = [
+        {
+          id: 'secondary',
+          label: '配置 Little corse',
+          detail: '连接日常聊天与写作模型'
+        },
+        {
+          id: 'embedding',
+          label: '配置 Embedding',
+          detail: '启用句子与文献语义检索'
+        },
+        {
+          id: 'plugins',
+          label: '配置插件',
+          detail: '管理 R、Python、OfficeCLI 与 MCP'
+        }
+      ];
       return '' +
-        '<div class="first-run-intro">' +
-          '<div><h2 class="first-run-intro-title">先配好小牛马，剩下的交给它</h2><div class="first-run-intro-copy">小牛马会根据你的科研目标，逐步配置大牛马、Embedding、Codex、Skill、插件和文献导入；只补齐当前真正需要的能力。</div></div>' +
-          '<span class="first-run-required-badge">小牛马必需 · 其余按需</span>' +
-        '</div>' +
-        '<div class="first-run-readiness">' +
-          '<div class="first-run-status-list">' +
-            firstRunStatusRow('小牛马', readiness.secondaryReady ? '已配置，可主持后续配置并执行日常任务。' : '尚未配置；先完成这一项即可启动 AI 配置向导。', readiness.secondaryReady, '必需') +
-            firstRunStatusRow('大牛马', readiness.primaryReady ? '已配置，可用于规划、复杂推理、Skill 生成和质检。' : '按需配置，不影响先使用小牛马。', readiness.primaryReady, '可选') +
-            firstRunStatusRow('Embedding', readiness.embeddingReady ? '语义检索已启用。' : '未配置时仍可使用关键词检索。', readiness.embeddingReady, '可选') +
-            firstRunStatusRow('Codex CLI', readiness.codexReady ? ('已启用' + (readiness.codexVersion ? ' · ' + readiness.codexVersion : '') + '。') : (readiness.codexAvailable ? '已检测到，尚未设为优先。' : '未检测到，需要本地工程自动化时再配置。'), readiness.codexReady, '可选') +
-            firstRunStatusRow('本地运行时', 'R / Python / OfficeCLI 已就绪 ' + runtimeReadyCount + '/3。', runtimeReadyCount > 0, '可选') +
-            firstRunStatusRow('Skill 与 MCP', '可用 Skill ' + Number(readiness.skillCount || 0) + ' 个；已安装 MCP ' + Number(readiness.mcpPluginCount || 0) + ' 个。', Number(readiness.skillCount || 0) > 0, '按需选择') +
+        '<div class="first-run-bubble-head">' +
+          '<div class="first-run-bubble-heading">' +
+            '<strong>AI 配置与使用向导</strong>' +
+            '<span>首次使用先访问三个配置入口，之后可以随时在配置中心调整。</span>' +
           '</div>' +
-          '<section class="first-run-next-panel">' +
-            '<div class="first-run-next-title">AI 配置与使用向导</div>' +
-            '<div class="first-run-next-copy">告诉小牛马你要做论文写作、PDF Wiki、文献计量、Meta 分析还是 R 作图。它会给出最小配置方案，并直接打开对应的安全配置框。</div>' +
-            '<div class="first-run-action-stack">' +
-              '<button type="button" class="primary" id="firstRunPrimaryAction" onclick="startAiConfigurationAssistant(\'all\')">' + escapeHtml(primaryLabel) + '</button>' +
-              '<button type="button" onclick="startAiConfigurationAssistant(\'literature\')">WoS / CNKI / RIS / PDF 怎么导入</button>' +
-              '<button type="button" onclick="openAiConfigurationSkillPage()">选择需要持续使用的 Skill</button>' +
-              '<button type="button" onclick="openAiConfigurationPluginPage()">配置 R、Python、OfficeCLI 或 MCP</button>' +
-            '</div>' +
-            '<div id="firstRunOnboardingStatus" class="first-run-next-copy" style="min-height:18px;margin-top:10px;"></div>' +
-          '</section>' +
+          '<button type="button" class="first-run-bubble-close" onclick="dismissFirstRunOnboarding()" title="关闭向导" aria-label="关闭向导">×</button>' +
         '</div>' +
-        '<div class="first-run-footer">' +
-          '<button type="button" onclick="refreshFirstRunOnboarding()">重新检测</button>' +
-          '<button type="button" onclick="dismissFirstRunOnboarding()">暂不配置，不再自动提示</button>' +
-        '</div>';
+        '<div class="first-run-bubble-actions" role="group" aria-label="首次配置入口">' +
+          stepMeta.map(function(step) {
+            var visited = !!state.visited[step.id];
+            return '<button type="button" class="first-run-bubble-action' + (visited ? ' visited' : '') + '" onclick="openFirstRunOnboardingStep(\'' + step.id + '\')">' +
+              '<span class="first-run-bubble-action-mark" aria-hidden="true">' + (visited ? '✓' : '') + '</span>' +
+              '<span class="first-run-bubble-action-copy"><strong>' + escapeHtml(step.label) + '</strong><small>' + escapeHtml(step.detail) + '</small></span>' +
+              '<span class="first-run-bubble-action-arrow" aria-hidden="true">›</span>' +
+            '</button>';
+          }).join('') +
+        '</div>' +
+        '<div class="first-run-bubble-progress"><span>已访问 ' + completedCount + '/3</span><span>访问第三个入口后自动关闭</span></div>';
     }
 
     async function showFirstRunOnboardingDialog(options) {
-      showModal('首次使用向导', renderFirstRunOnboardingContent(), true, false);
-      var readiness = await inspectFirstRunReadiness(!(options && options.autoDetect === false));
-      var title = document.getElementById('modalTitle');
-      var content = document.getElementById('modalContent');
-      if (!content || (title && title.textContent !== '首次使用向导')) return readiness;
-      content.innerHTML = renderFirstRunOnboardingContent();
-      return readiness;
+      var state = loadFirstRunOnboardingState();
+      var force = !!(options && options.manual);
+      if (!force && (state.status === 'completed' || state.status === 'dismissed')) return state;
+      if (hasCompletedFirstRunOnboardingSteps(state.visited)) {
+        saveFirstRunOnboardingState('completed', state.visited);
+        removeFirstRunOnboardingBubble();
+        return state;
+      }
+      var bubble = document.getElementById('firstRunOnboardingBubble');
+      if (!bubble) {
+        bubble = document.createElement('aside');
+        bubble.id = 'firstRunOnboardingBubble';
+        bubble.className = 'first-run-onboarding-bubble';
+        bubble.setAttribute('role', 'dialog');
+        bubble.setAttribute('aria-modal', 'false');
+        bubble.setAttribute('aria-label', 'AI 配置与使用向导');
+        document.body.appendChild(bubble);
+      }
+      bubble.innerHTML = renderFirstRunOnboardingContent();
+      requestAnimationFrame(function() { bubble.classList.add('show'); });
+      return state;
     }
     window.showFirstRunOnboardingDialog = showFirstRunOnboardingDialog;
 
     async function refreshFirstRunOnboarding() {
-      firstRunOnboardingReadiness = null;
       await showFirstRunOnboardingDialog({ manual: true });
     }
     window.refreshFirstRunOnboarding = refreshFirstRunOnboarding;
+
+    function openFirstRunOnboardingStep(step) {
+      var state = markFirstRunOnboardingStepVisited(step);
+      if (hasCompletedFirstRunOnboardingSteps(state.visited)) {
+        removeFirstRunOnboardingBubble();
+      } else {
+        showFirstRunOnboardingDialog({ manual: true });
+      }
+      if (step === 'secondary') {
+        openFirstRunAiConfig();
+        return;
+      }
+      if (step === 'embedding') {
+        openFirstRunEmbeddingConfig();
+        return;
+      }
+      if (step === 'plugins') {
+        if (typeof showRuntimePluginConfigDialog === 'function') {
+          showRuntimePluginConfigDialog();
+        } else if (typeof openAiConfigurationPluginPage === 'function') {
+          openAiConfigurationPluginPage();
+        }
+      }
+    }
+    window.openFirstRunOnboardingStep = openFirstRunOnboardingStep;
 
     function openFirstRunAiConfig() {
       initGuidedConfigState('secondary');
@@ -1543,7 +1632,7 @@
 
     function openFirstRunEmbeddingConfig() {
       initGuidedConfigState('embedding');
-      guidedConfigState.returnTarget = 'onboarding-literature';
+      guidedConfigState.returnTarget = 'onboarding';
       showGuidedConfigDialog('embedding', 0);
     }
     window.openFirstRunEmbeddingConfig = openFirstRunEmbeddingConfig;
@@ -1597,10 +1686,10 @@
 
     async function startAiConfigurationAssistant(focus) {
       var status = document.getElementById('firstRunOnboardingStatus');
-      if (status) status.textContent = '正在检查小牛马和当前配置...';
+      if (status) status.textContent = '正在检查 Little corse 和当前配置...';
       var readiness = await inspectFirstRunReadiness(false);
       if (!readiness.secondaryReady) {
-        if (status) status.textContent = '请先完成小牛马配置；保存成功后会自动继续。';
+        if (status) status.textContent = '请先完成 Little corse 配置；保存成功后会自动继续。';
         openAiGuidedConfig('secondary');
         return;
       }
@@ -1612,10 +1701,10 @@
       setComposerChatProvider('secondary');
       var focusText = focus === 'literature'
         ? '我想了解并完成 WoS、CNKI、RIS、TXT 和 PDF 的正确导出、上传与后续使用。请先区分题录库和 PDF Wiki，再一次只带我完成一个步骤。'
-        : '请先询问我主要要完成的科研任务，再根据目标给出最小配置方案；按顺序帮我配置大牛马、Embedding、Codex、Skill 或插件，只配置真正需要的项目。';
+        : '请先询问我主要要完成的科研任务，再根据目标给出最小配置方案；按顺序帮我配置 Grass、Embedding、Codex、Skill 或插件，只配置真正需要的项目。';
       var readinessText = [
-        '小牛马=' + (readiness.secondaryReady ? '已配置' : '未配置'),
-        '大牛马=' + (readiness.primaryReady ? '已配置' : '未配置'),
+        'Little corse=' + (readiness.secondaryReady ? '已配置' : '未配置'),
+        'Grass=' + (readiness.primaryReady ? '已配置' : '未配置'),
         'Embedding=' + (readiness.embeddingReady ? '已配置' : '未配置'),
         'Codex=' + (readiness.codexReady ? '已启用' : (readiness.codexAvailable ? '已检测未启用' : '未检测')),
         '本地运行时=' + [readiness.rReady, readiness.pythonReady, readiness.officeReady].filter(Boolean).length + '/3',
@@ -1634,6 +1723,7 @@
     function returnFromGuidedConfig() {
       var returnToOnboarding = guidedConfigState && String(guidedConfigState.returnTarget || '').indexOf('onboarding') === 0;
       if (returnToOnboarding) {
+        closeModal();
         showFirstRunOnboardingDialog({ manual: true, autoDetect: false });
       } else if (guidedConfigState && guidedConfigState.returnTarget === 'ai-configuration') {
         closeModal();
@@ -1734,8 +1824,9 @@
     window.applyFirstRunRecommendedConfig = applyFirstRunRecommendedConfig;
 
     function dismissFirstRunOnboarding() {
-      saveFirstRunOnboardingState('dismissed');
-      closeModal();
+      var state = loadFirstRunOnboardingState();
+      saveFirstRunOnboardingState('dismissed', state.visited);
+      removeFirstRunOnboardingBubble();
     }
     window.dismissFirstRunOnboarding = dismissFirstRunOnboarding;
 
@@ -1759,18 +1850,22 @@
 
     function getGuidedConfigMeta(kind) {
       if (kind === 'primary') {
+        var configuredPrimaryModel = chatBridgeConfig.primary?.model || '';
+        var defaultFreeModel = configuredPrimaryModel === 'openrouter/free' || configuredPrimaryModel.endsWith(':free')
+          ? configuredPrimaryModel
+          : 'openrouter/free';
         return {
           kind: 'primary',
-          title: '大牛马引导配置',
-          name: '大牛马',
-          subtitle: '负责规划、Skill 生成、质量检查和复杂推理。',
-          role: '建议使用推理能力更强的模型，例如 Claude、GPT-4o、Qwen Max 或 OpenRouter 上的高能力模型。',
-          defaultUrl: chatBridgeConfig.primary?.apiUrl || OPENROUTER_API_URL,
+          title: 'Grass 引导配置',
+          name: 'Grass',
+          subtitle: '通过 OpenRouter 免费模型负责规划、Skill 生成、质量检查和复杂推理。',
+          role: '粘贴 OpenRouter API Key 后，系统会实时筛选价格为零、可输出文本且支持 Agent 工具的模型。',
+          defaultUrl: OPENROUTER_API_URL,
           defaultKey: '',
           hasKey: !!chatBridgeConfig.primary?.hasApiKey,
-          defaultModel: chatBridgeConfig.primary?.model || 'claude-sonnet-4-5',
+          defaultModel: defaultFreeModel,
           advancedAction: 'showChatBridgeDialog()',
-          saveLabel: '保存大牛马配置'
+          saveLabel: '保存 Grass 配置'
         };
       }
       if (kind === 'embedding') {
@@ -1793,8 +1888,8 @@
       loadApiConfig();
       return {
         kind: 'secondary',
-        title: '小牛马引导配置',
-        name: '小牛马',
+        title: 'Little corse 引导配置',
+        name: 'Little corse',
         subtitle: '负责日常聊天、写作执行、引用验证和快速内容生成。',
         role: '建议使用稳定、便宜、响应快的模型，例如通义千问、DeepSeek、Kimi 或豆包。',
         defaultUrl: apiConfig.url || DEFAULT_EMBEDDING_API_URL,
@@ -1802,7 +1897,7 @@
         hasKey: !!apiConfig.key,
         defaultModel: apiConfig.model || currentModel || 'qwen3.5-plus',
         advancedAction: 'showConnectDialog()',
-        saveLabel: '保存小牛马配置'
+        saveLabel: '保存 Little corse 配置'
       };
     }
 
@@ -1836,17 +1931,17 @@
     }
 
     function getGuidedProviderList(kind) {
-      var providers = [];
       if (kind === 'primary') {
-        providers.push({
+        return [{
           id: 'openrouter',
           name: 'OpenRouter',
           apiUrl: OPENROUTER_API_URL,
           applyUrl: OPENROUTER_KEYS_URL,
-          modelHint: 'anthropic/claude-sonnet-4.5 或 openai/gpt-4o',
-          note: '适合大牛马，统一接入多个高能力模型。'
-        });
+          modelHint: 'openrouter/free 或具体的 :free 模型',
+          note: 'Grass 只显示支持 Agent 工具的实时免费模型，列表会随 OpenRouter 自动更新。'
+        }];
       }
+      var providers = [];
       CHINA_AI_API_PROVIDERS.forEach(function(provider) {
         providers.push(provider);
       });
@@ -1918,12 +2013,25 @@
           status +
           '<div class="btns" style="margin-top:14px;"><button class="cancel" onclick="guidedConfigPrevStep()">上一步</button><button class="ok" onclick="guidedConfigNextStep()">下一步</button></div>';
       }
+      var guidedModelControl = '';
+      if (meta.kind === 'primary') {
+        var freeModels = Array.isArray(guidedConfigState.freeModels) ? guidedConfigState.freeModels : [];
+        var freeModelOptions = freeModels.map(function(model) {
+          var id = typeof model === 'string' ? model : model.id;
+          var name = typeof model === 'string' ? model : (model.name || model.id);
+          var tools = typeof model === 'object' && model.supportsTools ? ' · 工具' : '';
+          return '<option value="' + escapeHtml(id) + '"' + (id === guidedConfigState.model ? ' selected' : '') + '>' + escapeHtml(name + (name !== id ? ' · ' + id : '') + tools) + '</option>';
+        }).join('');
+        guidedModelControl = '<select id="guidedModel" style="width:100%;padding:9px 10px;border:1px solid var(--border-color);border-radius:7px;background:var(--bg-input);color:var(--text-primary);font-size:12px;">' + freeModelOptions + '</select>';
+      } else {
+        guidedModelControl = '<input id="guidedModel" type="text" value="' + escapeHtml(guidedConfigState.model || meta.defaultModel) + '" style="width:100%;padding:9px 10px;border:1px solid var(--border-color);border-radius:7px;background:var(--bg-input);color:var(--text-primary);font-size:12px;">';
+      }
       return '' +
         '<section style="border:1px solid var(--border-color);border-radius:10px;background:var(--bg-secondary);padding:14px;">' +
           '<div style="font-size:13px;font-weight:800;color:var(--text-primary);margin-bottom:8px;">模型与开关</div>' +
-          '<div style="font-size:12px;line-height:1.7;color:var(--text-secondary);margin-bottom:10px;">模型名称要和服务商后台显示的 Model ID 一致。如果不确定，可以先用下面的推荐值，之后再从高级配置里调整。</div>' +
-          '<label style="display:block;margin-bottom:5px;font-size:12px;font-weight:750;color:var(--text-primary);">模型名称</label>' +
-          '<input id="guidedModel" type="text" value="' + escapeHtml(guidedConfigState.model || meta.defaultModel) + '" style="width:100%;padding:9px 10px;border:1px solid var(--border-color);border-radius:7px;background:var(--bg-input);color:var(--text-primary);font-size:12px;">' +
+          '<div style="font-size:12px;line-height:1.7;color:var(--text-secondary);margin-bottom:10px;">' + (meta.kind === 'primary' ? '下面是使用当前 API Key 实时获取并自动筛选出的 OpenRouter 免费 Agent 模型。' : '模型名称要和服务商后台显示的 Model ID 一致。') + '</div>' +
+          '<label style="display:block;margin-bottom:5px;font-size:12px;font-weight:750;color:var(--text-primary);">' + (meta.kind === 'primary' ? '免费模型' : '模型名称') + '</label>' +
+          guidedModelControl +
           (meta.kind === 'embedding' ? '<label style="display:flex;align-items:center;gap:8px;margin-top:12px;color:var(--text-primary);font-size:12px;cursor:pointer;"><input id="guidedEmbeddingEnabled" type="checkbox" ' + (guidedConfigState.enabled !== false ? 'checked' : '') + ' style="width:15px;height:15px;accent-color:var(--accent-color);">启用 Embedding 语义检索</label>' : '') +
         '</section>' +
         status +
@@ -1962,7 +2070,7 @@
       } else if (provider.id === 'qwen') {
         guidedConfigState.model = guidedConfigState.kind === 'primary' ? 'qwen-max' : 'qwen3.5-plus';
       } else if (provider.id === 'openrouter') {
-        guidedConfigState.model = guidedConfigState.model || 'anthropic/claude-sonnet-4.5';
+        guidedConfigState.model = 'openrouter/free';
       } else if (!guidedConfigState.model) {
         guidedConfigState.model = provider.modelHint || '';
       }
@@ -1970,7 +2078,7 @@
     }
     window.applyGuidedProviderPreset = applyGuidedProviderPreset;
 
-    function guidedConfigNextStep() {
+    async function guidedConfigNextStep() {
       captureGuidedConfigInputs();
       if (!guidedConfigState) return;
       var previousStep = guidedConfigState.step || 0;
@@ -1989,6 +2097,34 @@
           var status3 = document.getElementById('guidedConfigStatus');
           if (status3) status3.innerHTML = '<span style="color:var(--danger-color);">请先粘贴 API Key。</span>';
           return;
+        }
+        if (guidedConfigState.kind === 'primary') {
+          var loadingStatus = document.getElementById('guidedConfigStatus');
+          if (loadingStatus) loadingStatus.textContent = '正在连接 OpenRouter 并筛选免费模型...';
+          try {
+            var freeResponse = await fetch('/api/chat-bridge/models', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                agent: 'primary',
+                apiUrl: OPENROUTER_API_URL,
+                apiKey: guidedConfigState.apiKey || undefined
+              })
+            });
+            var freeResult = await freeResponse.json().catch(function() { return {}; });
+            if (!freeResponse.ok || !freeResult.success || !freeResult.freeOnly || !Array.isArray(freeResult.models) || !freeResult.models.length) {
+              throw new Error(freeResult.error || '没有获取到可用免费模型');
+            }
+            guidedConfigState.freeModels = Array.isArray(freeResult.modelDetails) && freeResult.modelDetails.length
+              ? freeResult.modelDetails
+              : freeResult.models;
+            if (freeResult.models.indexOf(guidedConfigState.model) < 0) {
+              guidedConfigState.model = freeResult.models[0];
+            }
+          } catch (error) {
+            if (loadingStatus) loadingStatus.innerHTML = '<span style="color:var(--danger-color);">OpenRouter 验证失败：' + escapeHtml(error.message || String(error)) + '。请检查 API Key 后重试。</span>';
+            return;
+          }
         }
       }
       guidedConfigState.step = Math.min(2, (guidedConfigState.step || 0) + 1);
@@ -2062,14 +2198,15 @@
         apiConfig.model = guidedConfigState.model;
         if (!apiConfig.key) {
           var secondaryStatus = document.getElementById('guidedConfigStatus');
-          if (secondaryStatus) secondaryStatus.innerHTML = '<span style="color:var(--danger-color);">小牛马需要填写 API Key。</span>';
+          if (secondaryStatus) secondaryStatus.innerHTML = '<span style="color:var(--danger-color);">Little corse 需要填写 API Key。</span>';
           return;
         }
         saveApiConfig();
         var returnToOnboarding = guidedConfigState.returnTarget === 'onboarding';
         var returnToAiConfiguration = guidedConfigState.returnTarget === 'ai-configuration';
-        appendMessage('✅ 小牛马配置已保存\n\n模型：' + currentModel, 'bot', false, true);
+        appendMessage('✅ Little corse 配置已保存\n\n模型：' + currentModel, 'bot', false, true);
         if (returnToOnboarding) {
+          closeModal();
           showFirstRunOnboardingDialog({ manual: true, autoDetect: false });
         } else if (returnToAiConfiguration) {
           guidedConfigState = null;
@@ -2101,34 +2238,77 @@
           document.body.appendChild(node);
         });
         try {
-          await saveEmbeddingConfig({
-            returnAction: embeddingReturnTarget === 'onboarding-literature'
-              ? 'literature'
+          var embeddingSaved = await saveEmbeddingConfig({
+            returnAction: embeddingReturnTarget === 'onboarding'
+              ? 'first-run-onboarding'
               : (embeddingReturnTarget === 'ai-configuration' ? 'ai-configuration' : '')
           });
+          if (embeddingSaved && embeddingReturnTarget === 'onboarding') {
+            closeModal();
+            showFirstRunOnboardingDialog({ manual: true, autoDetect: false });
+          }
         } finally {
           [embeddingUrl, embeddingKey, embeddingModel, embeddingEnabled].forEach(function(node) { node.remove(); });
         }
         return;
       }
-      var primaryUrl = document.createElement('input');
-      var primaryKey = document.createElement('input');
-      var primaryModel = document.createElement('input');
-      primaryUrl.id = 'primaryApiUrl';
-      primaryKey.id = 'primaryApiKey';
-      primaryModel.id = 'primaryModelInput';
-      primaryUrl.value = guidedConfigState.apiUrl || '';
-      primaryKey.value = guidedConfigState.apiKey || '';
-      primaryModel.value = guidedConfigState.model || '';
-      [primaryUrl, primaryKey, primaryModel].forEach(function(node) {
-        node.style.display = 'none';
-        document.body.appendChild(node);
-      });
+      if (!(await verifyGuidedAiConnection('primary'))) return;
+      var existingPool = chatBridgeConfig.primary?.pool;
+      var existingOpenRouterEntry = existingPool && Array.isArray(existingPool.models)
+        ? existingPool.models.find(function(entry) { return normalizeApiBaseUrl(entry.api_url || '') === OPENROUTER_API_URL; })
+        : null;
+      var grasslandEntryId = existingOpenRouterEntry?.id || 'grassland-openrouter';
+      var primaryResponse;
       try {
-        if (!(await verifyGuidedAiConnection('primary'))) return;
-        await saveChatBridgeConfig();
-      } finally {
-        [primaryUrl, primaryKey, primaryModel].forEach(function(node) { node.remove(); });
+        primaryResponse = await fetch('/api/chat-bridge/config', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            enabled: true,
+            mode: 'api',
+            primary: {
+              description: 'Grass - OpenRouter 免费模型',
+              pool: {
+                models: [{
+                  id: grasslandEntryId,
+                  label: 'OpenRouter',
+                  model: guidedConfigState.model,
+                  api_url: OPENROUTER_API_URL,
+                  api_key: guidedConfigState.apiKey || '',
+                  enabled: true,
+                  priority: 0
+                }],
+                active_model_id: grasslandEntryId,
+                auto_fallback: true
+              }
+            }
+          })
+        });
+      } catch (error) {
+        var primaryNetworkStatus = document.getElementById('guidedConfigStatus');
+        if (primaryNetworkStatus) primaryNetworkStatus.innerHTML = '<span style="color:var(--danger-color);">保存失败：' + escapeHtml(error.message || String(error)) + '</span>';
+        return;
+      }
+      var primaryResult = await primaryResponse.json().catch(function() { return {}; });
+      if (!primaryResponse.ok || !primaryResult.success) {
+        var primaryStatus = document.getElementById('guidedConfigStatus');
+        if (primaryStatus) primaryStatus.innerHTML = '<span style="color:var(--danger-color);">保存失败：' + escapeHtml(primaryResult.error || ('HTTP ' + primaryResponse.status)) + '</span>';
+        return;
+      }
+      await loadChatBridgeConfig();
+      localStorage.setItem(CHAT_BRIDGE_KEY, JSON.stringify(chatBridgeConfig));
+      updateModelBadge();
+      appendMessage('✅ Grass 配置已保存\n\nOpenRouter 免费模型：' + guidedConfigState.model, 'bot', false, true);
+      var primaryReturnTarget = guidedConfigState.returnTarget || '';
+      guidedConfigState = null;
+      firstRunOnboardingReadiness = null;
+      closeModal();
+      if (primaryReturnTarget === 'onboarding') {
+        showFirstRunOnboardingDialog({ manual: true, autoDetect: false });
+      } else if (primaryReturnTarget === 'ai-configuration') {
+        setTimeout(function() { startAiConfigurationAssistant('all'); }, 120);
+      } else {
+        showConfigCenterDialog();
       }
     }
     window.saveGuidedConfig = saveGuidedConfig;
@@ -2138,6 +2318,13 @@
     var CONFIG_CENTER_CODEX_EFFORTS_KEY = 'scholarharness_codex_effort_by_model';
     var configCenterCodexEffortByModel = {};
     var configCenterCodexCommandAutoSaveTimer = null;
+    var configCenterRuntimeModelsById = { pi: [], opencode: [] };
+    var configCenterRuntimeProvidersById = { pi: [], opencode: [] };
+    var CONFIG_CENTER_RUNTIME_INSTALLERS = {
+      codex: { label: 'Codex', packageName: '@openai/codex' },
+      pi: { label: 'Pi', packageName: '@earendil-works/pi-coding-agent' },
+      opencode: { label: 'OpenCode', packageName: 'opencode-ai' }
+    };
 
     function scheduleConfigCenterCodexCommandAutoSave() {
       if (configCenterCodexCommandAutoSaveTimer) {
@@ -2162,8 +2349,7 @@
         await refreshConfigCenterCodexStatus();
         return;
       }
-      var prefer = !!document.getElementById('configCenterCodexCliPrefer')?.checked;
-      await saveConfigCenterCodexPreference(prefer);
+      await saveConfigCenterAgentRuntimes();
     }
     window.flushConfigCenterCodexCommandAutoSave = flushConfigCenterCodexCommandAutoSave;
 
@@ -2186,6 +2372,534 @@
       } catch (e) {}
     }
 
+    function configCenterRuntimeCard(runtimeId, label, description) {
+      var runtimes = chatBridgeConfig.agentRuntimes || {};
+      var config = runtimes[runtimeId] || {};
+      var prefix = 'configCenterRuntime' + (runtimeId === 'pi' ? 'Pi' : 'Opencode');
+      var initialEfforts = runtimeId === 'pi'
+        ? ['off','minimal','low','medium','high','xhigh','max']
+        : ['low','medium','high','xhigh'];
+      var savedModelOption = config.model
+        ? '<option value="' + escapeHtml(config.model) + '" selected>当前配置 · ' + escapeHtml(config.model) + '</option>'
+        : '';
+      var providerAuth = config.provider_auth || {};
+      var savedProvider = String(providerAuth.provider || '');
+      var authMode = providerAuth.mode === 'api_key' ? 'api_key' : 'cli_login';
+      var savedProviderOption = savedProvider
+        ? '<option value="' + escapeHtml(savedProvider) + '" selected>当前厂商 · ' + escapeHtml(savedProvider) + '</option>'
+        : '';
+      return '<section class="agent-runtime-card" data-runtime-id="' + runtimeId + '">' +
+        '<div class="agent-runtime-head">' +
+          '<span><strong>' + escapeHtml(label) + '</strong><small>' + escapeHtml(description) + '</small></span>' +
+          '<label class="agent-runtime-enable"><input id="' + prefix + 'Enabled" type="checkbox" ' + (config.enabled ? 'checked' : '') + '>启用</label>' +
+        '</div>' +
+        '<div class="agent-runtime-auth">' +
+          '<div class="agent-runtime-auth-title"><strong>模型厂商与认证</strong><span>认证只提供给当前 Agent 进程，API Key 加密保存且不会回显。</span></div>' +
+          '<div class="agent-runtime-fields">' +
+            '<label class="agent-runtime-field"><span>模型厂商</span><select id="' + prefix + 'Provider" data-selected="' + escapeHtml(savedProvider) + '" onchange="handleConfigCenterRuntimeProviderChange(\'' + runtimeId + '\')"><option value="">选择厂商</option>' + savedProviderOption + '<option value="__custom__">其他厂商 ID</option></select></label>' +
+            '<label class="agent-runtime-field"><span>认证方式</span><select id="' + prefix + 'AuthMode" onchange="syncConfigCenterRuntimeAuthMode(\'' + runtimeId + '\')"><option value="cli_login" ' + (authMode === 'cli_login' ? 'selected' : '') + '>CLI 登录</option><option value="api_key" ' + (authMode === 'api_key' ? 'selected' : '') + '>API Key</option></select></label>' +
+            '<label id="' + prefix + 'ApiKeyField" class="agent-runtime-field agent-runtime-field-wide"><span>API Key</span><input id="' + prefix + 'ApiKey" type="password" value="" autocomplete="off" placeholder="' + (providerAuth.has_api_key ? '已安全保存，留空保持不变' : '输入该厂商 API Key') + '"></label>' +
+            '<label id="' + prefix + 'CustomProviderField" class="agent-runtime-field agent-runtime-field-wide" hidden><span>其他厂商 ID</span><input id="' + prefix + 'CustomProvider" type="text" value="" placeholder="例如 digitalocean 或自定义 provider id"></label>' +
+          '</div>' +
+          '<div id="' + prefix + 'AuthStatus" class="agent-runtime-auth-status" data-state="idle">' + (providerAuth.has_api_key ? '已保存 API Key，可刷新模型验证。' : '请选择厂商并完成认证。') + '</div>' +
+          '<div class="agent-runtime-actions"><button id="' + prefix + 'LoginButton" class="agent-runtime-button" type="button" onclick="openConfigCenterRuntimeLogin(\'' + runtimeId + '\')">打开登录终端</button></div>' +
+        '</div>' +
+        '<div class="agent-runtime-fields">' +
+          '<label class="agent-runtime-field agent-runtime-field-wide"><span>CLI 路径</span><input id="' + prefix + 'Command" type="text" value="' + escapeHtml(config.command || '') + '" placeholder="留空自动检测 ' + runtimeId + '"></label>' +
+          '<label class="agent-runtime-field"><span>模型</span><select id="' + prefix + 'Model" data-selected="' + escapeHtml(config.model || '') + '" onchange="handleConfigCenterRuntimeModelChange(\'' + runtimeId + '\')"><option value="">运行时默认</option>' + savedModelOption + '</select></label>' +
+          '<label class="agent-runtime-field"><span>推理强度</span><select id="' + prefix + 'Effort" data-selected="' + escapeHtml(config.reasoning_effort || 'medium') + '" onchange="this.setAttribute(\'data-selected\', this.value)">' +
+            initialEfforts.map(function(effort) { return '<option value="' + effort + '" ' + ((config.reasoning_effort || 'medium') === effort ? 'selected' : '') + '>' + effort + '</option>'; }).join('') +
+          '</select></label>' +
+          '<label class="agent-runtime-field"><span>工作区权限</span><select id="' + prefix + 'Sandbox">' +
+            ['read-only','workspace-write','danger-full-access'].map(function(level) { return '<option value="' + level + '" ' + ((config.sandbox || 'workspace-write') === level ? 'selected' : '') + '>' + level + '</option>'; }).join('') +
+          '</select></label>' +
+          '<label class="agent-runtime-field"><span>单轮超时，毫秒</span><input id="' + prefix + 'Timeout" type="number" min="10000" max="3600000" step="10000" value="' + Number(config.timeout_ms || 1800000) + '"></label>' +
+        '</div>' +
+        '<details class="agent-runtime-manual-model"><summary>使用未列出的模型 ID</summary><label class="agent-runtime-field"><span>手动模型 ID</span><input id="' + prefix + 'CustomModel" type="text" placeholder="例如 provider/model" oninput="handleConfigCenterRuntimeCustomModelInput(\'' + runtimeId + '\')"></label></details>' +
+        '<div id="' + prefix + 'ModelSource" class="agent-runtime-model-source">检测 CLI 后可读取模型。</div>' +
+        '<div id="' + prefix + 'Status" class="agent-runtime-status" data-state="idle">尚未检测</div>' +
+        '<div class="agent-runtime-actions">' +
+          '<button id="' + prefix + 'InstallButton" class="agent-runtime-button agent-runtime-button-primary" type="button" onclick="installConfigCenterRuntime(\'' + runtimeId + '\')" hidden>一键部署 CLI</button>' +
+          '<button id="' + prefix + 'RefreshModelsButton" class="agent-runtime-button" type="button" onclick="loadConfigCenterRuntimeModels(\'' + runtimeId + '\')">刷新模型</button>' +
+          '<button id="' + prefix + 'DetectButton" class="agent-runtime-button" type="button" onclick="refreshConfigCenterRuntimeStatus(\'' + runtimeId + '\')">检测 CLI</button>' +
+        '</div>' +
+      '</section>';
+    }
+
+    function configCenterCodexRuntimeHtml(currentCodexModel, currentCodexEffort, currentCodexConcurrency) {
+      var codex = chatBridgeConfig.codex || {};
+      var enabled = codex.enabled === true || codex.prefer === true;
+      return '<div style="padding:14px;border:1px solid var(--border-color);border-radius:8px;background:var(--bg-secondary);margin-bottom:10px;">' +
+        '<div style="display:flex;align-items:flex-start;justify-content:space-between;gap:10px;">' +
+          '<span><strong style="font-size:13px;color:var(--text-primary);">Codex</strong><small style="display:block;margin-top:3px;color:var(--text-secondary);line-height:1.5;">App Server 持久会话、MCP 工具、steer、取消和安全工作区。</small></span>' +
+          '<label style="display:flex;align-items:center;gap:6px;font-size:11px;color:var(--text-secondary);"><input id="configCenterCodexCliPrefer" type="checkbox" ' + (enabled ? 'checked' : '') + '>启用</label>' +
+        '</div>' +
+        '<input id="configCenterCodexCommand" type="text" value="' + escapeHtml(codex.command || '') + '" placeholder="CLI 路径；留空自动检测 codex" oninput="scheduleConfigCenterCodexCommandAutoSave()" onchange="flushConfigCenterCodexCommandAutoSave()" style="margin-top:10px;min-width:0;width:100%;padding:8px 9px;border:1px solid var(--border-color);border-radius:6px;background:var(--bg-input);color:var(--text-primary);font-size:12px;">' +
+        '<div style="margin-top:12px;">' +
+          '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:7px;"><strong style="font-size:12px;color:var(--text-primary);">模型</strong><button type="button" onclick="loadConfigCenterCodexModels(true)" style="padding:4px 7px;border:0;border-radius:6px;background:transparent;color:var(--text-secondary);cursor:pointer;font-size:10.8px;">刷新模型</button></div>' +
+          '<div id="configCenterCodexModelList" data-selected="' + escapeHtml(currentCodexModel) + '" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:8px;"><div style="font-size:11px;color:var(--text-secondary);">正在读取 Codex 可用模型...</div></div>' +
+          '<div id="configCenterCodexModelSource" style="margin-top:6px;font-size:10.8px;line-height:1.5;color:var(--text-secondary);"></div>' +
+        '</div>' +
+        '<div style="margin-top:12px;">' +
+          '<strong style="display:block;font-size:12px;color:var(--text-primary);margin-bottom:7px;">Reasoning Effort</strong>' +
+          '<div id="configCenterCodexEffortList" data-selected="' + escapeHtml(currentCodexEffort) + '" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px;"><div style="font-size:11px;color:var(--text-secondary);">选择模型后显示可用档位。</div></div>' +
+          '<div id="configCenterCodexEffortHint" style="margin-top:6px;font-size:10.8px;line-height:1.5;color:var(--text-secondary);"></div>' +
+        '</div>' +
+        '<div id="configCenterCodexStatus" class="agent-runtime-status" data-state="loading">正在自动检测 Codex CLI...</div>' +
+        '<div class="agent-runtime-actions">' +
+          '<button id="configCenterCodexInstallButton" class="agent-runtime-button agent-runtime-button-primary" type="button" onclick="installConfigCenterRuntime(\'codex\')" hidden>一键部署 CLI</button>' +
+          '<button class="agent-runtime-button" type="button" onclick="refreshConfigCenterCodexStatus()">检测 CLI</button>' +
+        '</div>' +
+        '<div style="margin-top:12px;display:grid;grid-template-columns:170px 1fr;gap:10px;align-items:center;">' +
+          '<label for="configCenterCodexConcurrency" style="font-size:12px;font-weight:700;color:var(--text-primary);">PDF Wiki 多开数</label>' +
+          '<input id="configCenterCodexConcurrency" type="number" min="1" max="6" step="1" value="' + currentCodexConcurrency + '" style="width:100%;padding:8px 9px;border:1px solid var(--border-color);border-radius:6px;background:var(--bg-input);color:var(--text-primary);font-size:12px;">' +
+        '</div>' +
+      '</div>';
+    }
+
+    function configCenterAgentRuntimeHtml(currentCodexModel, currentCodexEffort, currentCodexConcurrency) {
+      var runtimes = chatBridgeConfig.agentRuntimes || {};
+      var currentDefault = runtimes.default || (chatBridgeConfig.codex?.prefer ? 'codex' : '');
+      return '<details class="config-inline-advanced">' +
+        '<summary><span class="config-center-icon" aria-hidden="true"></span><span><strong>Agent 容器</strong><small>统一配置 Codex、Pi 与 OpenCode</small></span></summary>' +
+        '<div style="margin:0 0 18px;padding:16px 8px;border-top:1px solid var(--border-color);">' +
+          '<label style="display:grid;grid-template-columns:130px minmax(180px,1fr);align-items:center;gap:8px;margin-bottom:12px;font-size:12px;color:var(--text-primary);"><strong>默认运行时</strong>' +
+            '<select id="configCenterRuntimeDefault" style="padding:8px;border:1px solid var(--border-color);border-radius:6px;background:var(--bg-input);color:var(--text-primary);">' +
+              [['','不设默认'],['codex','Codex'],['pi','Pi'],['opencode','OpenCode']].map(function(item) { return '<option value="' + item[0] + '" ' + (currentDefault === item[0] ? 'selected' : '') + '>' + item[1] + '</option>'; }).join('') +
+            '</select>' +
+          '</label>' +
+          configCenterCodexRuntimeHtml(currentCodexModel, currentCodexEffort, currentCodexConcurrency) +
+          '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:10px;">' +
+            configCenterRuntimeCard('pi', 'Pi', 'RPC 持久会话；支持 steer、follow-up、取消和 Scholar Harness 工具扩展。') +
+            configCenterRuntimeCard('opencode', 'OpenCode', 'JSON 事件流与 MCP；会话自动恢复，真实产物仍由 Scholar Harness 校验。') +
+          '</div>' +
+          '<div style="display:flex;justify-content:flex-end;margin-top:12px;"><button type="button" onclick="saveConfigCenterAgentRuntimes()" style="padding:8px 12px;border:1px solid #111;border-radius:6px;background:#111;color:#d6a928;cursor:pointer;font-size:12px;font-weight:700;">保存 Agent 容器</button></div>' +
+        '</div>' +
+      '</details>';
+    }
+
+    function getConfigCenterRuntimePrefix(runtimeId) {
+      return 'configCenterRuntime' + (runtimeId === 'pi' ? 'Pi' : 'Opencode');
+    }
+
+    function setConfigCenterRuntimeInstallVisibility(runtimeId, visible) {
+      var id = runtimeId === 'codex'
+        ? 'configCenterCodexInstallButton'
+        : getConfigCenterRuntimePrefix(runtimeId) + 'InstallButton';
+      var button = document.getElementById(id);
+      if (button) button.hidden = !visible;
+    }
+
+    function getConfigCenterRuntimeProviderValue(runtimeId) {
+      var prefix = getConfigCenterRuntimePrefix(runtimeId);
+      var select = document.getElementById(prefix + 'Provider');
+      var custom = (document.getElementById(prefix + 'CustomProvider')?.value || '').trim().toLowerCase();
+      return select?.value === '__custom__' ? custom : String(select?.value || '').trim().toLowerCase();
+    }
+
+    function syncConfigCenterRuntimeAuthMode(runtimeId) {
+      var prefix = getConfigCenterRuntimePrefix(runtimeId);
+      var mode = document.getElementById(prefix + 'AuthMode')?.value || 'cli_login';
+      var apiKeyField = document.getElementById(prefix + 'ApiKeyField');
+      var loginButton = document.getElementById(prefix + 'LoginButton');
+      if (apiKeyField) apiKeyField.hidden = mode !== 'api_key';
+      if (loginButton) loginButton.hidden = mode !== 'cli_login';
+    }
+    window.syncConfigCenterRuntimeAuthMode = syncConfigCenterRuntimeAuthMode;
+
+    function handleConfigCenterRuntimeProviderChange(runtimeId) {
+      var prefix = getConfigCenterRuntimePrefix(runtimeId);
+      var select = document.getElementById(prefix + 'Provider');
+      var customField = document.getElementById(prefix + 'CustomProviderField');
+      if (select) select.setAttribute('data-selected', select.value || '');
+      if (customField) customField.hidden = select?.value !== '__custom__';
+      var modelSelect = document.getElementById(prefix + 'Model');
+      if (modelSelect) modelSelect.innerHTML = '<option value="">请刷新该厂商模型</option>';
+      configCenterRuntimeModelsById[runtimeId] = [];
+    }
+    window.handleConfigCenterRuntimeProviderChange = handleConfigCenterRuntimeProviderChange;
+
+    function renderConfigCenterRuntimeProviders(runtimeId, providers) {
+      var prefix = getConfigCenterRuntimePrefix(runtimeId);
+      var select = document.getElementById(prefix + 'Provider');
+      if (!select) return;
+      var selected = select.getAttribute('data-selected') || String((chatBridgeConfig.agentRuntimes?.[runtimeId] || {}).provider_auth?.provider || '');
+      var known = providers.some(function(provider) { return String(provider.id || '') === selected; });
+      var html = '<option value="">选择厂商</option>';
+      if (selected && !known) html += '<option value="' + escapeHtml(selected) + '">当前厂商 · ' + escapeHtml(selected) + '</option>';
+      html += providers.map(function(provider) {
+        return '<option value="' + escapeHtml(provider.id) + '">' + escapeHtml(provider.label || provider.id) + '</option>';
+      }).join('');
+      html += '<option value="__custom__">其他厂商 ID</option>';
+      select.innerHTML = html;
+      select.value = selected || '';
+      select.setAttribute('data-selected', selected || '');
+    }
+
+    async function loadConfigCenterRuntimeProviders(runtimeId) {
+      var prefix = getConfigCenterRuntimePrefix(runtimeId);
+      var authStatus = document.getElementById(prefix + 'AuthStatus');
+      try {
+        var response = await fetch('/api/chat-bridge/agent-runtimes/' + runtimeId + '/providers', { cache: 'no-store' });
+        var data = await response.json();
+        if (!response.ok || !data.success) throw new Error(data.error || '模型厂商读取失败');
+        var providers = Array.isArray(data.providers) ? data.providers : [];
+        configCenterRuntimeProvidersById[runtimeId] = providers;
+        renderConfigCenterRuntimeProviders(runtimeId, providers);
+      } catch (error) {
+        if (authStatus) {
+          authStatus.setAttribute('data-state', 'error');
+          authStatus.textContent = '厂商列表读取失败：' + (error && error.message ? error.message : String(error));
+        }
+      }
+      syncConfigCenterRuntimeAuthMode(runtimeId);
+    }
+
+    async function openConfigCenterRuntimeLogin(runtimeId) {
+      var prefix = getConfigCenterRuntimePrefix(runtimeId);
+      var provider = getConfigCenterRuntimeProviderValue(runtimeId);
+      var authStatus = document.getElementById(prefix + 'AuthStatus');
+      if (!provider) {
+        if (authStatus) {
+          authStatus.setAttribute('data-state', 'error');
+          authStatus.textContent = '请先选择模型厂商。';
+        }
+        return;
+      }
+      if (authStatus) {
+        authStatus.setAttribute('data-state', 'loading');
+        authStatus.textContent = '正在打开登录终端...';
+      }
+      try {
+        var response = await fetch('/api/chat-bridge/agent-runtimes/' + runtimeId + '/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            provider: provider,
+            command: (document.getElementById(prefix + 'Command')?.value || '').trim()
+          })
+        });
+        var data = await response.json();
+        if (!response.ok || !data.success) throw new Error(data.error || '登录终端启动失败');
+        if (authStatus) {
+          authStatus.setAttribute('data-state', data.launched ? 'success' : 'idle');
+          authStatus.textContent = data.instruction || data.command || '请在终端完成登录。';
+        }
+      } catch (error) {
+        if (authStatus) {
+          authStatus.setAttribute('data-state', 'error');
+          authStatus.textContent = error && error.message ? error.message : String(error);
+        }
+      }
+    }
+    window.openConfigCenterRuntimeLogin = openConfigCenterRuntimeLogin;
+
+    function getConfigCenterRuntimeModelValue(runtimeId) {
+      var prefix = getConfigCenterRuntimePrefix(runtimeId);
+      var custom = (document.getElementById(prefix + 'CustomModel')?.value || '').trim();
+      return custom || (document.getElementById(prefix + 'Model')?.value || '').trim();
+    }
+
+    function syncConfigCenterRuntimeEfforts(runtimeId) {
+      var prefix = getConfigCenterRuntimePrefix(runtimeId);
+      var effortSelect = document.getElementById(prefix + 'Effort');
+      if (!effortSelect) return;
+      var selectedModel = getConfigCenterRuntimeModelValue(runtimeId);
+      var model = (configCenterRuntimeModelsById[runtimeId] || []).find(function(item) {
+        return String(item.slug || item.id || '') === selectedModel;
+      });
+      var fallback = runtimeId === 'pi'
+        ? ['off','minimal','low','medium','high','xhigh','max']
+        : ['low','medium','high','xhigh'];
+      var levels = model && Array.isArray(model.supportedReasoningLevels) && model.supportedReasoningLevels.length
+        ? model.supportedReasoningLevels.map(function(level) { return String(level.effort || level); }).filter(Boolean)
+        : fallback;
+      var configured = effortSelect.getAttribute('data-selected') || effortSelect.value || model?.defaultReasoningLevel || 'medium';
+      if (!levels.includes(configured)) {
+        configured = levels.includes(String(model?.defaultReasoningLevel || ''))
+          ? String(model.defaultReasoningLevel)
+          : (levels.includes('medium') ? 'medium' : levels[0]);
+      }
+      effortSelect.innerHTML = levels.map(function(effort) {
+        return '<option value="' + escapeHtml(effort) + '"' + (effort === configured ? ' selected' : '') + '>' + escapeHtml(effort) + '</option>';
+      }).join('');
+      effortSelect.value = configured;
+      effortSelect.setAttribute('data-selected', configured);
+    }
+
+    function handleConfigCenterRuntimeModelChange(runtimeId) {
+      var prefix = getConfigCenterRuntimePrefix(runtimeId);
+      var select = document.getElementById(prefix + 'Model');
+      var custom = document.getElementById(prefix + 'CustomModel');
+      if (select) select.setAttribute('data-selected', select.value || '');
+      if (select?.value && custom) custom.value = '';
+      syncConfigCenterRuntimeEfforts(runtimeId);
+    }
+    window.handleConfigCenterRuntimeModelChange = handleConfigCenterRuntimeModelChange;
+
+    function handleConfigCenterRuntimeCustomModelInput(runtimeId) {
+      var prefix = getConfigCenterRuntimePrefix(runtimeId);
+      var select = document.getElementById(prefix + 'Model');
+      var custom = document.getElementById(prefix + 'CustomModel');
+      if (select && String(custom?.value || '').trim()) select.value = '';
+      syncConfigCenterRuntimeEfforts(runtimeId);
+    }
+    window.handleConfigCenterRuntimeCustomModelInput = handleConfigCenterRuntimeCustomModelInput;
+
+    function renderConfigCenterRuntimeModels(runtimeId, models) {
+      var prefix = getConfigCenterRuntimePrefix(runtimeId);
+      var select = document.getElementById(prefix + 'Model');
+      var source = document.getElementById(prefix + 'ModelSource');
+      if (!select) return;
+      var selectedModel = getConfigCenterRuntimeModelValue(runtimeId)
+        || select.getAttribute('data-selected')
+        || String((chatBridgeConfig.agentRuntimes?.[runtimeId] || {}).model || '');
+      var groups = {};
+      models.forEach(function(model) {
+        var slug = String(model.slug || model.id || model || '').trim();
+        if (!slug) return;
+        var provider = String(model.provider || (slug.includes('/') ? slug.split('/')[0] : '其他'));
+        if (!groups[provider]) groups[provider] = [];
+        groups[provider].push({ slug: slug, displayName: String(model.displayName || slug) });
+      });
+      var known = models.some(function(model) { return String(model.slug || model.id || model || '') === selectedModel; });
+      var html = '<option value="">运行时默认</option>';
+      if (selectedModel && !known) {
+        html += '<option value="' + escapeHtml(selectedModel) + '">当前配置 · ' + escapeHtml(selectedModel) + '</option>';
+      }
+      Object.keys(groups).sort().forEach(function(provider) {
+        html += '<optgroup label="' + escapeHtml(provider) + '">' + groups[provider].map(function(model) {
+          return '<option value="' + escapeHtml(model.slug) + '">' + escapeHtml(model.displayName) + '</option>';
+        }).join('') + '</optgroup>';
+      });
+      select.innerHTML = html;
+      select.value = selectedModel;
+      select.setAttribute('data-selected', selectedModel);
+      if (source) {
+        var providerCount = Object.keys(groups).length;
+        source.textContent = models.length
+          ? ('已发现 ' + models.length + ' 个模型，来自 ' + providerCount + ' 个提供商。手动模型 ID 仍可作为兜底。')
+          : '运行时没有返回模型。请先完成模型提供商登录，或填写手动模型 ID。';
+      }
+      syncConfigCenterRuntimeEfforts(runtimeId);
+    }
+    window.renderConfigCenterRuntimeModels = renderConfigCenterRuntimeModels;
+
+    async function refreshConfigCenterRuntimeStatus(runtimeId) {
+      var prefix = getConfigCenterRuntimePrefix(runtimeId);
+      var status = document.getElementById(prefix + 'Status');
+      var command = (document.getElementById(prefix + 'Command')?.value || '').trim();
+      if (status) {
+        status.textContent = '正在检测 CLI...';
+        status.setAttribute('data-state', 'loading');
+      }
+      try {
+        var response = await fetch('/api/chat-bridge/agent-runtimes/' + runtimeId + '/status' + (command ? '?command=' + encodeURIComponent(command) : ''));
+        var data = await response.json();
+        if (status) {
+          status.setAttribute('data-state', data.available ? 'success' : 'missing');
+          status.innerHTML = data.available
+            ? ('已检测到 ' + escapeHtml(data.version || runtimeId) + '<br><span>' + escapeHtml(data.path || 'PATH') + '</span>')
+            : ('未检测到 ' + escapeHtml(runtimeId) + ' CLI。可以一键部署，也可以手动填写路径。');
+        }
+        setConfigCenterRuntimeInstallVisibility(runtimeId, !data.available);
+        var modelButton = document.getElementById(prefix + 'RefreshModelsButton');
+        if (modelButton) modelButton.disabled = !data.available;
+        return data;
+      } catch (error) {
+        if (status) {
+          status.setAttribute('data-state', 'error');
+          status.textContent = '检测失败：' + (error && error.message ? error.message : String(error));
+        }
+        setConfigCenterRuntimeInstallVisibility(runtimeId, true);
+        return { available: false };
+      }
+    }
+    window.refreshConfigCenterRuntimeStatus = refreshConfigCenterRuntimeStatus;
+
+    async function loadConfigCenterRuntimeModels(runtimeId) {
+      var prefix = getConfigCenterRuntimePrefix(runtimeId);
+      var status = document.getElementById(prefix + 'Status');
+      var authStatus = document.getElementById(prefix + 'AuthStatus');
+      var command = (document.getElementById(prefix + 'Command')?.value || '').trim();
+      var provider = getConfigCenterRuntimeProviderValue(runtimeId);
+      var authMode = document.getElementById(prefix + 'AuthMode')?.value || 'cli_login';
+      var apiKey = (document.getElementById(prefix + 'ApiKey')?.value || '').trim();
+      var savedAuth = (chatBridgeConfig.agentRuntimes?.[runtimeId] || {}).provider_auth || {};
+      var hasMatchingSavedApiKey = !!savedAuth.has_api_key && String(savedAuth.provider || '') === provider;
+      if (!provider) {
+        if (authStatus) {
+          authStatus.setAttribute('data-state', 'error');
+          authStatus.textContent = '请先选择模型厂商。';
+        }
+        return [];
+      }
+      if (authMode === 'api_key' && !apiKey && !hasMatchingSavedApiKey) {
+        if (authStatus) {
+          authStatus.setAttribute('data-state', 'error');
+          authStatus.textContent = '请输入 API Key，或切换为 CLI 登录。';
+        }
+        return [];
+      }
+      if (status) {
+        status.textContent = '正在读取模型...';
+        status.setAttribute('data-state', 'loading');
+      }
+      if (authStatus) {
+        authStatus.textContent = '正在验证认证并读取厂商模型...';
+        authStatus.setAttribute('data-state', 'loading');
+      }
+      try {
+        var response = await fetch('/api/chat-bridge/agent-runtimes/' + runtimeId + '/models', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ command: command, provider: provider, auth_mode: authMode, api_key: apiKey })
+        });
+        var data = await response.json();
+        if (!response.ok || !data.success) throw new Error(data.error || '运行时模型读取失败');
+        var models = data.success && Array.isArray(data.models) ? data.models : [];
+        configCenterRuntimeModelsById[runtimeId] = models;
+        renderConfigCenterRuntimeModels(runtimeId, models);
+        if (status) {
+          status.textContent = models.length ? ('模型列表已更新，共 ' + models.length + ' 个。') : 'CLI 可用，但还没有模型。请先完成提供商登录。';
+          status.setAttribute('data-state', models.length ? 'success' : 'idle');
+        }
+        if (authStatus) {
+          authStatus.textContent = models.length
+            ? ('认证可用，已读取 ' + models.length + ' 个 ' + provider + ' 模型。')
+            : ('未读取到 ' + provider + ' 模型，请检查认证后重试。');
+          authStatus.setAttribute('data-state', models.length ? 'success' : 'error');
+        }
+        return models;
+      } catch (error) {
+        if (status) {
+          status.textContent = '模型读取失败：' + (error && error.message ? error.message : String(error));
+          status.setAttribute('data-state', 'error');
+        }
+        if (authStatus) {
+          authStatus.textContent = '认证或模型读取失败：' + (error && error.message ? error.message : String(error));
+          authStatus.setAttribute('data-state', 'error');
+        }
+        return [];
+      }
+    }
+    window.loadConfigCenterRuntimeModels = loadConfigCenterRuntimeModels;
+
+    async function installConfigCenterRuntime(runtimeId) {
+      var installer = CONFIG_CENTER_RUNTIME_INSTALLERS[runtimeId];
+      if (!installer) return;
+      var accepted = window.confirm('将通过 npm 全局安装官方 ' + installer.label + ' CLI（' + installer.packageName + '）。安装可能需要数分钟，是否继续？');
+      if (!accepted) return;
+      var prefix = runtimeId === 'codex' ? 'configCenterCodex' : getConfigCenterRuntimePrefix(runtimeId);
+      var button = document.getElementById(prefix + 'InstallButton');
+      var status = document.getElementById(prefix + 'Status');
+      if (button) {
+        button.disabled = true;
+        button.textContent = '部署中...';
+      }
+      if (status) {
+        status.textContent = '正在检查 npm 并部署 ' + installer.label + ' CLI，请勿关闭应用...';
+        status.setAttribute('data-state', 'loading');
+      }
+      try {
+        var response = await fetch('/api/chat-bridge/agent-runtimes/' + runtimeId + '/install', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ confirmed: true })
+        });
+        var data = await response.json();
+        if (!response.ok || !data.success) throw new Error(data.installation?.message || data.error || 'CLI 部署失败');
+        var commandInput = document.getElementById(runtimeId === 'codex' ? 'configCenterCodexCommand' : prefix + 'Command');
+        if (commandInput && data.installation?.commandPath) commandInput.value = data.installation.commandPath;
+        if (status) {
+          status.setAttribute('data-state', 'success');
+          status.textContent = data.installation.message + ' ' + data.installation.authenticationHint;
+        }
+        await saveConfigCenterAgentRuntimes();
+        if (runtimeId === 'codex') {
+          await refreshConfigCenterCodexStatus();
+          await loadConfigCenterCodexModels(true);
+        } else {
+          await refreshConfigCenterRuntimeStatus(runtimeId);
+          await loadConfigCenterRuntimeModels(runtimeId);
+        }
+      } catch (error) {
+        if (status) {
+          status.setAttribute('data-state', 'error');
+          status.textContent = error && error.message ? error.message : String(error);
+        }
+      } finally {
+        if (button) {
+          button.disabled = false;
+          button.textContent = '一键部署 CLI';
+        }
+      }
+    }
+    window.installConfigCenterRuntime = installConfigCenterRuntime;
+
+    async function saveConfigCenterAgentRuntimes() {
+      function collect(runtimeId) {
+        var prefix = getConfigCenterRuntimePrefix(runtimeId);
+        return {
+          enabled: !!document.getElementById(prefix + 'Enabled')?.checked,
+          command: (document.getElementById(prefix + 'Command')?.value || '').trim(),
+          model: getConfigCenterRuntimeModelValue(runtimeId),
+          reasoning_effort: document.getElementById(prefix + 'Effort')?.value || 'medium',
+          sandbox: document.getElementById(prefix + 'Sandbox')?.value || 'workspace-write',
+          timeout_ms: Number(document.getElementById(prefix + 'Timeout')?.value || 1800000),
+          fallback_to_secondary: true,
+          provider_auth: {
+            mode: document.getElementById(prefix + 'AuthMode')?.value || 'cli_login',
+            provider: getConfigCenterRuntimeProviderValue(runtimeId),
+            api_key: (document.getElementById(prefix + 'ApiKey')?.value || '').trim()
+          }
+        };
+      }
+      var payload = {
+        default: document.getElementById('configCenterRuntimeDefault')?.value || '',
+        codex: {},
+        pi: collect('pi'),
+        opencode: Object.assign(collect('opencode'), { auto_approve: true })
+      };
+      if (payload.default === 'pi') payload.pi.enabled = true;
+      if (payload.default === 'opencode') payload.opencode.enabled = true;
+      var codexModel = document.querySelector('input[name="configCenterCodexModel"]:checked')?.value || chatBridgeConfig.codex?.model || 'gpt-5.5';
+      var codexEffort = document.querySelector('input[name="configCenterCodexEffort"]:checked')?.value || chatBridgeConfig.codex?.reasoning_effort || 'xhigh';
+      var codexEnabled = !!document.getElementById('configCenterCodexCliPrefer')?.checked || payload.default === 'codex';
+      var codexConcurrency = Math.max(1, Math.min(6, parseInt(document.getElementById('configCenterCodexConcurrency')?.value || 1, 10) || 1));
+      var codex = Object.assign({}, chatBridgeConfig.codex || {}, {
+        enabled: codexEnabled,
+        prefer: payload.default === 'codex',
+        command: (document.getElementById('configCenterCodexCommand')?.value || '').trim(),
+        model: codexModel,
+        reasoning_effort: codexEffort,
+        sandbox: chatBridgeConfig.codex?.sandbox || 'workspace-write',
+        pdf_wiki_sandbox: chatBridgeConfig.codex?.pdf_wiki_sandbox || 'danger-full-access',
+        timeout_ms: Number(chatBridgeConfig.codex?.timeout_ms || 300000),
+        pdf_wiki_concurrency: codexConcurrency
+      });
+      payload.codex = {
+        enabled: codex.enabled,
+        prefer: codex.prefer,
+        command: codex.command,
+        model: codex.model,
+        reasoning_effort: codex.reasoning_effort,
+        sandbox: codex.sandbox,
+        timeout_ms: codex.timeout_ms,
+        fallback_to_secondary: true
+      };
+      var response = await fetch('/api/chat-bridge/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode: 'api', codex: codex, agent_runtimes: payload }) });
+      var data = await response.json();
+      if (!response.ok || !data.success) throw new Error(data.error || 'Agent Runtime 配置保存失败');
+      chatBridgeConfig.agentRuntimes = data.config?.agent_runtimes || payload;
+      chatBridgeConfig.codex = codex;
+      try { localStorage.setItem(CHAT_BRIDGE_KEY, JSON.stringify(chatBridgeConfig)); } catch (e) {}
+      updateModelBadge();
+      renderComposerProviderSelector();
+      await Promise.all([refreshConfigCenterCodexStatus(), refreshConfigCenterRuntimeStatus('pi'), refreshConfigCenterRuntimeStatus('opencode')]);
+    }
+    window.saveConfigCenterAgentRuntimes = saveConfigCenterAgentRuntimes;
+
     window.showConfigCenterDialog = async function() {
       await loadChatBridgeConfig();
       var currentCodexModel = chatBridgeConfig.codex?.model || 'gpt-5.5';
@@ -2196,49 +2910,10 @@
       var html = '' +
         '<div style="margin-top:6px;font-size:15px;font-weight:650;color:var(--text-primary);">配置项</div>' +
         '<div class="config-center-grid">' +
-          configCenterButton('AI 配置与使用向导', '让小牛马检测环境、配置能力并讲解文献导入', 'settings', 'startAiConfigurationAssistant(\'all\')') +
-        '<details class="config-inline-advanced">' +
-          '<summary><span class="config-center-icon" aria-hidden="true"></span><span><strong>Codex CLI</strong><small>模型、推理档位与 PDF Wiki 并发</small></span></summary>' +
-        '<div style="margin:0 0 18px;padding:16px 8px;border-top:1px solid var(--border-color);">' +
-          '<label for="configCenterCodexCliPrefer" style="display:flex;align-items:flex-start;gap:9px;cursor:pointer;">' +
-            '<input id="configCenterCodexCliPrefer" type="checkbox" ' + (chatBridgeConfig.codex?.prefer ? 'checked' : '') + ' onchange="saveConfigCenterCodexPreference(this.checked)" style="width:16px;height:16px;margin-top:3px;accent-color:var(--accent-color);">' +
-            '<span style="min-width:0;">' +
-              '<span style="display:block;font-size:13px;font-weight:700;color:var(--text-primary);">优先使用 Codex CLI</span>' +
-              '<span style="display:block;margin-top:3px;font-size:11px;line-height:1.6;color:var(--text-secondary);">勾选后，聊天和一键写作默认先调用本机 Codex；软件会自动识别路径，不可用时降级小牛马。</span>' +
-            '</span>' +
-          '</label>' +
-          '<div style="margin-top:10px;">' +
-            '<input id="configCenterCodexCommand" type="text" value="' + escapeHtml(chatBridgeConfig.codex?.command || '') + '" placeholder="可选：粘贴 Codex CLI 路径后自动识别并保存，例如 C:\\Users\\Administrator\\AppData\\Roaming\\npm\\codex.cmd" oninput="scheduleConfigCenterCodexCommandAutoSave()" onchange="flushConfigCenterCodexCommandAutoSave()" style="min-width:0;width:100%;padding:8px 9px;border:1px solid var(--border-color);border-radius:6px;background:var(--bg-input);color:var(--text-primary);font-size:12px;">' +
-          '</div>' +
-          '<div style="margin-top:12px;">' +
-            '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:7px;">' +
-              '<div style="font-size:12px;font-weight:700;color:var(--text-primary);">Codex 模型</div>' +
-              '<button type="button" onclick="loadConfigCenterCodexModels(true)" style="padding:4px 7px;border:0;border-radius:6px;background:transparent;color:var(--text-secondary);cursor:pointer;font-size:10.8px;">刷新模型列表</button>' +
-            '</div>' +
-            '<div id="configCenterCodexModelList" data-selected="' + escapeHtml(currentCodexModel) + '" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:8px;">' +
-              '<div style="font-size:11px;color:var(--text-secondary);">正在读取 Codex 可用模型...</div>' +
-            '</div>' +
-            '<div id="configCenterCodexModelSource" style="margin-top:6px;font-size:10.8px;line-height:1.5;color:var(--text-secondary);"></div>' +
-          '</div>' +
-          '<div style="margin-top:12px;">' +
-            '<div style="font-size:12px;font-weight:700;color:var(--text-primary);margin-bottom:7px;">Reasoning Effort</div>' +
-            '<div id="configCenterCodexEffortList" data-selected="' + escapeHtml(currentCodexEffort) + '" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px;">' +
-              '<div style="font-size:11px;color:var(--text-secondary);">选择模型后显示可用档位。</div>' +
-            '</div>' +
-            '<div id="configCenterCodexEffortHint" style="margin-top:6px;font-size:10.8px;line-height:1.5;color:var(--text-secondary);"></div>' +
-          '</div>' +
-          '<div id="configCenterCodexStatus" style="margin-top:8px;font-size:11px;line-height:1.6;color:var(--text-secondary);">正在自动检测 Codex CLI...</div>' +
-          '<div style="margin-top:12px;display:grid;grid-template-columns:170px 1fr;gap:10px;align-items:center;">' +
-            '<label for="configCenterCodexConcurrency" style="font-size:12px;font-weight:700;color:var(--text-primary);">PDF Wiki Codex 多开数</label>' +
-            '<input id="configCenterCodexConcurrency" type="number" min="1" max="6" step="1" value="' + currentCodexConcurrency + '" style="width:100%;padding:8px 9px;border:1px solid var(--border-color);border-radius:6px;background:var(--bg-input);color:var(--text-primary);font-size:12px;">' +
-            '<div style="grid-column:1 / -1;font-size:11px;line-height:1.6;color:var(--text-secondary);">上传多个 PDF 生成 Wiki论点库时，同时启动的 Codex CLI 个数。PDF 较多时可适当增加；建议 1-2，机器和网络稳定时可提高。</div>' +
-            '<div style="grid-column:1 / -1;display:flex;justify-content:flex-end;">' +
-              '<button type="button" id="configCenterCodexEffortSaveButton" onclick="saveConfigCenterCodexPreference(!!document.getElementById(\'configCenterCodexCliPrefer\')?.checked)" style="padding:8px 12px;border:1px solid #111111;border-radius:6px;background:#111111;color:#d6a928;cursor:pointer;font-size:12px;font-weight:700;white-space:nowrap;">保存</button>' +
-            '</div>' +
-          '</div>' +
-        '</div></details>' +
-          configCenterButton('小牛马', '写作执行', 'messageCircle', 'showConnectDialog()') +
-          configCenterButton('大牛马', '规划 / Skill / 质检', 'settings', 'showChatBridgeDialog()') +
+          configCenterButton('AI 配置与使用向导', '让 Little corse 检测环境、配置能力并讲解文献导入', 'settings', 'startAiConfigurationAssistant(\'all\')') +
+          configCenterAgentRuntimeHtml(currentCodexModel, currentCodexEffort, currentCodexConcurrency) +
+          configCenterButton('Little corse', '写作执行', 'messageCircle', 'showConnectDialog()') +
+          configCenterButton('Grass', 'OpenRouter 免费模型', 'settings', 'showChatBridgeDialog()') +
           configCenterButton('Embedding', '语义检索', 'network', 'showEmbeddingDialog()') +
           configCenterButton('PDF Wiki/Marker', 'PDF 解析', 'bookOpen', 'showPdfWikiLlmDialog()') +
           configCenterButton('本地插件', 'R / Python / OfficeCLI 全局运行时', 'wrench', 'showRuntimePluginConfigDialog()') +
@@ -2247,23 +2922,42 @@
       showHomeUtilityPage('config', '配置中心', '管理模型、检索、解析和本地运行环境', html);
       setTimeout(refreshConfigCenterCodexStatus, 0);
       setTimeout(loadConfigCenterCodexModels, 0);
+      setTimeout(async function() {
+        await Promise.all([
+          loadConfigCenterRuntimeProviders('pi'),
+          loadConfigCenterRuntimeProviders('opencode')
+        ]);
+        var statuses = await Promise.all([
+          refreshConfigCenterRuntimeStatus('pi'),
+          refreshConfigCenterRuntimeStatus('opencode')
+        ]);
+        if (statuses[0]?.available) loadConfigCenterRuntimeModels('pi');
+        if (statuses[1]?.available) loadConfigCenterRuntimeModels('opencode');
+      }, 0);
     };
 
     async function refreshConfigCenterCodexStatus() {
       var statusDiv = document.getElementById('configCenterCodexStatus');
       if (!statusDiv) return;
       statusDiv.textContent = '正在自动检测 Codex CLI...';
+      statusDiv.setAttribute('data-state', 'loading');
       try {
         var command = (document.getElementById('configCenterCodexCommand')?.value || '').trim();
         var response = await fetch('/api/chat-bridge/codex/status' + (command ? '?command=' + encodeURIComponent(command) : ''));
         var data = await response.json();
         if (data.success && data.available) {
           statusDiv.innerHTML = '已检测到 Codex CLI：<strong>' + escapeHtml(data.version || 'codex') + '</strong><br><span style="word-break:break-all;">' + escapeHtml(data.path || 'PATH') + '</span>';
+          statusDiv.setAttribute('data-state', 'success');
+          setConfigCenterRuntimeInstallVisibility('codex', false);
         } else {
-          statusDiv.innerHTML = '未检测到 Codex CLI；勾选后仍会自动降级小牛马。';
+          statusDiv.innerHTML = '未检测到 Codex CLI。可以一键部署，也可以手动填写路径；不可用时仍会自动降级 Little corse。';
+          statusDiv.setAttribute('data-state', 'missing');
+          setConfigCenterRuntimeInstallVisibility('codex', true);
         }
       } catch (e) {
-        statusDiv.innerHTML = 'Codex CLI 检测失败；勾选后仍会自动降级小牛马。';
+        statusDiv.innerHTML = 'Codex CLI 检测失败。可以重试检测或一键部署；不可用时仍会自动降级 Little corse。';
+        statusDiv.setAttribute('data-state', 'error');
+        setConfigCenterRuntimeInstallVisibility('codex', true);
       }
     }
     window.refreshConfigCenterCodexStatus = refreshConfigCenterCodexStatus;
@@ -2622,6 +3316,9 @@
     }
 
     async function saveConfigCenterCodexPreference(prefer) {
+      if (document.getElementById('configCenterRuntimeDefault')) {
+        return saveConfigCenterAgentRuntimes();
+      }
       var checkbox = document.getElementById('configCenterCodexCliPrefer');
       var commandInput = document.getElementById('configCenterCodexCommand');
       var concurrencyInput = document.getElementById('configCenterCodexConcurrency');
@@ -2675,7 +3372,7 @@
         };
         localStorage.setItem(CHAT_BRIDGE_KEY, JSON.stringify(chatBridgeConfig));
         updateModelBadge();
-        if (statusDiv) statusDiv.textContent = prefer ? 'Codex CLI 已设为默认优先：' + codexModel + ' / ' + codexEffort + '；PDF Wiki 多开 ' + codexConcurrency + '，失败会自动降级小牛马。' : 'Codex CLI 默认优先已关闭；模型和 PDF Wiki 多开设置已保存。';
+        if (statusDiv) statusDiv.textContent = prefer ? 'Codex CLI 已设为默认优先：' + codexModel + ' / ' + codexEffort + '；PDF Wiki 多开 ' + codexConcurrency + '，失败会自动降级 Little corse。' : 'Codex CLI 默认优先已关闭；模型和 PDF Wiki 多开设置已保存。';
         setTimeout(refreshConfigCenterCodexStatus, 500);
       } catch (e) {
         if (checkbox) checkbox.checked = !prefer;

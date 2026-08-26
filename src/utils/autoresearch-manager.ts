@@ -11,6 +11,7 @@ import {
 } from '../literature/retrieval/semantic-query';
 import { AUTO_RESEARCH_PAPER_TOPIC_CONTENT_SKILL_FOR_WRITING } from '../config/auto-research-paper-topic-skill';
 import { logger } from './logger';
+import { getProjectRuntimeContext } from './project-runtime-context';
 import { sanitizeUserId } from './paths';
 import type { PdfWikiEntry, PdfWikiReference, PdfWikiStore, PdfWikiViewpoint } from './pdf-wiki-manager';
 
@@ -4779,7 +4780,8 @@ export class AutoResearchManager {
   }
 
   private getUserDir(userId: string): string {
-    return path.join(this.dataDir, 'autoresearch', sanitizeUserId(userId));
+    const dataDir = getProjectRuntimeContext()?.projectRoot || this.dataDir;
+    return path.join(dataDir, 'autoresearch', sanitizeUserId(userId));
   }
 
   private getAppVersion(): string {

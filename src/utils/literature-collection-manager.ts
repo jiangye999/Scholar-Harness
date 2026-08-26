@@ -13,6 +13,10 @@ import { logger } from './logger';
 import { sanitizeUserId } from './paths';
 import { getRetrievalEngineManager } from './retrieval-engine-manager';
 import { callChatCompletion, type LLMClientConfig } from './llm-client';
+import {
+  parseWosPlainTextDataset,
+  wosDatasetToLiteratureRecords,
+} from './wos-plain-text';
 
 export type LiteratureCollectionSource = 'wos-starter' | 'wos-expanded' | 'cnki-assisted';
 export type LiteratureCollectionJobStatus =
@@ -98,6 +102,34 @@ export interface LiteratureCollectionPublicConfig {
   updatedAt?: string;
 }
 
+export interface WosDiscoveryRecord extends UnifiedLiterature {
+  sourceRecordId: string;
+  publishedAt: string;
+  recordUrl: string;
+  timesCited: number;
+}
+
+export interface WosDiscoveryResult {
+  mode: 'starter' | 'expanded';
+  query: string;
+  totalFound: number;
+  records: WosDiscoveryRecord[];
+  missingAbstractRecords: number;
+}
+
+export interface WosConnectionTestResult {
+  mode: 'starter' | 'expanded';
+  totalFound: number;
+  sampleTitle: string;
+  sampleHasAbstract: boolean;
+  message: string;
+}
+
+export interface WosPlainTextImportResult extends LiteratureCollectionImportResult {
+  filesImported: number;
+  bibliometricsImported: boolean;
+}
+
 interface StoredLiteratureCollectionConfig {
   encryptedWosApiKey?: string;
   wosMode: 'starter' | 'expanded';
@@ -134,6 +166,15 @@ interface CreateJobInput {
 interface StarterPage {
   total: number;
   records: unknown[];
+}
+
+interface WosPageRequest {
+  source: LiteratureCollectionSource;
+  query: string;
+  pageSize: number;
+  nextPage: number;
+  dateFrom?: string;
+  dateTo?: string;
 }
 
 const DEFAULT_STARTER_BASE_URL = 'https://api.clarivate.com/apis/wos-starter/v1';
@@ -254,6 +295,15 @@ function normalizeDoi(value: unknown): string {
     .replace(/^doi\s*:?\s*/i, '')
     .replace(/[.,;)\]}]+$/g, '')
     .trim();
+}
+
+function normalizeIsoDate(value: unknown, fallbackYear?: number): string {
+  const text = normalizeText(value);
+  const direct = text.match(/\b(\d{4})[-/]?(\d{2})[-/]?(\d{2})\b/);
+  if (direct) return `${direct[1]}-${direct[2]}-${direct[3]}`;
+  const parsed = Date.parse(text);
+  if (Number.isFinite(parsed)) return new Date(parsed).toISOString().slice(0, 10);
+  return fallbackYear ? `${fallbackYear}-01-01` : '';
 }
 
 function parseDocumentType(value: unknown): DocumentType {
@@ -431,6 +481,26 @@ function toStableLiterature(record: unknown, sourceRecordId: string, jobId: stri
     ['source', 'pages', 'range'],
     ['static_data', 'summary', 'pub_info', 'page'],
   ]));
+  const publishedAt = normalizeIsoDate(firstPresent(record, [
+    ['publishedAt'],
+    ['publicationDate'],
+    ['source', 'publishDate'],
+    ['source', 'publicationDate'],
+    ['static_data', 'summary', 'pub_info', 'sortdate'],
+  ]), year);
+  const timesCited = clampInteger(firstPresent(record, [
+    ['timesCited'],
+    ['citations', '0', 'count'],
+    ['dynamic_data', 'citation_related', 'tc_list', 'silo_tc', 'local_count'],
+  ]), 0, 0, Number.MAX_SAFE_INTEGER);
+  const recordUrl = normalizeText(firstPresent(record, [
+    ['links', 'record'],
+    ['links', 'recordUrl'],
+    ['wosUrl'],
+    ['url'],
+  ])) || (sourceRecordId
+    ? `https://www.webofscience.com/wos/woscc/full-record/${encodeURIComponent(sourceRecordId)}`
+    : '');
   const id = generateLiteratureId(title, year, authors, doi || undefined);
   const result: UnifiedLiterature & Record<string, unknown> = {
     id,
@@ -451,6 +521,9 @@ function toStableLiterature(record: unknown, sourceRecordId: string, jobId: stri
     source: 'wos',
     collectionJobId: jobId,
     sourceRecordId,
+    publishedAt,
+    recordUrl,
+    timesCited,
   };
   return result;
 }
@@ -636,6 +709,25 @@ function normalizePlan(input: {
   };
 }
 
+function buildWosDiscoveryQuery(terms: string[], dateFrom: string, dateTo: string): string {
+  const cleanTerms = Array.from(new Set(terms
+    .map(term => String(term || '').replace(/["()]/g, ' ').replace(/\s+/g, ' ').trim())
+    .filter(Boolean)))
+    .slice(0, 12);
+  if (!cleanTerms.length) throw new Error('WoS 检索至少需要一个研究关键词');
+  const topic = cleanTerms
+    .map(term => term.includes(' ') ? `"${term}"` : term)
+    .join(' OR ');
+  const fromYear = Number.parseInt(dateFrom.slice(0, 4), 10);
+  const toYear = Number.parseInt(dateTo.slice(0, 4), 10);
+  const yearQuery = Number.isFinite(fromYear) && Number.isFinite(toYear)
+    ? (fromYear === toYear
+      ? ` AND PY=(${fromYear})`
+      : ` AND PY=(${Math.min(fromYear, toYear)}-${Math.max(fromYear, toYear)})`)
+    : '';
+  return `TS=(${topic})${yearQuery}`;
+}
+
 export class LiteratureCollectionManager {
   private readonly runningUsers = new Set<string>();
   private readonly scheduledUsers = new Set<string>();
@@ -665,18 +757,171 @@ export class LiteratureCollectionManager {
     const userId = sanitizeUserId(userIdInput || 'web-user');
     const current = this.loadStoredConfig(userId);
     const suppliedKey = String(input.wosApiKey || '').trim();
+    const requestedMode = input.wosMode === 'starter' ? 'starter' : 'expanded';
     const next: StoredLiteratureCollectionConfig = {
       encryptedWosApiKey: suppliedKey
         ? encrypt(suppliedKey)
         : (input.keepWosApiKey !== false ? current.encryptedWosApiKey : ''),
-      // 正式采集必须使用 Full Record；Starter 只含基础题录，不再作为可入库模式。
-      wosMode: 'expanded',
+      // Expanded 用于正式入库；Starter 只作为发现模式，由下游摘要门禁决定是否可推荐。
+      wosMode: requestedMode,
       wosStarterBaseUrl: String(input.wosStarterBaseUrl || current.wosStarterBaseUrl || DEFAULT_STARTER_BASE_URL).trim().replace(/\/+$/, ''),
       wosExpandedBaseUrl: String(input.wosExpandedBaseUrl || current.wosExpandedBaseUrl || DEFAULT_EXPANDED_BASE_URL).trim().replace(/\/+$/, ''),
       updatedAt: nowIso(),
     };
     atomicWriteJson(this.getConfigPath(userId), next);
     return this.getPublicConfig(userId);
+  }
+
+  async testWosConnection(userIdInput: string): Promise<WosConnectionTestResult> {
+    const userId = sanitizeUserId(userIdInput || 'web-user');
+    const config = this.loadStoredConfig(userId);
+    const apiKey = this.resolveApiKey(config);
+    if (!apiKey) throw new Error('尚未配置 Web of Science API Key');
+    const year = new Date().getFullYear();
+    const mode = config.wosMode;
+    const page = await this.fetchWosPage({
+      source: mode === 'expanded' ? 'wos-expanded' : 'wos-starter',
+      query: `PY=(${year})`,
+      pageSize: 1,
+      nextPage: 1,
+    }, config, apiKey);
+    const raw = page.records[0];
+    const sourceRecordId = normalizeText(firstPresent(raw, [
+      ['uid'], ['UID'], ['ut'], ['id'],
+    ]));
+    const sample = raw ? toStableLiterature(raw, sourceRecordId, 'connection-test') as WosDiscoveryRecord : null;
+    return {
+      mode,
+      totalFound: page.total,
+      sampleTitle: sample?.title || '',
+      sampleHasAbstract: !!sample?.abstract?.trim(),
+      message: mode === 'expanded'
+        ? 'WoS Expanded 连接正常，可获取 Full Record。'
+        : 'WoS Starter 连接正常；该模式只用于候选发现，缺少摘要的记录不会进入推荐或精读。',
+    };
+  }
+
+  async discoverWos(input: {
+    userId: string;
+    terms: string[];
+    dateFrom: string;
+    dateTo: string;
+    limit?: number;
+  }): Promise<WosDiscoveryResult> {
+    const userId = sanitizeUserId(input.userId || 'web-user');
+    const config = this.loadStoredConfig(userId);
+    const apiKey = this.resolveApiKey(config);
+    if (!apiKey) throw new Error('尚未配置 Web of Science API Key');
+    const mode = config.wosMode;
+    const source = mode === 'expanded' ? 'wos-expanded' : 'wos-starter';
+    const limit = clampInteger(input.limit, 80, 1, 300);
+    const pageSize = Math.min(mode === 'expanded' ? 100 : 50, limit);
+    const query = buildWosDiscoveryQuery(input.terms, input.dateFrom, input.dateTo);
+    const records: WosDiscoveryRecord[] = [];
+    let totalFound = 0;
+    let nextPage = 1;
+    while (records.length < limit) {
+      const page = await this.fetchWosPage({
+        source,
+        query,
+        pageSize: Math.min(pageSize, limit - records.length),
+        nextPage,
+        dateFrom: input.dateFrom,
+        dateTo: input.dateTo,
+      }, config, apiKey);
+      totalFound = Math.max(totalFound, page.total);
+      if (!page.records.length) break;
+      page.records.forEach((record, index) => {
+        const sourceRecordId = normalizeText(firstPresent(record, [
+          ['uid'], ['UID'], ['ut'], ['id'],
+        ])) || `${source}:${nextPage}:${index + 1}`;
+        records.push(toStableLiterature(record, sourceRecordId, 'daily-paper-discovery') as WosDiscoveryRecord);
+      });
+      if (page.records.length < pageSize) break;
+      nextPage += 1;
+    }
+    const unique = this.dedupeRecords(records).slice(0, limit) as WosDiscoveryRecord[];
+    return {
+      mode,
+      query,
+      totalFound,
+      records: unique,
+      missingAbstractRecords: unique.filter(record => !normalizeText(record.abstract)).length,
+    };
+  }
+
+  async importWosPlainTextFiles(input: {
+    userId: string;
+    files: Array<{ fileName: string; content: string }>;
+  }): Promise<WosPlainTextImportResult> {
+    const userId = sanitizeUserId(input.userId || 'web-user');
+    if (!input.files.length) throw new Error('请选择 WoS Plain Text 文件');
+    const importedAt = nowIso();
+    const importId = `manual-${compactTimestamp()}-${crypto.randomBytes(3).toString('hex')}`;
+    const importRoot = path.join(this.getUserRoot(userId), 'imports', importId);
+    const normalized: UnifiedLiterature[] = [];
+    for (const file of input.files) {
+      const dataset = parseWosPlainTextDataset(file.content, file.fileName, importedAt);
+      if (!dataset.records.length) {
+        throw new Error(`${file.fileName} 未解析到 WoS 记录，请导出 Plain Text 格式`);
+      }
+      const incomplete = dataset.records.filter(record => {
+        const hasField = (tag: string): boolean =>
+          Array.isArray(record.fields[tag]) && record.fields[tag].some(value => normalizeText(value));
+        return !normalizeText(record.article.abstract) || !hasField('AF') || !hasField('UT');
+      });
+      if (incomplete.length) {
+        throw new Error(`${file.fileName} 有 ${incomplete.length} 条记录缺少摘要、完整作者名或 UT；请导出 Full Record and Cited References`);
+      }
+      for (const record of wosDatasetToLiteratureRecords(dataset)) {
+        const sourceRecordId = normalizeText((record as unknown as Record<string, unknown>).UT || record.id);
+        normalized.push(toStableLiterature(record, sourceRecordId, importId));
+      }
+    }
+    const unique = this.dedupeRecords(normalized);
+    const eligible = unique.filter(record => normalizeText(record.abstract));
+    const missingAbstractRecords = unique.length - eligible.length;
+    if (!eligible.length) {
+      throw new Error('导入文件中的记录均缺少摘要；请在 WoS 导出时选择 Full Record and Cited References');
+    }
+    let bibliometricsImported = false;
+    if (this.options.importWosPlainText) {
+      for (const file of input.files) {
+        await this.options.importWosPlainText({ userId, fileName: file.fileName, content: file.content });
+      }
+      bibliometricsImported = true;
+    }
+    fs.mkdirSync(path.join(importRoot, 'raw'), { recursive: true });
+    input.files.forEach((file, index) => {
+      fs.writeFileSync(
+        path.join(importRoot, 'raw', `${String(index + 1).padStart(3, '0')}-${safeFileSegment(file.fileName, 'savedrecs.txt')}`),
+        file.content,
+        'utf-8',
+      );
+    });
+    atomicWriteJson(path.join(importRoot, 'manifest.json'), {
+      id: importId,
+      importedAt,
+      files: input.files.map(file => file.fileName),
+      totalRecords: unique.length,
+      eligibleRecords: eligible.length,
+      missingAbstractRecords,
+    });
+    const importJob = {
+      id: importId,
+      userId,
+      source: 'wos-expanded',
+      durableRoot: importRoot,
+    } as LiteratureCollectionJob;
+    const imported = this.importIntoLiteratureLibrary(importJob, eligible);
+    return {
+      ...imported,
+      totalRecords: unique.length,
+      missingAbstractRecords,
+      bibliometricsEligibleRecords: eligible.length,
+      filesImported: input.files.length,
+      bibliometricsImported,
+    };
   }
 
   async planTopic(input: {
@@ -1033,7 +1278,7 @@ export class LiteratureCollectionManager {
   }
 
   private async fetchWosPage(
-    job: LiteratureCollectionJob,
+    job: WosPageRequest,
     config: StoredLiteratureCollectionConfig,
     apiKey: string,
   ): Promise<StarterPage> {
@@ -1047,12 +1292,20 @@ export class LiteratureCollectionManager {
       url.searchParams.set('count', String(job.pageSize));
       url.searchParams.set('firstRecord', String(((job.nextPage - 1) * job.pageSize) + 1));
       url.searchParams.set('optionView', 'FR');
+      url.searchParams.set('sortField', 'PY+D');
+      if (job.dateFrom && job.dateTo) {
+        url.searchParams.set('publishTimeSpan', `${job.dateFrom}+${job.dateTo}`);
+      }
     } else {
       url.searchParams.set('q', job.query);
       url.searchParams.set('db', 'WOS');
       url.searchParams.set('limit', String(job.pageSize));
       url.searchParams.set('page', String(job.nextPage));
       url.searchParams.set('detail', 'full');
+      url.searchParams.set('sort_field', 'LD+D');
+      if (job.dateFrom && job.dateTo) {
+        url.searchParams.set('modified_time_span', `${job.dateFrom}+${job.dateTo}`);
+      }
     }
     let lastError: unknown;
     for (let attempt = 1; attempt <= MAX_RETRY_ATTEMPTS; attempt += 1) {
@@ -1293,7 +1546,7 @@ export class LiteratureCollectionManager {
     );
     return {
       encryptedWosApiKey: stored.encryptedWosApiKey || '',
-      wosMode: 'expanded',
+      wosMode: stored.wosMode === 'starter' ? 'starter' : 'expanded',
       wosStarterBaseUrl: stored.wosStarterBaseUrl || DEFAULT_STARTER_BASE_URL,
       wosExpandedBaseUrl: stored.wosExpandedBaseUrl || DEFAULT_EXPANDED_BASE_URL,
       updatedAt: stored.updatedAt,

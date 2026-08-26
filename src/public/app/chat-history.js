@@ -1,125 +1,248 @@
-async function showProjectManagerDialog() {
-      showModal('项目管理', '<div style="padding:20px;color:var(--text-secondary);">正在加载项目...</div>', true, false);
+var sidebarProjectManagerStatusTimer = null;
+var sidebarProjectManagerRunPollTimer = null;
+var sidebarProjectManagerProjects = [];
+var sidebarProjectManagerActiveRuns = [];
 
+function getSidebarProjectRunProviderLabel(provider) {
+      var normalized = String(provider || '').trim().toLowerCase();
+      if (normalized === 'codex') return 'Codex';
+      if (normalized === 'pi') return 'Pi Agent';
+      if (normalized === 'opencode') return 'OpenCode';
+      return 'Agent';
+    }
+
+    function getSidebarProjectActiveRuns(projectId) {
+      var targetProjectId = String(projectId || '');
+      return sidebarProjectManagerActiveRuns.filter(function(run) {
+        return !!run && run.running === true && String(run.projectId || '') === targetProjectId;
+      });
+    }
+
+    async function refreshSidebarProjectRunStates() {
+      var panel = document.querySelector('[data-sidebar-collapse-key="projects"]');
+      if (!panel || panel.classList.contains('is-collapsed')) return;
       try {
-        var response = await fetch('/api/projects');
+        var response = await fetch('/api/chat-bridge/pi/runs?userId=' + encodeURIComponent(currentUserId || 'web-user'));
+        var result = await response.json();
+        if (!response.ok || !result.success) throw new Error(result.error || '读取运行状态失败');
+        sidebarProjectManagerActiveRuns = Array.isArray(result.runs) ? result.runs : [];
+        renderSidebarProjectManager(sidebarProjectManagerProjects);
+      } catch (error) {
+        console.warn('[ProjectManager] Failed to refresh Agent run states:', error);
+      }
+    }
+
+    function scheduleSidebarProjectRunPolling() {
+      if (sidebarProjectManagerRunPollTimer) clearTimeout(sidebarProjectManagerRunPollTimer);
+      sidebarProjectManagerRunPollTimer = setTimeout(async function pollProjectRuns() {
+        sidebarProjectManagerRunPollTimer = null;
+        await refreshSidebarProjectRunStates();
+        var panel = document.querySelector('[data-sidebar-collapse-key="projects"]');
+        if (panel && !panel.classList.contains('is-collapsed')) scheduleSidebarProjectRunPolling();
+      }, 2500);
+    }
+
+function setSidebarProjectManagerStatus(message, state) {
+      var status = document.getElementById('sidebarProjectManagerStatus');
+      if (!status) return;
+      if (sidebarProjectManagerStatusTimer) {
+        clearTimeout(sidebarProjectManagerStatusTimer);
+        sidebarProjectManagerStatusTimer = null;
+      }
+      var text = String(message || '').trim();
+      var statusState = String(state || 'info');
+      status.textContent = text;
+      status.hidden = !text;
+      status.dataset.state = statusState;
+      if (text && statusState === 'success') {
+        sidebarProjectManagerStatusTimer = setTimeout(function() {
+          if (status.textContent === text && status.dataset.state === 'success') {
+            status.textContent = '';
+            status.hidden = true;
+          }
+          sidebarProjectManagerStatusTimer = null;
+        }, 2600);
+      }
+    }
+    window.setSidebarProjectManagerStatus = setSidebarProjectManagerStatus;
+
+    function revealSidebarProjectManagerPanel() {
+      if (typeof setLeftSidebarCollapsed === 'function') {
+        setLeftSidebarCollapsed(false, { skipMutualCollapse: true });
+      }
+      var panel = document.querySelector('[data-sidebar-collapse-key="projects"]');
+      if (!panel) return null;
+      if (typeof setSidebarPanelCollapsed === 'function') {
+        setSidebarPanelCollapsed(panel, false);
+      } else {
+        panel.classList.remove('is-collapsed');
+      }
+      localStorage.setItem('scholarclaw_sidebar_panel_collapsed_projects', 'false');
+      return panel;
+    }
+    window.revealSidebarProjectManagerPanel = revealSidebarProjectManagerPanel;
+
+    function openSidebarProjectManagerCard(card) {
+      if (!card || card.dataset.currentProject === 'true') return;
+      var projectId = String(card.dataset.projectId || '');
+      if (!projectId) return;
+      confirmOpenArchivedProject(projectId, false, card);
+    }
+
+    function handleSidebarProjectManagerCardKeydown(event, card) {
+      var key = event ? String(event.key || '') : '';
+      if (key !== 'Enter' && key !== ' ' && key !== 'Spacebar') return;
+      event.preventDefault();
+      openSidebarProjectManagerCard(card);
+    }
+
+    window.openSidebarProjectManagerCard = openSidebarProjectManagerCard;
+    window.handleSidebarProjectManagerCardKeydown = handleSidebarProjectManagerCardKeydown;
+
+    function renderSidebarProjectManager(projects) {
+      var list = document.getElementById('sidebarProjectManagerList');
+      if (!list) return;
+      var items = Array.isArray(projects) ? projects : [];
+      var currentProjectId = projectManagerCurrentProject && projectManagerCurrentProject.isArchivedProject
+        ? String(projectManagerCurrentProject.projectId || '')
+        : '';
+      if (items.length === 0) {
+        list.innerHTML = '<div class="project-manager-empty">暂无已归档项目。点击右上角“＋”创建第一个项目。</div>';
+        return;
+      }
+      list.innerHTML = items.map(function(project) {
+        var projectId = String(project && project.projectId || '');
+        var projectName = String(project && (project.name || project.projectId) || '未命名项目');
+        var isCurrentProject = !!currentProjectId && projectId === currentProjectId;
+        var activeRuns = getSidebarProjectActiveRuns(projectId);
+        var activeRunCount = activeRuns.length;
+        var activeProviderLabels = activeRuns.map(function(run) {
+          return getSidebarProjectRunProviderLabel(run.provider);
+        }).filter(function(label, index, labels) {
+          return labels.indexOf(label) === index;
+        });
+        var activeRunLabel = activeRunCount > 0
+          ? activeProviderLabels.join('、') + ' 运行中' + (activeRunCount > 1 ? ' · ' + activeRunCount + ' 个对话' : '')
+          : '';
+        var profileLabel = String(project && project.writingProfileLabel || getProjectWritingProfile(project && project.writingProfileId).label || '');
+        var metadata = [formatProjectDate(project && project.archivedAt), profileLabel].filter(Boolean).join(' · ');
+        var combinedMetadata = [activeRunLabel, metadata].filter(Boolean).join(' · ');
+        return '<article class="project-manager-card' + (isCurrentProject ? ' is-current' : '') + (activeRunCount > 0 ? ' has-active-runs' : '') + '" data-project-card="' + escapeHtml(projectId) + '" data-project-id="' + escapeHtml(projectId) + '" data-project-name="' + escapeHtml(projectName) + '" data-current-project="' + (isCurrentProject ? 'true' : 'false') + '"' +
+          (isCurrentProject
+            ? ' aria-current="true"'
+            : ' role="button" tabindex="0" aria-label="打开项目 ' + escapeHtml(projectName) + '" onclick="openSidebarProjectManagerCard(this)" onkeydown="handleSidebarProjectManagerCardKeydown(event,this)"') + '>' +
+          '<div class="project-manager-card-title-row">' +
+            (isCurrentProject ? '<span class="project-manager-current-dot" title="当前项目" aria-label="当前项目"></span>' : '') +
+            (activeRunCount > 0 ? '<span class="project-manager-running-dot" title="' + escapeHtml(activeRunLabel) + '" aria-label="' + escapeHtml(activeRunLabel) + '"></span>' : '') +
+            '<div class="project-manager-card-title" title="' + escapeHtml(projectName) + '">' + escapeHtml(projectName) + '</div>' +
+            '<div class="project-manager-card-actions" aria-label="' + escapeHtml(projectName) + ' 项目操作">' +
+              '<button type="button" class="project-manager-action" data-project-id="' + escapeHtml(projectId) + '" data-project-name="' + escapeHtml(projectName) + '" onclick="event.stopPropagation(); showCloneProjectDialog(this.dataset.projectId, this.dataset.projectName, this)" title="复制项目" aria-label="复制项目 ' + escapeHtml(projectName) + '">' + uiIcon('clipboard') + '</button>' +
+              '<button type="button" class="project-manager-action" data-project-id="' + escapeHtml(projectId) + '" data-project-name="' + escapeHtml(projectName) + '" onclick="event.stopPropagation(); showRenameProjectDialog(this.dataset.projectId, this.dataset.projectName, this)" title="重命名项目" aria-label="重命名项目 ' + escapeHtml(projectName) + '">' + uiIcon('edit') + '</button>' +
+              '<button type="button" class="project-manager-action is-danger" data-project-id="' + escapeHtml(projectId) + '" data-project-name="' + escapeHtml(projectName) + '" onclick="event.stopPropagation(); deleteArchivedProject(this.dataset.projectId, this.dataset.projectName)" ' + (isCurrentProject ? 'disabled title="当前项目不能删除" aria-label="当前项目不能删除"' : 'title="删除项目" aria-label="删除项目 ' + escapeHtml(projectName) + '"') + '>' + uiIcon('trash') + '</button>' +
+            '</div>' +
+          '</div>' +
+          '<div class="project-manager-card-meta' + (activeRunCount > 0 ? ' has-active-runs' : '') + '" title="' + escapeHtml(combinedMetadata) + '">' + escapeHtml(combinedMetadata) + '</div>' +
+        '</article>';
+      }).join('');
+    }
+
+    async function loadSidebarProjectManager(options) {
+      var loadOptions = options && typeof options === 'object' ? options : {};
+      var list = document.getElementById('sidebarProjectManagerList');
+      if (!list) return;
+      list.setAttribute('aria-busy', 'true');
+      list.innerHTML = '<div class="project-manager-empty">正在加载项目…</div>';
+      if (!loadOptions.preserveStatus) setSidebarProjectManagerStatus('', 'info');
+      try {
+        var responses = await Promise.all([
+          fetch('/api/projects'),
+          fetch('/api/chat-bridge/pi/runs?userId=' + encodeURIComponent(currentUserId || 'web-user')).catch(function() { return null; })
+        ]);
+        var response = responses[0];
         var result = await response.json();
         if (!response.ok || !result.success) {
           throw new Error(result.error || '加载项目失败');
         }
-
-        var projects = result.projects || [];
         projectManagerCurrentProject = result.currentProject || null;
+        sidebarProjectManagerProjects = Array.isArray(result.projects) ? result.projects : [];
+        var runsResponse = responses[1];
+        if (runsResponse && runsResponse.ok) {
+          var runsResult = await runsResponse.json();
+          sidebarProjectManagerActiveRuns = runsResult && Array.isArray(runsResult.runs) ? runsResult.runs : [];
+        }
         applyProjectWritingProfileUi(getCurrentProjectProfileId());
-        var currentProjectId = projectManagerCurrentProject && projectManagerCurrentProject.isArchivedProject
-          ? projectManagerCurrentProject.projectId
-          : '';
-        var html = '<div style="display:flex;flex-direction:column;gap:10px;max-height:520px;overflow:auto;">';
-        if (projects.length === 0) {
-          html += '<div style="padding:16px;color:var(--text-secondary);background:var(--bg-secondary);border-radius:8px;">暂无已归档项目。</div>';
-        } else {
-          projects.forEach(function(project) {
-            var isCurrentProject = currentProjectId && project.projectId === currentProjectId;
-            html += '<div style="display:flex;gap:12px;align-items:center;justify-content:space-between;padding:12px;border:1px solid var(--border-color);border-radius:8px;background:var(--bg-secondary);">' +
-              '<div style="min-width:0;flex:1;">' +
-                '<div style="display:flex;align-items:center;gap:8px;min-width:0;">' +
-                  '<div style="font-weight:600;color:var(--text-primary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + escapeHtml(project.name || project.projectId) + '</div>' +
-                  (isCurrentProject ? '<span style="flex:0 0 auto;font-size:11px;line-height:1;padding:4px 6px;border-radius:999px;background:var(--accent-color);color:#fff;">当前项目</span>' : '') +
-                  '<span style="flex:0 0 auto;font-size:11px;line-height:1;padding:4px 6px;border-radius:999px;background:var(--bg-tertiary);color:var(--text-secondary);border:1px solid var(--border-color);">' + escapeHtml(project.writingProfileLabel || getProjectWritingProfile(project.writingProfileId).label) + '</span>' +
-                '</div>' +
-                '<div style="font-size:12px;color:var(--text-secondary);margin-top:4px;">' + escapeHtml(formatProjectDate(project.archivedAt)) + '</div>' +
-                '<div style="font-size:11px;color:var(--text-secondary);margin-top:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + escapeHtml(project.projectId) + '</div>' +
-              '</div>' +
-              '<div style="display:flex;gap:6px;flex:0 0 auto;">' +
-                '<button class="ok" style="padding:8px 12px;" data-project-id="' + escapeHtml(project.projectId) + '" data-project-name="' + escapeHtml(project.name || project.projectId) + '" onclick="showOpenProjectNameDialog(this.dataset.projectId, this.dataset.projectName)" ' + (isCurrentProject ? 'disabled title="当前已打开该项目"' : '') + '>' + (isCurrentProject ? '已打开' : '打开') + '</button>' +
-                '<button class="cancel" style="padding:8px 12px;" data-project-id="' + escapeHtml(project.projectId) + '" data-project-name="' + escapeHtml(project.name || project.projectId) + '" onclick="showCloneProjectDialog(this.dataset.projectId, this.dataset.projectName)">复制</button>' +
-                '<button class="cancel" style="padding:8px 12px;" data-project-id="' + escapeHtml(project.projectId) + '" data-project-name="' + escapeHtml(project.name || project.projectId) + '" onclick="showRenameProjectDialog(this.dataset.projectId, this.dataset.projectName)">重命名</button>' +
-                '<button class="cancel" style="padding:8px 12px;color:var(--danger-color);border-color:var(--danger-color);" data-project-id="' + escapeHtml(project.projectId) + '" data-project-name="' + escapeHtml(project.name || project.projectId) + '" onclick="deleteArchivedProject(this.dataset.projectId, this.dataset.projectName)" ' + (isCurrentProject ? 'disabled title="当前项目不能删除"' : '') + '>' + (isCurrentProject ? '使用中' : '删除') + '</button>' +
-              '</div>' +
-            '</div>';
-          });
-        }
-        html += '</div><div class="btns"><button class="cancel" onclick="closeModal()">关闭</button></div>';
-        showModal('项目管理', html, true, false);
+        renderSidebarProjectManager(sidebarProjectManagerProjects);
+        scheduleSidebarProjectRunPolling();
       } catch (e) {
-        showModal('项目管理', '<div style="color:var(--danger-color);padding:12px;">加载失败：' + escapeHtml(e.message) + '</div><div class="btns"><button class="cancel" onclick="closeModal()">关闭</button></div>', true, false);
+        list.innerHTML = '<div class="project-manager-empty">项目列表暂时不可用。</div>';
+        setSidebarProjectManagerStatus('加载失败：' + e.message, 'error');
+      } finally {
+        list.setAttribute('aria-busy', 'false');
       }
     }
+    window.refreshSidebarProjectManager = loadSidebarProjectManager;
 
-    async function showOpenProjectNameDialog(projectId, projectName) {
-      if (!projectManagerCurrentProject) {
-        showModal('项目管理', '<div style="padding:20px;color:var(--text-secondary);">正在识别当前项目...</div>', true, false);
-        await fetchCurrentProjectInfo();
-      }
-
-      var currentProject = projectManagerCurrentProject;
-      if (currentProject && currentProject.isArchivedProject && currentProject.projectId) {
-        if (currentProject.projectId === projectId) {
-          showModal(
-            '当前项目',
-            '<div style="line-height:1.7;color:var(--text-primary);">' +
-              '<p>当前已经打开项目“' + escapeHtml(projectName || currentProject.name || projectId) + '”。</p>' +
-            '</div>' +
-            '<div class="btns"><button class="ok" onclick="showProjectManagerDialog()">返回项目管理</button></div>',
-            true,
-            false
-          );
-          return;
-        }
-
-        showModal(
-          '打开项目',
-          '<div style="line-height:1.7;color:var(--text-primary);">' +
-            '<p>当前项目已识别为“' + escapeHtml(currentProject.name || currentProject.projectId) + '”。</p>' +
-            '<p style="margin-top:8px;color:var(--text-secondary);">打开“' + escapeHtml(projectName) + '”前，会先把当前工作区保存回原项目，不需要重新命名。</p>' +
-          '</div>' +
-          '<div class="btns">' +
-            '<button class="cancel" onclick="showProjectManagerDialog()">取消</button>' +
-            '<button class="ok" id="openProjectConfirmBtn" data-project-id="' + escapeHtml(projectId) + '" onclick="confirmOpenArchivedProject(this.dataset.projectId)">保存当前项目并打开</button>' +
-          '</div>',
-          true,
-          false
-        );
-        return;
-      }
-
-      var defaultName = '当前项目 ' + new Date().toLocaleString();
-      showModal(
-        '命名当前项目',
-        '<div style="line-height:1.7;color:var(--text-primary);">' +
-          '<p>打开“' + escapeHtml(projectName) + '”前，需要先把当前工作区归档保存。</p>' +
-          '<p style="margin-top:8px;color:var(--text-secondary);">请给当前项目命名，便于之后在项目管理中找回。</p>' +
-          '<input id="currentProjectBackupName" value="' + escapeHtml(defaultName) + '" style="width:100%;margin-top:14px;padding:10px;background:var(--modal-input-bg);border:1px solid var(--modal-input-border);border-radius:6px;color:var(--text-primary);">' +
-        '</div>' +
-        '<div class="btns">' +
-          '<button class="cancel" onclick="showProjectManagerDialog()">取消</button>' +
-          '<button class="cancel" style="color:var(--danger-color);border-color:var(--danger-color);" id="openProjectDiscardBtn" data-project-id="' + escapeHtml(projectId) + '" onclick="confirmOpenArchivedProject(this.dataset.projectId, true)">不保存当前项目，直接打开</button>' +
-          '<button class="ok" id="openProjectConfirmBtn" data-project-id="' + escapeHtml(projectId) + '" onclick="confirmOpenArchivedProject(this.dataset.projectId)">保存当前项目并打开</button>' +
-        '</div>'
-      );
-      setTimeout(function() {
-        var input = document.getElementById('currentProjectBackupName');
-        if (input) {
-          input.focus();
-          input.select();
-        }
-      }, 0);
+    async function showProjectManagerDialog() {
+      var overlay = document.getElementById('modalOverlay');
+      if (overlay && overlay.classList.contains('show')) closeModal();
+      var panel = revealSidebarProjectManagerPanel();
+      if (!panel) return;
+      await loadSidebarProjectManager();
     }
 
-    async function confirmOpenArchivedProject(projectId, skipBackup) {
+    async function completeSidebarProjectManagerAction(message, state) {
+      revealSidebarProjectManagerPanel();
+      await loadSidebarProjectManager({ preserveStatus: true });
+      setSidebarProjectManagerStatus(message, state || 'success');
+    }
+    window.completeSidebarProjectManagerAction = completeSidebarProjectManagerAction;
+
+    function showProjectManagerActionError(message) {
+      var text = String(message || '项目操作失败');
+      setSidebarProjectManagerStatus(text, 'error');
+      var content = document.getElementById('modalContent');
+      if (!content) return;
+      var errorBox = content.querySelector('.project-manager-modal-error');
+      if (!errorBox) {
+        errorBox = document.createElement('div');
+        errorBox.className = 'project-manager-modal-error';
+        var actions = content.querySelector('.btns');
+        if (actions) content.insertBefore(errorBox, actions);
+        else content.appendChild(errorBox);
+      }
+      errorBox.textContent = text;
+    }
+    window.showProjectManagerActionError = showProjectManagerActionError;
+
+    function showProjectManagerPopover(title, content, anchorElement) {
+      var fallbackAnchor = document.querySelector('.project-manager-heading');
+      return showModal(title, content, false, false, {
+        modalClass: 'project-manager-popover',
+        overlayClass: 'project-manager-popover-overlay',
+        anchorElement: anchorElement || fallbackAnchor
+      });
+    }
+    window.showProjectManagerPopover = showProjectManagerPopover;
+
+    async function confirmOpenArchivedProject(projectId, skipBackup, sourceCard) {
       var input = document.getElementById('currentProjectBackupName');
-      var currentProjectName = input ? input.value.trim() : '';
       var hasKnownCurrentProject = projectManagerCurrentProject && projectManagerCurrentProject.isArchivedProject && projectManagerCurrentProject.projectId;
-      if (!skipBackup && !currentProjectName && !hasKnownCurrentProject) {
-        alert('请先填写当前项目名称');
-        return;
-      }
+      var currentProjectName = input && input.value.trim()
+        ? input.value.trim()
+        : (hasKnownCurrentProject
+          ? String(projectManagerCurrentProject.name || projectManagerCurrentProject.projectId || '')
+          : '自动保存项目 ' + new Date().toLocaleString());
 
       if (skipBackup && !confirm('确定不保存当前项目，直接打开所选项目吗？\n\n当前工作区未归档的内容会被丢弃。')) {
         return;
       }
 
       var btn = document.getElementById(skipBackup ? 'openProjectDiscardBtn' : 'openProjectConfirmBtn');
+      if (sourceCard) {
+        sourceCard.classList.add('is-opening');
+        sourceCard.setAttribute('aria-busy', 'true');
+        setSidebarProjectManagerStatus('正在保存当前项目并打开…', 'info');
+      }
       if (btn) {
         btn.disabled = true;
         btn.textContent = '打开中...';
@@ -145,29 +268,35 @@ async function showProjectManagerDialog() {
         applyProjectWritingProfileUi(getCurrentProjectProfileId());
         renderMainContextSourceBar();
         applyProjectClientState(result.clientState);
+        if (typeof window.reloadDiscussionFrameworkForCurrentProject === 'function') {
+          await window.reloadDiscussionFrameworkForCurrentProject({ scanWorkspace: true });
+        }
         closeModal();
-        appendMessage(
+        await completeSidebarProjectManagerAction(
           result.savedCurrentProjectId
-            ? '✅ 已打开项目：' + result.projectId + '\n当前项目已保存回：' + (result.savedCurrentProjectName || result.savedCurrentProjectId)
+            ? '已打开项目；当前项目已保存回“' + (result.savedCurrentProjectName || result.savedCurrentProjectId) + '”。'
             : result.backupProjectId
-            ? '✅ 已打开项目：' + result.projectId + '\n当前工作区已自动备份为：' + result.backupProjectId
-            : '✅ 已打开项目：' + result.projectId + '\n当前工作区未保存，已直接切换。',
-          'bot',
-          false,
-          true
+            ? '已打开项目；当前工作区已自动备份为“' + result.backupProjectId + '”。'
+            : '已打开项目；原工作区未保存。',
+          'success'
         );
       } catch (e) {
         if (btn) {
           btn.disabled = false;
           btn.textContent = skipBackup ? '不保存当前项目，直接打开' : '保存当前项目并打开';
         }
-        appendMessage('❌ 打开项目失败：' + e.message, 'bot', false, true);
+        showProjectManagerActionError('打开项目失败：' + e.message);
+      } finally {
+        if (sourceCard && sourceCard.isConnected) {
+          sourceCard.classList.remove('is-opening');
+          sourceCard.removeAttribute('aria-busy');
+        }
       }
     }
 
-    function showCloneProjectDialog(projectId, projectName) {
+    function showCloneProjectDialog(projectId, projectName, anchorElement) {
       var defaultName = (projectName || projectId || '项目') + ' 副本';
-      showModal(
+      showProjectManagerPopover(
         '复制项目',
         '<div style="line-height:1.7;color:var(--text-primary);">' +
           '<p>复制“' + escapeHtml(projectName || projectId) + '”为一个独立项目，适合同一主题拆成两篇文章分别推进。</p>' +
@@ -178,8 +307,7 @@ async function showProjectManagerDialog() {
           '<button class="cancel" onclick="showProjectManagerDialog()">取消</button>' +
           '<button class="ok" id="cloneProjectConfirmBtn" data-project-id="' + escapeHtml(projectId) + '" onclick="confirmCloneProject(this.dataset.projectId)">复制项目</button>' +
         '</div>',
-        true,
-        false
+        anchorElement
       );
       setTimeout(function() {
         var input = document.getElementById('cloneProjectName');
@@ -220,30 +348,22 @@ async function showProjectManagerDialog() {
         }
         projectManagerCurrentProject = result.currentProject || projectManagerCurrentProject;
         var clonedProject = result.project || {};
-        showModal(
-          '复制完成',
-          '<div style="line-height:1.7;color:var(--text-primary);">' +
-            '<p>已创建项目副本：“' + escapeHtml(clonedProject.name || newName) + '”。</p>' +
-            '<p style="margin-top:8px;color:var(--text-secondary);">原项目和副本现在是两个独立项目，可分别写不同文章。</p>' +
-          '</div>' +
-          '<div class="btns">' +
-            '<button class="cancel" onclick="showProjectManagerDialog()">留在项目管理</button>' +
-            '<button class="ok" data-project-id="' + escapeHtml(clonedProject.projectId || '') + '" data-project-name="' + escapeHtml(clonedProject.name || newName) + '" onclick="showOpenProjectNameDialog(this.dataset.projectId, this.dataset.projectName)">打开副本</button>' +
-          '</div>',
-          true,
-          false
+        closeModal();
+        await completeSidebarProjectManagerAction(
+          '已创建项目副本“' + (clonedProject.name || newName) + '”，可直接在列表中打开。',
+          'success'
         );
       } catch (e) {
         if (btn) {
           btn.disabled = false;
           btn.textContent = '复制项目';
         }
-        appendMessage('❌ 复制项目失败：' + e.message, 'bot', false, true);
+        showProjectManagerActionError('复制项目失败：' + e.message);
       }
     }
 
-    function showRenameProjectDialog(projectId, currentName) {
-      showModal(
+    function showRenameProjectDialog(projectId, currentName, anchorElement) {
+      showProjectManagerPopover(
         '重命名项目',
         '<div style="line-height:1.7;color:var(--text-primary);">' +
           '<p>修改项目在项目管理列表中的显示名称。</p>' +
@@ -252,7 +372,8 @@ async function showProjectManagerDialog() {
         '<div class="btns">' +
           '<button class="cancel" onclick="showProjectManagerDialog()">取消</button>' +
           '<button class="ok" id="renameProjectConfirmBtn" data-project-id="' + escapeHtml(projectId) + '" onclick="confirmRenameProject(this.dataset.projectId)">保存</button>' +
-        '</div>'
+        '</div>',
+        anchorElement
       );
       setTimeout(function() {
         var input = document.getElementById('renameProjectName');
@@ -287,13 +408,14 @@ async function showProjectManagerDialog() {
         if (!response.ok || !result.success) {
           throw new Error(result.error || '重命名失败');
         }
-        await showProjectManagerDialog();
+        closeModal();
+        await completeSidebarProjectManagerAction('项目已重命名为“' + newName + '”。', 'success');
       } catch (e) {
         if (btn) {
           btn.disabled = false;
           btn.textContent = '保存';
         }
-        appendMessage('❌ 重命名项目失败：' + e.message, 'bot', false, true);
+        showProjectManagerActionError('重命名项目失败：' + e.message);
       }
     }
 
@@ -310,9 +432,9 @@ async function showProjectManagerDialog() {
         if (!response.ok || !result.success) {
           throw new Error(result.error || '删除失败');
         }
-        await showProjectManagerDialog();
+        await completeSidebarProjectManagerAction('项目“' + projectName + '”已删除。', 'success');
       } catch (e) {
-        appendMessage('❌ 删除项目失败：' + e.message, 'bot', false, true);
+        setSidebarProjectManagerStatus('删除项目失败：' + e.message, 'error');
       }
     }
 
@@ -374,46 +496,144 @@ async function showProjectManagerDialog() {
       });
     }
     
-    function deleteHistoryItem(convId) {
-      fetch(getMainChatPiSessionUrl(convId) + '?userId=' + encodeURIComponent(currentUserId || 'web-user'), {
-        method: 'DELETE'
-      }).catch(function(error) {
-        console.warn('[PiSession] Failed to delete queued session with conversation:', convId, error);
-      });
+    async function archiveHistoryItem(convId) {
+      var projectId = getConversationHistoryProjectId();
       var history = getHistory();
-      history = history.filter(function(h) { return h.id !== convId; });
-      saveHistory(history);
-      rememberDeletedConversationHistoryId(convId);
-      localStorage.removeItem(MSG_KEY + currentUserId + '_' + convId);
-      unregisterPdfPaperConversation(convId);
-      if (convId === currentConversationId) {
-        newChat();
+      var historyItem = history.find(function(item) { return item && item.id === convId; });
+      var restored = readConversationMessagesFromRestoreNamespacesLocal(convId);
+      var messages = Array.isArray(restored.messages) ? restored.messages.slice() : [];
+      cancelConversationPersistence(convId, projectId);
+
+      try {
+        var response = await fetch(
+          '/api/memory/conversation/' + encodeURIComponent(currentUserId || 'web-user') + '/' + encodeURIComponent(convId) + '/archive',
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              projectId: projectId || undefined,
+              title: historyItem ? historyItem.title : '',
+              messages: messages
+            })
+          }
+        );
+        var result = await response.json().catch(function() { return {}; });
+        if (!response.ok || !result.success) {
+          if (response.status === 404 && /未提供该接口|not found/i.test(String(result.error || ''))) {
+            throw new Error('本地服务版本过旧。请从系统托盘完全退出 Scholar Harness 后重新打开；本次归档未执行，原对话仍保留。');
+          }
+          throw new Error(result.error || ('HTTP ' + response.status));
+        }
+
+        fetch(
+          getMainChatPiSessionUrl(convId)
+            + '?userId=' + encodeURIComponent(currentUserId || 'web-user')
+            + (projectId ? '&projectId=' + encodeURIComponent(projectId) : ''),
+          { method: 'DELETE' }
+        ).catch(function(error) {
+          console.warn('[PiSession] Failed to clear archived conversation session:', convId, error);
+        });
+
+        history = history.filter(function(item) { return item.id !== convId; });
+        saveHistory(history);
+        rememberArchivedConversationHistoryId(convId);
+        getConversationHistoryRestoreUserIds().forEach(function(userId) {
+          localStorage.removeItem(MSG_KEY + userId + '_' + convId);
+        });
+        unregisterPdfPaperConversation(convId);
+        if (convId === currentConversationId) newChat();
+        deleteWorkspaceDirectorySetting(convId);
+        renderHistory();
+        console.log('[ConversationPersistence] 对话已归档:', convId, result.archiveFile || 'archived-conversations.json');
+      } catch (error) {
+        if (messages.length > 0) {
+          scheduleConversationPersistence(convId, { projectId: projectId, messages: messages });
+        }
+        console.warn('[ConversationPersistence] 对话归档失败，活动记录保持不变:', convId, error);
+        alert('归档对话失败：' + (error && error.message ? error.message : error));
       }
-      deleteWorkspaceDirectorySetting(convId);
-      renderHistory();
     }
-    window.deleteHistoryItem = deleteHistoryItem;
+    window.archiveHistoryItem = archiveHistoryItem;
     
-    function renderHistory() {
-      var history = getHistory().filter(function(item) {
+    function getConversationHistoryListElement() {
+      return document.getElementById('historyList');
+    }
+
+    function renderHistory(historyOverride) {
+      var historyHost = getConversationHistoryListElement();
+      if (!historyHost) {
+        console.warn('[RenderHistory] 历史对话容器尚未挂载，跳过本轮渲染');
+        return 0;
+      }
+      var sourceHistory = Array.isArray(historyOverride) ? historyOverride : getHistory();
+      var history = sourceHistory.filter(function(item) {
         return item && !isBibliometricsConversationId(item.id);
       });
 
       console.log('[RenderHistory] History count:', history.length);
-      console.log('[RenderHistory] History items:', history.map(function(h) { return { id: h.id, title: h.title }; }));
-      historyList.innerHTML = '';
+      historyHost.innerHTML = '';
+      if (history.length === 0) {
+        var empty = document.createElement('div');
+        empty.className = 'history-list-empty';
+        empty.textContent = '暂无历史对话';
+        historyHost.appendChild(empty);
+        return 0;
+      }
+
+      var fragment = document.createDocumentFragment();
       for (var i = 0; i < history.length; i++) {
         var h = history[i];
-        var pdfConversationContext = loadPdfPaperChatContextForConversation(h.id);
-        var historyDisplayTitle = pdfConversationContext
-          ? '论文 · ' + (pdfConversationContext.title || pdfConversationContext.originalName || h.title)
-          : h.title;
-        var div = document.createElement('div');
-        div.className = 'history-item' + (h.id === currentConversationId ? ' active' : '');
-        div.innerHTML = '<span class="history-item-title" title="' + escapeHtml(h.title || historyDisplayTitle) + '" onclick="loadConversation(\'' + h.id + '\')">' + escapeHtml(historyDisplayTitle) + '</span><span class="delete" onclick="event.stopPropagation(); deleteHistoryItem(\'' + h.id + '\')">' + uiIcon('x', 'sm') + '</span>';
-        historyList.appendChild(div);
+        try {
+          var conversationId = String(h && h.id || '').trim();
+          if (!conversationId) continue;
+          var pdfConversationContext = null;
+          try {
+            if (typeof loadPdfPaperChatContextForConversation === 'function') {
+              pdfConversationContext = loadPdfPaperChatContextForConversation(conversationId);
+            }
+          } catch (contextError) {
+            console.warn('[RenderHistory] 论文会话上下文损坏，继续显示普通历史项:', conversationId, contextError);
+          }
+          var fallbackTitle = String(h.title || '历史对话');
+          var historyDisplayTitle = pdfConversationContext
+            ? '论文 · ' + (pdfConversationContext.title || pdfConversationContext.originalName || fallbackTitle)
+            : fallbackTitle;
+          var div = document.createElement('div');
+          div.className = 'history-item' + (conversationId === currentConversationId ? ' active' : '');
+          div.dataset.conversationId = conversationId;
+
+          var title = document.createElement('span');
+          title.className = 'history-item-title';
+          title.title = historyDisplayTitle;
+          title.textContent = historyDisplayTitle;
+          title.addEventListener('click', (function(targetConversationId) {
+            return function() { loadConversation(targetConversationId); };
+          })(conversationId));
+
+          var archiveButton = document.createElement('span');
+          archiveButton.className = 'delete archive';
+          archiveButton.setAttribute('role', 'button');
+          archiveButton.setAttribute('aria-label', '归档历史对话');
+          archiveButton.setAttribute('title', '归档对话');
+          archiveButton.innerHTML = uiIcon('archive', 'sm');
+          archiveButton.addEventListener('click', (function(targetConversationId) {
+            return function(event) {
+              event.stopPropagation();
+              archiveHistoryItem(targetConversationId);
+            };
+          })(conversationId));
+
+          div.appendChild(title);
+          div.appendChild(archiveButton);
+          fragment.appendChild(div);
+        } catch (itemError) {
+          console.warn('[RenderHistory] 单条历史记录渲染失败，已跳过:', h && h.id, itemError);
+        }
       }
+      historyHost.appendChild(fragment);
+      return historyHost.querySelectorAll('.history-item').length;
     }
+    window.renderHistory = renderHistory;
 
     function isLocalOutputAttachmentPathForAuthorization(filePath) {
       var value = String(filePath || '').trim();
@@ -492,10 +712,14 @@ async function showProjectManagerDialog() {
 
     async function fetchPersistedConversationMessages(convId, signal) {
       var userIds = getConversationRestoreUserIds();
+      var projectId = typeof getConversationHistoryProjectId === 'function'
+        ? getConversationHistoryProjectId()
+        : '';
+      var projectQuery = projectId ? '?projectId=' + encodeURIComponent(projectId) : '';
       for (var i = 0; i < userIds.length; i++) {
         var restoreUserId = userIds[i];
         var response = await fetch(
-          '/api/memory/conversation/' + encodeURIComponent(restoreUserId) + '/' + encodeURIComponent(convId),
+          '/api/memory/conversation/' + encodeURIComponent(restoreUserId) + '/' + encodeURIComponent(convId) + projectQuery,
           { signal: signal }
         );
         var result = await response.json().catch(function() { return {}; });
@@ -525,7 +749,8 @@ async function showProjectManagerDialog() {
             message.content,
             normalizedRole,
             message.isHtml,
-            message.isSystemMessage
+            message.isSystemMessage,
+            { usage: message.usage, elapsedMs: message.elapsedMs }
           );
           if (normalizedRole === 'user') {
             element.setAttribute('data-query-nav-text', normalizeQueryNavText(message.content));
@@ -696,6 +921,8 @@ async function showProjectManagerDialog() {
     }
 
     function removeMessageChrome(clone) {
+      var usageLine = clone.querySelector('.message-token-usage');
+      if (usageLine) usageLine.remove();
       var footer = clone.querySelector('.message-footer');
       if (footer) {
         footer.remove();
@@ -1196,6 +1423,10 @@ async function showProjectManagerDialog() {
 
     function stripDecorativeAiIcons(text) {
       return String(text || '')
+        .replace(/Pi 编程 Agent/g, 'Pi Agent')
+        .replace(/Codex 编程 Agent/g, 'Codex')
+        .replace(/OpenCode 编程 Agent/g, 'OpenCode')
+        .replace(/Codex Agent 已启动/g, 'Codex 已启动')
         .replace(/([0-9#*])\uFE0F?\u20E3/g, '$1.')
         .replace(/[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}]/gu, '')
         .replace(/[\u20E3\uFE0E\uFE0F\u200D]/g, '')
@@ -1206,7 +1437,7 @@ async function showProjectManagerDialog() {
     }
 
     function renderPlainStatusText(text) {
-      return escapeHtml(stripDecorativeAiIcons(text));
+      return escapeHtml(stripVerifiedCodexArtifactMarkers(stripDecorativeAiIcons(text)));
     }
 
     function setPlainStatusHtml(element, text, trailingHtml) {
@@ -1215,7 +1446,7 @@ async function showProjectManagerDialog() {
     }
 
     function formatBotMessage(text) {
-      return formatMessage(stripDecorativeAiIcons(text));
+      return formatMessage(stripVerifiedCodexArtifactMarkers(stripDecorativeAiIcons(text)));
     }
 
     function isAgentTranscriptText(text) {
@@ -1259,6 +1490,9 @@ async function showProjectManagerDialog() {
     function stripVerifiedCodexArtifactMarkers(text) {
       return String(text || '')
         .replace(/\[\[SH_VERIFIED_ARTIFACTS_BEGIN\]\][\s\S]*?\[\[SH_VERIFIED_ARTIFACTS_END\]\]/g, '')
+        // Streaming may render after BEGIN arrives but before END. Hide the
+        // unfinished protocol block instead of exposing internal markers/paths.
+        .replace(/\[\[SH_VERIFIED_ARTIFACTS_BEGIN\]\][\s\S]*$/g, '')
         .replace(/\[\[SH_VERIFIED_ARTIFACTS_BEGIN\]\]/g, '')
         .replace(/\[\[SH_VERIFIED_ARTIFACTS_END\]\]/g, '')
         .replace(/\n{3,}/g, '\n\n')
@@ -1590,14 +1824,50 @@ async function showProjectManagerDialog() {
       });
     }
 
+    function normalizeAgentTokenUsage(value) {
+      if (!value || typeof value !== 'object') return null;
+      var inputTokens = Math.max(0, Math.floor(Number(value.inputTokens ?? value.prompt_tokens ?? value.input_tokens ?? 0)));
+      var outputTokens = Math.max(0, Math.floor(Number(value.outputTokens ?? value.completion_tokens ?? value.output_tokens ?? 0)));
+      if (!inputTokens && !outputTokens) return null;
+      var cacheReadTokens = value.cacheReadTokens !== undefined
+        ? Math.max(0, Math.floor(Number(value.cacheReadTokens)))
+        : undefined;
+      return {
+        inputTokens: inputTokens,
+        outputTokens: outputTokens,
+        totalTokens: Math.max(0, Math.floor(Number(value.totalTokens ?? value.total_tokens ?? inputTokens + outputTokens))),
+        estimated: value.estimated === true,
+        cacheReadTokens: cacheReadTokens
+      };
+    }
+
+    function formatAgentTokenUsage(value) {
+      var usage = normalizeAgentTokenUsage(value);
+      if (!usage) return '';
+      var prefix = usage.estimated ? '约 ' : '';
+      var base = prefix + '输入 ' + usage.inputTokens.toLocaleString() + ' tokens · 输出 ' + usage.outputTokens.toLocaleString() + ' tokens';
+      if (usage.cacheReadTokens !== undefined) {
+        var totalInput = usage.inputTokens + usage.cacheReadTokens;
+        var hitPercent = totalInput > 0
+          ? Math.round((usage.cacheReadTokens / totalInput) * 100)
+          : 0;
+        base += ' · 缓存命中 ' + hitPercent + '%';
+      }
+      return base;
+    }
+
+    function renderBotTokenUsageLine(value) {
+      var label = formatAgentTokenUsage(value);
+      if (!label) return '';
+      return '<div class="message-token-usage">' + escapeHtml(label) + '</div>';
+    }
+
     function renderAgentTranscript(text, options) {
       options = options || {};
       var parts = splitAgentTranscript(stripDecorativeAiIcons(text));
       var isCodexTranscript = /(?:^|\n)Codex CLI 已启动|##\s*Codex\s*最终回答/i.test(String(text || ''));
-      var verifiedCodexArtifacts = isCodexTranscript
-        ? extractVerifiedCodexArtifactText((parts.progress || '') + '\n' + (parts.answer || ''))
-        : '';
-      var progress = parts.progress || '';
+      var verifiedCodexArtifacts = extractVerifiedCodexArtifactText((parts.progress || '') + '\n' + (parts.answer || ''));
+      var progress = stripVerifiedCodexArtifactMarkers(parts.progress || '');
       var lines = progress.split(/\r?\n/).filter(function(line) { return !shouldHideAgentTranscriptLine(line); });
       var maxLines = options.final ? 260 : 180;
       var truncated = lines.length > maxLines;
@@ -1605,8 +1875,9 @@ async function showProjectManagerDialog() {
         lines = lines.slice(Math.max(0, lines.length - maxLines));
       }
       var elapsed = options.elapsedMs != null ? formatAgentElapsed(options.elapsedMs) : '';
+      var usageLabel = options.final ? formatAgentTokenUsage(options.usage) : '';
       var header = options.final
-        ? 'Worked' + (elapsed ? ' for ' + elapsed : '')
+        ? 'Worked' + (elapsed ? ' for ' + elapsed : '') + (usageLabel ? ' · ' + usageLabel : '')
         : '运行中 · 可继续输入' + (elapsed ? ' · ' + elapsed : '');
       var lineHtml = lines.map(function(rawLine) {
         var item = classifyAgentTranscriptLine(rawLine);
@@ -1629,15 +1900,13 @@ async function showProjectManagerDialog() {
         '</div>' + lineHtml;
       }
 
-      var answerText = isCodexTranscript
-        ? stripVerifiedCodexArtifactMarkers(parts.answer)
-        : parts.answer;
+      var answerText = stripVerifiedCodexArtifactMarkers(parts.answer || '');
       var answerHtml = answerText
         ? '<div class="agent-transcript-answer">' + (isCodexTranscript
           ? formatMessage(answerText, { skipOutputAttachments: true })
           : formatBotMessage(answerText)) + '</div>'
         : '';
-      var progressAttachmentsHtml = isCodexTranscript
+      var progressAttachmentsHtml = verifiedCodexArtifacts
         ? renderOutputAttachmentCards(verifiedCodexArtifacts, { workspaceContextText: parts.progress || '', verified: true })
         : renderOutputAttachmentCards(parts.progress || '', { latestGeneratedOnly: true });
 
@@ -1646,8 +1915,8 @@ async function showProjectManagerDialog() {
 
       return editSummaryHtml + '<div class="agent-transcript' + scrollClass + (options.final ? '' : ' is-running') + '" role="log" aria-live="' + (options.final ? 'polite' : 'off') + '">' +
         '<div class="agent-transcript-header"><span class="agent-transcript-live-dot" aria-hidden="true"></span><span class="agent-transcript-header-text">' + escapeHtml(header) + '</span></div>' +
-        '<div class="agent-transcript-body">' + lineHtml + '</div>' +
-      '</div>' + progressAttachmentsHtml + answerHtml;
+        '<div class="agent-transcript-body">' + lineHtml + answerHtml + '</div>' +
+      '</div>' + progressAttachmentsHtml;
     }
 
     function renderBotMessageContent(text, options) {
@@ -1656,7 +1925,12 @@ async function showProjectManagerDialog() {
       if (options.allowAgentTranscript && isAgentTranscriptText(normalized)) {
         return renderAgentTranscript(normalized, options);
       }
-      return formatBotMessage(normalized);
+      var contentHtml = formatBotMessage(normalized);
+      if (options.final) {
+        var usageLine = renderBotTokenUsageLine(options.usage);
+        if (usageLine) contentHtml += usageLine;
+      }
+      return contentHtml;
     }
 
     function createBotTextStreamer(messageDiv) {
@@ -1669,6 +1943,7 @@ async function showProjectManagerDialog() {
       var idleResolvers = [];
       var streamStartedAt = Date.now();
       var elapsedMsOverride = null;
+      var tokenUsage = null;
 
       function resolveIdle() {
         var resolvers = idleResolvers.slice();
@@ -1691,7 +1966,8 @@ async function showProjectManagerDialog() {
           contentDiv.innerHTML = renderBotMessageContent(renderedText, {
             allowAgentTranscript: true,
             final: true,
-            elapsedMs: getStreamElapsedMs()
+            elapsedMs: getStreamElapsedMs(),
+            usage: tokenUsage
           });
           initWorkspaceImageStacks(contentDiv);
           syncMessageLocalFileVisibilityClass(contentDiv.closest('.message'));
@@ -1789,13 +2065,13 @@ async function showProjectManagerDialog() {
         var logText = document.createElement('div');
         logText.className = 'agent-transcript-stream-text';
         body.appendChild(logText);
+        var answer = document.createElement('div');
+        answer.className = 'agent-transcript-answer agent-transcript-stream-answer';
+        body.appendChild(answer);
         transcript.appendChild(header);
         transcript.appendChild(body);
 
-        var answer = document.createElement('div');
-        answer.className = 'agent-transcript-answer agent-transcript-stream-answer';
         contentDiv.appendChild(transcript);
-        contentDiv.appendChild(answer);
 
         resetLightweightRenderReferences('transcript');
         lightweightTranscriptHeader = header;
@@ -1818,7 +2094,7 @@ async function showProjectManagerDialog() {
 
       function getLightweightTranscriptSnapshot(text) {
         var parts = splitAgentTranscript(stripDecorativeAiIcons(text));
-        var lines = String(parts.progress || '')
+        var lines = stripVerifiedCodexArtifactMarkers(parts.progress || '')
           .split(/\r?\n/)
           .filter(function(line) { return !shouldHideAgentTranscriptLine(line); });
         var maxLines = 180;
@@ -1892,7 +2168,10 @@ async function showProjectManagerDialog() {
         // Input has a higher scheduling priority than transcript formatting.
         // Continuous typing keeps coalescing stream chunks; one latest snapshot is
         // committed after a short quiet window instead of competing with the caret.
-        if (mainChatInputComposing) {
+        // Composition may remain stuck when the send button commits an IME
+        // candidate and clears the textarea. It may defer live snapshots, but
+        // must never block the canonical final answer.
+        if (mainChatInputComposing && !finalizing) {
           schedule(80);
           return;
         }
@@ -1943,8 +2222,12 @@ async function showProjectManagerDialog() {
             schedule();
           }
         },
-        finish: function(text, elapsedMs) {
+        setUsage: function(usage) {
+          tokenUsage = normalizeAgentTokenUsage(usage);
+        },
+        finish: function(text, elapsedMs, usage) {
           finalizing = true;
+          tokenUsage = normalizeAgentTokenUsage(usage) || tokenUsage;
           var nextElapsed = Number(elapsedMs || 0);
           elapsedMsOverride = Number.isFinite(nextElapsed) && nextElapsed > 0 ? nextElapsed : null;
           targetText = String(text || targetText || '');
@@ -2110,7 +2393,7 @@ async function showProjectManagerDialog() {
       }
     }
 
-    function createSharedChatMessageElement(text, role, isHtml, isSystemMessage) {
+    function createSharedChatMessageElement(text, role, isHtml, isSystemMessage, metadata) {
       var normalizedRole = role === 'user' ? 'user' : 'bot';
       var div = document.createElement('div');
       div.className = 'message ' + normalizedRole;
@@ -2118,7 +2401,12 @@ async function showProjectManagerDialog() {
       var displayText = normalizedRole === 'bot' ? stripDecorativeAiIcons(text) : text;
       var useAgentTranscript = normalizedRole === 'bot' && !isHtml && isAgentTranscriptText(displayText);
       var content = isHtml ? displayText : (normalizedRole === 'bot'
-        ? renderBotMessageContent(displayText, { allowAgentTranscript: true, final: true })
+        ? renderBotMessageContent(displayText, {
+            allowAgentTranscript: true,
+            final: true,
+            usage: metadata && metadata.usage,
+            elapsedMs: metadata && metadata.elapsedMs
+          })
         : formatMessage(displayText));
       
       var footer = normalizedRole === 'bot'
@@ -2136,10 +2424,10 @@ async function showProjectManagerDialog() {
       return div;
     }
 
-    function appendMessage(text, role, isHtml, isSystemMessage) {
+    function appendMessage(text, role, isHtml, isSystemMessage, metadata) {
       var normalizedRole = role === 'user' ? 'user' : 'bot';
       var stickToBottom = normalizedRole === 'user' || shouldAutoScrollChat();
-      var div = createSharedChatMessageElement(text, normalizedRole, isHtml, isSystemMessage);
+      var div = createSharedChatMessageElement(text, normalizedRole, isHtml, isSystemMessage, metadata);
       messagesDiv.appendChild(div);
       ensureChatMessageLayoutGuard();
       scheduleChatMessageLayoutRepair(div);
@@ -2201,10 +2489,21 @@ async function showProjectManagerDialog() {
     }
     window.setPersistentSkillsFromAiAction = setPersistentSkillsFromAiAction;
 
+    function getAvailableFrontendUiActionIds() {
+      if (typeof getFrontendPageAvailableActions !== 'function') return new Set();
+      return new Set(getFrontendPageAvailableActions().map(function(item) {
+        return String(item && item.id || '').trim();
+      }).filter(Boolean));
+    }
+
     function executeFrontendUiAction(actionId, attrs) {
       var action = String(actionId || '').trim();
       if (!action) return false;
       attrs = attrs && typeof attrs === 'object' ? attrs : {};
+      if (!getAvailableFrontendUiActionIds().has(action)) {
+        console.warn('[FrontendState] Rejected UI action outside current availableActions:', action);
+        return false;
+      }
       try {
         if (action === 'open_right_article') {
           setRightSidebarTab('article');
@@ -2231,6 +2530,15 @@ async function showProjectManagerDialog() {
         } else if (action === 'open_skill_config' && typeof window.openAiConfigurationSkillPage === 'function') {
           window.openAiConfigurationSkillPage();
         } else if (action === 'set_persistent_skills') {
+          var requestedSkillIds = String(attrs.skill_ids || attrs.skills || '').split(',').map(function(id) {
+            return String(id || '').trim();
+          }).filter(Boolean);
+          var confirmed = window.confirm(
+            'AI 建议把以下 Skill 加入“持续使用”：\n\n' +
+            (requestedSkillIds.length ? requestedSkillIds.join('\n') : '（未提供 Skill）') +
+            '\n\n这会影响之后每一轮主对话。是否确认？'
+          );
+          if (!confirmed) return false;
           setPersistentSkillsFromAiAction(attrs.skill_ids || attrs.skills || '').catch(function(error) {
             appendMessage('持续使用 Skill 配置失败：' + (error.message || String(error)), 'bot', false, true);
           });
@@ -2780,9 +3088,6 @@ async function showProjectManagerDialog() {
               <span style="font-size:24px;">🐄</span>
               小牛马检测到需要${evidenceName}支撑的内容
             </h3>
-            <button id="retrievalModalFullscreenBtn" class="modal-icon-btn" type="button" onclick="toggleCustomModalFullscreen('retrievalModal','retrievalModalPanel','retrievalModalFullscreenBtn')" title="全屏" aria-label="全屏">
-              <svg class="ui-icon sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3H3v5"></path><path d="M16 3h5v5"></path><path d="M21 16v5h-5"></path><path d="M3 16v5h5"></path></svg>
-            </button>
           </div>
           
           <div style="padding:20px;">
@@ -2947,7 +3252,7 @@ async function showProjectManagerDialog() {
       var requestedUserId = String(currentUserId || 'web-user');
       var requestedConversationId = String(currentConversationId || '');
       if (retryAttempt === 0 && !preserveChatState) {
-        emptyState.innerHTML = BRAND_TITLE_HTML + GREETING_HTML;
+        emptyState.innerHTML = BRAND_TITLE_HTML + GREETING_HTML + HOME_WORKFLOW_SHORTCUTS_HTML;
       }
 
       var controller = new AbortController();
@@ -2987,7 +3292,7 @@ async function showProjectManagerDialog() {
               && messagesDiv.querySelector('.literature-summary-message')
             );
             if (!existingLiteratureSummary) {
-              emptyState.innerHTML = BRAND_TITLE_HTML + GREETING_HTML;
+              emptyState.innerHTML = BRAND_TITLE_HTML + GREETING_HTML + HOME_WORKFLOW_SHORTCUTS_HTML;
               showLitSummary(d.summary, d.journalStyles, {
                 prependToConversation: chatAlreadyStarted
               });
@@ -2995,7 +3300,7 @@ async function showProjectManagerDialog() {
           }
         } else if (d.journalStyles && d.journalStyles.length > 0) {
           if (!preserveChatState) {
-            emptyState.innerHTML = BRAND_TITLE_HTML + GREETING_HTML + '<p style="margin-top:12px;color:#8e8ea0;">暂无' + labels.embeddingLibrary + '，请上传' + evidenceName + '开始写作</p>';
+            emptyState.innerHTML = BRAND_TITLE_HTML + GREETING_HTML + HOME_WORKFLOW_SHORTCUTS_HTML + '<p style="margin-top:12px;color:#8e8ea0;">暂无' + labels.embeddingLibrary + '，请上传' + evidenceName + '开始写作</p>';
             var msg = '📚 已分析' + labels.styleGroup + '：\n\n';
             msg += '📰 ' + d.journalStyles.join('\n📰 ') + '\n\n';
             msg += '💡 上传' + evidenceName + '后即可开始写作';
@@ -3003,7 +3308,7 @@ async function showProjectManagerDialog() {
           }
         } else {
           if (!preserveChatState) {
-            emptyState.innerHTML = BRAND_TITLE_HTML + GREETING_HTML + '<p style="margin-top:12px;color:#8e8ea0;">暂无' + labels.embeddingLibrary + '，请上传' + evidenceName + '开始写作</p>';
+            emptyState.innerHTML = BRAND_TITLE_HTML + GREETING_HTML + HOME_WORKFLOW_SHORTCUTS_HTML + '<p style="margin-top:12px;color:#8e8ea0;">暂无' + labels.embeddingLibrary + '，请上传' + evidenceName + '开始写作</p>';
           }
         }
       }).catch(function(e){
@@ -3011,6 +3316,9 @@ async function showProjectManagerDialog() {
         console.log('[Literature] 加载失败:', e.message);
         if (preserveChatState) return;
         if (retryAttempt < 2) {
+          if (emptyState) {
+            emptyState.innerHTML = '<p style="margin-top:12px;color:#8e8ea0;">📡 ' + escapeHtml(String(labels.embeddingLibrary || '文献库')) + ' 加载失败，正在自动重试…</p>';
+          }
           literatureLoadRetryTimer = setTimeout(function() {
             if (!isLatestLiteratureRequest()) return;
             loadLiteratureFromServer({ retryAttempt: retryAttempt + 1 });

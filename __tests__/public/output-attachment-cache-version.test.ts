@@ -18,15 +18,15 @@ function loadThumbnailCacheKeyHelper(): (img: unknown, sourceUrl: string) => str
   }).helper;
 }
 
-function loadConversationWorkspaceHelper(): (workspacePath: string, conversationId: string) => string {
-  const match = html.match(/function buildConversationScopedAiWorkRoot\(workspacePath, conversationId\) \{[\s\S]*?\n    \}/);
+function loadConversationWorkspaceHelper(): (workspacePath: string, conversationId: string, projectId?: string) => string {
+  const match = html.match(/function buildConversationScopedAiWorkRoot\(workspacePath, conversationId, projectId\) \{[\s\S]*?\n    \}/);
   if (!match) throw new Error('Conversation workspace helper was not found');
   const context = vm.createContext({
     joinLocalRPath: (dir: string, name: string) => `${String(dir).replace(/[\\/]+$/g, '')}/${String(name).replace(/^[\\/]+/g, '')}`,
   });
   vm.runInContext(`${match[0]}\nthis.helper = buildConversationScopedAiWorkRoot;`, context);
   return (context as unknown as {
-    helper: (workspacePath: string, conversationId: string) => string;
+    helper: (workspacePath: string, conversationId: string, projectId?: string) => string;
   }).helper;
 }
 
@@ -54,15 +54,16 @@ describe('AI output attachment cache versioning', () => {
     expect(html).toContain('workspaceContextText: parts.progress ||');
   });
 
-  it('isolates writable AI workspaces by conversation and does not reuse a mismatched pasted root', () => {
+  it('isolates writable AI workspaces by project and conversation and does not reuse a mismatched pasted root', () => {
     const getWorkspaceRoot = loadConversationWorkspaceHelper();
-    const first = getWorkspaceRoot('D:\\paper', 'conv-1');
-    const second = getWorkspaceRoot('D:\\paper', 'conv-2');
+    const first = getWorkspaceRoot('D:\\paper', 'conv-1', 'project-a');
+    const second = getWorkspaceRoot('D:\\paper', 'conv-1', 'project-b');
 
     expect(first).not.toBe(second);
-    expect(first).toContain('ScholarHarness_AI_Workspaces/Conversation-conv-1');
+    expect(first).toContain('ScholarHarness_AI_Workspaces/Project-project-a/Conversation-conv-1');
     expect(html).toContain("WORKSPACE_CONVERSATION_ROOTS_KEY = 'scholarharness_workspace_conversation_roots'");
-    expect(html).toContain("joinLocalRPath(workspaceContainer, 'Conversation-' + safeConversationId)");
+    expect(html).toContain("joinLocalRPath(workspaceContainer, 'Project-' + safeProjectId)");
+    expect(html).toContain("joinLocalRPath(projectContainer, 'Conversation-' + safeConversationId)");
     expect(html).toContain("setting.permission === 'read-only'");
     expect(html).toContain('if (configured && isLocalPathWithinWorkspace(configured.path, pastedPath))');
     expect(html).toContain("aiWorkRoot: ''");

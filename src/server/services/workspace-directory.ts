@@ -2,10 +2,17 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 
 import { createWorkspaceToolRuntime } from './workspace-tools';
+import { WORKSPACE_ARTIFACT_LAYOUT } from './workspace-artifact-layout';
+import { USER_VIEW_DIRECTORY_NAME } from './workspace-workbench';
+import {
+  shouldSkipWorkspaceSourceDirectory,
+  shouldSkipWorkspaceSourceFile,
+} from './workspace-source-policy';
 import {
   assertPathAuthorizedByWorkspaceRoot,
   isPathWithinRoot,
 } from './workspace-path-authorization';
+import { getProjectRuntimeContext } from '../../utils/project-runtime-context';
 
 export type WorkspaceDirectoryPermission = 'read-only' | 'workspace-write' | 'danger-full-access';
 
@@ -17,6 +24,7 @@ export interface WorkspaceDirectoryInput {
   safeWorkRoot?: string;
   aiWorkRoot?: string;
   conversationId?: string;
+  projectId?: string;
 }
 
 export interface WorkspaceDirectoryFileSummary {
@@ -44,6 +52,8 @@ export interface WorkspacePreviewItem {
   size: number;
   ext: string;
   kind: WorkspacePreviewKind;
+  createdAt?: string;
+  modifiedAt?: string;
   previewUrl?: string;
   thumbnailUrl?: string;
 }
@@ -66,6 +76,7 @@ interface WorkspaceFileRecord {
   absolutePath: string;
   relativePath: string;
   size: number;
+  birthtimeMs: number;
   mtimeMs: number;
   textLike: boolean;
 }
@@ -82,6 +93,7 @@ interface WorkspaceSearchResult {
   match: 'path' | 'content';
   kind?: WorkspacePreviewKind;
   score?: number;
+  createdAt?: string;
   modifiedAt?: string;
 }
 
@@ -99,6 +111,7 @@ export interface WorkspaceDirectoryContext {
   contextMarkdown: string;
   queryHintsMarkdown?: string;
   warning?: string;
+  discoveryDeferred?: boolean;
 }
 
 export interface PreparedWorkspaceOutputDirectory {
@@ -232,6 +245,7 @@ export function normalizeWorkspaceDirectoryInput(value: unknown): WorkspaceDirec
     safeWorkRoot: permission === 'read-only' ? undefined : requestedAiWorkRoot,
     aiWorkRoot: permission === 'read-only' ? undefined : requestedAiWorkRoot,
     conversationId: String(input.conversationId || input.sessionId || '').trim() || undefined,
+    projectId: String(input.projectId || '').trim() || undefined,
   };
 }
 
@@ -310,6 +324,11 @@ function resolveConversationAiWorkRoot(root: string, input: WorkspaceDirectoryIn
   if (normalizePermission(input.permission) === 'read-only') {
     return '';
   }
+  const projectId = sanitizeConversationWorkspaceId(
+    getProjectRuntimeContext()?.projectId || input.projectId
+  );
+  const containerRoot = resolveAiWorkspaceContainerRoot(root);
+  const projectRoot = projectId ? path.join(containerRoot, `Project-${projectId}`) : containerRoot;
   const requested = String(input.safeWorkRoot || input.aiWorkRoot || '').trim();
   if (requested) {
     const resolvedRequested = path.resolve(requested);
@@ -318,7 +337,7 @@ function resolveConversationAiWorkRoot(root: string, input: WorkspaceDirectoryIn
       .split(/[\\/]+/)
       .filter(Boolean);
     if (
-      isSubPath(root, resolvedRequested)
+      isSubPath(projectRoot, resolvedRequested)
       && (
         path.basename(path.resolve(root)).toLowerCase() === AI_WORKSPACE_DIRECTORY_NAME.toLowerCase()
         || relativeParts.includes(AI_WORKSPACE_DIRECTORY_NAME.toLowerCase())
@@ -330,7 +349,7 @@ function resolveConversationAiWorkRoot(root: string, input: WorkspaceDirectoryIn
 
   const conversationId = sanitizeConversationWorkspaceId(input.conversationId);
   return conversationId
-    ? path.join(resolveAiWorkspaceContainerRoot(root), `Conversation-${conversationId}`)
+    ? path.join(projectRoot, `Conversation-${conversationId}`)
     : '';
 }
 
@@ -420,6 +439,8 @@ function toWorkspacePreviewItem(file: WorkspaceFileRecord): WorkspacePreviewItem
     size: file.size,
     ext: path.extname(file.relativePath).replace(/^\./, '').toLowerCase(),
     kind,
+    createdAt: new Date(file.birthtimeMs || file.mtimeMs).toISOString(),
+    modifiedAt: new Date(file.mtimeMs).toISOString(),
   };
   if (kind === 'image') {
     const version = String(Math.round(file.mtimeMs || 0));
@@ -429,13 +450,13 @@ function toWorkspacePreviewItem(file: WorkspaceFileRecord): WorkspacePreviewItem
   return item;
 }
 
-async function walkWorkspaceFiles(root: string, maxFiles = MAX_WORKSPACE_FILES): Promise<WorkspaceFileRecord[]> {
+async function walkWorkspaceFiles(root: string, maxFiles = MAX_WORKSPACE_FILES, excludeDirs?: Set<string>): Promise<WorkspaceFileRecord[]> {
   const files: WorkspaceFileRecord[] = [];
   async function walk(dir: string): Promise<void> {
     if (files.length >= maxFiles) return;
     const entries = await fs.readdir(dir, { withFileTypes: true }).catch(() => []);
     const fileEntries = entries
-      .filter(entry => entry.isFile())
+      .filter(entry => entry.isFile() && !shouldSkipWorkspaceSourceFile(entry.name))
       .slice(0, Math.max(0, maxFiles - files.length));
     for (let offset = 0; offset < fileEntries.length && files.length < maxFiles; offset += MAX_WORKSPACE_STAT_CONCURRENCY) {
       const batch = fileEntries.slice(offset, offset + MAX_WORKSPACE_STAT_CONCURRENCY);
@@ -447,6 +468,7 @@ async function walkWorkspaceFiles(root: string, maxFiles = MAX_WORKSPACE_FILES):
           absolutePath,
           relativePath: path.relative(root, absolutePath).replace(/\\/g, '/'),
           size: stat.size,
+          birthtimeMs: stat.birthtimeMs > 0 ? stat.birthtimeMs : stat.mtimeMs,
           mtimeMs: stat.mtimeMs,
           textLike: isTextLikeFile(absolutePath, stat.size),
         } satisfies WorkspaceFileRecord;
@@ -458,21 +480,26 @@ async function walkWorkspaceFiles(root: string, maxFiles = MAX_WORKSPACE_FILES):
     }
     for (const entry of entries) {
       if (files.length >= maxFiles) break;
-      if (!entry.isDirectory() || entry.name.toLowerCase() === '.git') continue;
-      await walk(path.join(dir, entry.name));
+      if (!entry.isDirectory() || shouldSkipWorkspaceSourceDirectory(entry.name)) continue;
+      const absolutePath = path.join(dir, entry.name);
+      // Skip excluded directories (e.g. the AI workspace container when scanning
+      // the source root, so other conversations stay archived).
+      if (excludeDirs?.has(absolutePath.toLowerCase())) continue;
+      await walk(absolutePath);
     }
   }
   await walk(root);
   return files;
 }
 
-async function getWorkspaceFiles(root: string, maxFiles = MAX_WORKSPACE_FILES, forceRefresh = false): Promise<WorkspaceFileRecord[]> {
-  const key = `${path.resolve(root)}::${maxFiles}`;
+async function getWorkspaceFiles(root: string, maxFiles = MAX_WORKSPACE_FILES, forceRefresh = false, excludeDirs?: Set<string>): Promise<WorkspaceFileRecord[]> {
+  const excludeKey = excludeDirs ? Array.from(excludeDirs).sort().join('|') : '';
+  const key = `${path.resolve(root)}::${maxFiles}::${excludeKey}`;
   const cached = workspaceIndexCache.get(key);
   if (!forceRefresh && cached && cached.expiresAt > Date.now()) {
     return cached.files;
   }
-  const files = await walkWorkspaceFiles(root, maxFiles);
+  const files = await walkWorkspaceFiles(root, maxFiles, excludeDirs);
   workspaceIndexCache.set(key, {
     expiresAt: Date.now() + WORKSPACE_INDEX_TTL_MS,
     files,
@@ -488,12 +515,15 @@ async function getWorkspaceFilesAcrossRoots(
 ): Promise<WorkspaceFileRecord[]> {
   const primaryRoot = path.resolve(root);
   const aiWorkspaceContainerRoot = resolveAiWorkspaceContainerRoot(primaryRoot);
+  // P0 (scoped retrieval): the source root is scanned WITHOUT the AI workspace
+  // container, and the container is NOT walked in full. The current conversation
+  // folder is supplied by the caller through additionalRoots; every other
+  // conversation stays archived and is only reachable via scope=archive.
   const roots = [
     ...additionalRoots
       .map(value => String(value || '').trim())
       .filter(Boolean)
       .map(value => path.resolve(value)),
-    aiWorkspaceContainerRoot,
     primaryRoot,
   ];
   const seenRoots = new Set<string>();
@@ -519,7 +549,15 @@ async function getWorkspaceFilesAcrossRoots(
     // the five-minute source-tree cache cannot hide a just-created output or a
     // file stored in another conversation folder.
     const refreshCandidate = forceRefresh || candidateRoot !== primaryRoot;
-    const discovered = await getWorkspaceFiles(candidateRoot, maxFiles, refreshCandidate);
+    const excludeDirs = path.resolve(candidateRoot) === primaryRoot
+      ? new Set<string>([
+          ...(path.resolve(aiWorkspaceContainerRoot) !== primaryRoot
+            ? [aiWorkspaceContainerRoot.toLowerCase()]
+            : []),
+          path.join(primaryRoot, USER_VIEW_DIRECTORY_NAME).toLowerCase(),
+        ])
+      : undefined;
+    const discovered = await getWorkspaceFiles(candidateRoot, maxFiles, refreshCandidate, excludeDirs);
     for (const file of discovered) {
       const fileKey = process.platform === 'win32'
         ? file.absolutePath.toLowerCase()
@@ -586,14 +624,20 @@ async function readExcerpt(filePath: string, maxChars: number): Promise<string> 
   return text.slice(0, maxChars);
 }
 
-export async function buildWorkspaceDirectoryContext(input: WorkspaceDirectoryInput): Promise<WorkspaceDirectoryContext> {
+export async function buildWorkspaceDirectoryContext(
+  input: WorkspaceDirectoryInput,
+  options: { deferDiscovery?: boolean } = {},
+): Promise<WorkspaceDirectoryContext> {
   const root = await resolveWorkspaceDirectoryRoot(input);
   const permission = normalizePermission(input.permission);
   const requestedSafeRoot = resolveConversationAiWorkRoot(root, input);
-  const discovered = await getWorkspaceFilesAcrossRoots(
-    root,
-    requestedSafeRoot ? [requestedSafeRoot] : []
-  );
+  const discoveryDeferred = options.deferDiscovery === true;
+  const discovered = discoveryDeferred
+    ? []
+    : await getWorkspaceFilesAcrossRoots(
+        root,
+        requestedSafeRoot ? [requestedSafeRoot] : []
+      );
   const sorted = sortFilesForContext(discovered);
   const summaries: WorkspaceDirectoryFileSummary[] = sorted.slice(0, MAX_CONTEXT_FILES).map(file => ({
     path: file.relativePath,
@@ -608,18 +652,34 @@ export async function buildWorkspaceDirectoryContext(input: WorkspaceDirectoryIn
     `根目录：${root}`,
     `权限：${permission}`,
     requestedSafeRoot ? `AI工作文件夹：${requestedSafeRoot}` : '',
-    `文件总数：${discovered.length}`,
-    `文件类型统计：${fileTypeStats}`,
+    discoveryDeferred
+      ? '文件清单：已延迟到 Agent 工作区同步和原生目录工具，避免在同一轮递归扫描两次。'
+      : `文件总数：${discovered.length}`,
+    discoveryDeferred ? '' : `文件类型统计：${fileTypeStats}`,
     `授权范围：根目录本身及其全部层级的普通子目录、隐藏目录和文件；目录权限自动向下继承。为防止越权，不跟随指向根目录之外的符号链接或目录联接。`,
-    `说明：默认只注入轻量 Manifest，不把完整目录树或文件全文一次性塞进提示词；AI 必须通过后端原生工作目录工具按需递归 list/search/read 文件。${requestedSafeRoot ? '检索范围同时包含用户配置目录、整个 ScholarHarness_AI_Workspaces 容器及当前会话 AI 工作目录；当前会话优先，生成或更新的文件会同步保存在两处。' : ''}`,
+    `说明：默认只注入轻量 Manifest，不把完整目录树或文件全文一次性塞进提示词；AI 必须通过后端原生工作目录工具按需递归 list/search/read 文件。${requestedSafeRoot ? '默认检索范围是「用户源目录（不含 ScholarHarness_AI_Workspaces 容器）+ 当前会话 AI 工作区」；其他历史会话属于归档，需先 list_archived_sessions 再用 scope=archive 检索。生成或更新的文件会同步保存在两处。' : ''}`,
     '',
     '### 顶层内容概览',
-    tree || '（空目录）',
+    discoveryDeferred ? '（本轮按需读取，尚未预扫描）' : (tree || '（空目录）'),
     '',
     '### 内容读取策略',
     '- 当前 Manifest 只说明目录概况，不代表全量文件证据。',
-    '- 判断文件、目录、代码或数据列是否存在时，必须调用 list_dir、file_search、grep_files、read_file 或 office_* 工具确认；file_search/grep_files 默认递归覆盖全部后代目录。',
+    '- 判断文件、目录、代码或数据列是否存在时，必须调用 list_dir、file_search、grep_files、read_file 或 office_* 工具确认；file_search/grep_files/list_dir 默认 scope=current（源目录 + 当前会话工作区），其他历史会话属归档。',
     '- 只有自动检索命中或用户明确要求查看目录/文件时，才把具体路径和片段加入回答依据。',
+    '',
+    '### AI 产物目录规范',
+    '本目录（AI 工作文件夹）内的生成产物必须遵守统一结构（详见 docs/workspace-artifact-layout.md）：',
+    `- 草稿：Word 草稿和代码文件放入 ${WORKSPACE_ARTIFACT_LAYOUT.draftsDir}/ 目录。`,
+    `- 图表总文件夹：所有图片和表格放入 ${WORKSPACE_ARTIFACT_LAYOUT.figuresTablesDir}/ 目录。`,
+    '- 每个图表一个子文件夹，按 figure1、figure2…figureN 与 table1、table2…tableN 命名。',
+    '- 每个 figureN/ 或 tableN/ 子文件夹内放置四类文件：位图（figureN.png）、矢量版（figureN.pdf）、作图代码（figureN.R 或 figureN.py）、作图数据（figureN_data.csv 或 tableN_data.csv）。',
+    '- 图表标题与注解：在该子文件夹内提供 figureN_caption.txt（首行为标题/图注，其余行为注解），整合 Word 会按“图注在图片下方；表头在表格上方、注解在表格下方”的排版规则自动生成。',
+    '- 生成 R/Python 作图脚本时，输出文件请直接写入对应 figureN/ 或 tableN/ 子文件夹，避免把产物散落在根目录或临时目录。',
+    '### 源文件保护与增量归类',
+    '- 用户工作目录中的原始文件是源文件：AI 只能读取，绝不能修改、移动、重命名或删除源文件。',
+    '- 审查归类必须由 AI 自动完成：调用工具 import_workspace_assets（复制归类源文件到 figures_tables/figureN|tableN/ 与 drafts/，源文件保持原样）。用户配置工作目录后、以及每轮协作产生新图表/表格后，都应自动调用。',
+    '- figureN/tableN 是在持续工作中逐步生成的：每次工作只把新增内容归类到对应子文件夹，已存在的内容不重复复制；不要求一次性把所有图表整理完。',
+    '- 整合 Word 由 AI 自动刷新：归类或新增图表后调用工具 build_figures_tables_docx；系统会先累计同一项目全部历史会话的 figureN/tableN，再重新生成 figures_tables.docx（图注在图片下方；表头在表格上方、注解在表格下方），不得只保留当前会话图表。',
   ].filter(Boolean);
 
   return {
@@ -634,6 +694,7 @@ export async function buildWorkspaceDirectoryContext(input: WorkspaceDirectoryIn
     tree,
     files: summaries,
     contextMarkdown: contextParts.join('\n'),
+    discoveryDeferred,
   };
 }
 
@@ -713,9 +774,11 @@ export async function listWorkspaceFiles(
       const absolutePath = path.join(currentDir, entry.name);
       const relativePath = path.relative(root, absolutePath).replace(/\\/g, '/');
       if (entry.isDirectory()) {
+        if (shouldSkipWorkspaceSourceDirectory(entry.name)) continue;
         rows.push({ path: relativePath, kind: 'directory' });
         pendingDirectories.push(absolutePath);
       } else if (entry.isFile()) {
+        if (shouldSkipWorkspaceSourceFile(entry.name)) continue;
         const fileStat = await fs.stat(absolutePath).catch(() => null);
         if (!fileStat) continue;
         rows.push({
@@ -972,7 +1035,25 @@ function getWorkspaceKindSortIndex(kind: WorkspacePreviewKind | undefined, reque
 }
 
 function requestsNewestWorkspaceFile(query: string): boolean {
-  return /(?:最新|最近|最后修改|最新版|newest|latest|most\s+recent|last\s+modified)/i.test(String(query || ''));
+  return /(?:最新|最近|最后修改|最新版|刚生成|新生成|最新生成|刚修改|newest|latest|most\s+recent|last\s+modified|newly\s+(?:created|generated))/i.test(String(query || ''));
+}
+
+function requestsCreatedWorkspaceFile(query: string): boolean {
+  return /(?:生成时间|创建时间|刚生成|新生成|最新生成|creation\s+time|created\s+at|newly\s+(?:created|generated))/i.test(String(query || ''));
+}
+
+function requestsModifiedWorkspaceFile(query: string): boolean {
+  return /(?:修改时间|最后修改|最近修改|刚修改|最新版|modification\s+time|last\s+modified|recently\s+(?:modified|updated))/i.test(String(query || ''));
+}
+
+function getWorkspaceFileRecencyMs(
+  file: Pick<WorkspaceFileRecord, 'birthtimeMs' | 'mtimeMs'>,
+  preferCreated: boolean,
+  preferModified: boolean,
+): number {
+  if (preferCreated) return file.birthtimeMs || file.mtimeMs;
+  if (preferModified) return file.mtimeMs || file.birthtimeMs;
+  return Math.max(file.birthtimeMs || 0, file.mtimeMs || 0);
 }
 
 function formatWorkspaceSearchResults(results: WorkspaceSearchResult[], limit = 20): string {
@@ -987,7 +1068,7 @@ function formatWorkspaceSearchResults(results: WorkspaceSearchResult[], limit = 
   return Array.from(groups.entries())
     .map(([kind, items]) => [
       `- ${kind}`,
-      ...items.map(item => `  - ${item.path}${item.line ? `:${item.line}` : ''} [${item.match}]${item.modifiedAt ? ` [modified=${item.modifiedAt}]` : ''} ${item.preview}`),
+      ...items.map(item => `  - ${item.path}${item.line ? `:${item.line}` : ''} [${item.match}]${item.createdAt ? ` [created=${item.createdAt}]` : ''}${item.modifiedAt ? ` [modified=${item.modifiedAt}]` : ''} ${item.preview}`),
     ].join('\n'))
     .join('\n');
 }
@@ -1002,6 +1083,8 @@ export async function searchWorkspaceFiles(
   if (!normalizedQuery) throw new Error('搜索关键词为空');
   const max = Math.max(1, Math.min(maxResults, 200));
   const newestRequested = requestsNewestWorkspaceFile(normalizedQuery);
+  const preferCreated = requestsCreatedWorkspaceFile(normalizedQuery);
+  const preferModified = requestsModifiedWorkspaceFile(normalizedQuery);
   // “最新文件”必须看磁盘当前状态；缓存可能漏掉刚由 AI/Office 保存的新版本。
   const discovered = sortFilesForContext(
     await getWorkspaceFilesAcrossRoots(root, additionalRoots, MAX_WORKSPACE_FILES, newestRequested)
@@ -1021,12 +1104,14 @@ export async function searchWorkspaceFiles(
     .sort((a, b) => {
       const kindDelta = getWorkspaceKindSortIndex(a.kind, requestedKinds) - getWorkspaceKindSortIndex(b.kind, requestedKinds);
       if (kindDelta !== 0) return kindDelta;
+      if (newestRequested) {
+        const recencyDelta = getWorkspaceFileRecencyMs(b.file, preferCreated, preferModified) - getWorkspaceFileRecencyMs(a.file, preferCreated, preferModified);
+        if (recencyDelta !== 0) return recencyDelta;
+      }
       const scoreDelta = b.score - a.score;
       if (scoreDelta !== 0) return scoreDelta;
-      if (newestRequested) {
-        const modifiedDelta = b.file.mtimeMs - a.file.mtimeMs;
-        if (modifiedDelta !== 0) return modifiedDelta;
-      }
+      const recencyDelta = getWorkspaceFileRecencyMs(b.file, preferCreated, preferModified) - getWorkspaceFileRecencyMs(a.file, preferCreated, preferModified);
+      if (recencyDelta !== 0) return recencyDelta;
       return a.file.relativePath.localeCompare(b.file.relativePath);
     });
 
@@ -1041,6 +1126,7 @@ export async function searchWorkspaceFiles(
       match: 'path',
       kind: item.kind,
       score: item.score,
+      createdAt: new Date(item.file.birthtimeMs || item.file.mtimeMs).toISOString(),
       modifiedAt: new Date(item.file.mtimeMs).toISOString(),
     });
   }
@@ -1066,6 +1152,8 @@ export async function searchWorkspaceFiles(
         preview: line.trim().slice(0, 240),
         match: 'content',
         kind: classifyPreviewKind(file.absolutePath, file.textLike),
+        createdAt: new Date(file.birthtimeMs || file.mtimeMs).toISOString(),
+        modifiedAt: new Date(file.mtimeMs).toISOString(),
       });
       if (results.length >= max) break;
       const matchesForFile = results.filter(item => item.path === file.relativePath && item.match === 'content').length;
@@ -1206,7 +1294,7 @@ export async function buildWorkspaceAgentPrelude(
       sections.push([
         '### AI 工作区容器直接内容',
         `根路径：${relativeContainerRoot}`,
-        '这里包含当前会话和其他会话的 AI 产物目录；后续关键词搜索会递归覆盖整个容器。',
+        '这里只列出各会话文件夹名；默认检索不递归覆盖其他历史会话（它们属于归档），需要时用 list_archived_sessions + scope=archive 访问。',
         rows || '（目录尚未创建或为空）',
         entries.truncated ? '- ... 结果已截断' : '',
       ].filter(Boolean).join('\n'));
@@ -1286,7 +1374,7 @@ export async function buildWorkspaceAgentPrelude(
   if (sections.length === 0) return '';
   return [
     '## 工作目录预检结果',
-    '系统已经在模型回答前主动执行了根目录入口检查、整个 ScholarHarness_AI_Workspaces 容器检查、整棵授权目录树的递归关键词搜索和命中代码片段读取。回答时必须优先使用这些真实工具结果，不能把根目录直接条目或当前会话目录误当成完整范围。',
+    '系统已经在模型回答前主动执行了根目录入口检查和整棵授权目录树的递归关键词搜索。回答时必须优先使用这些真实工具结果，不能把根目录直接条目或当前会话目录误当成完整范围；需要查看其他历史会话时用 list_archived_sessions + scope=archive。',
     ...sections,
   ].join('\n\n');
 }

@@ -441,6 +441,55 @@ export class ProjectManager {
     );
   }
 
+  /**
+   * Promote the active legacy workspace to a stable linked project. Background
+   * Agent runs can then keep an immutable project root while the foreground UI
+   * activates another project.
+   */
+  ensureCurrentProjectRuntime(userId = 'web-user'): CurrentProjectInfo {
+    const existing = this.getCurrentProject();
+    if (existing.isArchivedProject && existing.projectId && existing.projectDir) return existing;
+
+    const record = this.readCurrentProjectRecord();
+    const candidateId = String(record?.projectId || '').trim();
+    const projectId = candidateId
+      && path.basename(candidateId) === candidateId
+      && candidateId.startsWith(PROJECT_DIR_PREFIX)
+      ? candidateId
+      : this.createProjectId();
+    const projectDir = this.getProjectDir(projectId);
+    const profile = getProjectWritingProfile(record?.writingProfileId);
+    fs.mkdirSync(projectDir, { recursive: true });
+
+    const manifestPath = path.join(projectDir, 'project.json');
+    if (!fs.existsSync(manifestPath)) {
+      this.writeJsonAtomic(manifestPath, {
+        projectId,
+        name: profile.label,
+        userId,
+        archivedAt: new Date().toISOString(),
+        archivedPaths: [],
+        notes: 'Promoted to a stable linked project for concurrent Agent execution.',
+        writingProfileId: profile.id,
+      } satisfies ProjectManifest);
+    }
+
+    const linkedPaths = this.adoptCurrentWorkspaceIntoProject(projectId);
+    const manifest = this.getProjectManifest(projectId);
+    manifest.archivedPaths = linkedPaths;
+    manifest.lastSavedAt = new Date().toISOString();
+    this.writeProjectManifest(projectId, manifest);
+    this.writeJsonAtomic(this.getCurrentProjectPath(), {
+      ...record,
+      projectId,
+      openedAt: record?.openedAt || new Date().toISOString(),
+      writingProfileId: profile.id,
+      storageMode: 'linked',
+    } satisfies CurrentProjectRecord);
+    logger.info(`[Project] Active workspace promoted to stable project runtime ${projectId}`);
+    return this.getCurrentProject();
+  }
+
   private saveCurrentWorkspaceToProject(projectId: string, options: NewProjectOptions, notes: string): NewProjectResult {
     const safeProjectId = this.validateProjectId(projectId);
     const projectDir = this.getProjectDir(safeProjectId);

@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "id": "agent-problem-solving",
+  "name": "复杂问题解决协议与可复用工具",
+  "version": "1.0.0",
+  "sourceRepository": "https://github.com/esengine/scholar-harness",
+  "license": "Scholar Harness Proprietary",
+  "skills": [
+    {
+      "id": "problem-solving-protocol",
+      "name": "复杂问题解决协议",
+      "category": "agent",
+      "description": "任何多步骤复杂任务（诊断、作图、写作、代码修复）在聊天会话中的执行协议：任务契约、基准校准、工具化、结构化输出、错误恢复、收敛。防止一次性脚本堆、日志洪流和试错循环。",
+      "entry": "skills/problem-solving-protocol/SKILL.md",
+      "aliases": ["解决协议", "执行协议", "任务契约", "阶段协议", "复杂问题", "不要试错", "一次性脚本", "诊断脚本"],
+      "policyOverlay": "复杂任务必须先建立任务契约和基准，再进入工具化执行；禁止堆版本号脚本，禁止巨型内联单行命令。"
+    },
+    {
+      "id": "diagnostic-runner",
+      "name": "像素诊断工具",
+      "category": "agent",
+      "description": "针对图像/图件（PNG/PDF 渲染）诊断的可复用像素扫描工具箱：水平/垂直 dark-run 扫描、边框定位、面板坐标映射、裁剪落盘、结构化 JSON 报告。用于检查边框缺失、标签重叠、面板尺寸一致性等问题。",
+      "entry": "skills/diagnostic-runner/SKILL.md",
+      "aliases": ["像素扫描", "诊断图", "边框检测", "面板定位", "扫描暗线", "裁剪图像", "像素级验证"],
+      "policyOverlay": "所有输出先落盘再报告；不打印超过 10 行的原始扫描数据到会话，只输出结构化结论。"
+    }
+  ]
+}

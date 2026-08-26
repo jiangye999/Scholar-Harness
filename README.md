@@ -476,3 +476,9 @@ install.bat
 ---
 
 **开始使用**: 运行 `install.bat` → 运行 `start.bat` → 访问 http://localhost:18789
+
+---
+
+## License
+
+Scholar Harness 完整产品仓库采用根目录 [LICENSE](LICENSE) 中的专有软件许可。除非某个第三方组件或子目录明确附带独立许可证，否则不得复制、修改、分发、再许可、反编译或用于商业托管。

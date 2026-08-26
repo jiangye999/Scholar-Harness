@@ -150,7 +150,6 @@
             '<div id="bibliometricsSubtitle" style="font-size:12px;color:var(--text-secondary);margin-top:4px;">正在读取 WoS Plain Text 计量学数据库...</div>' +
           '</div>' +
           '<div style="display:flex;align-items:center;gap:8px;flex-shrink:1;flex-wrap:wrap;justify-content:flex-end;min-width:0;">' +
-            '<button id="bibliometricsFullscreenBtn" class="modal-icon-btn" type="button" onclick="toggleCustomModalFullscreen(\'bibliometricsModal\',\'bibliometricsPanel\',\'bibliometricsFullscreenBtn\')" title="全屏" aria-label="全屏"><svg class="ui-icon sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3H3v5"></path><path d="M16 3h5v5"></path><path d="M21 16v5h-5"></path><path d="M3 16v5h5"></path></svg></button>' +
             '<button type="button" onclick="refreshBibliometrics()" style="height:32px;padding:0 12px;border:1px solid var(--border-color);border-radius:6px;background:var(--bg-secondary);color:var(--text-primary);cursor:pointer;">刷新</button>' +
             '<button type="button" onclick="closeBibliometricsDialog()" style="height:32px;padding:0 12px;border:1px solid var(--border-color);border-radius:6px;background:var(--bg-secondary);color:var(--text-primary);cursor:pointer;">关闭</button>' +
           '</div>' +
@@ -3296,7 +3295,6 @@
             '<div style="font-size:12px;color:var(--text-secondary);line-height:1.6;margin-top:4px;">上传目标期刊或同类文献计量文章，系统会提取可用于一键写作的结构套路、图表解释方式和常用表达。</div>' +
           '</div>' +
           '<div style="display:flex;gap:8px;align-items:center;flex:0 0 auto;">' +
-            '<button id="bibliometricsJournalStyleFullscreenBtn" class="modal-icon-btn" type="button" onclick="toggleCustomModalFullscreen(\'bibliometricsJournalStyleModal\',\'bibliometricsJournalStylePanel\',\'bibliometricsJournalStyleFullscreenBtn\')" title="全屏" aria-label="全屏"><svg class="ui-icon sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3H3v5"></path><path d="M16 3h5v5"></path><path d="M21 16v5h-5"></path><path d="M3 16v5h5"></path></svg></button>' +
             '<button type="button" onclick="closeBibliometricsJournalStyleDialog()" style="width:30px;height:30px;border:1px solid var(--border-color);border-radius:6px;background:transparent;color:var(--text-secondary);cursor:pointer;">×</button>' +
           '</div>' +
         '</div>' +

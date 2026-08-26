@@ -15,15 +15,15 @@ describe('first-run onboarding', () => {
     expect(html).toContain('scheduleFirstRunOnboarding(0)');
   });
 
-  it('treats one AI provider as required and local plugins as optional', () => {
-    expect(html).toContain("firstRunStatusRow('小牛马'");
-    expect(html).toContain("firstRunStatusRow('大牛马'");
-    expect(html).toContain("firstRunStatusRow('Embedding'");
-    expect(html).toContain("firstRunStatusRow('Codex CLI'");
-    expect(html).toContain("firstRunStatusRow('本地运行时'");
-    expect(html).toContain("firstRunStatusRow('Skill 与 MCP'");
-    expect(html).toContain("tag === '可选'");
-    expect(html).toContain('小牛马必需 · 其余按需');
+  it('tracks the three first-use destinations and closes after all are visited', () => {
+    expect(html).toContain("var FIRST_RUN_ONBOARDING_STEPS = ['secondary', 'embedding', 'plugins']");
+    expect(html).toContain('function markFirstRunOnboardingStepVisited(step)');
+    expect(html).toContain("state.status = hasCompletedFirstRunOnboardingSteps(state.visited) ? 'completed' : 'in-progress'");
+    expect(html).toContain('配置 Little corse');
+    expect(html).toContain('配置 Embedding');
+    expect(html).toContain('配置插件');
+    expect(html).toContain('访问第三个入口后自动关闭');
+    expect(html).toContain('removeFirstRunOnboardingBubble()');
   });
 
   it('detects existing runtimes and can enable Codex without manual path entry', () => {
@@ -35,15 +35,21 @@ describe('first-run onboarding', () => {
     expect(html).toContain("setComposerChatProvider('codex')");
   });
 
-  it('keeps the guide reachable from settings and exposes concrete first tasks', () => {
+  it('keeps the full guide reachable from settings and opens existing config pages', () => {
     expect(html).toContain("configCenterButton('AI 配置与使用向导'");
     expect(html).toContain('window.showFirstRunOnboardingDialog = showFirstRunOnboardingDialog');
-    expect(html).toContain("if (action === 'pdf')");
-    expect(html).toContain("if (action === 'workspace')");
-    expect(html).toContain("startAiConfigurationAssistant(\\'literature\\')");
-    expect(html).toContain('WoS / CNKI / RIS / PDF 怎么导入');
-    expect(html).toContain("guidedConfigState.returnTarget = 'onboarding-literature'");
-    expect(html).toContain("if (action === 'literature')");
+    expect(html).toContain('window.openFirstRunOnboardingStep = openFirstRunOnboardingStep');
+    expect(html).toContain('openFirstRunAiConfig()');
+    expect(html).toContain('openFirstRunEmbeddingConfig()');
+    expect(html).toContain('showRuntimePluginConfigDialog()');
+    expect(html).toContain("guidedConfigState.returnTarget = 'onboarding'");
+  });
+
+  it('allows manual dismissal without marking unfinished steps complete', () => {
+    expect(html).toContain('className = \'first-run-onboarding-bubble\'');
+    expect(html).toContain('onclick="dismissFirstRunOnboarding()"');
+    expect(html).toContain("saveFirstRunOnboardingState('dismissed', state.visited)");
+    expect(html).toContain('removeFirstRunOnboardingBubble()');
   });
 
   it('validates guided AI credentials before reporting a successful setup', () => {

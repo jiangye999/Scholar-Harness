@@ -2,6 +2,7 @@
   "name": "scholar-harness-cloud",
   "version": "1.0.0",
   "description": "Scholar Harness Cloud API Server",
+  "license": "UNLICENSED",
   "main": "dist/server/index.js",
   "scripts": {
     "dev": "tsx watch server/index.ts",

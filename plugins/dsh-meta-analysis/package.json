@@ -1,0 +1,46 @@
+{
+  "name": "dsh-meta-analysis",
+  "version": "0.1.0",
+  "description": "独立 Meta 分析插件（复刻 Scholar Harness Meta 模块）：PDF/研究来源管理、编码表（列/行编辑）、图像数字化复核导入（GetData CSV）、效应量配置与统计分析（lnRR/MD/SMD、固定/随机效应、异质性、亚组、mean-only bootstrap）、R/metafor 脚本生成、结果报告与导出。数据完全存于 DSH 本地用户目录，与 Scholar Harness 服务零网络/数据关联。",
+  "author": "sjs@cau.edu.cn",
+  "license": "UNLICENSED",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [],
+      "platform": "web"
+    }
+  },
+  "files": [
+    "lib",
+    "skills",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/dsh-tools": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-host-webserver": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-system-prompt": "^0.1.0-rc.6"
+  },
+  "scripts": {
+    "smoke": "node scripts/smoke-test.cjs",
+    "restart-dsh-web": "scripts\\restart-dsh-web.bat",
+    "setup-junctions": "scripts\\setup-junctions.cmd"
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/dsh-tools": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-host-webserver": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-system-prompt": "^0.1.0-rc.6"
+  }
+}

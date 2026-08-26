@@ -158,7 +158,7 @@ export default function UsagePage() {
               <span className="text-sm text-gray-500">今日</span>
             </div>
             <div className="text-3xl font-bold text-gray-900 mb-1">{formatWordCount(todayStat?.word_count || 0)}</div>
-            <div className="text-sm text-gray-600">字数使用</div>
+            <div className="text-sm text-gray-600">处理量（仅统计）</div>
           </div>
 
           <div className="bg-white rounded-xl shadow p-6">
@@ -171,7 +171,7 @@ export default function UsagePage() {
               <span className="text-sm text-gray-500">本月</span>
             </div>
             <div className="text-3xl font-bold text-gray-900 mb-1">{formatWordCount(monthTotal)}</div>
-            <div className="text-sm text-gray-600">字数使用</div>
+            <div className="text-sm text-gray-600">处理量（仅统计）</div>
           </div>
 
           <div className="bg-white rounded-xl shadow p-6">
@@ -184,14 +184,14 @@ export default function UsagePage() {
               <span className="text-sm text-gray-500">30天</span>
             </div>
             <div className="text-3xl font-bold text-gray-900 mb-1">{formatWordCount(totalWordsUsed)}</div>
-            <div className="text-sm text-gray-600">总字数</div>
+            <div className="text-sm text-gray-600">累计处理量（仅统计）</div>
           </div>
         </div>
 
         {/* 用量柱状图 */}
         <div className="bg-white rounded-xl shadow mb-6">
           <div className="border-b border-gray-200 px-6 py-4">
-            <h2 className="text-lg font-semibold text-gray-900">用量趋势（最近30天）</h2>
+            <h2 className="text-lg font-semibold text-gray-900">使用记录趋势（最近30天，不作为套餐额度）</h2>
           </div>
           <div className="p-6">
             {dailyStats.length > 0 ? (
@@ -239,7 +239,7 @@ export default function UsagePage() {
                 <thead className="bg-gray-50 border-b border-gray-200">
                   <tr>
                     <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">日期</th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">字数使用</th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">处理量（仅统计）</th>
                     <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">文件上传</th>
                   </tr>
                 </thead>

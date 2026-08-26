@@ -5,6 +5,116 @@
 
 import { z } from 'zod';
 
+export const CHAT_HISTORY_MAX_ITEMS = 20;
+export const CHAT_HISTORY_MAX_CHARS_PER_MESSAGE = 20_000;
+export const CHAT_HISTORY_TOTAL_MAX_CHARS = 100_000;
+const CHAT_HISTORY_TRUNCATION_MARKER = '\n\n[历史消息过长，本次请求仅保留首尾；完整内容仍保存在本地会话中]\n\n';
+
+export interface ChatHistoryNormalizationStats {
+  inputMessages: number;
+  outputMessages: number;
+  inputChars: number;
+  outputChars: number;
+  truncatedMessages: number;
+  droppedMessages: number;
+}
+
+function truncateChatHistoryContent(value: string, maxChars: number): string {
+  const text = String(value || '');
+  const limit = Math.max(0, Math.floor(maxChars));
+  if (text.length <= limit) return text;
+  if (limit <= CHAT_HISTORY_TRUNCATION_MARKER.length + 2) return text.slice(0, limit);
+  const available = limit - CHAT_HISTORY_TRUNCATION_MARKER.length;
+  const headLength = Math.floor(available * 0.7);
+  const tailLength = available - headLength;
+  return `${text.slice(0, headLength)}${CHAT_HISTORY_TRUNCATION_MARKER}${text.slice(-tailLength)}`;
+}
+
+/**
+ * Normalize only the network request copy of visible chat history. The full
+ * local conversation remains untouched. Keeping this before Zod validation
+ * prevents one large assistant/tool transcript from permanently blocking a
+ * conversation while preserving the newest context and both ends of a long
+ * message.
+ */
+export function normalizeChatRequestHistory(body: unknown): {
+  body: unknown;
+  stats: ChatHistoryNormalizationStats;
+} {
+  const record = body && typeof body === 'object' && !Array.isArray(body)
+    ? body as Record<string, unknown>
+    : null;
+  const source = record && Array.isArray(record.history) ? record.history : [];
+  const stats: ChatHistoryNormalizationStats = {
+    inputMessages: source.length,
+    outputMessages: source.length,
+    inputChars: 0,
+    outputChars: 0,
+    truncatedMessages: 0,
+    droppedMessages: 0,
+  };
+  if (!record || !Array.isArray(record.history)) return { body, stats };
+
+  source.forEach((item) => {
+    if (item && typeof item === 'object' && typeof (item as Record<string, unknown>).content === 'string') {
+      stats.inputChars += ((item as Record<string, unknown>).content as string).length;
+    }
+  });
+
+  const bounded = source.slice(-CHAT_HISTORY_MAX_ITEMS).map((item) => {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) return item;
+    const message = item as Record<string, unknown>;
+    if (typeof message.content !== 'string') return { ...message };
+    const content = truncateChatHistoryContent(message.content, CHAT_HISTORY_MAX_CHARS_PER_MESSAGE);
+    if (content.length < message.content.length) stats.truncatedMessages += 1;
+    return { ...message, content };
+  });
+  stats.droppedMessages = source.length - bounded.length;
+
+  const retained: unknown[] = [];
+  let remainingChars = CHAT_HISTORY_TOTAL_MAX_CHARS;
+  for (let index = bounded.length - 1; index >= 0; index -= 1) {
+    const item = bounded[index];
+    const message = item && typeof item === 'object' && !Array.isArray(item)
+      ? item as Record<string, unknown>
+      : null;
+    const content = message && typeof message.content === 'string' ? message.content : null;
+    if (content === null) {
+      retained.unshift(item);
+      continue;
+    }
+    if (remainingChars <= 0) {
+      stats.droppedMessages += 1;
+      continue;
+    }
+    if (content.length <= remainingChars) {
+      retained.unshift(item);
+      remainingChars -= content.length;
+      continue;
+    }
+    const shortened = truncateChatHistoryContent(content, remainingChars);
+    if (shortened) {
+      retained.unshift({ ...message, content: shortened });
+      stats.truncatedMessages += 1;
+      remainingChars -= shortened.length;
+    } else {
+      stats.droppedMessages += 1;
+    }
+  }
+
+  stats.outputMessages = retained.length;
+  stats.outputChars = retained.reduce<number>((total, item) => {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) return total;
+    const content = (item as Record<string, unknown>).content;
+    return total + (typeof content === 'string' ? content.length : 0);
+  }, 0);
+
+  return {
+    body: { ...record, history: retained },
+    stats,
+  };
+}
+
 /**
  * URL 验证（放宽限制，允许各种 URL 格式）
  */
@@ -75,6 +185,20 @@ const agentApiConfigSchema = z.object({
   model: z.string().optional(),
   vision_model: z.string().optional(),
   description: z.string().optional(),
+  pool: z.object({
+    models: z.array(z.object({
+      id: z.string().min(1),
+      label: z.string().optional(),
+      model: z.string(),
+      api_url: z.string().optional(),
+      api_key: z.string().optional(),
+      vision_model: z.string().optional(),
+      enabled: z.boolean().optional(),
+      priority: z.number().int().min(0).max(9999).optional(),
+    })).min(1),
+    active_model_id: z.string().optional(),
+    auto_fallback: z.boolean().optional(),
+  }).optional(),
 });
 
 const codexCliConfigSchema = z.object({
@@ -90,9 +214,42 @@ const codexCliConfigSchema = z.object({
   concurrency: z.number().int().min(1).max(6).optional(),
 });
 
+const codingAgentRuntimeConfigSchema = z.object({
+  enabled: z.boolean().optional(),
+  prefer: z.boolean().optional(),
+  command: z.string().max(2400).optional(),
+  model: z.string().max(300).optional(),
+  reasoning_effort: z.string().max(40).optional(),
+  sandbox: z.enum(['read-only', 'workspace-write', 'danger-full-access']).optional(),
+  timeout_ms: z.number().int().min(10000).max(3600000).optional(),
+  auto_approve: z.boolean().optional(),
+  fallback_to_secondary: z.boolean().optional(),
+  provider_auth: z.object({
+    mode: z.enum(['api_key', 'cli_login']).optional(),
+    provider: z.string().max(120).refine(value => !value || /^[a-z0-9][a-z0-9._\/-]{0,119}$/.test(value), 'Invalid provider ID').optional(),
+    api_key: z.string().max(12000).optional(),
+  }).optional(),
+});
+
+export const runtimeInstallRequestSchema = z.object({
+  confirmed: z.literal(true),
+});
+
+export const runtimeModelsRequestSchema = z.object({
+  command: z.string().max(2400).optional(),
+  provider: z.string().max(120).refine(value => !value || /^[a-z0-9][a-z0-9._\/-]{0,119}$/.test(value), 'Invalid provider ID').optional(),
+  auth_mode: z.enum(['api_key', 'cli_login']).optional(),
+  api_key: z.string().max(12000).optional(),
+});
+
+export const runtimeLoginRequestSchema = z.object({
+  command: z.string().max(2400).optional(),
+  provider: z.string().regex(/^[a-z0-9][a-z0-9._\/-]{0,119}$/),
+});
+
 /**
  * 配置保存请求验证 Schema
- * 支持大牛马 (primary) 和小牛马 (secondary) 两套独立 API 配置
+ * 支持草原 (primary) 和小牛马 (secondary) 两套独立 API 配置
  */
 export const saveConfigSchema = z.object({
   enabled: z.boolean().optional(),
@@ -108,14 +265,20 @@ export const saveConfigSchema = z.object({
     password: z.string().optional(),
   }).optional(),
   // ========== 新的双 Agent API 配置 ==========
-  // 大牛马 API 配置（规划、Skill生成、质量检查）
+  // 草原 API 配置（规划、Skill生成、质量检查）
   primary: agentApiConfigSchema.optional(),
   // 小牛马 API 配置（执行写作、引用验证）
   secondary: agentApiConfigSchema.optional(),
   // 小牛马视觉/多模态 API 配置（图片、图表截图等）
   secondary_vision: agentApiConfigSchema.optional(),
-  // Codex CLI 配置（作为大牛马的本机执行入口）
+  // Codex CLI 配置（作为草原之外的本机执行入口）
   codex: codexCliConfigSchema.optional(),
+  agent_runtimes: z.object({
+    default: z.enum(['', 'codex', 'pi', 'opencode']).optional(),
+    codex: codingAgentRuntimeConfigSchema.optional(),
+    pi: codingAgentRuntimeConfigSchema.optional(),
+    opencode: codingAgentRuntimeConfigSchema.optional(),
+  }).optional(),
   // 浏览器配置
   browser: z.object({
     profile: z.string().optional(),
@@ -152,16 +315,49 @@ const coerceBoolean = z.preprocess((val) => {
   return Boolean(val);
 }, z.boolean()).optional();
 
+const chatImagePathSchema = z.string().min(1).max(2400);
+const chatAttachmentSchema = z.object({
+  name: z.string().max(300).optional(),
+  path: z.string().min(1).max(2400).optional(),
+  type: z.string().max(80).optional(),
+  size: z.number().nonnegative().max(1024 * 1024 * 1024).optional(),
+  previewUrl: z.string().max(3000).optional(),
+  originalName: z.string().max(300).optional(),
+  originalPath: z.string().max(2400).optional(),
+  lastModified: z.number().nonnegative().optional(),
+  inputSource: z.string().max(80).optional(),
+}).passthrough();
+
+const CHAT_REQUEST_MAX_BYTES = 4 * 1024 * 1024;
+const CHAT_INTENT_REQUEST_MAX_BYTES = 2 * 1024 * 1024;
+
+function enforceSerializedSize(
+  value: unknown,
+  ctx: z.RefinementCtx,
+  maxBytes: number,
+  message: string,
+): void {
+  try {
+    const serialized = JSON.stringify(value);
+    if (Buffer.byteLength(serialized, 'utf8') > maxBytes) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message });
+    }
+  } catch {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: '请求内容无法序列化' });
+  }
+}
+
 /**
  * 聊天请求验证 Schema
  */
 export const chatRequestSchema = z.object({
   message: z.string()
-    .min(1, '消息不能为空'),
+    .min(1, '消息不能为空')
+    .max(20000, '消息过长'),
   context: z.object({
-    systemPrompt: z.string().nullable().optional(),
-    soulContent: z.string().nullable().optional(),
-    taskType: z.string().nullable().optional(),
+    systemPrompt: z.string().max(40000).nullable().optional(),
+    soulContent: z.string().max(40000).nullable().optional(),
+    taskType: z.string().max(500).nullable().optional(),
     memory: z.any().optional(),
     literature: z.any().optional(),
     journalStyle: z.any().optional(),
@@ -176,38 +372,43 @@ export const chatRequestSchema = z.object({
     autoResearchExplicit: z.boolean().optional(),
     autoResearchPinned: z.boolean().optional(),
     contextSourceStatus: z.any().optional(),
-    userSkillPrompt: z.string().optional(),
-    invokedUserSkills: z.array(z.any()).optional(),
+    userSkillPrompt: z.string().max(200000).optional(),
+    invokedUserSkills: z.array(z.any()).max(30).optional(),
     discussionFramework: z.any().optional(),
     autonomousRetrieval: z.any().optional(),
-    relevantLiterature: z.string().nullable().optional(),
-    webSearchContext: z.string().nullable().optional(),
+    relevantLiterature: z.string().max(500000).nullable().optional(),
+    webSearchContext: z.string().max(200000).nullable().optional(),
     isFirstMessage: z.any().optional(),
   }).passthrough().optional(),
   options: z.record(z.any()).optional(),
   stream: coerceBoolean,
   newPage: coerceBoolean,
-  userId: z.string().nullable().optional(),
-  conversationId: z.string().nullable().optional(),
+  userId: z.string().max(200).nullable().optional(),
+  projectId: z.string().max(200).nullable().optional(),
+  conversationId: z.string().max(200).nullable().optional(),
   piQueueMessageId: z.string().max(160).optional(),
   piQueueOriginalMessage: z.string().max(20000).optional(),
   history: z.array(z.object({
     role: z.enum(['user', 'assistant', 'system']),
-    content: z.string(),
-  })).optional(),
+    content: z.string().max(40000, '单条历史消息过长'),
+  })).max(80, '历史消息过多').optional(),
   /**
    * 强制指定使用的 provider/agent
    * - 'browser': 强制使用浏览器模式（chat_url）- 已弃用
    * - 'api': 强制使用 API 模式
-   * - 'primary': 使用大牛马 API 配置（规划、Skill生成）
+   * - 'primary': 使用草原 API 配置（规划、Skill生成）
    * - 'secondary': 使用小牛马 API 配置（执行写作）
    * - 'codex': 使用本机 Codex CLI
    */
-  forceProvider: z.enum(['browser', 'api', 'primary', 'secondary', 'codex']).optional(),
+  forceProvider: z.enum(['browser', 'api', 'primary', 'secondary', 'codex', 'pi', 'opencode']).optional(),
+  agentRuntime: z.enum(['codex', 'pi', 'opencode']).optional(),
+  agentRuntimeModel: z.string().max(300).optional(),
+  agentRuntimeReasoningEffort: z.string().max(40).optional(),
+  agentRuntimeTimeoutMs: z.number().int().min(-1).max(3_600_000).optional(),
   workspaceDirectory: z.object({
     enabled: coerceBoolean,
-    path: z.string().optional(),
-    root: z.string().optional(),
+    path: z.string().max(2400).optional(),
+    root: z.string().max(2400).optional(),
     conversationId: z.string().max(200).optional(),
     permission: z.enum(['read-only', 'workspace-write', 'danger-full-access']).optional(),
   }).passthrough().optional(),
@@ -217,34 +418,40 @@ export const chatRequestSchema = z.object({
    * 小牛马 API 配置（来自前端 ⚙️ API 设置）
    * 当 forceProvider='api' 或 'secondary' 时使用这些配置
    */
-  apiUrl: z.string().optional(),
-  apiKey: z.string().optional(),
-  model: z.string().optional(),
+  apiUrl: z.string().max(4000).optional(),
+  apiKey: z.string().max(12000).optional(),
+  model: z.string().max(300).optional(),
+  /** 当前请求绑定的模型池 entry id；避免依赖异步全局 active 状态。 */
+  modelId: z.string().min(1).max(200).optional(),
   /** Composer-level Codex model override for this request. */
   codexModel: z.string().max(200).optional(),
   /** Composer-level Codex reasoning override for this request. */
   codexReasoningEffort: z.enum(['low', 'medium', 'high', 'xhigh', 'max', 'ultra']).optional(),
+  /** 主聊天 reasoning_effort（来自设置页，控制推理强度与速度）。 */
+  reasoningEffort: z.enum(['low', 'medium', 'high']).optional(),
   /**
    * 小牛马模型（用于记忆提取、结构化总结等）
    * 来自前端 ⚙️ API 设置中的 secondary model 配置
    */
-  secondaryModel: z.string().optional(),
+  secondaryModel: z.string().max(300).optional(),
   /**
    * 当请求包含图片、图表截图等视觉输入时，优先使用小牛马视觉 API 配置。
    */
   requiresVision: coerceBoolean,
-  visionApiUrl: z.string().optional(),
-  visionApiKey: z.string().optional(),
-  visionModel: z.string().optional(),
-  codexImages: z.array(z.string()).optional(),
-  visionImages: z.array(z.string()).optional(),
-  chatAttachments: z.array(z.object({
-    name: z.string().optional(),
-    path: z.string().optional(),
-    type: z.string().optional(),
-    size: z.number().optional(),
-    previewUrl: z.string().optional(),
-  }).passthrough()).optional(),
+  visionApiUrl: z.string().max(4000).optional(),
+  visionApiKey: z.string().max(12000).optional(),
+  visionModel: z.string().max(300).optional(),
+  codexImages: z.array(chatImagePathSchema).max(12).optional(),
+  visionImages: z.array(chatImagePathSchema).max(12).optional(),
+  chatAttachments: z.array(chatAttachmentSchema).max(12).optional(),
+  /**
+   * P1: optional hard tool-cycle budget. 0 or undefined keeps the default
+   * soft convergence (no hard stop); a positive value forces the agent loop to
+   * converge after that many rounds and return the accumulated result.
+   */
+  hardToolCycleLimit: z.number().int().min(0).max(100).optional(),
+}).superRefine((value, ctx) => {
+  enforceSerializedSize(value, ctx, CHAT_REQUEST_MAX_BYTES, '聊天请求总大小超过 4 MB');
 });
 
 /**
@@ -255,7 +462,7 @@ export const queryIntentRequestSchema = z.object({
   message: z.string().min(1, '消息不能为空').max(20000, '消息过长'),
   userId: z.string().nullable().optional(),
   conversationId: z.string().nullable().optional(),
-  forceProvider: z.enum(['browser', 'api', 'primary', 'secondary', 'codex']).optional(),
+  forceProvider: z.enum(['browser', 'api', 'primary', 'secondary', 'codex', 'pi', 'opencode']).optional(),
   history: z.array(z.object({
     role: z.enum(['user', 'assistant', 'system']),
     content: z.string().max(20000),
@@ -283,7 +490,9 @@ export const queryIntentRequestSchema = z.object({
   contextItems: z.array(z.record(z.any())).max(50).optional(),
   apiUrl: z.string().optional(),
   apiKey: z.string().optional(),
-  model: z.string().optional(),
+  model: z.string().max(300).optional(),
+}).superRefine((value, ctx) => {
+  enforceSerializedSize(value, ctx, CHAT_INTENT_REQUEST_MAX_BYTES, '意图识别请求总大小超过 2 MB');
 });
 
 /**
@@ -292,31 +501,27 @@ export const queryIntentRequestSchema = z.object({
  */
 export const multimodalIntentRequestSchema = z.object({
   message: z.string().min(1, '消息不能为空').max(20000, '消息过长'),
-  userId: z.string().nullable().optional(),
-  conversationId: z.string().nullable().optional(),
-  forceProvider: z.enum(['browser', 'api', 'primary', 'secondary', 'codex']).optional(),
+  userId: z.string().max(200).nullable().optional(),
+  conversationId: z.string().max(200).nullable().optional(),
+  forceProvider: z.enum(['browser', 'api', 'primary', 'secondary', 'codex', 'pi', 'opencode']).optional(),
   workspaceDirectory: z.object({
     enabled: coerceBoolean,
-    path: z.string().optional(),
-    root: z.string().optional(),
+    path: z.string().max(2400).optional(),
+    root: z.string().max(2400).optional(),
     conversationId: z.string().max(200).optional(),
     permission: z.enum(['read-only', 'workspace-write', 'danger-full-access']).optional(),
   }).passthrough().optional(),
-  apiUrl: z.string().optional(),
-  apiKey: z.string().optional(),
-  model: z.string().optional(),
-  visionApiUrl: z.string().optional(),
-  visionApiKey: z.string().optional(),
-  visionModel: z.string().optional(),
-  codexImages: z.array(z.string()).optional(),
-  visionImages: z.array(z.string()).optional(),
-  chatAttachments: z.array(z.object({
-    name: z.string().optional(),
-    path: z.string().optional(),
-    type: z.string().optional(),
-    size: z.number().optional(),
-    previewUrl: z.string().optional(),
-  }).passthrough()).min(1, '至少需要一个图片附件').max(12),
+  apiUrl: z.string().max(4000).optional(),
+  apiKey: z.string().max(12000).optional(),
+  model: z.string().max(300).optional(),
+  visionApiUrl: z.string().max(4000).optional(),
+  visionApiKey: z.string().max(12000).optional(),
+  visionModel: z.string().max(300).optional(),
+  codexImages: z.array(chatImagePathSchema).max(12).optional(),
+  visionImages: z.array(chatImagePathSchema).max(12).optional(),
+  chatAttachments: z.array(chatAttachmentSchema).min(1, '至少需要一个图片附件').max(12),
+}).superRefine((value, ctx) => {
+  enforceSerializedSize(value, ctx, CHAT_INTENT_REQUEST_MAX_BYTES, '多模态意图请求总大小超过 2 MB');
 });
 
 const piQueueBehaviorSchema = z.enum(['steer', 'follow_up']);
@@ -342,6 +547,7 @@ const piQueueWorkspaceFileSchema = z.object({
 
 export const piQueueMessageRequestSchema = z.object({
   userId: z.string().nullable().optional(),
+  projectId: z.string().max(200).nullable().optional(),
   message: z.string().min(1, '排队消息不能为空').max(20000, '排队消息过长'),
   behavior: piQueueBehaviorSchema.default('follow_up'),
   clientMessageId: z.string().max(160).optional(),
@@ -351,6 +557,7 @@ export const piQueueMessageRequestSchema = z.object({
 
 export const piQueueMessageUpdateSchema = z.object({
   userId: z.string().nullable().optional(),
+  projectId: z.string().max(200).nullable().optional(),
   message: z.string().min(1, '排队消息不能为空').max(20000, '排队消息过长').optional(),
   behavior: piQueueBehaviorSchema.optional(),
 }).refine(value => value.message !== undefined || value.behavior !== undefined, {
@@ -359,6 +566,7 @@ export const piQueueMessageUpdateSchema = z.object({
 
 export const piQueueSessionActionSchema = z.object({
   userId: z.string().nullable().optional(),
+  projectId: z.string().max(200).nullable().optional(),
 });
 
 /**

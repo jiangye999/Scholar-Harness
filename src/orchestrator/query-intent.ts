@@ -191,12 +191,27 @@ const R_PLOT_DIRECT_PATTERN = /(?:r\s*(?:作图|绘图|代码|脚本)|作图|绘
 const PLOT_OBJECT_PATTERN = /(?:图|图表|图形|图例|坐标轴)|\b(?:plots?|figures?|charts?|visuali[sz]ations?)\b/i;
 const PLOT_ACTION_PATTERN = /(?:做|生成|创建|绘制|画|重绘|修改|调整|编辑|导出|配色)|\b(?:create|generate|draw|plot|visuali[sz]e|redraw|edit|modify|update|export|color)\b/i;
 const PLOT_TEXT_ONLY_PATTERN = /(?:图题|图片标题|图注文字|图注内容)|\b(?:figure|plot|chart)(?:\s+[a-z]?\d+(?:\([a-z0-9]+\)|[a-z])?)?\s+(?:caption|title|description)\b/i;
+const WORKSPACE_CODE_ASSET_REFACTOR_PATTERN = /(?:(?:提取|抽取|拆分|分离|整理|移动|复制|迁移|归档|打包|单独(?:生成|保存)|只(?:放|保留))[^。！？\r\n]{0,120}(?:代码|脚本|r\s*文件|数据文件|figure\s*\d+))|(?:(?:extract|split|separate|organize|move|copy|package|save\s+separately)[^.!?\r\n]{0,120}(?:code|script|r\s*file|data\s*file|figure\s*\d+))/i;
 const META_DIRECT_PATTERN = /(?:meta\s*分析|荟萃分析)|\bmeta-analysis\b/i;
 const META_OBJECT_PATTERN = /(?:效应量|森林图|漏斗图|异质性|亚组分析|敏感性分析)|\beffect\s+size\b|\bforest\s+plot\b|\bfunnel\s+plot\b|\bheterogeneity\b/i;
 const BIBLIOMETRICS_DIRECT_PATTERN = /(?:文献计量分析|计量学分析)|\b(?:bibliometric|scientometric)\s+analysis\b/i;
 const BIBLIOMETRICS_OBJECT_PATTERN = /(?:文献计量|计量学|知识图谱|共现|共被引|文献耦合|突现词|主题演化)|\b(?:bibliometrics?|scientometrics?|citespace|vosviewer)\b/i;
 const PDF_WIKI_PATTERN = /(?:pdf\s*wiki|句子级wiki|论点库|证据句|pdf句子级)|\b(?:sentenceId|referenceIndexes)\b/i;
 const PROJECT_PATTERN = /(?:新建项目|导入项目|切换项目|项目目录|项目记忆)|\bproject\s+(?:import|switch|create|memory)\b/i;
+/**
+ * 纯解释/问答型消息前缀：什么是/介绍一下/解释一下/科普… 这类问题没有
+ * 执行动作，不应进入完整工具循环（省一轮全量工具 schema 与模型往返）。
+ * 一旦正文里出现强执行动词或文件/工作区信号，就按普通工具任务处理。
+ */
+const EXPLAIN_ONLY_PREFIX_PATTERN = /^(?:请问|麻烦问下|想问问|问一下)?\s*(?:什么是|啥是|什么叫|介绍一下|介绍下|解释一下|解释下|科普一下|科普|简述|简单说(?:说)?|说下|说说|讲一下|讲下|了解(?:一下)?|学习一下|学一下)/i;
+const EXPLAIN_ONLY_BLOCKER_PATTERN = /(?:生成|制作|创建|计算|检验|运行|执行|绘制|作图|画图|重绘|修改|更新|保存|写入|导出|上传|下载|采集|收集|抓取|批量|检索|搜索|查找|找一下|设计|搭建|安装|编辑|删除|移动|复制|处理|转换|合并|拆分|写(?:入|作|一段|一页|一个|一份)|做(?:一份|一页|一个|一张))|(?:工作目录|目录路径|文件路径|\.xlsx|\.csv|\.docx|\.pdf|\.pptx|C:\\|E:\\|D:\\|[/]Users[/]|[/]home[/])/i;
+
+/** True when a message is a pure explain-style question with no execute signals. */
+export function isExplainOnlyQuery(message: string): boolean {
+  const text = String(message || '').trim();
+  if (!text) return false;
+  return EXPLAIN_ONLY_PREFIX_PATTERN.test(text) && !EXPLAIN_ONLY_BLOCKER_PATTERN.test(text);
+}
 
 function compactText(value: unknown, maxLength: number): string {
   const text = String(value || '').replace(/\s+/g, ' ').trim();
@@ -564,6 +579,8 @@ export function classifyQueryIntentFallback(input: QueryIntentClassifierInput): 
   const hasPdfWikiIntent = PDF_WIKI_PATTERN.test(routingText);
   const hasRPlotIntent = hasRPlotRequest(routingText, hasDataContext);
   const hasDataAnalysisIntent = hasDataAnalysisRequest(routingText, hasDataContext);
+  const hasWorkspaceCodeAssetRefactorIntent = WORKSPACE_CODE_ASSET_REFACTOR_PATTERN.test(routingText)
+    && FILE_WORD_PATTERN.test(routingText);
   const hasProjectIntent = PROJECT_PATTERN.test(routingText);
   const hasWritingIntent = WRITING_PATTERN.test(routingText);
   const citationRequiredWriting = isCitationRequiredWritingRequest(input);
@@ -621,6 +638,18 @@ export function classifyQueryIntentFallback(input: QueryIntentClassifierInput): 
     needsLiteratureRetrieval = false;
     confidence = 0.94;
     reason = '检测到 PDF Wiki、句子级论点或证据映射意图。';
+  } else if (hasWorkspaceCodeAssetRefactorIntent) {
+    primaryIntent = 'workspace_file';
+    // The user is refactoring an existing workspace asset even when the
+    // requested output is a newly extracted file. Do not reinterpret the
+    // word "生成" as a request to create a brand-new plot from source data.
+    action = 'edit';
+    dataSource = input.workspaceRoot ? 'workspace' : 'unknown';
+    needsWorkspaceSearch = true;
+    needsToolExecution = true;
+    needsLiteratureRetrieval = explicitLiterature;
+    confidence = 0.96;
+    reason = '检测到从现有代码或脚本中抽取、拆分或整理 Figure 与数据文件的工作目录任务；这不是重新生成图形。';
   } else if (hasRPlotIntent) {
     primaryIntent = 'r_plot';
     action = 'plot';
@@ -697,6 +726,25 @@ export function classifyQueryIntentFallback(input: QueryIntentClassifierInput): 
     needsToolExecution = true;
     confidence = 0.86;
     reason = '当前请求包含图片附件，需要继续进行多模态意图识别。';
+  }
+  // 成本护栏：纯解释型问题（什么是/介绍一下/解释一下…）按普通对话直连，
+  // 不进入完整工具循环。只在没有附件、文件/工作区信号、显式文献/采集、
+  // Skill 命令或联网搜索时才降级，避免误伤真实执行任务。
+  if (
+    isExplainOnlyQuery(message)
+    && !hasAttachments
+    && !hardWorkspaceFollowUp
+    && !explicitLiterature
+    && !explicitLiteratureCollection
+    && !hasExplicitSkillIntent
+    && !needsWebSearch
+  ) {
+    action = 'explain';
+    needsToolExecution = false;
+    needsWorkspaceSearch = false;
+    needsLiteratureRetrieval = false;
+    confidence = Math.max(confidence, 0.8);
+    reason = '纯解释型问题，按普通对话直连回答，不需要工具执行。';
   }
   if (needsWebSearch) {
     needsToolExecution = true;
@@ -985,6 +1033,13 @@ export function normalizeQueryIntent(value: unknown): QueryIntent | null {
 
 export function buildQueryIntentPromptBlock(intent: QueryIntent | null | undefined): string {
   if (!intent) return '';
+  if (intent.source === 'fallback') {
+    return [
+      '## Query 路由兼容提示（非语义判决）',
+      '- 来自确定性兼容规则，仅用于诊断与上下文预算；不得据此禁止或强制任何工具调用。正式 Agent 自主判断工具与资源调用。',
+      '',
+    ].join('\n');
+  }
   const routing = {
     primaryIntent: intent.primaryIntent,
     secondaryIntents: intent.secondaryIntents,

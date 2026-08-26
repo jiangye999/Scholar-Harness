@@ -36,6 +36,9 @@ describe('historical conversation query navigation', () => {
     expect(html).toContain('.query-nav-dot.active-third-neighbor::before');
     expect(html).toContain('transform: translate(-50%, -50%) scale(1.4);');
     expect(html).toContain('.query-nav-dot.active::before');
+    expect(html).toContain('.query-nav-rail .query-nav-dot:focus-visible');
+    expect(html).toMatch(/\.query-nav-rail \.query-nav-dot:active,[\s\S]*?background-color:\s*transparent !important;/);
+    expect(html).toContain('-webkit-appearance: none;');
     expect(html).toContain('transform: translate(-50%, -50%) scale(2.8);');
     expect(html).toContain("dotButtons[activeDotIndex - 1].classList.add('active-neighbor')");
     expect(html).toContain("dotButtons[activeDotIndex + 1].classList.add('active-neighbor')");
@@ -44,10 +47,13 @@ describe('historical conversation query navigation', () => {
     expect(html).toContain("dotButtons[activeDotIndex - 3].classList.add('active-third-neighbor')");
     expect(html).toContain("dotButtons[activeDotIndex + 3].classList.add('active-third-neighbor')");
     expect(html).toMatch(/\.query-nav-dot::before\s*\{[\s\S]*?background:\s*var\(--theme-primary\) !important;/);
-    expect(html).toMatch(/\.query-nav-dot\.active-third-neighbor::before,[\s\S]*?var\(--theme-primary\) 72%, #ffffff/);
-    expect(html).toMatch(/\.query-nav-dot\.active-second-neighbor::before,[\s\S]*?var\(--theme-primary\) 50%, #ffffff/);
-    expect(html).toMatch(/\.query-nav-dot\.active-neighbor::before,[\s\S]*?var\(--theme-primary\) 28%, #ffffff/);
-    expect(html).toMatch(/\.query-nav-dot:hover::before,[\s\S]*?background:\s*#ffffff !important;/);
+    expect(html).not.toMatch(/\.query-nav-dot\.active-third-neighbor::before\s*\{[^}]*background\s*:/);
+    expect(html).not.toMatch(/\.query-nav-dot\.active-second-neighbor::before\s*\{[^}]*background\s*:/);
+    expect(html).not.toMatch(/\.query-nav-dot\.active-neighbor::before\s*\{[^}]*background\s*:/);
+    expect(html).not.toMatch(/\.query-nav-dot\.active::before\s*\{[^}]*background\s*:/);
+    expect(html).not.toMatch(/\.query-nav-dot:hover::before\s*\{[^}]*background\s*:/);
+    expect(html).not.toMatch(/\.query-nav-dot\.hover-focus::before\s*\{[^}]*background\s*:/);
+    expect(html).toMatch(/\.query-nav-dot:hover::before\s*\{[^}]*transform:\s*translate\(-50%, -50%\) scale\(2\.8\);/);
   });
 
   it('tracks the latest query against the composer edge instead of the old center threshold', () => {
@@ -71,5 +77,6 @@ describe('historical conversation query navigation', () => {
     expect(html).toContain("dotButtons[hoveredIndex - 3].classList.add('hover-third-neighbor')");
     expect(html).toContain("dotButtons[hoveredIndex + 3].classList.add('hover-third-neighbor')");
     expect(html).toContain('clearQueryNavHoverState()');
+    expect(html).not.toMatch(/\.query-nav-dot\.hover-neighbor::before\s*\{[^}]*background\s*:/);
   });
 });

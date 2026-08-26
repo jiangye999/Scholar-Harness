@@ -29,16 +29,85 @@ function renderFileList() {
     var MAIN_CHAT_INPUT_PRIORITY_WINDOW_MS = 140;
     var MAIN_CHAT_FINAL_RENDER_QUIET_WINDOW_MS = 320;
     var MAIN_CHAT_MESSAGE_CLIP_CLEARANCE_PX = 15;
+    var MAIN_CHAT_HISTORY_MAX_ITEMS = 20;
+    var MAIN_CHAT_HISTORY_MESSAGE_MAX_CHARS = 20000;
+    var MAIN_CHAT_HISTORY_TOTAL_MAX_CHARS = 100000;
+    var MAIN_CHAT_HISTORY_TRUNCATION_MARKER = '\n\n[历史消息过长，本次请求仅保留首尾；完整内容仍保存在本地会话中]\n\n';
     var mainChatLastMeasuredInputLength = userInput && userInput.value ? userInput.value.length : 0;
     var mainChatInputNeedsShrinkMeasurement = true;
     var mainChatComposerResizeObserver = null;
     var mainChatComposerOverlayHeight = 0;
+    var mainChatPreflightFollowFrame = null;
     var mainChatPerformanceState = {
       inputEvents: [],
       longTasks: [],
       streamRenders: [],
       observers: []
     };
+
+    function truncateMainChatHistoryContent(value, maxChars) {
+      var text = String(value || '');
+      var limit = Math.max(0, Math.floor(Number(maxChars) || 0));
+      if (text.length <= limit) return text;
+      if (limit <= MAIN_CHAT_HISTORY_TRUNCATION_MARKER.length + 2) return text.slice(0, limit);
+      var available = limit - MAIN_CHAT_HISTORY_TRUNCATION_MARKER.length;
+      var headLength = Math.floor(available * 0.7);
+      var tailLength = available - headLength;
+      return text.slice(0, headLength) + MAIN_CHAT_HISTORY_TRUNCATION_MARKER + text.slice(-tailLength);
+    }
+
+    function buildMainChatHistoryRequestPayload(messages) {
+      var source = Array.isArray(messages) ? messages : [];
+      var bounded = source.slice(-MAIN_CHAT_HISTORY_MAX_ITEMS).map(function(item) {
+        var role = item && (item.role === 'assistant' || item.role === 'system') ? item.role : 'user';
+        return {
+          role: role,
+          content: truncateMainChatHistoryContent(
+            item && typeof item.content === 'string' ? item.content : '',
+            MAIN_CHAT_HISTORY_MESSAGE_MAX_CHARS
+          )
+        };
+      });
+      var retained = [];
+      var remainingChars = MAIN_CHAT_HISTORY_TOTAL_MAX_CHARS;
+      var truncatedMessages = 0;
+      var droppedMessages = Math.max(0, source.length - bounded.length);
+      for (var index = bounded.length - 1; index >= 0; index -= 1) {
+        var message = bounded[index];
+        if (remainingChars <= 0) {
+          droppedMessages += 1;
+          continue;
+        }
+        var content = message.content;
+        if (content.length > remainingChars) {
+          content = truncateMainChatHistoryContent(content, remainingChars);
+          truncatedMessages += 1;
+        }
+        if (!content && message.content) {
+          droppedMessages += 1;
+          continue;
+        }
+        retained.unshift({ role: message.role, content: content });
+        remainingChars -= content.length;
+      }
+      bounded.forEach(function(message, index) {
+        var sourceItem = source[source.length - bounded.length + index];
+        if (sourceItem && typeof sourceItem.content === 'string' && message.content.length < sourceItem.content.length) {
+          truncatedMessages += 1;
+        }
+      });
+      if (truncatedMessages > 0 || droppedMessages > 0) {
+        console.warn('[ChatHistory] 请求副本已压缩，完整本地会话未修改:', {
+          inputMessages: source.length,
+          outputMessages: retained.length,
+          truncatedMessages: truncatedMessages,
+          droppedMessages: droppedMessages,
+          outputChars: MAIN_CHAT_HISTORY_TOTAL_MAX_CHARS - remainingChars
+        });
+      }
+      return retained;
+    }
+    window.buildMainChatHistoryRequestPayload = buildMainChatHistoryRequestPayload;
 
     function pushBoundedPerformanceSample(list, sample) {
       if (!Array.isArray(list)) return;
@@ -304,7 +373,7 @@ function renderFileList() {
     }
 
     function beginMainChatExperimentBusy(providerLabel) {
-      if (isGenerating) return false;
+      if (isMainChatConversationRunning()) return false;
       mainChatExperimentUploadBusyOwner = true;
       emptyState.style.display = 'none';
       setMainChatInputBusy(true);
@@ -316,6 +385,7 @@ function renderFileList() {
       isGenerating = true;
       activeMainChatProvider = providerLabel || getComposerChatProvider();
       currentAbortController = new AbortController();
+      registerMainChatActiveRun(currentConversationId, currentAbortController);
       updateMainChatQueueButtonState();
       return true;
     }
@@ -329,6 +399,7 @@ function renderFileList() {
         sendBtn.classList.remove('sending', 'can-stop');
       }
       isGenerating = false;
+      unregisterMainChatActiveRun(currentConversationId, currentAbortController);
       currentAbortController = null;
       activeMainChatProvider = null;
       clearChatTurnScrollLock();
@@ -341,6 +412,8 @@ function renderFileList() {
     }
 
     function finishMainChatRequest(requestController) {
+      // 后台运行（切走会话后仍在跑的流）完成时，也要释放运行登记。
+      releaseMainChatActiveRunByController(requestController);
       if (!requestController || currentAbortController !== requestController) return false;
       setMainChatInputBusy(false);
       if (sendBtn) {
@@ -350,11 +423,18 @@ function renderFileList() {
       isGenerating = false;
       currentAbortController = null;
       activeMainChatConversationId = null;
+      activeMainChatProjectId = null;
       activeMainChatProvider = null;
       mainChatPiState = Object.assign({}, mainChatPiState || {}, { running: false });
+      if (mainChatPiQueueHostMessage) {
+        stopMainChatPreflightHeader(mainChatPiQueueHostMessage);
+        renderMainChatPiQueue(mainChatPiState);
+        scheduleChatMessageLayoutRepair(mainChatPiQueueHostMessage);
+      }
       stopChatStreamTail();
       clearChatTurnScrollLock();
       updateMainChatQueueButtonState();
+      maybeScrollChatToBottom(true);
       scheduleMainChatQueueDrain();
       return true;
     }
@@ -403,11 +483,20 @@ function renderFileList() {
       return '/api/chat-bridge/pi/sessions/' + encodeURIComponent(conversationId || ensureCurrentConversationId());
     }
 
+    function getMainChatProjectId() {
+      return typeof getConversationHistoryProjectId === 'function'
+        ? String(getConversationHistoryProjectId() || '')
+        : '';
+    }
+
     async function interruptMainChatAgent(conversationId) {
       var response = await fetch(getMainChatPiSessionUrl(conversationId) + '/interrupt', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ userId: currentUserId || 'web-user' })
+        body: JSON.stringify({
+          userId: currentUserId || 'web-user',
+          projectId: getMainChatProjectId() || undefined
+        })
       });
       var result = await response.json().catch(function() { return {}; });
       if (!response.ok || !result.success) {
@@ -439,6 +528,10 @@ function renderFileList() {
         && activeMainChatConversationId !== currentConversationId
       );
       if (!conversationMismatch && hasActiveMainChatRunVisual()) return false;
+      // Only release the registry entry after the run is proven stale. Doing
+      // this before the visual check made the stop button forget the active
+      // run and fall through into a new (sometimes empty) send request.
+      releaseMainChatActiveRunByController(currentAbortController);
       console.warn('[PiSession] Recovering stale main-chat frontend run:', reason || 'missing active response');
       if (currentAbortController) {
         try {
@@ -448,6 +541,7 @@ function renderFileList() {
       isGenerating = false;
       currentAbortController = null;
       activeMainChatConversationId = null;
+      activeMainChatProjectId = null;
       activeMainChatProvider = null;
       mainChatExperimentUploadBusyOwner = false;
       setMainChatInputBusy(false);
@@ -463,27 +557,18 @@ function renderFileList() {
     window.recoverStaleMainChatFrontendRun = recoverStaleMainChatFrontendRun;
 
     function stopActiveMainChatForNavigation() {
-      var conversationId = activeMainChatConversationId || currentConversationId;
-      var hadActiveRun = !!(isGenerating || currentAbortController);
-      if (currentAbortController) {
-        try {
-          currentAbortController.abort();
-        } catch (error) {
-          console.warn('[PiSession] Failed to abort active frontend request during navigation:', error);
-        }
-      }
-      if (hadActiveRun && conversationId) {
-        fetch(getMainChatPiSessionUrl(conversationId) + '/interrupt', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ userId: currentUserId || 'web-user' })
-        }).catch(function(error) {
-          console.warn('[PiSession] Failed to interrupt active conversation during navigation:', conversationId, error);
-        });
-      }
+      // 切换/新建对话不再中断后端运行：任务在后台继续执行，返回时由
+      // pi 会话轮询（reconcileMainChatPersistedRun）恢复渲染与结果。
+      // 只有用户显式点“停止”才 abort 前端流并 interrupt 后端。
+      // 运行仍登记在 mainChatActiveRuns，直到后台流完成并释放。
       isGenerating = false;
+      if (mainChatPiQueueHostMessage) {
+        stopMainChatPreflightHeader(mainChatPiQueueHostMessage);
+        renderMainChatPiQueue(mainChatPiState);
+      }
       currentAbortController = null;
       activeMainChatConversationId = null;
+      activeMainChatProjectId = null;
       activeMainChatProvider = null;
       mainChatExperimentUploadBusyOwner = false;
       setMainChatInputBusy(false);
@@ -752,6 +837,18 @@ function renderFileList() {
     function startMainChatPreflightHeader(messageDiv) {
       if (!messageDiv) return;
       messageDiv.classList.add('pi-preflight-message');
+      // Mark the preceding user instruction so CSS can tighten the gap below
+      // it without a relational sibling selector.
+      if (messageDiv.previousElementSibling) {
+        var preceding = messageDiv.previousElementSibling;
+        if (
+          preceding.classList
+          && preceding.classList.contains('message')
+          && preceding.classList.contains('user')
+        ) {
+          preceding.classList.add('has-preflight-follow');
+        }
+      }
       messageDiv.dataset.piStartedAt = String(Date.now());
       messageDiv.__piPreflightLog = [];
       var current = document.getElementById('mainChatPreflightCurrent');
@@ -785,6 +882,12 @@ function renderFileList() {
         messageDiv.__piPreflightTimer = null;
       }
       messageDiv.classList.remove('pi-preflight-message');
+      if (messageDiv.previousElementSibling) {
+        var preceding = messageDiv.previousElementSibling;
+        if (preceding.classList && preceding.classList.contains('has-preflight-follow')) {
+          preceding.classList.remove('has-preflight-follow');
+        }
+      }
       delete messageDiv.dataset.piStartedAt;
       delete messageDiv.dataset.piStatus;
       delete messageDiv.__piPreflightLog;
@@ -807,12 +910,16 @@ function renderFileList() {
           : [];
         var previous = progressLog.length ? progressLog[progressLog.length - 1] : null;
         if (!previous || previous.message !== fullStatus) {
+          var statusStartedAt = Date.now();
+          if (previous && !Number.isFinite(Number(previous.durationSeconds))) {
+            previous.durationSeconds = Math.max(
+              0,
+              Math.floor((statusStartedAt - Number(previous.startedAtMs || statusStartedAt)) / 1000)
+            );
+          }
           progressLog.push({
             message: fullStatus,
-            elapsedSeconds: Math.max(
-              0,
-              Math.floor((Date.now() - Number(messageDiv.dataset.piStartedAt || Date.now())) / 1000)
-            )
+            startedAtMs: statusStartedAt
           });
           messageDiv.__piPreflightLog = progressLog.slice(-24);
         }
@@ -820,6 +927,27 @@ function renderFileList() {
       else delete messageDiv.dataset.piStatus;
       renderMainChatPreflightLog(messageDiv);
       renderMainChatPiQueue(mainChatPiState);
+      scheduleMainChatPreflightViewportFollow(messageDiv);
+    }
+
+    function scheduleMainChatPreflightViewportFollow(messageDiv) {
+      if (!messageDiv || !chatContainer || mainChatPreflightFollowFrame !== null) return;
+      if (typeof shouldAutoScrollChat === 'function' && !shouldAutoScrollChat()) return;
+      mainChatPreflightFollowFrame = requestAnimationFrame(function() {
+        mainChatPreflightFollowFrame = null;
+        if (!messageDiv || !document.documentElement.contains(messageDiv)) return;
+        // The user may scroll upward between the status update and this frame.
+        // Recheck the follow state so progress updates never steal their viewport.
+        if (typeof shouldAutoScrollChat === 'function' && !shouldAutoScrollChat()) return;
+        maybeScrollChatToBottom(false);
+      });
+    }
+
+    function formatMainChatRuntimeStatus(status) {
+      var normalized = String(status || '').trim().toLowerCase();
+      if (!normalized) return '';
+      if (/-running$/.test(normalized) || normalized === 'running') return '运行中';
+      return String(status || '').trim();
     }
 
     function createMainChatPreflightLogRow(entry) {
@@ -827,7 +955,11 @@ function renderFileList() {
       row.className = 'pi-preflight-log-row';
       var time = document.createElement('span');
       time.className = 'pi-preflight-log-time';
-      time.textContent = String(Math.max(0, Number(entry && entry.elapsedSeconds || 0))) + 's';
+      var startedAtMs = Number(entry && entry.startedAtMs || Date.now());
+      var durationSeconds = Number.isFinite(Number(entry && entry.durationSeconds))
+        ? Number(entry.durationSeconds)
+        : Math.floor((Date.now() - startedAtMs) / 1000);
+      time.textContent = String(Math.max(0, durationSeconds)) + 's';
       var text = document.createElement('span');
       text.className = 'pi-preflight-log-text';
       text.textContent = String(entry && entry.message || '');
@@ -893,16 +1025,16 @@ function renderFileList() {
       // The strip follows this renderer's active response. A stale server-side
       // running flag must not leave it visible after the response has finished.
       var running = isGenerating;
-      var hasRunningTranscript = !!(
+      var responseStarted = !!(
         mainChatPiQueueHostMessage
-        && mainChatPiQueueHostMessage.querySelector('.agent-transcript.is-running')
+        && mainChatPiQueueHostMessage.dataset
+        && mainChatPiQueueHostMessage.dataset.piResponseStarted === 'true'
       );
-      // Before execution logs arrive this strip remains the thinking indicator.
-      // The transcript's integrated dark header replaces it as soon as Running
-      // output is rendered. Actual queued instructions still keep the panel.
+      // Any real assistant output replaces the preflight strip. Queued
+      // instructions can still reopen the panel when they need user control.
       var visible = !!mainChatPiQueueHostMessage && (
         displayedPending.length > 0
-        || (running && !hasRunningTranscript)
+        || (running && !responseStarted)
       );
       panel.hidden = !visible;
       if (mainChatPiQueueHostMessage) mainChatPiQueueHostMessage.classList.toggle('pi-agent-message', visible);
@@ -984,6 +1116,8 @@ function renderFileList() {
           initialContent.innerHTML = '';
         }
       }
+      messageDiv.dataset.piResponseStarted = 'true';
+      renderMainChatPiQueue(mainChatPiState);
       if (!mainChatAttachedRunRenderer) {
         mainChatAttachedRunRenderer = createBotTextStreamer(messageDiv);
       }
@@ -1002,13 +1136,13 @@ function renderFileList() {
       if (messageDiv && mainChatAttachedRunText) {
         renderMainChatAttachedRunText(state);
         var attachedRenderer = mainChatAttachedRunRenderer;
+        var startedAt = Date.parse(String(state && state.startedAt || ''));
+        var completedAt = Date.parse(String(state && state.completedAt || ''));
+        var elapsedMs = Number.isFinite(startedAt) && startedAt > 0
+          ? Math.max(0, (Number.isFinite(completedAt) && completedAt > 0 ? completedAt : Date.now()) - startedAt)
+          : 0;
         if (attachedRenderer && typeof attachedRenderer.finish === 'function') {
-          var startedAt = Date.parse(String(state && state.startedAt || ''));
-          var completedAt = Date.parse(String(state && state.completedAt || ''));
-          var elapsedMs = Number.isFinite(startedAt) && startedAt > 0
-            ? Math.max(0, (Number.isFinite(completedAt) && completedAt > 0 ? completedAt : Date.now()) - startedAt)
-            : 0;
-          finalRenderPromise = Promise.resolve(attachedRenderer.finish(mainChatAttachedRunText, elapsedMs));
+          finalRenderPromise = Promise.resolve(attachedRenderer.finish(mainChatAttachedRunText, elapsedMs, state && state.usage));
         }
         var conversationId = currentConversationId || state.conversationId;
         var saved = readConversationMessagesLocal(conversationId);
@@ -1019,7 +1153,9 @@ function renderFileList() {
             role: 'assistant',
             content: mainChatAttachedRunText,
             isHtml: false,
-            timestamp: Date.now()
+            timestamp: Date.now(),
+            usage: state && state.usage,
+            elapsedMs: elapsedMs
           });
           storeConversationMessagesLocally(conversationId, saved);
           Promise.resolve(persistConversationNow(conversationId)).catch(function(error) {
@@ -1049,12 +1185,65 @@ function renderFileList() {
         else {
           isGenerating = false;
           activeMainChatConversationId = null;
+          activeMainChatProjectId = null;
           activeMainChatProvider = null;
           setMainChatInputBusy(false);
           updateMainChatQueueButtonState();
           scheduleMainChatQueueDrain();
         }
       });
+    }
+
+    function rebuildMainChatPersistedRunText(events) {
+      var replayText = '';
+      (Array.isArray(events) ? events.slice() : [])
+        .sort(function(left, right) {
+          return Number(left && left.sequence || 0) - Number(right && right.sequence || 0);
+        })
+        .forEach(function(event) {
+          var payload = event && event.payload || {};
+          if (event && event.type === 'chunk') {
+            replayText += String(payload.content || '');
+          } else if (
+            event
+            && event.type === 'complete'
+            && typeof payload.content === 'string'
+            && payload.content.length > 0
+          ) {
+            replayText = payload.content;
+          }
+        });
+      return replayText;
+    }
+
+    function normalizeMainChatPersistedRunText(text) {
+      return String(text || '')
+        .replace(/<scholar-harness-ui-action\b([^>]*?)(?:>\s*<\/scholar-harness-ui-action\s*>|\/>)/gi, '')
+        .replace(/\n{3,}/g, '\n\n')
+        .trim();
+    }
+
+    function hasSavedMainChatAssistantReplay(savedMessages, replayText) {
+      var normalizedReplay = normalizeMainChatPersistedRunText(replayText);
+      if (!normalizedReplay) return false;
+      return (Array.isArray(savedMessages) ? savedMessages : []).some(function(item) {
+        return item
+          && item.role === 'assistant'
+          && normalizeMainChatPersistedRunText(item.content) === normalizedReplay;
+      });
+    }
+
+    function acknowledgeMainChatPersistedRunWithoutRendering(state, events) {
+      mainChatAttachedRunId = String(state && state.runId || '');
+      mainChatAttachedRunEventSequence = Math.max(
+        Number(state && state.lastEventSequence || 0),
+        (Array.isArray(events) ? events : []).reduce(function(highest, event) {
+          return Math.max(highest, Number(event && event.sequence || 0));
+        }, 0)
+      );
+      mainChatAttachedRunMessage = null;
+      mainChatAttachedRunText = '';
+      mainChatAttachedRunRenderer = null;
     }
 
     function reconcileMainChatPersistedRun(state) {
@@ -1082,27 +1271,27 @@ function renderFileList() {
         return Number(event && event.sequence || 0) > mainChatAttachedRunEventSequence;
       });
       var savedMessages = readConversationMessagesLocal(state.conversationId || currentConversationId);
-      var completedPayload = '';
-      for (var index = events.length - 1; index >= 0; index -= 1) {
-        var candidate = events[index];
-        if (candidate && candidate.type === 'complete' && candidate.payload && candidate.payload.content) {
-          completedPayload = String(candidate.payload.content);
-          break;
-        }
-      }
+      var terminalRun = !state.running && ['completed', 'cancelled', 'error', 'interrupted'].includes(state.runStatus);
+      var persistedReplayText = terminalRun ? rebuildMainChatPersistedRunText(events) : '';
+      var hasAttachedRunMessage = !!(
+        mainChatAttachedRunId === state.runId
+        && mainChatAttachedRunMessage
+        && document.documentElement.contains(mainChatAttachedRunMessage)
+      );
+      // The normal conversation history is rendered before the persisted Pi
+      // journal is reconciled. A desktop restart can leave a terminal run with
+      // chunk events but no complete event even though its final assistant text
+      // was already saved. Consume that journal without creating a second DOM
+      // bubble. UI-action tags are stripped without executing them again.
       if (
-        !state.running
-        && completedPayload
-        && savedMessages.some(function(item) {
-          return item && item.role === 'assistant' && item.content === completedPayload;
-        })
-        && mainChatAttachedRunId !== state.runId
+        terminalRun
+        && !hasAttachedRunMessage
+        && hasSavedMainChatAssistantReplay(savedMessages, persistedReplayText)
       ) {
-        mainChatAttachedRunId = state.runId;
-        mainChatAttachedRunEventSequence = Number(state.lastEventSequence || 0);
+        acknowledgeMainChatPersistedRunWithoutRendering(state, events);
         return false;
       }
-      if (!state.running && !hasUnseenEvents && mainChatAttachedRunId !== state.runId) return false;
+      if (!state.running && !hasUnseenEvents && !hasAttachedRunMessage) return false;
 
       ensureMainChatAttachedRunMessage(state);
       if (state.running) {
@@ -1110,7 +1299,9 @@ function renderFileList() {
           isGenerating = true;
           currentAbortController = new AbortController();
           activeMainChatConversationId = state.conversationId || currentConversationId;
+          activeMainChatProjectId = state.projectId || getMainChatProjectId();
           activeMainChatProvider = state.provider || null;
+          registerMainChatActiveRun(activeMainChatConversationId, currentAbortController, activeMainChatProjectId);
           setMainChatInputBusy(true);
           if (sendBtn) {
             sendBtn.disabled = false;
@@ -1132,6 +1323,7 @@ function renderFileList() {
           mainChatAttachedRunText += String(payload.content || '');
           if (mainChatAttachedRunText) renderMainChatAttachedRunText(state);
         } else if (event.type === 'complete') {
+          if (payload.usage) state.usage = payload.usage;
           if (typeof payload.content === 'string' && payload.content.length > 0) {
             mainChatAttachedRunText = payload.content;
           }
@@ -1145,7 +1337,7 @@ function renderFileList() {
         mainChatAttachedRunEventSequence = Math.max(mainChatAttachedRunEventSequence, sequence);
       });
 
-      if (!state.running && ['completed', 'cancelled', 'error', 'interrupted'].includes(state.runStatus)) {
+      if (terminalRun) {
         completeMainChatAttachedRun(state, state.runStatus !== 'completed');
       } else {
         renderMainChatPiQueue(state);
@@ -1179,6 +1371,7 @@ function renderFileList() {
         var response = await fetch(
           getMainChatPiSessionUrl(currentConversationId)
           + '?userId=' + encodeURIComponent(currentUserId || 'web-user')
+          + '&projectId=' + encodeURIComponent(getMainChatProjectId())
           + '&afterSequence=' + encodeURIComponent(String(Math.max(0, afterSequence || 0)))
         );
         var result = await response.json().catch(function() { return {}; });
@@ -1217,7 +1410,7 @@ function renderFileList() {
         }
         refreshMainChatQueueStatuses();
         renderMainChatPiQueue(result.state);
-        if (options.claimWhenIdle !== false && !isGenerating && !result.state.running && result.state.pendingMessageCount > 0) {
+        if (options.claimWhenIdle !== false && !isMainChatConversationRunning() && !result.state.running && result.state.pendingMessageCount > 0) {
           await claimNextMainChatPiMessage();
         }
         return true;
@@ -1233,13 +1426,13 @@ function renderFileList() {
     window.syncMainChatPiQueueState = syncMainChatPiQueueState;
 
     async function claimNextMainChatPiMessage() {
-      if (isGenerating || mainChatPiContinuationStarting || mainChatPiClaimInFlight || !currentConversationId) return null;
+      if (isMainChatConversationRunning() || mainChatPiContinuationStarting || mainChatPiClaimInFlight || !currentConversationId) return null;
       mainChatPiClaimInFlight = true;
       try {
         var response = await fetch(getMainChatPiSessionUrl(currentConversationId) + '/claim', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ userId: currentUserId || 'web-user' })
+          body: JSON.stringify({ userId: currentUserId || 'web-user', projectId: getMainChatProjectId() || undefined })
         });
         var result = await response.json().catch(function() { return {}; });
         if (!response.ok || !result.success) throw new Error(result.error || ('HTTP ' + response.status));
@@ -1278,12 +1471,15 @@ function renderFileList() {
     }
 
     async function requeueMainChatPiMessage(queueItem) {
-      if (!queueItem || !queueItem.serverManaged || !queueItem.id || !currentConversationId) return;
+      if (!queueItem || !queueItem.serverManaged || !queueItem.id || !(queueItem.conversationId || currentConversationId)) return;
       try {
-        await fetch(getMainChatPiSessionUrl(currentConversationId) + '/messages/' + encodeURIComponent(queueItem.id) + '/requeue', {
+        await fetch(getMainChatPiSessionUrl(queueItem.conversationId || currentConversationId) + '/messages/' + encodeURIComponent(queueItem.id) + '/requeue', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ userId: currentUserId || 'web-user' })
+          body: JSON.stringify({
+            userId: currentUserId || 'web-user',
+            projectId: String(queueItem.projectId || getMainChatProjectId() || '') || undefined
+          })
         });
       } catch (error) {
         console.warn('[PiSession] Failed to requeue message after request error:', error);
@@ -1304,6 +1500,7 @@ function renderFileList() {
       var queueItem = {
         id: makeMainChatQueueId(),
         conversationId: currentConversationId,
+        projectId: getMainChatProjectId() || undefined,
         message: text || (queuedAttachments.length > 0
           ? getDefaultChatAttachmentMessage(queuedAttachments)
           : '请读取我选择的工作目录文件，并根据文件内容回答。'),
@@ -1334,6 +1531,7 @@ function renderFileList() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             userId: currentUserId || 'web-user',
+            projectId: getMainChatProjectId() || undefined,
             message: queueItem.message,
             behavior: queueItem.behavior,
             clientMessageId: queueItem.id,
@@ -1367,7 +1565,7 @@ function renderFileList() {
           var response = await fetch(getMainChatPiSessionUrl(item.conversationId || currentConversationId) + '/messages/' + encodeURIComponent(item.id), {
             method: 'PATCH',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ userId: currentUserId || 'web-user', message: nextText })
+            body: JSON.stringify({ userId: currentUserId || 'web-user', projectId: getMainChatProjectId() || undefined, message: nextText })
           });
           var result = await response.json().catch(function() { return {}; });
           if (!response.ok || !result.success) throw new Error(result.error || ('HTTP ' + response.status));
@@ -1388,7 +1586,7 @@ function renderFileList() {
       if (!item || item.status !== 'queued') return;
       try {
         if (item.serverManaged) {
-          var response = await fetch(getMainChatPiSessionUrl(item.conversationId || currentConversationId) + '/messages/' + encodeURIComponent(item.id) + '?userId=' + encodeURIComponent(currentUserId || 'web-user'), {
+          var response = await fetch(getMainChatPiSessionUrl(item.conversationId || currentConversationId) + '/messages/' + encodeURIComponent(item.id) + '?userId=' + encodeURIComponent(currentUserId || 'web-user') + '&projectId=' + encodeURIComponent(getMainChatProjectId()), {
             method: 'DELETE'
           });
           var result = await response.json().catch(function() { return {}; });
@@ -1988,7 +2186,7 @@ function renderFileList() {
       if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault();
         sendMessage(null, {
-          piBehavior: isGenerating && (e.ctrlKey || e.metaKey) ? 'steer' : undefined
+          piBehavior: isMainChatConversationRunning() && (e.ctrlKey || e.metaKey) ? 'steer' : undefined
         });
       }
     });
@@ -2071,7 +2269,7 @@ window.chatBridgeNeedsNewPage = true;
       resetMainChatPiQueueHost();
       messagesDiv.innerHTML = '';
       // 文献库摘要在后台加载，首页立即可用。
-      emptyState.innerHTML = BRAND_TITLE_HTML + GREETING_HTML;
+      emptyState.innerHTML = BRAND_TITLE_HTML + GREETING_HTML + HOME_WORKFLOW_SHORTCUTS_HTML;
       emptyState.style.display = 'flex';
       // 不清空 uploadedFiles，保持文献库跨会话共享
       renderFileList();
@@ -2132,6 +2330,7 @@ window.chatBridgeNeedsNewPage = true;
 
       if (!currentConversationId) ensureCurrentConversationId();
       var projectImportConversationId = currentConversationId;
+      registerMainChatActiveRun(projectImportConversationId, currentAbortController);
       var savedMsgs = readConversationMessagesLocal(projectImportConversationId);
 
       var projectImportUserMessageEl = appendMessage(originalMessage || address, 'user', false);
@@ -2166,8 +2365,8 @@ window.chatBridgeNeedsNewPage = true;
         }
 
         var providerLabel = result.provider === 'codex-cli' ? 'Codex CLI'
-          : result.provider === 'secondary-api' ? '小牛马 API'
-          : result.provider === 'primary-api' ? '大牛马 API'
+          : result.provider === 'secondary-api' ? 'Little corse API'
+          : result.provider === 'primary-api' ? 'Grass OpenRouter API'
           : '本地降级索引';
         var markdown = '## 项目已导入长期记忆\n\n' +
           '- 项目：' + (result.projectName || '未命名项目') + '\n' +
@@ -2285,14 +2484,10 @@ window.chatBridgeNeedsNewPage = true;
         }
       }
 
-      if (!message && pendingChatAttachments.length === 0 && selectedWorkspaceFiles.length === 0 && uploadedFiles.length === 0) {
-        return;
-      }
-      
       // 如果正在生成，有新输入则加入同一会话队列；空输入点击才停止当前生成。
-      if (isGenerating && currentAbortController) {
+      if (isMainChatConversationRunning() && currentAbortController) {
         var draftWhileGenerating = userInput.value.trim();
-        if (draftWhileGenerating || pendingChatAttachments.length > 0) {
+        if (message || pendingChatAttachments.length > 0 || selectedWorkspaceFiles.length > 0) {
           await enqueueMainChatQuery(
             draftWhileGenerating || message,
             pendingChatAttachments,
@@ -2322,10 +2517,12 @@ window.chatBridgeNeedsNewPage = true;
           console.warn('[ChatBridge] Backend stop sync failed:', e);
         }
         isGenerating = false;
+        unregisterMainChatActiveRun(activeStopConversationId, controllerToStop);
         if (currentAbortController === controllerToStop) {
           currentAbortController = null;
         }
         activeMainChatConversationId = null;
+        activeMainChatProjectId = null;
         activeMainChatProvider = null;
         mainChatPiState = Object.assign({}, mainChatPiState || {}, { running: false });
         sendBtn.classList.remove('sending', 'can-stop');
@@ -2341,6 +2538,15 @@ window.chatBridgeNeedsNewPage = true;
         stopChatStreamTail();
         clearChatTurnScrollLock();
         updateMainChatQueueButtonState();
+        return;
+      }
+
+      // uploadedFiles is the conversation-independent literature library, not
+      // a payload attached to this composer turn. Counting it here allowed an
+      // empty click to create a fake "[已上传文献]" user bubble and send an
+      // empty message to Pi. Only the current turn's text/attachments/files
+      // are valid sendable input.
+      if (!message && pendingChatAttachments.length === 0 && selectedWorkspaceFiles.length === 0) {
         return;
       }
       
@@ -2450,25 +2656,17 @@ window.chatBridgeNeedsNewPage = true;
         return;
       }
 
-      var hasVisualReferenceAttachments = hasChatAttachmentVision(pendingChatAttachments);
-      var recentRPlotToolIntent = queuedItem || selectedWorkspaceFiles.length > 0 || hasVisualReferenceAttachments
-        ? { intent: 'none' }
-        : await classifyRecentRPlotToolIntent(message);
-      if (recentRPlotToolIntent.intent === 'r_plot_modify' || recentRPlotToolIntent.intent === 'r_plot_rerun') {
-        console.log('[ToolIntentRouter] Routing to R plot tool:', recentRPlotToolIntent);
-        var handledRPlotFollowup = await runRecentRPlotFollowup(message, recentRPlotToolIntent);
-        if (handledRPlotFollowup) return;
-      }
-
-      var workspaceRPlotHandled = queuedItem || selectedWorkspaceFiles.length > 0 || hasVisualReferenceAttachments
-        ? false
-        : await runWorkspaceRPlotFromMessage(
-            message,
-            getWorkspaceDirectoryPayloadForMessage(rawUserInput || message, currentConversationId)
-          );
-      if (workspaceRPlotHandled) return;
+      // 普通聊天的工具意图统一交给正式 Agent。旧的 R 作图预路由会把
+      // “从现有脚本抽取 Figure 代码并整理数据文件”误判成“重新生成 R 图”，
+      // 并在 Agent 读取上下文前直接调用 /api/r-code/generate。专用页面按钮仍可
+      // 显式调用对应 R 工作流，但输入框消息不得再被本地正则或二级分类器截走。
 
       emptyState.style.display = 'none';
+      // A click on the send button can clear the textarea before Chromium
+      // dispatches compositionend. Do not let that stale IME flag suspend the
+      // response renderer for the whole turn.
+      mainChatInputComposing = false;
+      mainChatLastInputAt = 0;
       setMainChatInputBusy(true);
       sendBtn.disabled = false;
       sendBtn.classList.add('sending');
@@ -2499,11 +2697,14 @@ window.chatBridgeNeedsNewPage = true;
         ensureCurrentConversationId();
       }
       var activeConversationId = currentConversationId;
+      var activeProjectId = getMainChatProjectId();
       activeMainChatConversationId = activeConversationId;
+      activeMainChatProjectId = activeProjectId;
+      registerMainChatActiveRun(activeConversationId, currentAbortController, activeProjectId);
 
       // 使用复合 key 读取消息
       var savedMsgs = readConversationMessagesLocal(activeConversationId);
-      var historyMsgs = savedMsgs.slice(-20);
+      var historyMsgs = buildMainChatHistoryRequestPayload(savedMsgs);
       
       // 判断是否需要发送完整提示词
       // 使用 needsFullPrompt 标志（点击新建对话时设置为 true）
@@ -2517,6 +2718,18 @@ window.chatBridgeNeedsNewPage = true;
       var workspaceFileMentions = mergeWorkspaceFileMentions(extractWorkspaceFileMentions(message), selectedWorkspaceFiles);
       var explicitProvider = getComposerChatProvider();
       var actualMessage = message;
+      if (typeof window.flushComposerMainChatSelectionSave === 'function') {
+        try {
+          await window.flushComposerMainChatSelectionSave();
+        } catch (modelSelectionError) {
+          appendMessage(
+            '❌ 模型选择尚未保存成功，本次消息未发送：' + (modelSelectionError && modelSelectionError.message ? modelSelectionError.message : String(modelSelectionError)),
+            'bot', false, true
+          );
+          await requeueMainChatPiMessage(queuedItem);
+          return;
+        }
+      }
       if (queuedItem && queuedItem.piQueueMessageId) {
         var queuedMessageIndex = savedMsgs.findIndex(function(savedMessage) {
           return savedMessage && savedMessage.piQueueId === queuedItem.piQueueMessageId;
@@ -2534,21 +2747,27 @@ window.chatBridgeNeedsNewPage = true;
         else savedMsgs.push(queuedMessageRecord);
       }
       if (!(queuedItem && queuedItem.piQueueMessageId)) savedMsgs.push({ role: 'user', content: actualMessage, isHtml: false, timestamp: Date.now() });
-      storeConversationMessagesLocally(activeConversationId, savedMsgs);
+      storeConversationMessagesLocally(activeConversationId, savedMsgs, { projectId: activeProjectId });
       console.log('[ComposerProvider] Selected provider:', explicitProvider, 'workspace files:', workspaceFileMentions.map(function(file) { return file.path; }));
       activeMainChatProvider = explicitProvider;
       
-// 检查大牛马配置是否可用（AI 桥接设置）
+// 检查草原配置是否可用（内部仍为 primary）
       var isPrimaryAvailable = chatBridgeConfig.primary &&
                                chatBridgeConfig.primary.apiUrl &&
                                chatBridgeConfig.primary.apiUrl.trim() !== '' &&
                                chatBridgeConfig.primary.hasApiKey;
       
       // 检查小牛马配置是否可用（AI 桥接设置）
-      var isSecondaryAvailable = chatBridgeConfig.secondary &&
+      var isSecondaryPoolAvailable = !!(chatBridgeConfig.secondary
+        && chatBridgeConfig.secondary.pool
+        && Array.isArray(chatBridgeConfig.secondary.pool.models)
+        && chatBridgeConfig.secondary.pool.models.some(function(entry) {
+          return entry && entry.enabled !== false && entry.api_url && entry.has_api_key;
+        }));
+      var isSecondaryAvailable = isSecondaryPoolAvailable || !!(chatBridgeConfig.secondary &&
                                  chatBridgeConfig.secondary.apiUrl &&
                                  chatBridgeConfig.secondary.apiUrl.trim() !== '' &&
-                                 chatBridgeConfig.secondary.hasApiKey;
+                                 chatBridgeConfig.secondary.hasApiKey);
       
       // 检查前端 ⚙️ API 设置 是否可用（优先级最高）
       var isLegacyApiAvailable = !!(apiConfig.url && apiConfig.key);
@@ -2565,8 +2784,8 @@ window.chatBridgeNeedsNewPage = true;
       
       console.log('[Provider] 配置检查:', {
         legacyApi: isLegacyApiAvailable ? '✅ 前端API设置可用' : '❌ 前端API设置未配置',
-        secondary: isSecondaryAvailable ? '✅ 小牛马桥接可用' : '❌ 小牛马桥接未配置',
-        primary: isPrimaryAvailable ? '✅ 大牛马桥接可用' : '❌ 大牛马桥接未配置',
+        secondary: isSecondaryAvailable ? '✅ Little corse 桥接可用' : '❌ Little corse 桥接未配置',
+        primary: isPrimaryAvailable ? '✅ Grass OpenRouter 可用' : '❌ Grass OpenRouter 未配置',
         codex: isCodexCliPreferred ? '✅ Codex CLI 优先' : '未启用 Codex CLI 优先',
         apiConfigUrl: apiConfig.url || '(空)',
         chatBridgeEnabled: chatBridgeConfig.enabled
@@ -2628,6 +2847,7 @@ window.chatBridgeNeedsNewPage = true;
           startChatStreamTail();
           maybeScrollChatToBottom(true);
 
+          setMainChatPreflightStatus(thinkingDiv, '正在准备分析工作目录…');
           var baseWorkspaceDirectory = getWorkspaceDirectoryPayloadForMessage(
             rawUserInput || actualMessage,
             activeConversationId
@@ -2648,6 +2868,7 @@ window.chatBridgeNeedsNewPage = true;
           var chatDelivery = queuedItem && queuedItem.behavior !== 'steer' ? 'queue' : 'steer';
           
           // 准备 ChatBridge 所需的完整上下文（和 API Flow 一样的内容）
+          setMainChatPreflightStatus(thinkingDiv, '正在整理 Skill、记忆与文献上下文…');
           var chatBridgeContext = await prepareChatBridgeContext(
             actualMessage,
             isFirstMessage && !skipFullPrompt,
@@ -2700,6 +2921,7 @@ window.chatBridgeNeedsNewPage = true;
           if (pendingChatAttachments.length > 0) {
             chatBridgeContext.chatAttachments = pendingChatAttachments;
           }
+          setMainChatPreflightStatus(thinkingDiv, '正在附加论文框架与章节上下文…');
           await attachSelectedArticleChaptersToChatContext(chatBridgeContext);
           
           console.log('[Debug] Context to send:', {
@@ -2758,9 +2980,10 @@ window.chatBridgeNeedsNewPage = true;
           var chatBridgeRequestBody = {
             message: actualMessage,
             userId: currentUserId,
+            projectId: activeProjectId || undefined,
             conversationId: activeConversationId,
             context: chatBridgeContext,
-            history: historyMsgs,  // 切换 Codex / 小牛马 / 大牛马时传递最近 20 条上下文
+            history: historyMsgs,  // 切换 Codex / 小牛马 / 草原时传递最近 20 条上下文
             stream: true,
             newPage: needsNewPage,
             frontendState: buildFrontendPageStateSnapshot(actualMessage, explicitProvider || 'auto', chatDelivery),
@@ -2796,10 +3019,22 @@ window.chatBridgeNeedsNewPage = true;
             }
           }
           var requiresVisionForChat = hasVisionInputForMainChat() || hasChatAttachmentVision(pendingChatAttachments);
+          var composerPoolSelection = typeof window.getComposerActivePoolSelection === 'function'
+            ? window.getComposerActivePoolSelection(explicitProvider, requiresVisionForChat)
+            : null;
           if (requiresVisionForChat) {
             loadSecondaryVisionApiConfig();
             chatBridgeRequestBody.requiresVision = true;
-            if (secondaryVisionApiConfig.url && secondaryVisionApiConfig.key) {
+            var hasBridgeVisionPool = !!(chatBridgeConfig.secondaryVision
+              && chatBridgeConfig.secondaryVision.pool
+              && Array.isArray(chatBridgeConfig.secondaryVision.pool.models)
+              && chatBridgeConfig.secondaryVision.pool.models.some(function(entry) {
+                return entry && entry.enabled !== false && entry.api_url && entry.has_api_key;
+              }));
+            var hasBridgeVisionConfig = hasBridgeVisionPool || !!(chatBridgeConfig.secondaryVision
+              && chatBridgeConfig.secondaryVision.apiUrl
+              && chatBridgeConfig.secondaryVision.hasApiKey);
+            if (!hasBridgeVisionConfig && secondaryVisionApiConfig.url && secondaryVisionApiConfig.key) {
               chatBridgeRequestBody.visionApiUrl = secondaryVisionApiConfig.url;
               chatBridgeRequestBody.visionApiKey = secondaryVisionApiConfig.key;
               chatBridgeRequestBody.visionModel = secondaryVisionApiConfig.model || 'gpt-4o';
@@ -2807,7 +3042,7 @@ window.chatBridgeNeedsNewPage = true;
           }
           
           // 传递 forceProvider 参数
-          // - 'primary': 使用大牛马配置
+          // - 'primary': 使用草原配置
           // - 'codex': 使用本机 Codex CLI
           // - 'secondary': 使用小牛马配置
           // - 'api': 使用前端 ⚙️ API 设置（向后兼容）
@@ -2816,37 +3051,56 @@ window.chatBridgeNeedsNewPage = true;
             chatBridgeRequestBody.forceProvider = explicitProvider;
             console.log('[ChatBridge] forceProvider:', explicitProvider);
 
-            if (explicitProvider === 'codex') {
-              var composerCodexSelection = getComposerCodexSelection();
-              chatBridgeRequestBody.codexModel = composerCodexSelection.model;
-              chatBridgeRequestBody.codexReasoningEffort = composerCodexSelection.reasoningEffort;
-              flushComposerCodexSelectionSave().catch(function(error) {
-                console.warn('[ComposerProvider] Codex selection persistence failed:', error);
-              });
-              console.log('[ChatBridge] Codex request selection:', composerCodexSelection);
+            if (explicitProvider === 'codex' || explicitProvider === 'pi' || explicitProvider === 'opencode') {
+              var runtimeSelection = typeof window.getComposerCodingRuntimeSelection === 'function'
+                ? window.getComposerCodingRuntimeSelection(explicitProvider)
+                : null;
+              chatBridgeRequestBody.agentRuntime = explicitProvider;
+              if (runtimeSelection && runtimeSelection.model) chatBridgeRequestBody.agentRuntimeModel = runtimeSelection.model;
+              if (runtimeSelection && runtimeSelection.reasoningEffort) chatBridgeRequestBody.agentRuntimeReasoningEffort = runtimeSelection.reasoningEffort;
+              if (runtimeSelection && runtimeSelection.timeoutMs) chatBridgeRequestBody.agentRuntimeTimeoutMs = runtimeSelection.timeoutMs;
+              if (explicitProvider === 'codex') {
+                var composerCodexSelection = getComposerCodexSelection();
+                chatBridgeRequestBody.codexModel = composerCodexSelection.model;
+                chatBridgeRequestBody.codexReasoningEffort = composerCodexSelection.reasoningEffort;
+                flushComposerCodexSelectionSave().catch(function(error) {
+                  console.warn('[ComposerProvider] Codex selection persistence failed:', error);
+                });
+              }
+              console.log('[ChatBridge] Coding Agent runtime selection:', runtimeSelection);
             }
             
-            // 小牛马模式：传递前端 ⚙️ API 设置 的配置
+            if (composerPoolSelection && composerPoolSelection.id) {
+              chatBridgeRequestBody.modelId = composerPoolSelection.id;
+            }
+
+            // 小牛马模式：模型池/桥接配置是权威来源；仅在没有桥接配置时
+            // 才透传旧版前端 API 设置，避免旧 URL/模型覆盖输入框当前选择。
             if (explicitProvider === 'secondary' || explicitProvider === 'api' || explicitProvider === 'codex') {
-              // 优先使用前端 ⚙️ API 设置，其次使用 AI 桥接设置
-              if (apiConfig.url && apiConfig.key) {
+              var activeSecondaryTextSelection = typeof window.getComposerActivePoolSelection === 'function'
+                ? window.getComposerActivePoolSelection('secondary', false)
+                : null;
+              var hasBridgeSecondaryConfig = !!(activeSecondaryTextSelection
+                || (chatBridgeConfig.secondary?.apiUrl && chatBridgeConfig.secondary.hasApiKey));
+              if (activeSecondaryTextSelection && activeSecondaryTextSelection.model) {
+                chatBridgeRequestBody.secondaryModel = activeSecondaryTextSelection.model;
+              } else if (chatBridgeConfig.secondary?.model) {
+                chatBridgeRequestBody.secondaryModel = chatBridgeConfig.secondary.model;
+              }
+              if (!hasBridgeSecondaryConfig && apiConfig.url && apiConfig.key) {
                 chatBridgeRequestBody.apiUrl = apiConfig.url;
                 chatBridgeRequestBody.apiKey = apiConfig.key;
                 chatBridgeRequestBody.model = apiConfig.model || 'qwen3.5-plus';
                 chatBridgeRequestBody.secondaryModel = apiConfig.model || 'qwen3.5-plus';
-                console.log('[ChatBridge] 小牛马使用前端 API 配置:', apiConfig.url, 'model:', apiConfig.model);
-              } else if (chatBridgeConfig.secondary?.apiUrl && chatBridgeConfig.secondary.hasApiKey) {
-                // 使用 AI 桥接设置中的小牛马配置
-                chatBridgeRequestBody.model = chatBridgeConfig.secondary.model || 'gpt-4o';
-                chatBridgeRequestBody.secondaryModel = chatBridgeConfig.secondary.model || 'gpt-4o';
-                console.log('[ChatBridge] 小牛马使用 AI 桥接配置:', chatBridgeConfig.secondary.apiUrl);
+                console.log('[ChatBridge] 小牛马使用旧版前端 API 兜底:', apiConfig.url, 'model:', apiConfig.model);
+              } else {
+                console.log('[ChatBridge] 小牛马使用模型池/AI 桥接配置:', composerPoolSelection || activeSecondaryTextSelection || chatBridgeConfig.secondary?.model);
               }
             }
             
-            // 大牛马模式
-            if (explicitProvider === 'primary' && chatBridgeConfig.primary?.apiUrl && chatBridgeConfig.primary.hasApiKey) {
-              chatBridgeRequestBody.model = chatBridgeConfig.primary.model || 'claude-sonnet-4-5';
-              console.log('[ChatBridge] 大牛马使用 AI 桥接配置:', chatBridgeConfig.primary.apiUrl);
+            // 草原模式
+            if (explicitProvider === 'primary') {
+              console.log('[ChatBridge] 草原使用 OpenRouter 模型池配置:', composerPoolSelection || chatBridgeConfig.primary?.model);
             }
           } else {
             // 无明确指定时，传递前端 API 配置作为默认
@@ -2859,15 +3113,24 @@ window.chatBridgeNeedsNewPage = true;
             }
           }
 
+          // 透传设置页的 reasoning_effort（low/medium/high），后端用它控制模型推理强度。
+          if (currentReasoningEffort) {
+            chatBridgeRequestBody.reasoningEffort = currentReasoningEffort;
+          }
+
           // 两阶段多模态编排：视觉 AI 先输出结构化意图，主聊天再结合
           // 原始 query、视觉发现和工作目录执行后续动作。分类失败时保留
           // 原来的直接多模态路线，不阻断用户请求。
+          if (pendingChatAttachments.length > 0) {
+            setMainChatPreflightStatus(thinkingDiv, '正在分析附件并确定执行方式…');
+          }
           var multimodalIntent = await classifyMultimodalAttachmentIntent(chatBridgeRequestBody);
           if (multimodalIntent) {
             chatBridgeContext.multimodalIntent = multimodalIntent;
             chatBridgeRequestBody.context = chatBridgeContext;
           }
           
+          setMainChatPreflightStatus(thinkingDiv, explicitProvider === 'pi' ? '正在连接 Pi Agent…' : '正在连接 Agent…');
           var chatBridgeResponse = await fetch('/api/chat-bridge/chat', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -2914,12 +3177,15 @@ window.chatBridgeNeedsNewPage = true;
           var reader = chatBridgeResponse.body.getReader();
           var decoder = new TextDecoder();
           var fullResponse = '';
+          var thinkingText = '';
           var messageDiv = thinkingDiv || null;
           var streamRenderer = null;
           var sseBuffer = '';
           var lastChunkTime = Date.now();
           var streamStartedAt = Date.now();
           var timeoutWarningShown = false;
+          var streamUsage = null;
+          var streamElapsedMs = null;
 
           function ensureStreamingBotMessage() {
             if (!messageDiv) {
@@ -2940,6 +3206,10 @@ window.chatBridgeNeedsNewPage = true;
             if (messageDiv && mainChatPiQueueHostMessage !== messageDiv) {
               attachMainChatPiQueuePanelToMessage(messageDiv);
             }
+            if (messageDiv && messageDiv.dataset) {
+              messageDiv.dataset.piResponseStarted = 'true';
+              renderMainChatPiQueue(mainChatPiState);
+            }
             if (!streamRenderer) {
               streamRenderer = createBotTextStreamer(messageDiv);
             }
@@ -2952,12 +3222,34 @@ window.chatBridgeNeedsNewPage = true;
               lastChunkTime = Date.now();
               fullResponse += data.content || '';
               ensureStreamingBotMessage().setText(fullResponse);
+            } else if (data.type === 'thinking') {
+              lastChunkTime = Date.now();
+              thinkingText += data.content || '';
+              if (!fullResponse) {
+                // 流式展示推理内容（只保留尾部，避免超长思考刷屏）；正文开始后会被答案替换。
+                ensureStreamingBotMessage().setText('💭 思考中…\n\n' + thinkingText.slice(-3000));
+              }
             } else if (data.type === 'status') {
               lastChunkTime = Date.now();
+              var runtimeStatus = formatMainChatRuntimeStatus(data.message || data.status || data.stage);
+              if (runtimeStatus && messageDiv) {
+                setMainChatPreflightStatus(messageDiv, runtimeStatus);
+              }
               if (streamRenderer && typeof streamRenderer.setElapsedMs === 'function' && data.elapsedMs) {
                 streamRenderer.setElapsedMs(data.elapsedMs);
               }
             } else if (data.type === 'complete' || data.type === 'done' || data.type === 'end') {
+              var reportedElapsedMs = Number(data.elapsedMs || 0);
+              streamElapsedMs = Number.isFinite(reportedElapsedMs) && reportedElapsedMs > 0
+                ? reportedElapsedMs
+                : Date.now() - streamStartedAt;
+              if (data.usage) {
+                streamUsage = data.usage;
+                var activeRenderer = ensureStreamingBotMessage();
+                if (activeRenderer && typeof activeRenderer.setUsage === 'function') {
+                  activeRenderer.setUsage(streamUsage);
+                }
+              }
               if (typeof data.content === 'string' && data.content.length > 0) {
                 fullResponse = data.content;
               }
@@ -2966,9 +3258,16 @@ window.chatBridgeNeedsNewPage = true;
                 ensureStreamingBotMessage().setText(fullResponse);
               }
               if (fullResponse && !savedMsgs.find(function(m) { return m.content === fullResponse; })) {
-                savedMsgs.push({ role: 'assistant', content: fullResponse, isHtml: false, timestamp: Date.now() });
+                savedMsgs.push({
+                  role: 'assistant',
+                  content: fullResponse,
+                  isHtml: false,
+                  timestamp: Date.now(),
+                  usage: streamUsage,
+                  elapsedMs: streamElapsedMs
+                });
                 mergeConcurrentPiQueueRecords(activeConversationId, savedMsgs);
-                storeConversationMessagesLocally(activeConversationId, savedMsgs);
+                storeConversationMessagesLocally(activeConversationId, savedMsgs, { projectId: activeProjectId });
               }
             } else if (data.type === 'error') {
               ensureStreamingBotMessage();
@@ -3032,15 +3331,22 @@ window.chatBridgeNeedsNewPage = true;
           // 如果卡住了但有部分内容，保存它
           if (fullResponse && fullResponse.length > 0 && !fullResponse.startsWith('❌')) {
             if (!savedMsgs.find(function(m) { return m.content === fullResponse; })) {
-              savedMsgs.push({ role: 'assistant', content: fullResponse, isHtml: false, timestamp: Date.now() });
+              savedMsgs.push({
+                role: 'assistant',
+                content: fullResponse,
+                isHtml: false,
+                timestamp: Date.now(),
+                usage: streamUsage,
+                elapsedMs: streamElapsedMs || (Date.now() - streamStartedAt)
+              });
               mergeConcurrentPiQueueRecords(activeConversationId, savedMsgs);
-              storeConversationMessagesLocally(activeConversationId, savedMsgs);
+              storeConversationMessagesLocally(activeConversationId, savedMsgs, { projectId: activeProjectId });
             }
           }
           
           if (messageDiv) {
             if (streamRenderer && fullResponse) {
-              await streamRenderer.finish(fullResponse, Date.now() - streamStartedAt);
+              await streamRenderer.finish(fullResponse, streamElapsedMs || (Date.now() - streamStartedAt), streamUsage);
             }
             var contentDiv = messageDiv.querySelector('.content');
             var useAgentTranscript = isAgentTranscriptText(fullResponse);
@@ -3049,7 +3355,8 @@ window.chatBridgeNeedsNewPage = true;
               contentDiv.innerHTML = renderBotMessageContent(fullResponse, {
                 allowAgentTranscript: true,
                 final: true,
-                elapsedMs: Date.now() - streamStartedAt
+                elapsedMs: streamElapsedMs || (Date.now() - streamStartedAt),
+                usage: streamUsage
               });
             }
             initWorkspaceImageStacks(contentDiv);
@@ -3064,7 +3371,10 @@ window.chatBridgeNeedsNewPage = true;
                 el.parentNode.removeChild(el);
               }
             });
-            appendMessage(fullResponse, 'bot', false);
+            appendMessage(fullResponse, 'bot', false, false, {
+              usage: streamUsage,
+              elapsedMs: streamElapsedMs || (Date.now() - streamStartedAt)
+            });
           }
           
           // 确保"正在思考"消息被移除
@@ -3079,16 +3389,19 @@ window.chatBridgeNeedsNewPage = true;
           // 这里不再二次调用 /api/memory/update，避免同一轮对话重复提取和并发写入。
           
           // 持久化对话消息到服务端（确保跨会话可恢复）
-          await persistConversationNow(activeConversationId);
+          await persistConversationNow(activeConversationId, {
+            projectId: activeProjectId,
+            messages: savedMsgs
+          });
 
           refreshArticleDraftProgressAfterAiResponse(fullResponse);
 
-          try {
-            await maybeExecuteRCodeFromAiResponse(fullResponse, actualMessage);
-          } catch (autoRPlotError) {
-            console.warn('[AutoRPlot] Failed to execute R code from AI response:', autoRPlotError);
-            appendMessage('检测到 R 作图代码，但自动调用 R 插件失败：' + (autoRPlotError.message || autoRPlotError), 'bot', false, true);
-          }
+          // Do not scan a completed assistant response and turn it into a new R task.
+          // The formal Agent/tool loop already decides and executes R tools during the
+          // current turn. Re-processing its final answer here caused completed plots
+          // (and tool transcripts containing R code) to be executed a second time.
+          // Explicit legacy R workflows still enter through runRecentRPlotFollowup()
+          // and the analysis workspace actions.
           
           // 文献检索已在本轮正式请求前自主完成并作为证据上下文发送，
           // 这里不再对 AI 输出做二次检测，避免回答后重复弹窗或重复检索。
@@ -3107,7 +3420,7 @@ window.chatBridgeNeedsNewPage = true;
           }
         });
         
-        appendMessage('❌ 未配置 AI 服务\n\n请先在配置界面设置小牛马、大牛马或 Codex CLI，再通过输入框右侧的模型选择器选择服务。', 'bot', false, true);
+        appendMessage('❌ 未配置 AI 服务\n\n请先在配置界面设置 Little corse、Grass OpenRouter 或 Codex CLI，再通过输入框右侧的模型选择器选择服务。', 'bot', false, true);
         await requeueMainChatPiMessage(queuedItem);
         
         finishMainChatRequest(requestAbortController);
@@ -3629,7 +3942,7 @@ window.editRetrievalKeywords = function() {
           // 更新 placeholder 显示状态
           autoResize();
           
-          appendMessage(' 🐄 小牛马已完成' + getProjectEvidenceItemName() + '检索，已自动填入输入框，点击发送即可传给大牛马', 'bot', false, true);
+          appendMessage(' 🐄 Little corse 已完成' + getProjectEvidenceItemName() + '检索，已自动填入输入框，点击发送即可传给 Grass', 'bot', false, true);
           
         } else {
           if (modal) {
@@ -4771,13 +5084,126 @@ window.editRetrievalKeywords = function() {
       }
     }
 
+    var rightSidebarPreviewSelectionAskState = null;
+
+    function hideRightSidebarPreviewSelectionAsk() {
+      rightSidebarPreviewSelectionAskState = null;
+      var bubble = document.getElementById('rightSidebarPreviewSelectionAsk');
+      if (bubble && bubble.parentNode) bubble.parentNode.removeChild(bubble);
+    }
+    window.hideRightSidebarPreviewSelectionAsk = hideRightSidebarPreviewSelectionAsk;
+
+    function placeRightSidebarPreviewSelectionInChat() {
+      var selected = rightSidebarPreviewSelectionAskState;
+      if (!selected || !selected.text || !userInput) return;
+      var prompt = [
+        '【文件预览选段】',
+        '文件路径：' + (selected.path || selected.name || '当前预览文件'),
+        '选中文本：',
+        selected.text,
+        '',
+        '我的问题：'
+      ].join('\n');
+      var existing = String(userInput.value || '').trim();
+      userInput.value = existing ? existing + '\n\n' + prompt : prompt;
+      userInput.dispatchEvent(new Event('input', { bubbles: true }));
+      hideRightSidebarPreviewSelectionAsk();
+      userInput.focus({ preventScroll: true });
+      try {
+        userInput.setSelectionRange(userInput.value.length, userInput.value.length);
+      } catch (error) {}
+      userInput.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    }
+    window.placeRightSidebarPreviewSelectionInChat = placeRightSidebarPreviewSelectionInChat;
+
+    function showRightSidebarPreviewSelectionAsk(selection, frame) {
+      var state = rightSidebarFilePreviewState;
+      if (!state || state.editing || state.officeEditing || !selection || selection.rangeCount < 1) {
+        hideRightSidebarPreviewSelectionAsk();
+        return;
+      }
+      var text = String(selection.toString() || '').replace(/\s+/g, ' ').trim();
+      if (!text) {
+        hideRightSidebarPreviewSelectionAsk();
+        return;
+      }
+      if (text.length > 8000) text = text.slice(0, 8000) + '…';
+      var rangeRect = selection.getRangeAt(0).getBoundingClientRect();
+      if (!rangeRect || (!rangeRect.width && !rangeRect.height)) return;
+      var offsetLeft = 0;
+      var offsetTop = 0;
+      if (frame) {
+        var frameRect = frame.getBoundingClientRect();
+        offsetLeft = frameRect.left;
+        offsetTop = frameRect.top;
+      }
+      hideRightSidebarPreviewSelectionAsk();
+      rightSidebarPreviewSelectionAskState = {
+        text: text,
+        path: String(state.path || ''),
+        name: String(state.name || '')
+      };
+      var bubble = document.createElement('button');
+      bubble.type = 'button';
+      bubble.id = 'rightSidebarPreviewSelectionAsk';
+      bubble.className = 'right-sidebar-preview-selection-ask';
+      bubble.textContent = '询问 AI';
+      bubble.setAttribute('aria-label', '将选中文本发送到主页输入框询问 AI');
+      bubble.addEventListener('click', placeRightSidebarPreviewSelectionInChat);
+      document.body.appendChild(bubble);
+      var bubbleWidth = Math.max(76, bubble.offsetWidth || 76);
+      var bubbleHeight = Math.max(34, bubble.offsetHeight || 34);
+      var left = offsetLeft + rangeRect.left + rangeRect.width / 2 - bubbleWidth / 2;
+      var top = offsetTop + rangeRect.bottom + 8;
+      left = Math.max(8, Math.min(window.innerWidth - bubbleWidth - 8, left));
+      if (top + bubbleHeight > window.innerHeight - 8) {
+        top = offsetTop + rangeRect.top - bubbleHeight - 8;
+      }
+      bubble.style.left = Math.max(8, left) + 'px';
+      bubble.style.top = Math.max(8, top) + 'px';
+    }
+
+    function bindRightSidebarPreviewSelectionDocument(doc, frame) {
+      if (!doc || doc.__scholarHarnessSelectionAskBound) return;
+      doc.__scholarHarnessSelectionAskBound = true;
+      var revealSelectionAction = function() {
+        setTimeout(function() {
+          try {
+            showRightSidebarPreviewSelectionAsk(doc.getSelection && doc.getSelection(), frame || null);
+          } catch (error) {
+            hideRightSidebarPreviewSelectionAsk();
+          }
+        }, 0);
+      };
+      doc.addEventListener('mouseup', revealSelectionAction);
+      doc.addEventListener('keyup', revealSelectionAction);
+      doc.addEventListener('scroll', hideRightSidebarPreviewSelectionAsk, true);
+    }
+
+    function setupRightSidebarPreviewSelection() {
+      var panel = document.getElementById('rightSidebarFilePreviewPanel');
+      if (!panel || panel.__scholarHarnessSelectionAskBound) return;
+      panel.__scholarHarnessSelectionAskBound = true;
+      panel.addEventListener('mouseup', function(event) {
+        var previewText = event.target && event.target.closest
+          ? event.target.closest('.right-sidebar-file-preview-text')
+          : null;
+        if (!previewText) return;
+        showRightSidebarPreviewSelectionAsk(window.getSelection && window.getSelection(), null);
+      });
+      panel.addEventListener('scroll', hideRightSidebarPreviewSelectionAsk, true);
+    }
+
     function setupRightSidebarFormattedPreviewInteraction(frame) {
       var state = rightSidebarFilePreviewState;
-      if (!state || !frame || (!supportsRightSidebarTextEditing(state.extension)
-          && ['docx', 'xls', 'xlsx'].indexOf(state.extension) === -1)) return;
+      if (!state || !frame) return;
       try {
         var doc = frame.contentDocument;
-        if (!doc || doc.__scholarHarnessDoubleClickBound) return;
+        if (!doc) return;
+        bindRightSidebarPreviewSelectionDocument(doc, frame);
+        if (!supportsRightSidebarTextEditing(state.extension)
+            && ['docx', 'xls', 'xlsx'].indexOf(state.extension) === -1) return;
+        if (doc.__scholarHarnessDoubleClickBound) return;
         restoreRightSidebarFormattedPreviewPosition(frame, state);
         doc.__scholarHarnessDoubleClickBound = true;
         doc.documentElement.style.cursor = 'default';
@@ -5068,6 +5494,7 @@ window.editRetrievalKeywords = function() {
     function renderRightSidebarFilePreviewPanel() {
       var panel = document.getElementById('rightSidebarFilePreviewPanel');
       if (!panel) return;
+      hideRightSidebarPreviewSelectionAsk();
       teardownRightSidebarImageZoom();
       var state = rightSidebarFilePreviewState;
       if (!state) {
@@ -5157,7 +5584,7 @@ window.editRetrievalKeywords = function() {
       } else if (state.kind === 'pdf' && state.previewUrl) {
         body = '<iframe class="right-sidebar-file-preview-frame" src="' + escapeHtml(state.previewUrl) + '" title="' + escapeHtml(state.name || 'PDF 预览') + '" loading="lazy"></iframe>';
       } else if (state.formattedPreviewUrl) {
-        body = '<iframe class="right-sidebar-file-preview-frame" src="' + escapeHtml(state.formattedPreviewUrl) + '" title="' + escapeHtml(state.name || '格式化文件预览') + '" sandbox="" loading="eager" onload="setupRightSidebarFormattedPreviewInteraction(this)"></iframe>';
+        body = '<iframe class="right-sidebar-file-preview-frame" src="' + escapeHtml(state.formattedPreviewUrl) + '" title="' + escapeHtml(state.name || '格式化文件预览') + '" sandbox="allow-same-origin" loading="eager" onload="setupRightSidebarFormattedPreviewInteraction(this)"></iframe>';
       } else if (isRightSidebarTextPreviewKind(state.kind, state.extension)) {
         if (typeof state.textContent === 'string') {
           body = '<pre class="right-sidebar-file-preview-text" ondblclick="beginRightSidebarTextEditAtPointer(event)">' + escapeHtml(state.textContent) + '</pre>';
@@ -5178,6 +5605,7 @@ window.editRetrievalKeywords = function() {
       panel.innerHTML = toolbar +
         '<div class="right-sidebar-file-preview-viewport' + (imagePreviewReady ? ' right-sidebar-file-preview-image-viewport' : '') + '">' + body + '</div>' +
         imageNavigationHtml;
+      setupRightSidebarPreviewSelection();
       if (imagePreviewReady) setupRightSidebarImageZoom();
       if (state.editing && typeof state.textContent === 'string') {
         var editor = document.getElementById('rightSidebarFileEditor');
@@ -5934,6 +6362,7 @@ window.editRetrievalKeywords = function() {
 
     function clearRightSidebarFilePreviewState() {
       rightSidebarFilePreviewRequestId += 1;
+      hideRightSidebarPreviewSelectionAsk();
       releaseRightSidebarImagePreview(rightSidebarFilePreviewState);
       rightSidebarFilePreviewState = null;
       rightSidebarTransientTab = '';
@@ -6414,7 +6843,10 @@ window.editRetrievalKeywords = function() {
         var layoutClass = compactText.length <= 48 && compactText.indexOf('\n') === -1
           ? 'is-atomic'
           : 'is-wrap';
-        return '<code class="message-inline-code ' + layoutClass + '">' + inlineCode + '</code>';
+        var semanticClass = /\.(?:png|jpe?g|gif|bmp|webp|tiff?|svg|pdf|docx?|xlsx?|csv|tsv|txt|md|markdown|r|rmd|json|tex|latex|html?|pptx?|zip)$/i.test(compactText)
+          ? ' is-file-reference'
+          : '';
+        return '<code class="message-inline-code ' + layoutClass + semanticClass + '">' + inlineCode + '</code>';
       });
       
       // 处理标题（h1-h6）
@@ -6560,6 +6992,19 @@ window.editRetrievalKeywords = function() {
         currentUserId = 'web-user';
       }
 
+      // Model configuration is independent from conversation/workspace
+      // recovery. Start it first so a later initialization error cannot leave
+      // the composer permanently stuck on compatibility defaults.
+      var composerConfigBootstrap = Promise.resolve(loadChatBridgeConfig())
+        .catch(function(error) {
+          console.warn('[Init] Composer model configuration bootstrap failed:', error);
+        })
+        .finally(function() {
+          renderMainContextSourceBar();
+          scheduleFirstRunOnboarding(0);
+        });
+      window.composerConfigBootstrap = composerConfigBootstrap;
+
       // 兼容旧版本：把已经写入本地、但尚未加入历史列表的会话重新归档。
       recoverLocalConversationsIntoHistory();
 
@@ -6571,12 +7016,9 @@ window.editRetrievalKeywords = function() {
       bindConversationLifecyclePersistence();
       
       renderHistory();
-      hydrateConversationHistoryFromServer();
+      refreshConversationHistory();
       activateWorkspaceDirectoryConversation(currentConversationId);
       
-      Promise.resolve(loadChatBridgeConfig()).finally(function() {
-        scheduleFirstRunOnboarding(0);
-      });
       renderMainContextSourceBar();
       mainMetaAnalysisReturnContext = loadMainMetaAnalysisReturnContext(currentConversationId);
       mainAnalysisWorkflowReturnContext = loadMainAnalysisWorkflowReturnContext(currentConversationId);
@@ -6603,13 +7045,19 @@ window.editRetrievalKeywords = function() {
           if (messages[i].piQueueId && (messages[i].piStatus === 'queued' || messages[i].piStatus === 'processing')) {
             continue;
           } else {
-            appendMessage(messages[i].content, messages[i].role, messages[i].isHtml);
+            appendMessage(
+              messages[i].content,
+              messages[i].role,
+              messages[i].isHtml,
+              messages[i].isSystemMessage,
+              { usage: messages[i].usage, elapsedMs: messages[i].elapsedMs }
+            );
           }
         }
         emptyState.style.display = messages.length > 0 ? 'none' : 'flex';
       } else {
         // 文献库摘要在后台加载，不能阻塞历史记录和输入框。
-        emptyState.innerHTML = BRAND_TITLE_HTML + GREETING_HTML;
+        emptyState.innerHTML = BRAND_TITLE_HTML + GREETING_HTML + HOME_WORKFLOW_SHORTCUTS_HTML;
         emptyState.style.display = 'flex';
       }
       
@@ -6620,50 +7068,6 @@ window.editRetrievalKeywords = function() {
     }
     
     initApp();
-    
-    /**
-     * 调用 API Flow 更新记忆（手脚层功能）
-     * 根据 ChatBridge 的响应和用户的输入，更新跨会话的长期记忆
-     */
-    async function updateMemoryWithAPI(userMessage, aiResponse, userId) {
-      // 构建请求数据 - 使用 JSON 格式而非 FormData
-      // FormData 使用 multipart/form-data，而 Express 只配置了 JSON body parser
-      var requestBody = {
-        userId: userId,
-        userMessage: userMessage,
-        aiResponse: aiResponse,
-        action: 'update_memory'
-      };
-      
-      // 添加 API 配置（如果有配置的话）
-      if (apiConfig.url) {
-        requestBody.apiUrl = apiConfig.url;
-        requestBody.apiKey = apiConfig.key;
-        requestBody.model = apiConfig.model;
-        requestBody.secondaryModel = apiConfig.model || currentModel;
-      }
-      
-      try {
-        var response = await fetch('/api/memory/update', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(requestBody)
-        });
-        
-        if (response.ok) {
-          var result = await response.json();
-          if (result.success) {
-            console.log('[Memory] Updated successfully:', result.updatedKeys);
-          } else {
-            console.warn('[Memory] Update failed:', result.error);
-          }
-        } else {
-          console.warn('[Memory] HTTP error:', response.status);
-        }
-      } catch (e) {
-        console.warn('[Memory] Update request failed:', e);
-      }
-    }
     
     /**
      * 准备 ChatBridge 上下文（和 API Flow 完全一致）
@@ -6680,14 +7084,22 @@ window.editRetrievalKeywords = function() {
     async function prepareChatBridgeContext(message, isFirstMessage, explicitBibliometricsContext, explicitMetaAnalysisContext, onProgress, routingInput) {
       // 稳定系统规则由后端以真正的 system role 统一注入，前端只发送动态上下文。
       routingInput = routingInput || {};
+      var reportPreparationProgress = function(status) {
+        if (typeof onProgress === 'function') onProgress(status);
+      };
       var intentMessage = String(routingInput.rawMessage || message || '').trim();
-      var queryIntent = await classifyMainChatQueryIntent(intentMessage, routingInput, onProgress);
       var selectedContextSources = loadMainContextSourceSelection();
       var context = {
         isFirstMessage: isFirstMessage,
         soulContent: null,
-        taskType: detectTaskType(intentMessage, queryIntent),
-        queryIntent: queryIntent,
+        // 普通聊天不再先等待一个独立 AI 意图分类请求。正式 Agent 直接读取
+        // CURRENT_USER_REQUEST + QueryEnvelope，并在同一工具循环内决定要使用
+        // Skill、MCP、文件、文献库或页面上下文。旧 query-intent 接口仅供
+        // 兼容入口、诊断和特殊多模态流程使用。
+        taskType: '正式 Agent 负责理解当前请求并按需调用已授权资源；不得把本地规则当作工具调用或禁止调用的语义判决。',
+        queryIntent: null,
+        agentToolRouting: 'formal-agent',
+        queryIntentAuthority: 'formal-agent',
         memory: {},
         writingSkill: null,
         literature: null,
@@ -6731,6 +7143,7 @@ window.editRetrievalKeywords = function() {
 
       var selectedPersistentSkillTokens = loadMainContextSkillSelection();
       try {
+        reportPreparationProgress('正在读取已选 Skill 与写作风格…');
         var persistentSkillContext = await buildPersistentMainContextSkillContext();
         if (persistentSkillContext.prompt) {
           context.userSkillPrompt = persistentSkillContext.prompt;
@@ -6756,9 +7169,11 @@ window.editRetrievalKeywords = function() {
       }
       
       if (isFirstMessage && chatBridgeConfig.enabled) {
+        reportPreparationProgress('正在加载首轮上下文文件…');
         context.uploadFiles = await uploadContextFiles(message);
       }
       
+      reportPreparationProgress('正在匹配论文写作 Skill…');
       context.writingSkill = await loadWritingSkillAsync(intentMessage);
       
       var soulData = localStorage.getItem('scholarclaw_soul');
@@ -6768,65 +7183,8 @@ window.editRetrievalKeywords = function() {
         } catch (e) {}
       }
       
-      try {
-        var memoryResponse = await fetch('/api/memory/' + currentUserId);
-        if (memoryResponse.ok) {
-          var memoryResult = await memoryResponse.json();
-          if (memoryResult.success && memoryResult.memory) {
-            var memory = memoryResult.memory;
-            
-            var recentConversations = memory.conversations?.slice(-3) || [];
-            var fullConversations = [];
-            var remainingHistoricalMessages = 10;
-            
-            for (var conv of recentConversations) {
-              if (remainingHistoricalMessages <= 0) break;
-              if (conv.id) {
-                try {
-                  var convResponse = await fetch('/api/memory/' + currentUserId + '/conversation/' + conv.id);
-                  if (convResponse.ok) {
-                    var convData = await convResponse.json();
-                    if (convData.success && convData.conversation) {
-                      var convMessages = (convData.conversation.messages || []).slice(-remainingHistoricalMessages);
-                      fullConversations.push({
-                        id: conv.id,
-                        title: conv.title,
-                        summary: conv.summary,
-                        messages: convMessages
-                      });
-                      remainingHistoricalMessages -= convMessages.length;
-                    }
-                  }
-                } catch (e) {
-                  fullConversations.push(conv);
-                }
-              }
-            }
-            
-            var memoryEntryKeys = new Set((memory.entries || []).map(function(e) { return e.key; }));
-            var structuredReplacementKeys = {
-              'experiment_summary': 'experiment_summary_structured',
-              'data_summary': 'data_summary_structured'
-            };
-            
-            context.memory = {
-              writingProgress: memory.entries?.find(e => e.key === 'writing_progress')?.value,
-              completedChapters: memory.entries?.find(e => e.key === 'completed_chapters')?.value,
-              pendingChapters: memory.entries?.find(e => e.key === 'pending_chapters')?.value,
-              conversations: fullConversations,
-              other: memory.entries?.filter(e => {
-                if (['writing_progress', 'completed_chapters', 'pending_chapters'].includes(e.key)) return false;
-                var structuredKey = structuredReplacementKeys[e.key];
-                return !(structuredKey && memoryEntryKeys.has(structuredKey));
-              })
-            };
-            
-            console.log('[Memory] Loaded', fullConversations.length, 'conversations with up to 10 historical messages');
-          }
-        }
-      } catch (e) {
-        console.warn('Failed to load memory from server:', e);
-      }
+      // 长期记忆由 /api/chat-bridge/chat 在服务端统一加载、筛选和写回。
+      // 前端不再预取同一份记忆及历史会话，避免重复 I/O、重复 Prompt 和并发写入。
 
       try {
         if (typeof buildRecentRPlotContextForChat === 'function') {
@@ -6848,6 +7206,7 @@ window.editRetrievalKeywords = function() {
       
       // 只读取文献库轻量概况。正式 Agent 决定何时检索，不预取论文或摘要。
       try {
+        reportPreparationProgress('正在读取文献库概况…');
         var litResponse = await fetch('/api/literature/' + encodeURIComponent(currentUserId || 'web-user') + '?summaryOnly=1');
         if (litResponse.ok) {
           var litData = await litResponse.json();
@@ -6888,6 +7247,7 @@ window.editRetrievalKeywords = function() {
         var pinnedMetaAnalysisMissingMarked = false;
         var metaAnalysisDatasetAttached = false;
         try {
+          reportPreparationProgress('正在整理已选 Meta 分析数据…');
           var metaAnalysisDatasetContext = await loadMainMetaAnalysisDatasetContext(routingInput.workspaceDirectory || null);
           if (metaAnalysisDatasetContext) {
             context.metaAnalysisAgent = metaAnalysisDatasetContext;
@@ -6935,6 +7295,7 @@ window.editRetrievalKeywords = function() {
       }
 
       try {
+        reportPreparationProgress('正在核对目标期刊与审稿上下文…');
         context.targetVenuePeerReview = await ensureTargetVenuePeerReviewContext(message);
         if (context.targetVenuePeerReview) {
           console.log('[TargetVenueReview] Context attached:', {
@@ -7359,12 +7720,65 @@ window.editRetrievalKeywords = function() {
       return controlChatBridge('refresh');
     }
 
-    async function loadChatBridgeConfig() {
-      var loadedServerCodex = false;
+    function mergeCachedChatBridgeConfig(localConfig) {
+      if (!localConfig || typeof localConfig !== 'object' || Array.isArray(localConfig)) return false;
+      ['primary', 'secondary', 'secondaryVision', 'codex'].forEach(function(key) {
+        if (localConfig[key] && typeof localConfig[key] === 'object' && !Array.isArray(localConfig[key])) {
+          chatBridgeConfig[key] = Object.assign({}, chatBridgeConfig[key] || {}, localConfig[key]);
+        }
+      });
+      var cachedRuntimes = localConfig.agentRuntimes || localConfig.agent_runtimes;
+      if (cachedRuntimes && typeof cachedRuntimes === 'object' && !Array.isArray(cachedRuntimes)) {
+        chatBridgeConfig.agentRuntimes = Object.assign({}, chatBridgeConfig.agentRuntimes || {}, cachedRuntimes);
+        ['codex', 'pi', 'opencode'].forEach(function(runtimeId) {
+          if (cachedRuntimes[runtimeId] && typeof cachedRuntimes[runtimeId] === 'object') {
+            chatBridgeConfig.agentRuntimes[runtimeId] = Object.assign(
+              {},
+              chatBridgeConfig.agentRuntimes[runtimeId] || {},
+              cachedRuntimes[runtimeId]
+            );
+          }
+        });
+      }
+      ['chatUrl', 'mode', 'credentials', 'apiUrl', 'hasApiKey'].forEach(function(key) {
+        if (localConfig[key] !== undefined) chatBridgeConfig[key] = localConfig[key];
+      });
+      if (typeof localConfig.enabled === 'boolean') chatBridgeConfig.enabled = localConfig.enabled;
+      if (typeof localConfig.useForChat === 'boolean') chatBridgeConfig.useForChat = localConfig.useForChat;
+      return true;
+    }
+
+    function hydrateChatBridgeConfigFromStorage() {
       try {
-        var response = await fetch('/api/chat-bridge/config');
+        var raw = localStorage.getItem(CHAT_BRIDGE_KEY);
+        return raw ? mergeCachedChatBridgeConfig(JSON.parse(raw)) : false;
+      } catch (error) {
+        console.warn('[ChatBridge] Ignoring invalid cached model configuration:', error);
+        return false;
+      }
+    }
+
+    function persistChatBridgeConfigSnapshot() {
+      try {
+        localStorage.setItem(CHAT_BRIDGE_KEY, JSON.stringify(chatBridgeConfig));
+      } catch (error) {
+        console.warn('[ChatBridge] Failed to cache model configuration:', error);
+      }
+    }
+
+    async function loadChatBridgeConfig() {
+      // Cold start must render the last known model pool synchronously. The
+      // server response remains authoritative and overwrites this snapshot.
+      hydrateChatBridgeConfigFromStorage();
+      var loadedServerConfig = false;
+      try {
+        var response = await fetch('/api/chat-bridge/config', { cache: 'no-store' });
         var data = await response.json();
+        if (!response.ok || !data.success || !data.config) {
+          throw new Error(data.error || ('HTTP ' + response.status));
+        }
         if (data.success && data.config) {
+          loadedServerConfig = true;
           // 旧的浏览器模式字段（向后兼容）
           chatBridgeConfig.chatUrl = data.config.chat_url || '';
           chatBridgeConfig.mode = data.config.mode || 'api';
@@ -7372,14 +7786,15 @@ window.editRetrievalKeywords = function() {
           chatBridgeConfig.apiUrl = data.config.api_url || '';
           chatBridgeConfig.hasApiKey = data.config.has_api_key || false;
           
-          // ========== 加载大牛马/小牛马配置 ==========
-          // 大牛马配置
+          // ========== 加载草原/小牛马配置 ==========
+          // 草原配置
           if (data.config.primary) {
             chatBridgeConfig.primary = {
               apiUrl: data.config.primary.api_url || '',
               hasApiKey: data.config.primary.has_api_key || false,
-              model: data.config.primary.model || 'claude-sonnet-4-5',
-              description: data.config.primary.description || '大牛马 - 规划、Skill生成、质量检查'
+              model: data.config.primary.model || 'openrouter/free',
+              description: data.config.primary.description || 'Grass - OpenRouter 免费模型',
+              pool: data.config.primary.pool || undefined
             };
           }
           // 小牛马配置
@@ -7388,7 +7803,8 @@ window.editRetrievalKeywords = function() {
               apiUrl: data.config.secondary.api_url || '',
               hasApiKey: data.config.secondary.has_api_key || false,
               model: data.config.secondary.model || 'gpt-4o',
-              description: data.config.secondary.description || '小牛马 - 引用验证、更新记忆'
+              description: data.config.secondary.description || 'Little corse - 引用验证、更新记忆',
+              pool: data.config.secondary.pool || undefined
             };
           }
           if (data.config.secondary_vision) {
@@ -7396,7 +7812,8 @@ window.editRetrievalKeywords = function() {
               apiUrl: data.config.secondary_vision.api_url || '',
               hasApiKey: data.config.secondary_vision.has_api_key || false,
               model: data.config.secondary_vision.model || 'gpt-4o',
-              description: data.config.secondary_vision.description || '小牛马视觉 - 图片、图表截图、多模态输入'
+              description: data.config.secondary_vision.description || 'Little corse 视觉 - 图片、图表截图、多模态输入',
+              pool: data.config.secondary_vision.pool || undefined
             };
             var localVisionConfig = loadSecondaryVisionApiConfig();
             if (data.config.secondary_vision.api_url || data.config.secondary_vision.model) {
@@ -7418,7 +7835,14 @@ window.editRetrievalKeywords = function() {
               timeout_ms: Number(data.config.codex.timeout_ms || 300000),
               pdf_wiki_concurrency: Math.max(1, Math.min(6, parseInt(data.config.codex.pdf_wiki_concurrency || data.config.codex.concurrency || 1, 10) || 1))
             };
-            loadedServerCodex = true;
+          }
+          if (data.config.agent_runtimes) {
+            chatBridgeConfig.agentRuntimes = {
+              default: data.config.agent_runtimes.default || '',
+              codex: Object.assign({}, chatBridgeConfig.agentRuntimes?.codex || {}, chatBridgeConfig.codex || {}, data.config.agent_runtimes.codex || {}),
+              pi: Object.assign({}, chatBridgeConfig.agentRuntimes?.pi || {}, data.config.agent_runtimes.pi || {}),
+              opencode: Object.assign({}, chatBridgeConfig.agentRuntimes?.opencode || {}, data.config.agent_runtimes.opencode || {})
+            };
           }
           
           console.log('[ChatBridge] Loaded config from server:', {
@@ -7452,17 +7876,10 @@ window.editRetrievalKeywords = function() {
       } catch (e) {
         console.warn('Failed to load chat bridge config from server:', e);
       }
-      
-      // 从 localStorage 加载启用状态
-      var data = localStorage.getItem(CHAT_BRIDGE_KEY);
-      if (data) {
-        var localConfig = JSON.parse(data);
-        chatBridgeConfig.enabled = localConfig.enabled || false;
-        chatBridgeConfig.useForChat = localConfig.useForChat || false;
-        if (localConfig.codex && !loadedServerCodex) {
-          chatBridgeConfig.codex = Object.assign({}, chatBridgeConfig.codex, localConfig.codex);
-        }
-      }
+
+      // A successful server read becomes the complete cold-start fallback for
+      // the next launch. Never replace it with defaults after a transient error.
+      if (loadedServerConfig) persistChatBridgeConfigSnapshot();
       
       // 自动启用：如果服务器配置完整且本地未显式禁用，则自动启用
       var hasServerConfig = chatBridgeConfig.chatUrl && 
@@ -7516,7 +7933,7 @@ window.editRetrievalKeywords = function() {
         btn.style.background = '';
         btn.style.borderColor = '';
         btn.style.color = '';
-        btn.textContent = '🐂 大牛马';
+        btn.textContent = '🌾 Grass';
       }
     }
     
@@ -7531,15 +7948,16 @@ function showChatBridgeDialog() {
               chatBridgeConfig.primary = {
                 apiUrl: data.config.primary.api_url || '',
                 hasApiKey: data.config.primary.has_api_key || false,
-                model: data.config.primary.model || 'claude-sonnet-4-5',
-                description: data.config.primary.description || '大牛马 - 规划、Skill生成、质量检查'
+                model: data.config.primary.model || 'openrouter/free',
+                description: data.config.primary.description || 'Grass - OpenRouter 免费模型',
+                pool: data.config.primary.pool || undefined,
               };
             } else {
               chatBridgeConfig.primary = {
-                apiUrl: '',
+                apiUrl: OPENROUTER_API_URL,
                 hasApiKey: false,
-                model: 'claude-sonnet-4-5',
-                description: '大牛马 - 规划、Skill生成、质量检查'
+                model: 'openrouter/free',
+                description: 'Grass - OpenRouter 免费模型'
               };
             }
             if (data.config.secondary) {
@@ -7547,14 +7965,16 @@ function showChatBridgeDialog() {
                 apiUrl: data.config.secondary.api_url || '',
                 hasApiKey: data.config.secondary.has_api_key || false,
                 model: data.config.secondary.model || 'gpt-4o',
-                description: data.config.secondary.description || '小牛马 - 引用验证、更新记忆'
+                vision_model: data.config.secondary.vision_model || undefined,
+                description: data.config.secondary.description || 'Little corse - 引用验证、更新记忆',
+                pool: data.config.secondary.pool || undefined,
               };
             } else {
               chatBridgeConfig.secondary = {
                 apiUrl: '',
                 hasApiKey: false,
                 model: 'gpt-4o',
-                description: '小牛马 - 引用验证、更新记忆'
+                description: 'Little corse - 引用验证、更新记忆'
               };
             }
             if (data.config.secondary_vision) {
@@ -7562,14 +7982,15 @@ function showChatBridgeDialog() {
                 apiUrl: data.config.secondary_vision.api_url || '',
                 hasApiKey: data.config.secondary_vision.has_api_key || false,
                 model: data.config.secondary_vision.model || 'gpt-4o',
-                description: data.config.secondary_vision.description || '小牛马视觉 - 图片、图表截图、多模态输入'
+                description: data.config.secondary_vision.description || 'Little corse 视觉 - 图片、图表截图、多模态输入',
+                pool: data.config.secondary_vision.pool || undefined,
               };
             } else {
               chatBridgeConfig.secondaryVision = {
                 apiUrl: '',
                 hasApiKey: false,
                 model: 'gpt-4o',
-                description: '小牛马视觉 - 图片、图表截图、多模态输入'
+                description: 'Little corse 视觉 - 图片、图表截图、多模态输入'
               };
             }
             chatBridgeConfig.codex = data.config.codex ? {
@@ -7600,56 +8021,61 @@ function showChatBridgeDialog() {
             chatBridgeConfig.chatUrl = data.config.chat_url || '';
             chatBridgeConfig.credentials = data.config.credentials || { email: '', has_password: false };
             console.log('[ChatBridge] Loaded config:', chatBridgeConfig);
+
+            // ========== 渲染草原 OpenRouter 模型池面板 ==========
+            var mp = window.ScholarHarnessModelPool;
+            var sectionHtml = '';
+            if (mp) {
+              sectionHtml += mp.renderProviderSection('primary', chatBridgeConfig.primary);
+            } else {
+              sectionHtml = '<div style="color:var(--danger-color);margin-bottom:15px;">模型池面板未加载, 请刷新页面</div>';
+            }
+
+            var tipStyle = 'margin-bottom:12px;padding:10px;border-radius:6px;background:var(--modal-tip-bg,rgba(99,102,241,0.06));font-size:12px;line-height:1.7;color:var(--text-secondary);';
+            var tipHtml = '<div style="' + tipStyle + '">'
+              + '<strong style="color:var(--text-primary);">Grass · OpenRouter 免费模型</strong><br>'
+              + '• 添加提供方时默认使用 OpenRouter；粘贴 API Key 后自动筛选当前免费文本模型<br>'
+              + '• 可添加多个免费模型形成<strong>故障切换池</strong>，OpenRouter 免费路由也会随可用性自动选择<br>'
+              + '• 当前模型 5xx/超时/限流时自动切到下一个; 401/403/余额不足不会切换<br>'
+              + '• <strong>"设为当前"</strong>按钮即时切换激活模型, 不需要保存<br>'
+              + '• 顺序通过 ↑ / ↓ 调整 (上 = 高优先级); 留空 API Key 表示保留原值'
+              + '</div>';
+
+            var switchTipStyle = 'margin-bottom:12px;font-size:12px;color:var(--text-secondary);min-height:18px;';
+            var switchTipHtml = '<div id="mpSwitchTip" style="' + switchTipStyle + '"></div>';
+
+            showModal('🌾 Grass 配置',
+              tipHtml +
+              switchTipHtml +
+              sectionHtml +
+              '<div id="chatBridgeTestResult" style="margin-bottom:15px;padding:10px;border-radius:6px;display:none;"></div>' +
+              '<div class="btns">' +
+                '<button class="cancel" onclick="closeModal()">取消</button>' +
+                '<button class="ok" onclick="saveChatBridgeConfig()">保存配置</button>' +
+              '</div>',
+              true
+            );
+
+            if (mp) {
+              mp.attachModelPoolHandlers();
+              mp.refreshActiveSelect('primary');
+              mp.startHealthPolling();
+              var overlay = document.getElementById('modalOverlay');
+              if (overlay && !overlay.dataset.mpHealthStopBound) {
+                overlay.dataset.mpHealthStopBound = '1';
+                var observer = new MutationObserver(function () {
+                  if (!overlay.classList.contains('show')) {
+                    mp.stopHealthPolling();
+                  }
+                });
+                observer.observe(overlay, { attributes: true, attributeFilter: ['class'] });
+              }
+            }
           }
-          
-          showModal('🐂 大牛马配置',
-            // ========== 大牛马配置 ==========
-            '<div style="margin-bottom:15px;padding:15px;background:rgba(148,163,184,0.08);border-radius:8px;border:1px solid rgba(148,163,184,0.32);">' +
-            '<div style="font-size:14px;font-weight:600;margin-bottom:12px;color:#6b7280;">API 配置（规划、Skill生成、质量检查）</div>' +
-            '<div style="margin-bottom:10px;">' +
-            '<label style="display:block;margin-bottom:5px;font-size:12px;color:var(--text-secondary);">API URL</label>' +
-            '<input type="text" id="primaryApiUrl" placeholder="例如: https://openrouter.ai/api/v1 或 https://dashscope.aliyuncs.com/compatible-mode/v1" value="' + (chatBridgeConfig.primary?.apiUrl || '') + '" style="width:100%;padding:8px 12px;border:1px solid var(--border-color);border-radius:6px;background:var(--bg-input);color:var(--text-primary);">' +
-            '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px;">' +
-            '<button type="button" onclick="applyOpenRouterPrimaryPreset(false)" style="flex:1;min-width:150px;padding:8px 10px;background:#e5e7eb;border:1px solid #cbd5e1;border-radius:6px;color:#374151;cursor:pointer;font-size:12px;font-weight:600;box-shadow:inset 0 1px 0 rgba(255,255,255,0.65);">填入 OpenRouter URL</button>' +
-            '<button type="button" onclick="applyOpenRouterPrimaryPreset(true)" style="flex:1;min-width:170px;padding:8px 10px;background:#d1d5db;border:1px solid #9ca3af;border-radius:6px;color:#374151;cursor:pointer;font-size:12px;font-weight:600;box-shadow:inset 0 1px 0 rgba(255,255,255,0.62);">OpenRouter 官网申请 API</button>' +
-            '</div>' +
-            '<div style="margin-top:8px;padding:8px 10px;background:var(--modal-tip-bg);border-radius:6px;font-size:12px;line-height:1.7;color:var(--text-secondary);">' +
-            'OpenRouter URL 已写好：<code style="color:var(--text-primary);">' + OPENROUTER_API_URL + '</code><br>' +
-            '先去官网创建 API Key，回来填入 Key；模型名称请填 OpenRouter 模型页里的完整 Model ID。' +
-            '</div>' +
-            '</div>' +
-            '<div style="margin-bottom:10px;">' +
-            '<label style="display:block;margin-bottom:5px;font-size:12px;color:var(--text-secondary);">API Key</label>' +
-            '<input type="password" id="primaryApiKey" placeholder="输入 API Key" value="" style="width:100%;padding:8px 12px;border:1px solid var(--border-color);border-radius:6px;background:var(--bg-input);color:var(--text-primary);">' +
-            (chatBridgeConfig.primary?.hasApiKey ? '<div style="font-size:11px;color:var(--text-secondary);margin-top:4px;">✓ 已保存 Key（留空则保留原 Key）</div>' : '') +
-            '</div>' +
-            '<div style="margin-bottom:0;">' +
-            '<label style="display:block;margin-bottom:5px;font-size:12px;color:var(--text-secondary);">模型选择</label>' +
-            '<div id="primaryModelLoading" style="text-align:center;padding:8px;color:var(--text-secondary);font-size:12px;">点击下方按钮获取可用模型列表</div>' +
-            '<select id="primaryModelSelect" style="display:none;width:100%;padding:8px 12px;border:1px solid var(--border-color);border-radius:6px;background:var(--bg-input);color:var(--text-primary);">' +
-            '<option value="claude-sonnet-4-5"' + (chatBridgeConfig.primary?.model === 'claude-sonnet-4-5' ? ' selected' : '') + '>Claude Sonnet 4.5 (默认)</option>' +
-            '<option value="claude-opus-4"' + (chatBridgeConfig.primary?.model === 'claude-opus-4' ? ' selected' : '') + '>Claude Opus 4</option>' +
-            '<option value="gpt-4o"' + (chatBridgeConfig.primary?.model === 'gpt-4o' ? ' selected' : '') + '>GPT-4o</option>' +
-            '<option value="gpt-4-turbo"' + (chatBridgeConfig.primary?.model === 'gpt-4-turbo' ? ' selected' : '') + '>GPT-4 Turbo</option>' +
-            '<option value="qwen-max"' + (chatBridgeConfig.primary?.model === 'qwen-max' ? ' selected' : '') + '>通义千问 Max</option>' +
-            '<option value="qwen3.5-plus"' + (chatBridgeConfig.primary?.model === 'qwen3.5-plus' ? ' selected' : '') + '>通义千问 3.5 Plus</option>' +
-            '</select>' +
-            '<input type="text" id="primaryModelInput" placeholder="或手动输入模型名称" value="' + (chatBridgeConfig.primary?.model || 'claude-sonnet-4-5') + '" style="display:block;width:100%;padding:8px 12px;border:1px solid var(--border-color);border-radius:6px;background:var(--bg-input);color:var(--text-primary);margin-top:6px;">' +
-            '<button onclick="loadPrimaryModels()" style="margin-top:8px;padding:8px 12px;background:var(--bg-secondary);border:1px solid var(--border-color);border-radius:6px;color:var(--text-primary);cursor:pointer;font-size:12px;">🔄 获取可用模型列表</button>' +
-            '</div>' +
-            '</div>' +
-            
-            '<div id="chatBridgeTestResult" style="margin-bottom:15px;padding:10px;border-radius:6px;display:none;"></div>' +
-            '<div class="btns">' +
-            '<button class="cancel" onclick="closeModal()">取消</button>' +
-            '<button class="ok" onclick="saveChatBridgeConfig()">保存配置</button>' +
-            '</div>'
-            , true
-          );
         })
         .catch(e => {
           console.error('Failed to load chat bridge config:', e);
-          showModal('🐂 大牛马配置',
+          showModal('🌾 Grass 配置',
             '<div style="color:var(--danger-color);margin-bottom:15px;">加载配置失败，请刷新页面重试</div>' +
             '<div class="btns"><button class="cancel" onclick="closeModal()">关闭</button></div>'
           );
@@ -7701,11 +8127,11 @@ function showChatBridgeDialog() {
           statusDiv.innerHTML = '已检测到 Codex CLI：<strong>' + escapeHtml(data.version || 'codex') + '</strong><br><span style="color:var(--text-secondary);word-break:break-all;">' + escapeHtml(data.path || 'PATH') + '</span>';
         } else {
           statusDiv.style.borderColor = 'var(--danger-color)';
-          statusDiv.innerHTML = '未检测到 Codex CLI。勾选后仍会自动降级小牛马。<br><span style="color:var(--text-secondary);">' + escapeHtml(data.error || '请确认已安装 Codex CLI') + '</span>';
+          statusDiv.innerHTML = '未检测到 Codex CLI。勾选后仍会自动降级 Little corse。<br><span style="color:var(--text-secondary);">' + escapeHtml(data.error || '请确认已安装 Codex CLI') + '</span>';
         }
       } catch (e) {
         statusDiv.style.borderColor = 'var(--danger-color)';
-        statusDiv.innerHTML = 'Codex CLI 检测失败，勾选后仍会自动降级小牛马。<br><span style="color:var(--text-secondary);">' + escapeHtml(e.message) + '</span>';
+        statusDiv.innerHTML = 'Codex CLI 检测失败，勾选后仍会自动降级 Little corse。<br><span style="color:var(--text-secondary);">' + escapeHtml(e.message) + '</span>';
       }
     }
     window.refreshCodexCliStatus = refreshCodexCliStatus;
@@ -7800,11 +8226,11 @@ function showChatBridgeDialog() {
     }
     window.testChatBridgeConnection = testChatBridgeConnection;
     
-    // 加载大牛马可用模型列表
+    // 加载草原 OpenRouter 免费模型列表（旧面板兼容函数）
     async function loadPrimaryModels() {
       var url = document.getElementById('primaryApiUrl')?.value.trim() || '';
       var key = document.getElementById('primaryApiKey')?.value || '';
-      var currentModel = chatBridgeConfig.primary?.model || 'claude-sonnet-4-5';
+      var currentModel = chatBridgeConfig.primary?.model || 'openrouter/free';
       
       var loadingDiv = document.getElementById('primaryModelLoading');
       var selectDiv = document.getElementById('primaryModelSelect');
@@ -7886,63 +8312,56 @@ function showChatBridgeDialog() {
     window.loadPrimaryModels = loadPrimaryModels;
     
     async function saveChatBridgeConfig() {
-      // 获取大牛马配置
-      var primaryApiUrl = document.getElementById('primaryApiUrl')?.value.trim() || '';
-      var primaryApiKey = document.getElementById('primaryApiKey')?.value || '';
-      // 优先使用下拉选择，其次使用手动输入
-      var selectVal = document.getElementById('primaryModelSelect')?.value || '';
-      var inputVal = document.getElementById('primaryModelInput')?.value.trim() || '';
-      var primaryModel = selectVal || inputVal || 'claude-sonnet-4-5';
-      
-      // 获取启用状态
-      var isEnabled = chatBridgeConfig.enabled;
-      
-      // 验证配置
-      if (!primaryApiUrl) {
-        appendMessage('⚠️ 请填写大牛马的 API URL', 'bot', false, true);
+      // 步骤4: 只收集草原 primary pool, 保存
+      var mp = window.ScholarHarnessModelPool;
+      if (!mp) {
+        appendMessage('❌ 模型池面板未加载, 无法保存', 'bot', false, true);
         return;
       }
-      if (isScholarHarnessAccountApiUrl(primaryApiUrl)) {
-        appendMessage('⚠️ 这个地址是 Scholar Harness 官网账号接口，不是模型 API 地址。\n\n请填写模型服务商提供的 OpenAI 兼容地址，例如：\nhttps://openrouter.ai/api/v1\nhttps://dashscope.aliyuncs.com/compatible-mode/v1', 'bot', false, true);
+
+      var primaryPool = mp.collectProviderSection('primary');
+
+      // 校验: 至少一个 enabled entry 的 model 字段非空
+      var hasValid = primaryPool && primaryPool.models && primaryPool.models.some(function (m) { return m.enabled && (m.model || m.api_url); });
+      if (!hasValid) {
+        appendMessage('⚠️ Grass 至少需要配置一个启用的 OpenRouter 免费模型', 'bot', false, true);
         return;
       }
-      
-      // 构建配置对象（只保存大牛马配置）
+
       var configToSave = {
-        enabled: isEnabled,
+        enabled: chatBridgeConfig.enabled,
         mode: 'api',
         primary: {
-          api_url: primaryApiUrl,
-          api_key: primaryApiKey || undefined,  // 空值不覆盖已有
-          model: primaryModel
-        }
+          pool: primaryPool,
+        },
       };
-      
-      // 保存到后端配置文件
+
       try {
         var response = await fetch('/api/chat-bridge/config', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(configToSave)
         });
-        
+
         var result = await response.json();
         if (response.ok && result.success) {
-          // 更新本地配置
-          chatBridgeConfig.enabled = isEnabled;
-          chatBridgeConfig.mode = 'api';
-          chatBridgeConfig.primary = {
-            apiUrl: primaryApiUrl,
-            hasApiKey: !!primaryApiKey || chatBridgeConfig.primary?.hasApiKey,
-            model: primaryModel
-          };
-          
+          if (result.config && result.config.primary) {
+            chatBridgeConfig.primary = {
+              apiUrl: result.config.primary.api_url || '',
+              hasApiKey: result.config.primary.has_api_key || false,
+              model: result.config.primary.model || 'openrouter/free',
+              description: result.config.primary.description || '',
+              pool: result.config.primary.pool || undefined,
+            };
+          }
           localStorage.setItem(CHAT_BRIDGE_KEY, JSON.stringify(chatBridgeConfig));
           updateModelBadge();
           updateChatBridgeButton();
-          
+
+          mp.refreshActiveSelect('primary');
+
           console.log('[ChatBridge] Config saved successfully:', chatBridgeConfig);
-          
+
           var returnToAiConfiguration = guidedConfigState && guidedConfigState.returnTarget === 'ai-configuration';
           if (returnToAiConfiguration) {
             guidedConfigState = null;
@@ -7951,10 +8370,10 @@ function showChatBridgeDialog() {
           } else {
             showConfigCenterDialog();
           }
-          appendMessage('✅ 大牛马配置已保存！\n\n' +
-            '🐂 **模型**: ' + primaryModel + '\n' +
-            '📍 **API URL**: ' + primaryApiUrl + '\n\n' +
-            'Codex CLI 请在“配置”首页顶部单独配置；模型通过主页输入框右侧的选择器切换。', 'bot', false, true);
+          appendMessage('✅ Grass 配置已保存！\n\n' +
+            '🌾 **当前免费模型**: ' + (chatBridgeConfig.primary?.model || '(未配置)') + '\n' +
+            '📍 **API URL**: ' + (chatBridgeConfig.primary?.apiUrl || '(未配置)') + '\n\n' +
+            '在输入框右侧选择器切换 Grass；在本面板内“设为当前”可立即切换激活模型。', 'bot', false, true);
           if (returnToAiConfiguration) {
             setTimeout(function() { startAiConfigurationAssistant('all'); }, 120);
           }
@@ -7973,14 +8392,14 @@ function showChatBridgeDialog() {
       chatBridgeConfig.useForChat = true;
       localStorage.setItem(CHAT_BRIDGE_KEY, JSON.stringify(chatBridgeConfig));
       closeModal();
-      appendMessage('✅ 已切换到大牛马模式', 'bot', false, true);
+      appendMessage('✅ 已切换到 Grass OpenRouter 模式', 'bot', false, true);
       
       var btn = document.querySelector('.chat-bridge-btn');
       if (btn) {
         btn.style.background = '';
         btn.style.borderColor = '';
         btn.style.color = '';
-        btn.textContent = '🐂 大牛马';
+        btn.textContent = '🌾 Grass';
       }
     }
     window.useChatBridgeForChat = useChatBridgeForChat;
@@ -8069,12 +8488,12 @@ function showChatBridgeDialog() {
       var resultDiv = document.getElementById('chatBridgeTestResult');
       resultDiv.style.display = 'block';
       resultDiv.style.background = 'rgba(255,193,7,0.15)';
-      resultDiv.innerHTML = '正在刷新大牛马页面...';
+      resultDiv.innerHTML = '正在刷新 Grass 页面...';
       
       try {
         await refreshChatBridgeViaApi();
         resultDiv.style.background = 'rgba(16,163,127,0.15)';
-        resultDiv.textContent = '大牛马页面已刷新';
+        resultDiv.textContent = 'Grass 页面已刷新';
       } catch (e) {
         resultDiv.style.background = 'rgba(220,38,38,0.15)';
         resultDiv.textContent = '刷新失败：' + e.message;

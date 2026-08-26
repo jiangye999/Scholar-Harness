@@ -257,9 +257,9 @@ publicRouter.post("/activate", authMiddleware, async (req: AuthenticatedRequest,
             endDate,
             isLifetimeCode ? null : startDate,
             isLifetimeCode ? null : endDate,
-            isLifetimeCode ? -1 : 5000000,
-            isLifetimeCode ? -1 : 5000000,
-            isLifetimeCode ? -1 : 10,
+            -1,
+            -1,
+            -1,
             existingSubscription.id,
           ]
         )
@@ -281,8 +281,8 @@ publicRouter.post("/activate", authMiddleware, async (req: AuthenticatedRequest,
             isLifetimeCode ? "active" : "trial",
             isLifetimeCode ? null : startDate,
             isLifetimeCode ? null : endDate,
-            isLifetimeCode ? -1 : 5000000,
-            isLifetimeCode ? -1 : 10,
+            -1,
+            -1,
           ]
         );
     

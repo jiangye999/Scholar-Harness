@@ -2662,6 +2662,12 @@ window.showPdfWikiMetaDatabase = async function(options) {
       return '/api/chat-bridge/pi/sessions/' + encodeURIComponent(conversationId || ensurePdfWikiMetaAnalysisConversationId());
     }
 
+    function getPdfWikiMetaProjectId() {
+      return typeof getConversationHistoryProjectId === 'function'
+        ? String(getConversationHistoryProjectId() || '')
+        : '';
+    }
+
     function createPdfWikiMetaPiQueuePanel() {
       var existing = document.getElementById('metaAnalysisPiQueuePanel');
       if (existing) return existing;
@@ -2840,7 +2846,7 @@ window.showPdfWikiMetaDatabase = async function(options) {
       if (!pdfWikiMetaAnalysisConversationId || pdfWikiMetaPiSyncInFlight) return false;
       pdfWikiMetaPiSyncInFlight = true;
       try {
-        var response = await fetch(getPdfWikiMetaPiSessionUrl(pdfWikiMetaAnalysisConversationId) + '?userId=' + encodeURIComponent(currentUserId || 'web-user'));
+        var response = await fetch(getPdfWikiMetaPiSessionUrl(pdfWikiMetaAnalysisConversationId) + '?userId=' + encodeURIComponent(currentUserId || 'web-user') + '&projectId=' + encodeURIComponent(getPdfWikiMetaProjectId()));
         var result = await response.json().catch(function() { return {}; });
         if (!response.ok || !result.success || !result.state) throw new Error(result.error || ('HTTP ' + response.status));
         pdfWikiMetaPiState = result.state;
@@ -2868,7 +2874,7 @@ window.showPdfWikiMetaDatabase = async function(options) {
         var response = await fetch(getPdfWikiMetaPiSessionUrl(pdfWikiMetaAnalysisConversationId) + '/claim', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ userId: currentUserId || 'web-user' })
+          body: JSON.stringify({ userId: currentUserId || 'web-user', projectId: getPdfWikiMetaProjectId() || undefined })
         });
         var result = await response.json().catch(function() { return {}; });
         if (!response.ok || !result.success) throw new Error(result.error || ('HTTP ' + response.status));
@@ -2903,6 +2909,7 @@ window.showPdfWikiMetaDatabase = async function(options) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           userId: currentUserId || 'web-user',
+          projectId: getPdfWikiMetaProjectId() || undefined,
           message: message,
           behavior: behavior === 'steer' ? 'steer' : 'follow_up',
           chatAttachments: chatAttachments,
@@ -2949,7 +2956,7 @@ window.showPdfWikiMetaDatabase = async function(options) {
         var response = await fetch(getPdfWikiMetaPiSessionUrl(pdfWikiMetaAnalysisConversationId) + '/messages/' + encodeURIComponent(messageId), {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ userId: currentUserId || 'web-user', message: String(nextMessage).trim() })
+          body: JSON.stringify({ userId: currentUserId || 'web-user', projectId: getPdfWikiMetaProjectId() || undefined, message: String(nextMessage).trim() })
         });
         var result = await response.json().catch(function() { return {}; });
         if (!response.ok || !result.success) throw new Error(result.error || ('HTTP ' + response.status));
@@ -2969,7 +2976,7 @@ window.showPdfWikiMetaDatabase = async function(options) {
 
     window.cancelPdfWikiMetaPiQueuedMessage = async function(messageId) {
       try {
-        var response = await fetch(getPdfWikiMetaPiSessionUrl(pdfWikiMetaAnalysisConversationId) + '/messages/' + encodeURIComponent(messageId) + '?userId=' + encodeURIComponent(currentUserId || 'web-user'), {
+        var response = await fetch(getPdfWikiMetaPiSessionUrl(pdfWikiMetaAnalysisConversationId) + '/messages/' + encodeURIComponent(messageId) + '?userId=' + encodeURIComponent(currentUserId || 'web-user') + '&projectId=' + encodeURIComponent(getPdfWikiMetaProjectId()), {
           method: 'DELETE'
         });
         var result = await response.json().catch(function() { return {}; });
@@ -3287,6 +3294,14 @@ window.showPdfWikiMetaDatabase = async function(options) {
       var dataset = workspace.dataset || {};
       var lines = [];
       lines.push('模型链路：' + (plan.provider || '本地规则') + (plan.workflowStage ? '；阶段：' + plan.workflowStage : ''));
+      if (plan.usage && Number(plan.usage.inputTokens) > 0) {
+        var metaUsage = plan.usage;
+        var metaTotalInput = Number(metaUsage.inputTokens) + (metaUsage.cacheReadTokens !== undefined ? Number(metaUsage.cacheReadTokens) : 0);
+        var metaCachePart = metaUsage.cacheReadTokens !== undefined && metaTotalInput > 0
+          ? ' · 缓存命中 ' + Math.round((Number(metaUsage.cacheReadTokens) / metaTotalInput) * 100) + '%'
+          : '';
+        lines.push('Token 用量：输入 ' + Number(metaUsage.inputTokens).toLocaleString() + ' · 输出 ' + Number(metaUsage.outputTokens || 0).toLocaleString() + metaCachePart);
+      }
       if (workspace.id) {
         lines.push('副本工作区：' + workspace.id + '；行 ' + Number(dataset.rowCount || 0) + '，列 ' + Number(dataset.columnCount || 0) + '。');
       }
@@ -3491,7 +3506,7 @@ window.showPdfWikiMetaDatabase = async function(options) {
               workspaceDirectory: getWorkspaceDirectoryPayload(currentConversationId)
             })
           }),
-          fetch(getPdfWikiMetaPiSessionUrl(conversationId) + '?userId=' + encodeURIComponent(currentUserId || 'web-user'), {
+          fetch(getPdfWikiMetaPiSessionUrl(conversationId) + '?userId=' + encodeURIComponent(currentUserId || 'web-user') + '&projectId=' + encodeURIComponent(getPdfWikiMetaProjectId()), {
             method: 'DELETE'
           })
         ]);
@@ -3702,7 +3717,7 @@ window.showPdfWikiMetaDatabase = async function(options) {
         fetch(getPdfWikiMetaPiSessionUrl(conversationId) + '/interrupt', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ userId: currentUserId || 'web-user' })
+          body: JSON.stringify({ userId: currentUserId || 'web-user', projectId: getPdfWikiMetaProjectId() || undefined })
         }).then(function(response) {
           return response.json().catch(function() { return {}; });
         }).then(function(result) {
@@ -3788,13 +3803,22 @@ window.showPdfWikiMetaDatabase = async function(options) {
     function applyPdfWikiMetaChatProviderConfig(requestBody, provider) {
       if (!requestBody) return;
       if (provider) requestBody.forceProvider = provider;
-      if (provider === 'codex') {
-        var composerCodexSelection = getComposerCodexSelection();
-        requestBody.codexModel = composerCodexSelection.model;
-        requestBody.codexReasoningEffort = composerCodexSelection.reasoningEffort;
-        flushComposerCodexSelectionSave().catch(function(error) {
-          console.warn('[MetaAnalysisAI] Codex selection persistence failed:', error);
-        });
+      if (provider === 'codex' || provider === 'pi' || provider === 'opencode') {
+        var runtimeSelection = typeof window.getComposerCodingRuntimeSelection === 'function'
+          ? window.getComposerCodingRuntimeSelection(provider)
+          : null;
+        requestBody.agentRuntime = provider;
+        if (runtimeSelection && runtimeSelection.model) requestBody.agentRuntimeModel = runtimeSelection.model;
+        if (runtimeSelection && runtimeSelection.reasoningEffort) requestBody.agentRuntimeReasoningEffort = runtimeSelection.reasoningEffort;
+        if (runtimeSelection && runtimeSelection.timeoutMs) requestBody.agentRuntimeTimeoutMs = runtimeSelection.timeoutMs;
+        if (provider === 'codex') {
+          var composerCodexSelection = getComposerCodexSelection();
+          requestBody.codexModel = composerCodexSelection.model;
+          requestBody.codexReasoningEffort = composerCodexSelection.reasoningEffort;
+          flushComposerCodexSelectionSave().catch(function(error) {
+            console.warn('[MetaAnalysisAI] Codex selection persistence failed:', error);
+          });
+        }
         return;
       }
       if (provider === 'primary') {
@@ -3992,6 +4016,7 @@ window.showPdfWikiMetaDatabase = async function(options) {
         var requestBody = {
           message: query,
           userId: currentUserId || 'web-user',
+          projectId: getPdfWikiMetaProjectId() || undefined,
           conversationId: conversationId,
           context: sharedContext,
           history: historyForAgent,
@@ -4071,7 +4096,7 @@ window.showPdfWikiMetaDatabase = async function(options) {
             await fetch(getPdfWikiMetaPiSessionUrl(conversationId) + '/messages/' + encodeURIComponent(queuedItem.id) + '/requeue', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ userId: currentUserId || 'web-user' })
+              body: JSON.stringify({ userId: currentUserId || 'web-user', projectId: getPdfWikiMetaProjectId() || undefined })
             });
           } catch (requeueError) {
             console.warn('[MetaPi] Failed to requeue message after request error:', requeueError);

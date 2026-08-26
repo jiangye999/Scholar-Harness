@@ -48,8 +48,8 @@ describe('main page dragged file provenance', () => {
   it('keeps a reference image and workspace data in the same multimodal turn', () => {
     expect(html).toContain('function hasWorkspaceBackedVisualReferenceIntent(text)');
     expect(html).toContain('工作路径|工作目录|当前目录|本地路径|项目目录');
-    expect(html).toContain('var hasVisualReferenceAttachments = hasChatAttachmentVision(pendingChatAttachments);');
-    expect(html).toContain('selectedWorkspaceFiles.length > 0 || hasVisualReferenceAttachments');
+    expect(html).toContain('var requiresVisionForChat = hasVisionInputForMainChat() || hasChatAttachmentVision(pendingChatAttachments);');
+    expect(html).toContain('chatBridgeRequestBody.requiresVision = true;');
     expect(html).toContain('chatBridgeRequestBody.workspaceDirectory = activeWorkspaceDirectory;');
     expect(html).toContain('chatBridgeRequestBody.codexImages = chatAttachmentImagePaths;');
   });

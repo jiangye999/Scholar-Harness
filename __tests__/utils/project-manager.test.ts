@@ -125,6 +125,20 @@ describe('ProjectManager linked workspaces', () => {
     expect(manager.listProjects().some(project => project.name === '原项目')).toBe(true);
   });
 
+  it('promotes a legacy active workspace to a stable linked runtime project', () => {
+    createLegacyWorkspace(dataDir, 'runtime-marker');
+    const manager = new ProjectManager(dataDir);
+
+    const current = manager.ensureCurrentProjectRuntime('user-runtime');
+
+    expect(current.isArchivedProject).toBe(true);
+    expect(current.projectId).toMatch(/^project-/);
+    expect(current.projectDir).toBeTruthy();
+    expect(fs.lstatSync(path.join(dataDir, 'uploads')).isSymbolicLink()).toBe(true);
+    expect(fs.readFileSync(path.join(current.projectDir!, 'uploads', 'runtime-marker.txt'), 'utf-8'))
+      .toBe('runtime-marker');
+  });
+
   it('recovers an interrupted linked project switch during startup', () => {
     const projectId = 'project-20260722000300-cccccc';
     const projectDir = writeArchivedProject(dataDir, projectId, '恢复项目', 'recover-me');

@@ -8,6 +8,7 @@ import {
 
 export interface AgentRunIdentity {
   userId: string;
+  projectId?: string;
   conversationId: string;
   runId: string;
 }
@@ -51,13 +52,14 @@ export class AgentExecutionKernel {
     return this.outcomeRecordedValue;
   }
 
-  begin(userId: string, conversationId: string, provider = 'auto'): BeginAgentRunResult {
-    const result = piAgentSessionManager.beginRun(userId, conversationId, provider);
+  begin(userId: string, conversationId: string, provider = 'auto', projectId = ''): BeginAgentRunResult {
+    const result = piAgentSessionManager.beginRun(userId, conversationId, provider, projectId);
     if (result.accepted) {
-      this.identityValue = { userId, conversationId, runId: result.runId };
+      this.identityValue = { userId, projectId: projectId || undefined, conversationId, runId: result.runId };
       logger.info(`[${this.options.label}] Agent run started`, {
         userId,
         conversationId,
+        projectId: projectId || undefined,
         runId: result.runId,
         provider,
       });
@@ -80,6 +82,7 @@ export class AgentExecutionKernel {
       this.identityValue.userId,
       this.identityValue.conversationId,
       this.identityValue.runId,
+      this.identityValue.projectId,
     );
   }
 
@@ -98,6 +101,7 @@ export class AgentExecutionKernel {
       this.identityValue.runId,
       type,
       payload,
+      this.identityValue.projectId,
     );
   }
 
@@ -107,6 +111,7 @@ export class AgentExecutionKernel {
       this.identityValue.userId,
       this.identityValue.conversationId,
       this.identityValue.runId,
+      this.identityValue.projectId,
     );
   }
 
@@ -119,6 +124,7 @@ export class AgentExecutionKernel {
       this.identityValue.userId,
       this.identityValue.conversationId,
       this.identityValue.runId,
+      this.identityValue.projectId,
     );
     logger.info(`[${this.options.label}] Explicit Agent cancellation requested`, {
       conversationId: this.identityValue.conversationId,
@@ -146,6 +152,7 @@ export class AgentExecutionKernel {
       this.identityValue.conversationId,
       this.identityValue.runId,
       { status, error: options.error },
+      this.identityValue.projectId,
     );
     this.outcomeRecordedValue = true;
   }
@@ -157,6 +164,7 @@ export class AgentExecutionKernel {
       this.identityValue.userId,
       this.identityValue.conversationId,
       this.identityValue.runId,
+      this.identityValue.projectId,
     );
     logger.info(`[${this.options.label}] Agent run settled`, {
       conversationId: this.identityValue.conversationId,

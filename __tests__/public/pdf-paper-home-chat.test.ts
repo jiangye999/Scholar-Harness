@@ -67,13 +67,15 @@ describe('single PDF homepage chat integration', () => {
     expect(source).not.toContain("fetch('/api/pdf-wiki/reader/chat'");
   });
 
-  it('hydrates the selected PDF and attaches it to every homepage turn', () => {
+  it('exposes the selected PDF as an on-demand resource on every homepage turn', () => {
     expect(localServer).toContain('app.get("/api/pdf-wiki/reader/context"');
     expect(localServer).toContain('paperText: truncatePdfReaderFullText(fullText.text, 90000)');
-    expect(html).toContain('context.pdfPaperChat = await loadActivePdfPaperChatContextForTurn()');
+    expect(html).toContain("registerMainChatAgentResource(context, 'current-pdf', '当前论文', {");
+    expect(html).toContain("pdfId: activePaperResource.pdfId || activePaperResource.id || ''");
+    expect(html).toContain('正文由 Agent 按需读取');
     expect(chatBridge).toContain('function buildPdfPaperChatPromptBlock(value: any)');
-    expect(chatBridge).toContain('<CURRENT_PDF_TEXT>');
-    expect(chatBridge).toContain('buildPdfPaperChatPromptBlock(context.pdfPaperChat)');
+    expect(chatBridge).toContain('<CURRENT_PDF_SELECTION>');
+    expect(chatBridge).toContain('read_page_context(resourceId="current-pdf")');
   });
 });
 

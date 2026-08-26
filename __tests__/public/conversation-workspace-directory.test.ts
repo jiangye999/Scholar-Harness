@@ -36,7 +36,7 @@ function createStorage(initial: Record<string, string> = {}) {
   };
 }
 
-function loadWorkspaceDirectoryHelpers() {
+function loadWorkspaceDirectoryHelpers(options: { failLocalWrites?: boolean } = {}) {
   const start = html.indexOf("var WORKSPACE_DIRECTORY_KEY = 'scholarharness_workspace_directory'");
   const end = html.indexOf('function loadWorkspaceConversationRoots()', start);
   if (start < 0 || end < 0) throw new Error('Conversation workspace helper block was not found');
@@ -49,6 +49,11 @@ function loadWorkspaceDirectoryHelpers() {
       aiWorkRoot: 'D:\\legacy-paper\\AI',
     }),
   });
+  if (options.failLocalWrites) {
+    storage.setItem = () => {
+      throw new Error('quota exceeded');
+    };
+  }
   const context = vm.createContext({
     localStorage: storage,
     currentUserId: 'web-user',
@@ -60,6 +65,7 @@ function loadWorkspaceDirectoryHelpers() {
     Map,
     Date,
   });
+  (context as unknown as { window: vm.Context }).window = context;
   vm.runInContext(
     `${html.slice(start, end)}
      this.workspaceApi = {
@@ -75,7 +81,7 @@ function loadWorkspaceDirectoryHelpers() {
     api: (context as unknown as {
       workspaceApi: {
         load: (conversationId: string) => WorkspaceSetting;
-        save: (setting: WorkspaceSetting, conversationId: string) => void;
+        save: (setting: WorkspaceSetting, conversationId: string) => boolean;
         initialize: (conversationId: string, previousConversationId?: string) => WorkspaceSetting;
         markActive: (conversationId: string) => void;
         activate: (conversationId: string) => void;
@@ -170,6 +176,22 @@ describe('conversation-scoped workspace directories', () => {
     expect(api.load('legacy-history').permission).toBe('workspace-write');
   });
 
+  it('keeps the current page setting in memory when localStorage rejects the write', () => {
+    const { api } = loadWorkspaceDirectoryHelpers({ failLocalWrites: true });
+    const savedLocally = api.save(
+      {
+        enabled: true,
+        path: 'D:\\quota-safe-paper',
+        permission: 'workspace-write',
+        aiWorkRoot: '',
+      },
+      'conv-a',
+    );
+
+    expect(savedLocally).toBe(false);
+    expect(api.load('conv-a').path).toBe('D:\\quota-safe-paper');
+  });
+
   it('wires inheritance, switching, deletion, payloads, and project archives to conversation state', () => {
     expect(html).toMatch(
       /currentConversationId = chatOptions\.scope === 'bibliometrics'[\s\S]*?: createConversationId\(\);[\s\S]*?initializeWorkspaceDirectoryForConversation\(currentConversationId, oldConvId\);/,
@@ -194,6 +216,14 @@ describe('conversation-scoped workspace directories', () => {
     expect(html).not.toContain("setting.permission === 'read-only') return ''");
     expect(html).toContain('aiWorkRoot: conversationAiWorkRoot');
     expect(html).toContain("conversationId: String(conversationId || currentConversationId || '').trim()");
+    expect(html).toContain("projectId: typeof getConversationHistoryProjectId === 'function'");
+    expect(html).toContain('getWorkspaceConversationRootKey(scopedConversationId, projectId)');
+    expect(html).toContain("fetch('/api/chat-bridge/workspace/reconcile-user-view'");
+    expect(html).not.toContain('reconcileWorkspaceUserViewForConversation(id);');
+    expect(html).toContain("fetch('/api/chat-bridge/workspace/preference'");
+    expect(html).toContain('persistWorkspaceDirectorySettingRemote(inspectedSetting, inspectionConversationId)');
+    expect(html).toContain('window.syncWorkspaceDirectorySettingFromServer = syncWorkspaceDirectorySettingFromServer;');
+    expect(html).toContain("window.syncWorkspaceDirectorySettingFromServer(currentConversationId);");
     expect(html).toContain('onchange="handleWorkspaceDirectoryPermissionChange()"');
     expect(html).toContain('当前运行任务仍使用“');
     expect(html).toContain('新设置从下一轮任务生效');

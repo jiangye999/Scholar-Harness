@@ -410,6 +410,7 @@
       } catch (e) {
         console.warn('[SecondaryConfig] Failed to refresh server config:', e);
       }
+      // 把已保存的 chatBridgeConfig 镜像到本地 apiConfig (兼容老代码读取)
       if (chatBridgeConfig.secondary?.apiUrl && !apiConfig.url) {
         apiConfig.url = normalizeApiBaseUrl(chatBridgeConfig.secondary.apiUrl);
       }
@@ -417,197 +418,152 @@
         apiConfig.model = chatBridgeConfig.secondary.model;
         currentModel = apiConfig.model;
       }
-      
-      showModal('🐄 小牛马配置',
+
+      var mp = window.ScholarHarnessModelPool;
+      var sectionHtml = '';
+      if (mp) {
+        // 左右两列布局: 宽屏并排, 窄屏自动堆叠
+        sectionHtml = '<div style="display:flex;gap:15px;align-items:flex-start;flex-wrap:wrap;">'
+          + '<div style="flex:1 1 320px;min-width:280px;">' + mp.renderProviderSection('secondary', chatBridgeConfig.secondary) + '</div>'
+          + '<div style="flex:1 1 320px;min-width:280px;">' + mp.renderProviderSection('secondary_vision', chatBridgeConfig.secondaryVision) + '</div>'
+          + '</div>';
+      } else {
+        sectionHtml = '<div style="color:var(--danger-color);margin-bottom:15px;">模型池面板未加载, 请刷新页面</div>';
+      }
+
+      showModal('🐄 Little corse 配置',
         '<div class="current-api">文本模型: ' + escapeHtml(currentModel) + '；视觉模型: ' + escapeHtml(secondaryVisionApiConfig.model || chatBridgeConfig.secondaryVision?.model || '未配置') + '</div>' +
-        // ========== 数据跨境传输合规告知 ========== 
-        '<div style="background:#fff3cd;border:1px solid #ffc107;border-radius:8px;padding:12px;margin-bottom:15px;font-size:13px;">' +
-        '<div style="color:#856404;font-weight:bold;margin-bottom:8px;">⚠️ 数据跨境传输告知（合规要求）</div>' +
-        '<div style="color:#856404;line-height:1.8;font-size:12px;">' +
-        '根据《个人信息保护法》，使用境外AI服务时需告知您：<br>' +
-        '• <b>OpenAI GPT</b> → 美国（境外）<br>' +
-        '• <b>Anthropic Claude</b> → 美国（境外）<br>' +
-        '• <b>阿里云通义千问</b> → 中国境内<br>' +
-        '• <b>百度文心</b> → 中国境内<br>' +
-        '使用境外API时，您的输入内容将传输至境外服务器。<br>' +
-        '<b style="color:#dc3545;">建议优先使用境内服务商以保护数据安全。</b>' +
-        '</div>' +
-        '</div>' +
-        '<div style="margin-bottom:15px;padding:14px;border:1px solid var(--border-color);border-radius:10px;background:rgba(148,163,184,0.08);">' +
-        '<div style="font-size:14px;font-weight:800;color:var(--text-primary);margin-bottom:5px;">1. 小牛马文本 API</div>' +
-        '<div style="font-size:12px;line-height:1.7;color:var(--text-secondary);margin-bottom:10px;">用于纯文本聊天、写作执行、引用验证、长期记忆总结。建议配置便宜稳定的文本模型。</div>' +
-        '<div style="margin-bottom:10px;">' +
-        '<label style="display:block;margin-bottom:5px;font-size:12px;color:var(--text-secondary);">文本 API 地址</label>' +
-        '<input type="text" id="apiUrl" placeholder="普通百炼或 Token Plan 的 OpenAI 兼容 URL" value="' + escapeHtml(apiConfig.url) + '" style="width:100%;padding:8px 12px;border:1px solid var(--border-color);border-radius:6px;background:var(--bg-input);color:var(--text-primary);">' +
-        '</div>' +
-        buildSecondaryProviderGuideHtml('text') +
-        '<div style="margin-bottom:10px;">' +
-        '<label style="display:block;margin-bottom:5px;font-size:12px;color:var(--text-secondary);">API 密钥</label>' +
-        '<input type="password" id="apiKey" placeholder="' + (chatBridgeConfig.secondary?.hasApiKey && !apiConfig.key ? '已保存；留空保持原 Key' : '输入 API Key') + '" value="' + escapeHtml(apiConfig.key) + '" style="width:100%;padding:8px 12px;border:1px solid var(--border-color);border-radius:6px;background:var(--bg-input);color:var(--text-primary);">' +
-        '</div>' +
-        '<div style="margin-bottom:10px;">' +
-        '<label style="display:block;margin-bottom:5px;font-size:12px;color:var(--text-secondary);">文本模型</label>' +
-        '<div id="modelLoading" style="text-align:center;padding:8px;color:#8e8ea0;font-size:12px;">点击按钮获取可用模型列表，或直接手动填写模型名称。</div>' +
-        '<select id="modelSelect" style="display:none;width:100%;padding:8px 12px;border:1px solid var(--border-color);border-radius:6px;background:var(--bg-input);color:var(--text-primary);"></select>' +
-        '<input type="text" id="modelInput" placeholder="例如：qwen-plus / deepseek-chat" value="' + escapeHtml(apiConfig.model || currentModel || '') + '" style="display:block;width:100%;padding:8px 12px;border:1px solid var(--border-color);border-radius:6px;background:var(--bg-input);color:var(--text-primary);">' +
-        '<button type="button" onclick="loadSecondaryModels(\'text\')" style="margin-top:8px;padding:8px 12px;background:var(--bg-secondary);border:1px solid var(--border-color);border-radius:6px;color:var(--text-primary);cursor:pointer;font-size:12px;">获取可用模型列表</button>' +
-        '</div>' +
-        '</div>' +
-        '<div style="margin-bottom:15px;padding:14px;border:1px solid var(--border-color);border-radius:10px;background:rgba(148,163,184,0.08);">' +
-        '<div style="font-size:14px;font-weight:800;color:var(--text-primary);margin-bottom:5px;">2. 小牛马视觉多模态 API</div>' +
-        '<div style="font-size:12px;line-height:1.7;color:var(--text-secondary);margin-bottom:10px;">用于图片、图表截图、实验结果图片等视觉输入。纯文本不会调用这里；未配置时会回退到旧的小牛马文本配置。</div>' +
-        '<div style="margin-bottom:10px;">' +
-        '<label style="display:block;margin-bottom:5px;font-size:12px;color:var(--text-secondary);">视觉 API 地址</label>' +
-        '<input type="text" id="visionApiUrl" placeholder="普通百炼或 Token Plan 的 OpenAI 兼容 URL" value="' + escapeHtml(secondaryVisionApiConfig.url || chatBridgeConfig.secondaryVision?.apiUrl || '') + '" style="width:100%;padding:8px 12px;border:1px solid var(--border-color);border-radius:6px;background:var(--bg-input);color:var(--text-primary);">' +
-        '</div>' +
-        buildSecondaryProviderGuideHtml('vision') +
-        '<div style="margin-bottom:10px;">' +
-        '<label style="display:block;margin-bottom:5px;font-size:12px;color:var(--text-secondary);">视觉 API 密钥</label>' +
-        '<input type="password" id="visionApiKey" placeholder="' + (chatBridgeConfig.secondaryVision?.hasApiKey && !secondaryVisionApiConfig.key ? '已保存；留空保持原 Key' : '输入视觉 API Key') + '" value="' + escapeHtml(secondaryVisionApiConfig.key || '') + '" style="width:100%;padding:8px 12px;border:1px solid var(--border-color);border-radius:6px;background:var(--bg-input);color:var(--text-primary);">' +
-        '</div>' +
-        '<div style="margin-bottom:0;">' +
-        '<label style="display:block;margin-bottom:5px;font-size:12px;color:var(--text-secondary);">视觉模型</label>' +
-        '<div id="visionModelLoading" style="text-align:center;padding:8px;color:#8e8ea0;font-size:12px;">点击按钮获取可用模型列表，或直接填写支持图片输入的模型名称。</div>' +
-        '<select id="visionModelSelect" style="display:none;width:100%;padding:8px 12px;border:1px solid var(--border-color);border-radius:6px;background:var(--bg-input);color:var(--text-primary);"></select>' +
-        '<input type="text" id="visionModelInput" placeholder="例如：qwen3.5-ocr / qwen-vl-max / gpt-4o" value="' + escapeHtml(secondaryVisionApiConfig.model || chatBridgeConfig.secondaryVision?.model || 'gpt-4o') + '" style="display:block;width:100%;padding:8px 12px;border:1px solid var(--border-color);border-radius:6px;background:var(--bg-input);color:var(--text-primary);">' +
-        '<button type="button" onclick="loadSecondaryModels(\'vision\')" style="margin-top:8px;padding:8px 12px;background:var(--bg-secondary);border:1px solid var(--border-color);border-radius:6px;color:var(--text-primary);cursor:pointer;font-size:12px;">获取视觉模型列表</button>' +
-        '</div>' +
-        '</div>' +
+        '<div id="mpSwitchTip" style="margin-bottom:12px;font-size:12px;color:var(--text-secondary);min-height:18px;"></div>' +
+        sectionHtml +
         '<div style="background:var(--modal-tip-bg);padding:10px;border-radius:6px;margin-bottom:10px;font-size:12px;color:var(--text-secondary);">' +
-        '<strong>调用规则：</strong>纯文本走“小牛马文本 API”；图片/图表截图等视觉输入优先走“小牛马视觉多模态 API”。' +
+        '<strong>调用规则：</strong>纯文本走"Little corse 文本 API"；图片/图表截图等视觉输入优先走"Little corse 视觉多模态 API"。' +
         '</div>' +
         '<div class="btns secondary-config-actions"><button class="cancel" onclick="closeModal()">取消</button><button class="ok" onclick="saveApiConnect()">保存</button></div>'
         , true
       );
-      
-      // 获取模型列表
-      if (apiConfig.url && apiConfig.key) {
-        try {
-          var response = await fetch('/api/models', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ apiUrl: apiConfig.url, apiKey: apiConfig.key })
-          });
-          
-          var data = await response.json();
-          var models = data.models || [];
-          
-          document.getElementById('modelLoading').style.display = 'none';
-          document.getElementById('modelInput').style.display = 'block';
-          
-          if (models.length > 0) {
-            var select = document.getElementById('modelSelect');
-            var options = '<option value="">-- 选择模型 --</option>';
-            for (var i = 0; i < models.length; i++) {
-              var selected = models[i] === currentModel ? ' selected' : '';
-              options += '<option value="' + models[i] + '"' + selected + '>' + models[i] + '</option>';
+
+      // 渲染后绑定事件 + 启动健康轮询
+      if (mp) {
+        mp.attachModelPoolHandlers();
+        mp.refreshActiveSelect('secondary');
+        mp.refreshActiveSelect('secondary_vision');
+        mp.startHealthPolling();
+        var overlay = document.getElementById('modalOverlay');
+        if (overlay && !overlay.dataset.mpHealthStopBound) {
+          overlay.dataset.mpHealthStopBound = '1';
+          var observer = new MutationObserver(function () {
+            if (!overlay.classList.contains('show')) {
+              mp.stopHealthPolling();
             }
-            select.innerHTML = options;
-            select.style.display = 'block';
-          } else {
-            document.getElementById('modelLoading').style.display = 'block';
-            document.getElementById('modelLoading').innerHTML = '请输入模型名称（API 未返回模型列表）';
-            document.getElementById('modelLoading').style.color = '#8e8ea0';
-          }
-        } catch (error) {
-          document.getElementById('modelLoading').textContent = '请手动输入模型名称';
-          document.getElementById('modelLoading').style.color = '#f59e0b';
-          document.getElementById('modelSelect').style.display = 'none';
-          document.getElementById('modelInput').style.display = 'block';
+          });
+          observer.observe(overlay, { attributes: true, attributeFilter: ['class'] });
         }
-      } else {
-        document.getElementById('modelLoading').textContent = '请先配置 API 地址和密钥';
-        document.getElementById('modelLoading').style.color = '#f59e0b';
-        document.getElementById('modelSelect').style.display = 'none';
-        document.getElementById('modelInput').style.display = 'block';
       }
     }
-    
+
     window.saveApiConnect = async function() {
-      var url = normalizeApiBaseUrl(document.getElementById('apiUrl').value);
-      var key = document.getElementById('apiKey').value.trim();
-      var selectVal = document.getElementById('modelSelect')?.value || '';
-      var inputVal = document.getElementById('modelInput')?.value.trim() || '';
-      var model = selectVal || inputVal || apiConfig.model || 'qwen3.5-plus';
-      var visionUrl = normalizeApiBaseUrl(document.getElementById('visionApiUrl')?.value || '');
-      var visionKeyInput = document.getElementById('visionApiKey')?.value.trim() || '';
-      var visionSelectVal = document.getElementById('visionModelSelect')?.value || '';
-      var visionInputVal = document.getElementById('visionModelInput')?.value.trim() || '';
-      var previousVision = loadSecondaryVisionApiConfig();
-      var previousTextKey = apiConfig.key || '';
-      var visionModel = visionSelectVal || visionInputVal || previousVision.model || chatBridgeConfig.secondaryVision?.model || 'gpt-4o';
-      
-      console.log('[API] Saving config:', {
-        url: url ? '已填写' : '空',
-        key: key ? '已填写' : '空',
-        model: model,
-        visionUrl: visionUrl ? '已填写' : '空',
-        visionKey: visionKeyInput ? '已填写' : '空',
-        visionModel: visionModel
-      });
-      
-      if (!url) {
-        alert('请填写 API 地址\n\n普通百炼：https://dashscope.aliyuncs.com/compatible-mode/v1\nToken Plan：https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1');
+      var mp = window.ScholarHarnessModelPool;
+      if (!mp) {
+        alert('模型池面板未加载, 请刷新页面重试');
         return;
       }
-      if (isScholarHarnessAccountApiUrl(url)) {
-        alert('这个地址是 Scholar Harness 官网账号接口，不是模型 API 地址。\n\n请填写模型服务商提供的 OpenAI 兼容地址，例如：\nhttps://dashscope.aliyuncs.com/compatible-mode/v1\nhttps://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1\nhttps://openrouter.ai/api/v1');
+
+      var secondaryPool = mp.collectProviderSection('secondary');
+      var secondaryVisionPool = mp.collectProviderSection('secondary_vision');
+
+      function poolHasValidEntry(pool) {
+        return pool && pool.models && pool.models.some(function (m) {
+          return m.enabled && m.api_url;
+        });
+      }
+      if (!poolHasValidEntry(secondaryPool)) {
+        alert('请至少配置一个启用的"Little corse 文本 API"卡片, 并填写 API 地址');
         return;
       }
-      if (!key && !previousTextKey && !chatBridgeConfig.secondary?.hasApiKey) {
-        alert('请填写 API 密钥');
+
+      function poolHasScholarHarnessUrl(pool) {
+        return pool && pool.models && pool.models.some(function (m) {
+          return m.enabled && m.api_url && isScholarHarnessAccountApiUrl(m.api_url);
+        });
+      }
+      if (poolHasScholarHarnessUrl(secondaryPool) || poolHasScholarHarnessUrl(secondaryVisionPool)) {
+        alert('不能填写 Scholar Harness 官网账号接口。请填写模型服务商提供的 OpenAI 兼容地址, 例如: https://dashscope.aliyuncs.com/compatible-mode/v1');
         return;
       }
-      if (visionUrl && isScholarHarnessAccountApiUrl(visionUrl)) {
-        alert('视觉 API 地址不能填写 Scholar Harness 官网账号接口。\n\n请填写支持图片输入的模型服务商 API 地址。');
-        return;
+
+      if (secondaryVisionPool && secondaryVisionPool.models) {
+        for (var i = 0; i < secondaryVisionPool.models.length; i++) {
+          var m = secondaryVisionPool.models[i];
+          if (m.enabled && m.api_url && !m.api_key && !chatBridgeConfig.secondaryVision?.hasApiKey) {
+            alert('已填写视觉 API 地址, 请同时填写视觉 API Key');
+            return;
+          }
+        }
       }
-      if (visionUrl && !visionKeyInput && !previousVision.key && !chatBridgeConfig.secondaryVision?.hasApiKey) {
-        alert('已填写视觉 API 地址，请同时填写视觉 API Key。');
-        return;
-      }
-      
-      apiConfig.url = url;
-      apiConfig.key = key || previousTextKey || '';
-      apiConfig.model = model;
-      saveApiConfig();
-      chatBridgeConfig.secondary = {
-        apiUrl: url,
-        hasApiKey: !!apiConfig.key || !!chatBridgeConfig.secondary?.hasApiKey,
-        model: model,
-        description: '小牛马文本 - 日常聊天、写作执行、引用验证'
+
+      var configToSave = {
+        enabled: chatBridgeConfig.enabled,
+        mode: 'api',
+        secondary: { pool: secondaryPool },
+        secondary_vision: { pool: secondaryVisionPool },
       };
 
-      secondaryVisionApiConfig.url = visionUrl;
-      secondaryVisionApiConfig.key = visionKeyInput || previousVision.key || '';
-      secondaryVisionApiConfig.model = visionModel;
-      if (visionUrl || secondaryVisionApiConfig.key || visionModel) {
-        try {
-          await saveSecondaryVisionApiConfig();
-        } catch (error) {
-          alert('小牛马视觉配置保存失败：' + (error.message || String(error)));
+      try {
+        var response = await fetch('/api/chat-bridge/config', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(configToSave)
+        });
+        var result = await response.json();
+        if (!response.ok || !result.success) {
+          alert('保存配置失败: ' + (result.error || '未知错误'));
           return;
         }
-      }
-      chatBridgeConfig.secondaryVision = {
-        apiUrl: visionUrl,
-        hasApiKey: !!secondaryVisionApiConfig.key || !!chatBridgeConfig.secondaryVision?.hasApiKey,
-        model: visionModel,
-        description: '小牛马视觉 - 图片、图表截图、多模态输入'
-      };
-      localStorage.setItem(CHAT_BRIDGE_KEY, JSON.stringify(chatBridgeConfig));
 
-      showConfigCenterDialog();
-      appendMessage(
-        '✅ 小牛马配置已更新\n\n' +
-        '文本模型：' + currentModel + '\n' +
-        '视觉模型：' + (secondaryVisionApiConfig.url ? secondaryVisionApiConfig.model : '未配置'),
-        'bot',
-        false,
-        true
-      );
+        if (result.config) {
+          if (result.config.secondary) {
+            chatBridgeConfig.secondary = {
+              apiUrl: result.config.secondary.api_url || '',
+              hasApiKey: result.config.secondary.has_api_key || false,
+              model: result.config.secondary.model || 'gpt-4o',
+              vision_model: result.config.secondary.vision_model || undefined,
+              description: result.config.secondary.description || 'Little corse - 引用验证、更新记忆',
+              pool: result.config.secondary.pool || undefined,
+            };
+            apiConfig.url = chatBridgeConfig.secondary.apiUrl;
+            apiConfig.model = chatBridgeConfig.secondary.model;
+            currentModel = apiConfig.model;
+            saveApiConfig();
+          }
+          if (result.config.secondary_vision) {
+            chatBridgeConfig.secondaryVision = {
+              apiUrl: result.config.secondary_vision.api_url || '',
+              hasApiKey: result.config.secondary_vision.has_api_key || false,
+              model: result.config.secondary_vision.model || 'gpt-4o',
+              description: result.config.secondary_vision.description || 'Little corse 视觉 - 图片、图表截图、多模态输入',
+              pool: result.config.secondary_vision.pool || undefined,
+            };
+            secondaryVisionApiConfig.url = chatBridgeConfig.secondaryVision.apiUrl;
+            secondaryVisionApiConfig.model = chatBridgeConfig.secondaryVision.model;
+          }
+        }
+        localStorage.setItem(CHAT_BRIDGE_KEY, JSON.stringify(chatBridgeConfig));
+
+        mp.refreshActiveSelect('secondary');
+        mp.refreshActiveSelect('secondary_vision');
+
+        showConfigCenterDialog();
+        appendMessage(
+          '✅ Little corse 配置已保存\n\n' +
+          '文本模型: ' + (chatBridgeConfig.secondary?.model || '(未配置)') + '\n' +
+          '视觉模型: ' + (chatBridgeConfig.secondaryVision?.apiUrl ? (chatBridgeConfig.secondaryVision?.model || '未配置') : '未配置') + '\n\n' +
+          '在输入框右侧选择器切换 Grass/Little corse；Grass 使用 OpenRouter 免费模型。',
+          'bot', false, true
+        );
+      } catch (e) {
+        alert('保存配置失败: ' + e.message);
+      }
     }
-    
     window.showModelDialog = async function() {
       loadApiConfig();
       
@@ -1172,7 +1128,7 @@
       .then(function(data) {
         if (!data.success) throw new Error(data.error || '保存失败');
         showConfigCenterDialog();
-        var qwenStatus = apiUrlValue && (apiKeyValue || keepApiKey) ? '已配置，模型由系统预设' : '未配置，必要时使用小牛马 API';
+        var qwenStatus = apiUrlValue && (apiKeyValue || keepApiKey) ? '已配置，模型由系统预设' : '未配置，必要时使用 Little corse API';
         appendMessage('✅ PDF Wiki 自动解析配置已保存\n\n无 Codex 默认链路：LiteParse → qwen-long/qwen-max → qwen-vl-ocr → qwen-vl-max\n千问 API：' + qwenStatus, 'bot', false, true);
       })
       .catch(function(e) {

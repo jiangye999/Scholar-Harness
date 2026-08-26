@@ -21,6 +21,7 @@ interface PlannerRuntime {
 
 interface LiteratureCollectionRoutesOptions {
   dataDir: string;
+  manager?: LiteratureCollectionManager;
   getPlannerRuntime?: () => PlannerRuntime;
   importWosPlainText?: (args: {
     userId: string;
@@ -112,12 +113,14 @@ async function runAutomaticLiteratureCollection(
   });
   const config = manager.getPublicConfig(userId);
 
-  if (source !== 'cnki' && !config.hasWosApiKey) {
+  if (source !== 'cnki' && (!config.hasWosApiKey || config.wosMode !== 'expanded')) {
     return {
       status: 'configuration-required',
       plan,
       config,
-      message: 'WoS 检索方案已生成，但尚未创建、提交、排队或启动任何采集任务。当前缺少具备 Expanded API 权限的 Clarivate API Key；配置并保存后，系统才会自动继续当前主题。',
+      message: !config.hasWosApiKey
+        ? 'WoS 检索方案已生成，但尚未创建、提交、排队或启动任何采集任务。当前缺少 Clarivate API Key；配置并保存后，系统才会自动继续当前主题。'
+        : '当前配置为 WoS Starter 发现模式，不能用于 Full Record 批量入库。请切换为 Expanded，或导入 WoS Full Record and Cited References 文件。',
     };
   }
 
@@ -302,7 +305,7 @@ export function createLiteratureCollectionRouter(
   options: LiteratureCollectionRoutesOptions,
 ): Router {
   const router = Router();
-  const manager = new LiteratureCollectionManager({
+  const manager = options.manager || new LiteratureCollectionManager({
     dataDir: options.dataDir,
     getPlannerRuntime: options.getPlannerRuntime
       ? () => {
@@ -319,7 +322,6 @@ export function createLiteratureCollectionRouter(
   sharedLiteratureCollectionManager = manager;
 
   manager.recoverPersistentQueues();
-
   router.get('/config', (req: Request, res: Response) => {
     try {
       const userId = sanitizeUserId(String(req.query.userId || 'web-user'));
@@ -335,13 +337,23 @@ export function createLiteratureCollectionRouter(
       const config = manager.saveConfig(userId, {
         wosApiKey: typeof req.body?.wosApiKey === 'string' ? req.body.wosApiKey : undefined,
         keepWosApiKey: req.body?.keepWosApiKey !== false,
-        wosMode: 'expanded',
+        wosMode: req.body?.wosMode === 'starter' ? 'starter' : 'expanded',
         wosStarterBaseUrl: req.body?.wosStarterBaseUrl,
         wosExpandedBaseUrl: req.body?.wosExpandedBaseUrl,
       });
       res.json({ success: true, config });
     } catch (error) {
       sendError(res, error, '保存文献采集配置失败');
+    }
+  });
+
+  router.post('/config/test', async (req: Request, res: Response) => {
+    try {
+      const userId = sanitizeUserId(String(req.body?.userId || 'web-user'));
+      const result = await manager.testWosConnection(userId);
+      res.json({ success: true, result });
+    } catch (error) {
+      sendError(res, error, 'WoS 连接检测失败');
     }
   });
 

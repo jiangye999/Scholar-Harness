@@ -14,7 +14,10 @@ describe("chat message and retrieval regressions", () => {
     expect(html).toMatch(/\.content code\.message-inline-code\.is-atomic \{[\s\S]*?display: inline-block;[\s\S]*?white-space: nowrap;[\s\S]*?word-break: keep-all;/);
     expect(html).toMatch(/\.content code\.message-inline-code\.is-wrap \{[\s\S]*?display: inline;[\s\S]*?overflow-wrap: break-word;/);
     expect(html).toContain("compactText.length <= 48");
-    expect(html).toContain('<code class="message-inline-code \' + layoutClass + \'">');
+    expect(html).toContain('<code class="message-inline-code \' + layoutClass + semanticClass + \'">');
+    expect(html).toContain("? ' is-file-reference'");
+    expect(html).toMatch(/\.content code\.message-inline-code\.is-file-reference,[\s\S]*?display: inline-block;[\s\S]*?overflow-wrap: anywhere;/);
+    expect(html).toMatch(/code\.message-inline-code\.is-file-reference,[\s\S]*?box-shadow: none !important;/);
     expect(html).toMatch(/\.content pre code \{[\s\S]*?white-space: inherit;/);
     expect(html).toMatch(/\.message-list-body \{[\s\S]*?width: 100%;[\s\S]*?overflow-wrap: break-word;/);
   });

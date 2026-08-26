@@ -3,6 +3,7 @@ import * as path from 'path';
 import { promises as fsp } from 'fs';
 import { logger } from '../utils/logger';
 import { getDataDir, sanitizeUserId } from '../utils/paths';
+import { getProjectRuntimeContext } from '../utils/project-runtime-context';
 import {
   extractDois,
   stylePass,
@@ -808,7 +809,9 @@ export class ResearchSessionManager {
   }
 
   private getUserDir(userId: string): string {
-    return path.join(this.rootDir, sanitizeUserId(userId || 'web-user'));
+    const projectRoot = getProjectRuntimeContext()?.projectRoot;
+    const rootDir = projectRoot ? path.join(projectRoot, 'research-sessions') : this.rootDir;
+    return path.join(rootDir, sanitizeUserId(userId || 'web-user'));
   }
 
   private getSessionPath(userId: string, sessionId: string): string {
@@ -826,6 +829,8 @@ export class ResearchSessionManager {
   private resolveProjectId(projectId?: string): string {
     const explicit = normalizeProjectId(projectId);
     if (explicit) return explicit;
+    const runtimeProjectId = normalizeProjectId(getProjectRuntimeContext()?.projectId);
+    if (runtimeProjectId) return runtimeProjectId;
     if (!this.projectContextProvider) return 'current-workspace';
     try {
       const value = this.projectContextProvider();

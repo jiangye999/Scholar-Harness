@@ -11,8 +11,15 @@ import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 import { logger } from '../../utils/logger';
-import { getUserUploadDir, sanitizeUserId } from '../../utils/paths';
-import type { PiSessionRuntime } from '../../types';
+import { getDataDir, getMemoryDir, getUserUploadDir, sanitizeUserId } from '../../utils/paths';
+import {
+  getProjectRuntimeContext,
+  resolveProjectRuntimeContext,
+  runWithProjectRuntimeContext,
+} from '../../utils/project-runtime-context';
+import type { PiSessionRuntime, ChatTokenUsage } from '../../types';
+import { getSessionLog } from '../services/session-log';
+import { buildCompactionSummaryPrompt, considerAutoCompaction } from '../services/compaction';
 import { prepareWorkspaceOutputDirectory } from '../services/workspace-directory';
 import { piAgentSessionManager } from '../services/pi-agent-session';
 import { AgentExecutionKernel } from '../services/agent-execution-kernel';
@@ -33,6 +40,11 @@ export interface CreateMetaAnalysisRouterOptions {
   getIntegratedDataTablesForExport: (userId: string, pdfIds: string[]) => Promise<MetaAnalysisIntegratedDataTable[]>;
   generateAiPlan?: (input: MetaAnalysisAssistantInput) => Promise<MetaAnalysisAssistantResult>;
   interruptAiConversation?: (userId: string, conversationId: string) => Promise<void>;
+  /**
+   * P0-2: optional summarizer used for automatic session-log compaction after
+   * a Meta AI turn. When absent, auto-compaction is skipped for Meta sessions.
+   */
+  summarizeConversationRange?: (rangeText: string) => Promise<string>;
 }
 
 export type VariableType = 'numeric' | 'categorical' | 'empty';
@@ -211,6 +223,8 @@ export interface MetaAnalysisAssistantResult {
   progressLogs?: string[];
   autoPreparedDataset?: MetaAnalysisPreparedDatasetInfo;
   autoRun?: MetaAnalysisRunData;
+  /** Token/cache accounting from the provider that produced this plan. */
+  usage?: ChatTokenUsage;
 }
 
 export interface EffectRow {
@@ -757,6 +771,15 @@ export async function executeMetaAnalysisAgentTool(
 
 export function createMetaAnalysisRouter(options: CreateMetaAnalysisRouterOptions): Router {
   const router = Router();
+  router.use((req, res, next) => {
+    try {
+      const body = req.body && typeof req.body === 'object' ? req.body as Record<string, unknown> : {};
+      const projectId = body.projectId ?? req.query.projectId ?? req.get('x-scholar-project-id');
+      runWithProjectRuntimeContext(resolveProjectRuntimeContext(getDataDir(), projectId), next);
+    } catch (error) {
+      res.status(400).json({ success: false, code: 'INVALID_PROJECT_RUNTIME', error: (error as Error).message });
+    }
+  });
 
   router.get('/active-user', (_req: Request, res: Response) => {
     res.json({ success: true, data: { userId: readMetaAnalysisActiveUser() } });
@@ -765,6 +788,7 @@ export function createMetaAnalysisRouter(options: CreateMetaAnalysisRouterOption
   router.post('/active-user', async (req: Request, res: Response) => {
     try {
       const userId = sanitizeUserId(req.body?.userId || 'web-user');
+      const projectId = getProjectRuntimeContext()?.projectId || '';
       await rememberMetaAnalysisActiveUser(userId);
       res.json({ success: true, data: { userId } });
     } catch (error) {
@@ -960,6 +984,7 @@ export function createMetaAnalysisRouter(options: CreateMetaAnalysisRouterOption
         executionKernel.appendEvent('status', { message });
       };
       const userId = sanitizeUserId(req.body?.userId || 'web-user');
+      const projectId = getProjectRuntimeContext()?.projectId || '';
       await rememberMetaAnalysisActiveUser(userId);
       const conversationId = normalizeMetaAssistantConversationId(req.body?.conversationId);
       const requestedProvider = stringifyCell(req.body?.forceProvider);
@@ -978,19 +1003,20 @@ export function createMetaAnalysisRouter(options: CreateMetaAnalysisRouterOption
           conversationId,
           piQueueMessageId,
           piQueueOriginalMessage || stringifyCell(req.body?.query),
+          projectId,
         );
         if (!continuationClaim) {
           res.status(409).json({
             success: false,
             code: 'PI_QUEUE_CLAIM_INVALID',
             error: '该 Meta 排队消息的领取状态已经失效，请刷新队列后重试。',
-            state: piAgentSessionManager.getState(userId, conversationId),
+            state: piAgentSessionManager.getState(userId, conversationId, projectId),
           });
           return;
         }
         piContinuedMessageId = continuationClaim.id;
       }
-      const piRun = executionKernel.begin(userId, conversationId, requestedProvider || 'auto');
+      const piRun = executionKernel.begin(userId, conversationId, requestedProvider || 'auto', projectId);
       if (!piRun.accepted) {
         res.status(409).json({
           success: false,
@@ -1008,7 +1034,22 @@ export function createMetaAnalysisRouter(options: CreateMetaAnalysisRouterOption
       const writingConversationId = normalizeMetaScopeId(req.body?.writingConversationId);
       const pdfIds = normalizeStringArray(req.body?.pdfIds);
       const query = stringifyCell(req.body?.query);
-      const chatHistory = normalizeMetaAssistantChatHistory(req.body?.chatHistory);
+      let chatHistory = normalizeMetaAssistantChatHistory(req.body?.chatHistory);
+      // Phase 2（缓存友好重构）：Meta 会话的服务端追加式日志优先作为历史来源，
+      // 请求侧历史只在日志为空时兜底。日志在成功路径追加本轮 user/assistant。
+      const metaSessionLog = getSessionLog({ userId, conversationId, rootDir: getMemoryDir() });
+      // Phase 4: claimed steering id -> content, so consumed steering lands in
+      // the session log (queue <-> log alignment).
+      const metaSteeringContentById = new Map<string, string>();
+      let metaHistoryOverflow = false;
+      if (metaSessionLog.lastSeq() > 0) {
+        const stats = metaSessionLog.deriveMessagesWithStats({ maxChars: 60_000 });
+        metaHistoryOverflow = stats.droppedChars > 0;
+        const derivedHistory = stats.messages
+          .filter(message => message.source === 'history' && (message.role === 'user' || message.role === 'assistant'))
+          .map(message => ({ role: message.role as 'user' | 'assistant', content: message.content }));
+        if (derivedHistory.length > 0) chatHistory = derivedHistory;
+      }
       const recentUserQueries = normalizeStringArray(req.body?.recentUserQueries).slice(-10);
       const supplementalContext = normalizeMetaAssistantSupplementalContext(req.body?.supplementalContext);
       const storageRoot = await resolveMetaAnalysisStorageRoot(supplementalContext.workspaceDirectory);
@@ -1107,19 +1148,31 @@ export function createMetaAnalysisRouter(options: CreateMetaAnalysisRouterOption
         recentUserQueries,
         piSession: {
           sessionId: conversationId,
-          takeSteeringMessages: async takeOptions => piAgentSessionManager
-            .takeSteeringMessages(userId, conversationId, takeOptions)
-            .map(item => ({
+          takeSteeringMessages: async takeOptions => {
+            const items = await piAgentSessionManager.takeSteeringMessages(userId, conversationId, takeOptions, projectId);
+            for (const item of items) metaSteeringContentById.set(item.id, item.message);
+            return items.map(item => ({
               id: item.id,
               message: item.message,
               chatAttachments: item.chatAttachments,
               workspaceFileMentions: item.workspaceFileMentions,
-            })),
+            }));
+          },
           markSteeringApplied: async messageId => {
-            piAgentSessionManager.markApplied(userId, conversationId, messageId, 'steered');
+            piAgentSessionManager.markApplied(userId, conversationId, messageId, 'steered', projectId);
+            const content = metaSteeringContentById.get(messageId);
+            if (metaSessionLog && content) {
+              metaSessionLog.append({ type: 'user', content, delivery: 'steer' });
+            }
+            metaSteeringContentById.delete(messageId);
           },
           requeueSteeringMessage: async messageId => {
-            piAgentSessionManager.requeueMessage(userId, conversationId, messageId);
+            piAgentSessionManager.requeueMessage(userId, conversationId, messageId, projectId);
+            // P0-3: log-only audit for a requeued steering message.
+            if (metaSessionLog && metaSessionLog.lastSeq() > 0) {
+              metaSessionLog.append({ type: 'queue', action: 'requeued', messageId, behavior: 'steer' });
+            }
+            metaSteeringContentById.delete(messageId);
           },
         },
         isCancelled: isPiRunCancelled,
@@ -1191,7 +1244,7 @@ export function createMetaAnalysisRouter(options: CreateMetaAnalysisRouterOption
         }
       }
       if (piContinuedMessageId) {
-        piAgentSessionManager.markApplied(userId, conversationId, piContinuedMessageId, 'continued');
+        piAgentSessionManager.markApplied(userId, conversationId, piContinuedMessageId, 'continued', projectId);
         piContinuedMessageId = '';
       }
       const responseData = {
@@ -1204,6 +1257,36 @@ export function createMetaAnalysisRouter(options: CreateMetaAnalysisRouterOption
         progressLogs: result.progressLogs,
         ...result,
       };
+      // Phase 2：把本轮写进 Meta 会话的追加式日志（前缀稳定、重连一致）。
+      try {
+        metaSessionLog.append({
+          type: 'user',
+          content: String(query || '(empty request)').trim() || '(empty request)',
+          delivery: piQueueMessageId ? 'follow_up' : 'normal',
+        });
+        metaSessionLog.append({
+          type: 'assistant',
+          content: String(result.assistantMessage || result.rawText || '').trim(),
+          provider: result.provider || requestedProvider || 'meta-analysis',
+        });
+        // P0-2：回合结束后自动压缩最老历史（压力触发；历史预算已丢消息时强制）。
+        // fire-and-forget：无总结器或总结失败都只保留原历史。
+        if (options.summarizeConversationRange) {
+          void considerAutoCompaction({
+            sessionLog: metaSessionLog,
+            force: metaHistoryOverflow,
+            summarize: options.summarizeConversationRange,
+          }).then(compactResult => {
+            if (compactResult.compacted) {
+              logger.info(`[MetaAnalysis] Auto-compaction: ${compactResult.reason}`);
+            }
+          }).catch(compactError => {
+            logger.warn('[MetaAnalysis] Auto-compaction failed:', compactError);
+          });
+        }
+      } catch (error) {
+        logger.warn('[MetaAnalysis] Session log append failed:', error);
+      }
       executionKernel.complete('completed', {
         event: {
           content: JSON.stringify({ success: true, data: responseData }),
@@ -3978,6 +4061,30 @@ function sanitizeMetaAssistantResult(result: MetaAnalysisAssistantResult, input:
     rawText: stringifyCell(record.rawText),
     fallbackChain: normalizeStringArray(record.fallbackChain),
     progressLogs: normalizeStringArray(record.progressLogs),
+    usage: sanitizeMetaAssistantUsage(record.usage),
+  };
+}
+
+function sanitizeMetaAssistantUsage(value: unknown): ChatTokenUsage | undefined {
+  if (!isRecord(value)) return undefined;
+  const inputTokens = Number(value.inputTokens);
+  const outputTokens = Number(value.outputTokens);
+  const totalTokens = Number(value.totalTokens);
+  if (!Number.isFinite(inputTokens) && !Number.isFinite(outputTokens)) return undefined;
+  const cacheRead = Number(value.cacheReadTokens);
+  return {
+    inputTokens: Number.isFinite(inputTokens) && inputTokens > 0 ? Math.floor(inputTokens) : 0,
+    outputTokens: Number.isFinite(outputTokens) && outputTokens > 0 ? Math.floor(outputTokens) : 0,
+    totalTokens: Number.isFinite(totalTokens) && totalTokens > 0
+      ? Math.floor(totalTokens)
+      : Math.max(0, Math.floor(Number.isFinite(inputTokens) ? inputTokens : 0) + Math.floor(Number.isFinite(outputTokens) ? outputTokens : 0)),
+    ...(Number.isFinite(value.reasoningTokens) && Number(value.reasoningTokens) > 0
+      ? { reasoningTokens: Math.floor(Number(value.reasoningTokens)) }
+      : {}),
+    ...(value.cacheReadTokens !== undefined && Number.isFinite(cacheRead) && cacheRead >= 0
+      ? { cacheReadTokens: Math.floor(cacheRead) }
+      : {}),
+    ...(value.estimated === true ? { estimated: true } : {}),
   };
 }
 

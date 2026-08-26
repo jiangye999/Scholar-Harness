@@ -30,6 +30,8 @@ describe('ChatBridge research enhancement MCP tools', () => {
 
   it('asks for confirmation before starting optional post-writing analyses', () => {
     expect(RESEARCH_ENHANCEMENT_AGENT_GUIDANCE).toContain('必须先询问并得到用户同意');
+    expect(RESEARCH_ENHANCEMENT_AGENT_GUIDANCE).toContain('再调用 invoke_capability');
+    expect(RESEARCH_ENHANCEMENT_AGENT_GUIDANCE).toContain('禁止把 research_* 名称当作直接 tool call 输出');
     expect(RESEARCH_ENHANCEMENT_AGENT_GUIDANCE).toContain('结果会自动保存并显示在“科研增强工具”界面');
     expect(RESEARCH_ENHANCEMENT_AGENT_GUIDANCE).toContain('只有工具返回 ok=true');
   });

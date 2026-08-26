@@ -9,7 +9,7 @@ import { logger } from '../../utils/logger';
 import type { LLMToolCall, LLMToolDefinition } from '../../utils/llm-client';
 import { listUserSkills, type UserSkill } from './user-skills';
 
-const PACK_CACHE_TTL_MS = 5_000;
+const PACK_CACHE_TTL_MS = 5 * 60_000;
 const MAX_SKILL_FILE_CHARS = 120_000;
 const MAX_RESOURCE_FILE_CHARS = 240_000;
 const MAX_RESOURCE_LIST_ITEMS = 160;
@@ -105,6 +105,8 @@ export interface AgentSkillCatalogOptions {
   query?: string;
   maxChars?: number;
   fullCatalogPath?: string;
+  /** On-demand mode: header + category summary only, no per-skill list. */
+  compact?: boolean;
 }
 
 export interface AgentSkillCompletionContract {
@@ -540,6 +542,20 @@ export function buildAgentSkillCatalogPrompt(
       ? `完整目录：${options.fullCatalogPath}（当前摘要未列出所需 Skill 时，读取此文件继续选择）。`
       : '当前摘要未列出所需 Skill 时，调用 list_available_skills 按关键词或类别检索完整目录。',
   ].filter(Boolean);
+  if (options.compact) {
+    const categoryCounts = new Map<string, number>();
+    for (const skill of descriptors) {
+      const category = toCatalogLineText(skill.category || 'other');
+      categoryCounts.set(category, (categoryCounts.get(category) || 0) + 1);
+    }
+    const categoryLine = Array.from(categoryCounts.entries())
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 8)
+      .map(([category, count]) => `${category}×${count}`)
+      .join('、');
+    const summary = categoryLine ? `按类别分布：${categoryLine}。` : '';
+    return [...header, summary].filter(Boolean).join('\n');
+  }
   const selectedLines: string[] = [];
   const rankedDescriptors = rankSkillCatalogDescriptors(descriptors, String(options.query || ''));
   let usedChars = header.join('\n').length;
@@ -633,6 +649,8 @@ function skillSearchScore(skill: InternalAgentSkill, terms: string[]): number {
 }
 
 async function writeAtomic(filePath: string, content: string): Promise<void> {
+  const existing = await fs.readFile(filePath, 'utf-8').catch(() => null);
+  if (existing === content) return;
   const tempPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
   await fs.writeFile(tempPath, content, 'utf-8');
   await fs.rename(tempPath, filePath);

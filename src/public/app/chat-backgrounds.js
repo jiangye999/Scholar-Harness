@@ -3,16 +3,15 @@
   var CHAT_BACKGROUND_CUSTOM_KEY = 'scholarharness_chat_background_custom';
   var CHAT_BACKGROUND_OPACITY_KEY = 'scholarharness_chat_background_opacity';
   var CHAT_BACKGROUND_GROUP_KEY = 'scholarharness_chat_background_group';
+  var CHAT_BACKGROUND_DB_NAME = 'scholarharness-chat-backgrounds';
+  var CHAT_BACKGROUND_DB_STORE = 'custom-backgrounds';
+  var CHAT_BACKGROUND_DB_VERSION = 1;
   var BUILTIN_BACKGROUND_COUNT = 107;
   var CUSTOM_IMAGE_MAX_EDGE = 1600;
   var CUSTOM_IMAGE_MAX_DATA_LENGTH = 3600000;
-  var DEFAULT_BACKGROUND_GROUP = 'featured';
+  var MAX_CUSTOM_BACKGROUND_COUNT = 50;
+  var DEFAULT_BACKGROUND_GROUP = 'humanities';
   var CHAT_BACKGROUND_GROUPS = [
-    {
-      id: 'featured',
-      label: '推荐',
-      indexes: [2, 11, 22, 27, 32, 41, 43, 46, 52, 58, 64, 65, 78, 85, 93, 96, 105, 107]
-    },
     {
       id: 'humanities',
       label: '人文古建',
@@ -42,10 +41,16 @@
       id: 'art',
       label: '艺术纹理',
       indexes: [1, 10, 14, 15, 25, 29, 41, 45, 47, 49, 77, 79, 80, 94, 95, 96, 97, 98, 99, 100, 106, 107]
+    },
+    {
+      id: 'custom',
+      label: '自定义',
+      indexes: []
     }
   ];
   var activePanel = 'color';
   var activeBackgroundGroup = DEFAULT_BACKGROUND_GROUP;
+  var customBackgrounds = [];
 
   function padBackgroundNumber(value) {
     return String(value).padStart(2, '0');
@@ -59,11 +64,141 @@
     return '/theme-backgrounds/chat-bg-' + padBackgroundNumber(index) + '.webp';
   }
 
-  function getCustomBackground() {
+  function customBackgroundSelection(id) {
+    return 'custom-' + String(id || '');
+  }
+
+  function getCustomBackgroundId(selection) {
+    var value = String(selection || '');
+    return value.indexOf('custom-') === 0 ? value.slice(7) : '';
+  }
+
+  function getCustomBackgroundRecord(selection) {
+    var id = getCustomBackgroundId(selection);
+    if (!id && selection === 'custom' && customBackgrounds.length) return customBackgrounds[0];
+    return customBackgrounds.find(function(item) { return item.id === id; }) || null;
+  }
+
+  function openCustomBackgroundDatabase() {
+    return new Promise(function(resolve, reject) {
+      if (!window.indexedDB) {
+        reject(new Error('当前环境不支持自定义背景图库'));
+        return;
+      }
+      var request = window.indexedDB.open(CHAT_BACKGROUND_DB_NAME, CHAT_BACKGROUND_DB_VERSION);
+      request.onupgradeneeded = function() {
+        var database = request.result;
+        if (!database.objectStoreNames.contains(CHAT_BACKGROUND_DB_STORE)) {
+          database.createObjectStore(CHAT_BACKGROUND_DB_STORE, { keyPath: 'id' });
+        }
+      };
+      request.onsuccess = function() { resolve(request.result); };
+      request.onerror = function() { reject(request.error || new Error('无法打开自定义背景图库')); };
+    });
+  }
+
+  function runCustomBackgroundStore(mode, operation) {
+    return openCustomBackgroundDatabase().then(function(database) {
+      return new Promise(function(resolve, reject) {
+        var transaction = database.transaction(CHAT_BACKGROUND_DB_STORE, mode);
+        var store = transaction.objectStore(CHAT_BACKGROUND_DB_STORE);
+        var request = operation(store);
+        request.onsuccess = function() { resolve(request.result); };
+        request.onerror = function() { reject(request.error || new Error('自定义背景图库操作失败')); };
+        transaction.oncomplete = function() { database.close(); };
+        transaction.onerror = function() { database.close(); };
+        transaction.onabort = function() { database.close(); };
+      });
+    });
+  }
+
+  function readCustomBackgrounds() {
+    return runCustomBackgroundStore('readonly', function(store) { return store.getAll(); })
+      .then(function(items) {
+        return (Array.isArray(items) ? items : []).sort(function(left, right) {
+          return Number(right.createdAt || 0) - Number(left.createdAt || 0);
+        });
+      });
+  }
+
+  function saveCustomBackgroundRecord(record) {
+    return runCustomBackgroundStore('readwrite', function(store) { return store.put(record); });
+  }
+
+  function saveCustomBackgroundRecords(records) {
+    return openCustomBackgroundDatabase().then(function(database) {
+      return new Promise(function(resolve, reject) {
+        var transaction = database.transaction(CHAT_BACKGROUND_DB_STORE, 'readwrite');
+        var store = transaction.objectStore(CHAT_BACKGROUND_DB_STORE);
+        records.forEach(function(record) { store.put(record); });
+        transaction.oncomplete = function() {
+          database.close();
+          resolve();
+        };
+        transaction.onerror = function() {
+          var error = transaction.error || new Error('自定义背景批量保存失败');
+          database.close();
+          reject(error);
+        };
+        transaction.onabort = function() {
+          var error = transaction.error || new Error('自定义背景批量保存已取消');
+          database.close();
+          reject(error);
+        };
+      });
+    });
+  }
+
+  function removeCustomBackgroundRecord(id) {
+    return runCustomBackgroundStore('readwrite', function(store) { return store.delete(id); });
+  }
+
+  function createCustomBackgroundId() {
+    if (window.crypto && typeof window.crypto.randomUUID === 'function') {
+      return window.crypto.randomUUID();
+    }
+    return Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10);
+  }
+
+  async function loadCustomBackgroundGallery() {
+    var records = [];
     try {
-      return localStorage.getItem(CHAT_BACKGROUND_CUSTOM_KEY) || '';
+      records = await readCustomBackgrounds();
     } catch (error) {
-      return '';
+      console.warn('[ChatBackground] Failed to load custom gallery:', error);
+    }
+
+    var legacyImage = '';
+    try {
+      legacyImage = localStorage.getItem(CHAT_BACKGROUND_CUSTOM_KEY) || '';
+    } catch (error) {
+      legacyImage = '';
+    }
+    if (legacyImage && !records.some(function(item) { return item.legacy === true; })) {
+      var legacyRecord = {
+        id: 'legacy',
+        name: '原自定义背景',
+        dataUrl: legacyImage,
+        createdAt: Date.now(),
+        legacy: true
+      };
+      try {
+        await saveCustomBackgroundRecord(legacyRecord);
+        records.unshift(legacyRecord);
+        localStorage.removeItem(CHAT_BACKGROUND_CUSTOM_KEY);
+      } catch (error) {
+        console.warn('[ChatBackground] Failed to migrate legacy custom background:', error);
+        if (!records.length) records.push(legacyRecord);
+      }
+    }
+    customBackgrounds = records.slice(0, MAX_CUSTOM_BACKGROUND_COUNT);
+
+    try {
+      if (localStorage.getItem(CHAT_BACKGROUND_KEY) === 'custom' && customBackgrounds.length) {
+        localStorage.setItem(CHAT_BACKGROUND_KEY, customBackgroundSelection(customBackgrounds[0].id));
+      }
+    } catch (error) {
+      // Selection migration is best effort.
     }
   }
 
@@ -83,7 +218,7 @@
 
   function getPrimaryGroupForIndex(index) {
     return CHAT_BACKGROUND_GROUPS.find(function(group) {
-      return group.id !== 'featured' && group.indexes.indexOf(index) !== -1;
+      return group.id !== 'custom' && group.indexes.indexOf(index) !== -1;
     }) || getBackgroundGroup(DEFAULT_BACKGROUND_GROUP);
   }
 
@@ -96,11 +231,13 @@
   function getSavedBackgroundGroup(selection) {
     try {
       var saved = localStorage.getItem(CHAT_BACKGROUND_GROUP_KEY);
+      if (saved === 'featured') return 'custom';
       if (getBackgroundGroup(saved)) return saved;
     } catch (error) {
       // Local storage can be unavailable in hardened Electron sessions.
     }
 
+    if (String(selection || '').indexOf('custom') === 0) return 'custom';
     var match = String(selection || '').match(/^builtin-(\d{2,3})$/);
     if (!match) return DEFAULT_BACKGROUND_GROUP;
     var primaryGroup = getPrimaryGroupForIndex(Number(match[1]));
@@ -174,7 +311,8 @@
 
   function normalizeChatBackground(selection) {
     if (selection === 'none') return 'none';
-    if (selection === 'custom' && getCustomBackground()) return 'custom';
+    var customRecord = getCustomBackgroundRecord(selection);
+    if (customRecord) return customBackgroundSelection(customRecord.id);
     var match = String(selection || '').match(/^builtin-(\d{2,3})$/);
     if (!match) return 'none';
     var index = Number(match[1]);
@@ -184,7 +322,8 @@
   }
 
   function resolveChatBackgroundUrl(selection) {
-    if (selection === 'custom') return getCustomBackground();
+    var customRecord = getCustomBackgroundRecord(selection);
+    if (customRecord) return customRecord.dataUrl;
     var match = String(selection || '').match(/^builtin-(\d{2,3})$/);
     return match ? builtinBackgroundUrl(Number(match[1])) : '';
   }
@@ -235,7 +374,7 @@
     }
     updateChatBackgroundControls(normalized);
     window.dispatchEvent(new CustomEvent('scholarharness:chat-background-change', {
-      detail: { background: normalized, custom: normalized === 'custom' }
+      detail: { background: normalized, custom: normalized.indexOf('custom-') === 0 }
     }));
     return normalized;
   }
@@ -272,6 +411,46 @@
     return button;
   }
 
+  function createCustomBackgroundOption(record) {
+    var shell = document.createElement('div');
+    shell.className = 'chat-background-custom-card';
+    shell.appendChild(createBackgroundOption(
+      customBackgroundSelection(record.id),
+      record.name || '自定义背景',
+      record.dataUrl,
+      'chat-background-option-custom'
+    ));
+
+    var removeButton = document.createElement('button');
+    removeButton.type = 'button';
+    removeButton.className = 'chat-background-custom-remove';
+    removeButton.setAttribute('aria-label', '删除背景 ' + (record.name || ''));
+    removeButton.setAttribute('title', '删除这张背景');
+    removeButton.textContent = '×';
+    removeButton.addEventListener('click', async function(event) {
+      event.preventDefault();
+      event.stopPropagation();
+      try {
+        var removedSelection = customBackgroundSelection(record.id);
+        var wasSelected = getSavedBackground() === removedSelection;
+        await removeCustomBackgroundRecord(record.id);
+        customBackgrounds = customBackgrounds.filter(function(item) { return item.id !== record.id; });
+        if (wasSelected) {
+          applyChatBackground(customBackgrounds.length
+            ? customBackgroundSelection(customBackgrounds[0].id)
+            : 'none', true);
+        }
+        renderChatBackgroundGroups();
+        renderChatBackgroundOptions();
+      } catch (error) {
+        console.warn('[ChatBackground] Failed to remove custom background:', error);
+        alert(error && error.message ? error.message : '删除自定义背景失败');
+      }
+    });
+    shell.appendChild(removeButton);
+    return shell;
+  }
+
   function renderChatBackgroundGroups() {
     var container = document.getElementById('chatBackgroundGroups');
     if (!container) return;
@@ -288,7 +467,7 @@
       button.setAttribute('aria-controls', 'chatBackgroundOptions');
       button.innerHTML =
         '<span>' + group.label + '</span>' +
-        '<small>' + group.indexes.length + '</small>';
+        '<small>' + (group.id === 'custom' ? customBackgrounds.length : group.indexes.length) + '</small>';
       button.addEventListener('click', function(event) {
         event.stopPropagation();
         activeBackgroundGroup = group.id;
@@ -315,18 +494,21 @@
       'chat-background-option-none'
     ));
 
-    var customImage = getCustomBackground();
-    if (customImage) {
-      container.appendChild(createBackgroundOption(
-        'custom',
-        '自定义背景',
-        customImage,
-        'chat-background-option-custom'
-      ));
-    }
-
     var activeGroup = getBackgroundGroup(activeBackgroundGroup) ||
       getBackgroundGroup(DEFAULT_BACKGROUND_GROUP);
+    if (activeGroup && activeGroup.id === 'custom') {
+      customBackgrounds.forEach(function(record) {
+        container.appendChild(createCustomBackgroundOption(record));
+      });
+      if (!customBackgrounds.length) {
+        var empty = document.createElement('div');
+        empty.className = 'chat-background-custom-empty';
+        empty.textContent = '还没有自定义背景，可以一次选择多张图片上传。';
+        container.appendChild(empty);
+      }
+      updateChatBackgroundControls(normalizeChatBackground(getSavedBackground()));
+      return;
+    }
     (activeGroup ? activeGroup.indexes : []).forEach(function(index) {
       container.appendChild(createBackgroundOption(
         builtinBackgroundId(index),
@@ -418,14 +600,33 @@
 
   async function handleCustomChatBackgroundChange(event) {
     var input = event && event.target;
-    var file = input && input.files && input.files[0];
-    if (!file) return;
+    var files = input && input.files ? Array.from(input.files) : [];
+    if (!files.length) return;
     try {
-      var optimized = await compressCustomBackground(file);
-      localStorage.setItem(CHAT_BACKGROUND_CUSTOM_KEY, optimized);
-      localStorage.setItem(CHAT_BACKGROUND_KEY, 'custom');
+      if (customBackgrounds.length + files.length > MAX_CUSTOM_BACKGROUND_COUNT) {
+        throw new Error('自定义背景最多保存 ' + MAX_CUSTOM_BACKGROUND_COUNT + ' 张，请先删除不需要的图片');
+      }
+      var added = [];
+      for (var fileIndex = 0; fileIndex < files.length; fileIndex += 1) {
+        var file = files[fileIndex];
+        var optimized = await compressCustomBackground(file);
+        var record = {
+          id: createCustomBackgroundId(),
+          name: String(file.name || ('自定义背景 ' + (customBackgrounds.length + added.length + 1))),
+          dataUrl: optimized,
+          createdAt: Date.now() + fileIndex
+        };
+        added.push(record);
+      }
+      await saveCustomBackgroundRecords(added);
+      customBackgrounds = added.slice().reverse().concat(customBackgrounds);
+      activeBackgroundGroup = 'custom';
+      localStorage.setItem(CHAT_BACKGROUND_GROUP_KEY, 'custom');
+      var selectedBackground = customBackgroundSelection(added[added.length - 1].id);
+      localStorage.setItem(CHAT_BACKGROUND_KEY, selectedBackground);
+      renderChatBackgroundGroups();
       renderChatBackgroundOptions();
-      applyChatBackground('custom', false);
+      applyChatBackground(selectedBackground, false);
       switchThemePickerPanel('background');
     } catch (error) {
       console.warn('[ChatBackground] Custom background failed:', error);
@@ -435,7 +636,8 @@
     }
   }
 
-  function initChatBackgrounds() {
+  async function initChatBackgrounds() {
+    await loadCustomBackgroundGallery();
     activeBackgroundGroup = getSavedBackgroundGroup(getSavedBackground());
     renderChatBackgroundGroups();
     renderChatBackgroundOptions();
@@ -461,9 +663,15 @@
   window.applyChatBackgroundOpacity = applyChatBackgroundOpacity;
 
   if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', initChatBackgrounds, { once: true });
+    document.addEventListener('DOMContentLoaded', function() {
+      initChatBackgrounds().catch(function(error) {
+        console.warn('[ChatBackground] Initialization failed:', error);
+      });
+    }, { once: true });
   } else {
-    initChatBackgrounds();
+    initChatBackgrounds().catch(function(error) {
+      console.warn('[ChatBackground] Initialization failed:', error);
+    });
   }
 })();
 

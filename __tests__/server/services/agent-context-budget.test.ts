@@ -4,6 +4,7 @@ import {
   budgetAgentPrompt,
   compactAgentContextValue,
   precomputeAgentContext,
+  resolveAgentContextBudget,
 } from '../../../src/orchestrator/agent-context-budget';
 
 describe('shared Agent context budget', () => {
@@ -70,5 +71,42 @@ describe('shared Agent context budget', () => {
 
     expect(serialized.length).toBeLessThanOrEqual(6_500);
     expect(serialized).toMatch(/omittedItems|统一上下文/);
+  });
+
+  it('uses a compact envelope for simple chat and expands it for evidence-heavy writing', () => {
+    const simple = resolveAgentContextBudget({
+      profile: 'main-chat',
+      query: '解释一下这个概念。',
+      primaryIntent: 'general_chat',
+    });
+    const research = resolveAgentContextBudget({
+      profile: 'main-chat',
+      query: '根据已选文献修改 Discussion 并逐句核验引用。',
+      primaryIntent: 'academic_writing',
+      secondaryIntents: ['literature_retrieval'],
+      needsWorkspaceSearch: true,
+      needsLiteratureRetrieval: true,
+      hasExplicitSkill: true,
+      hasAttachments: true,
+      hasAutonomousRetrieval: true,
+    });
+
+    expect(simple.tier).toBe('compact');
+    expect(simple.maxChars).toBeLessThan(research.maxChars);
+    expect(research.maxChars).toBeLessThanOrEqual(112_000);
+    expect(research.reasons).toContain('literature-retrieval');
+  });
+
+  it('omits a handoff message when its compacted prefix is already in the prompt', () => {
+    const fullMessage = `用户要求核验一组参考文献。${'详细上下文 '.repeat(500)}`;
+    const result = precomputeAgentContext({
+      profile: 'main-chat',
+      maxChars: 48_000,
+      prompt: `## 当前对话历史\n${fullMessage.slice(0, 900)}\n[已压缩]`,
+      conversationHandoff: [{ role: 'user', content: fullMessage }],
+    });
+
+    expect(result.conversationHandoff).toHaveLength(0);
+    expect(result.diagnostics.omittedDuplicateHandoffMessages).toBe(1);
   });
 });

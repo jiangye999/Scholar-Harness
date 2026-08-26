@@ -7,18 +7,20 @@ import { readPublicAppSource } from '../helpers/public-app-source';
 const repoRoot = path.resolve(__dirname, "..", "..");
 
 describe("autonomous literature and file retrieval defaults", () => {
-  it("lets AI generate keywords and execute local evidence retrieval before answering", () => {
+  it("keeps legacy retrieval helpers available but does not run them before the formal Agent", () => {
     const html = readPublicAppSource();
+    const prepareStart = html.indexOf('async function prepareChatBridgeContext(');
+    const prepareEnd = html.indexOf('async function loadBibliometricsWritingContext(', prepareStart);
+    const prepare = html.slice(prepareStart, prepareEnd);
 
     expect(html).toContain("var AUTO_LITERATURE_CONTEXT_ENABLED = true;");
     expect(html).toContain("var AUTO_RETRIEVAL_DETECTION_ENABLED = true;");
     expect(html).toContain("async function runAutonomousRetrievalForMessage(message, onProgress, queryIntent, recentHistory, abortSignal)");
-    expect(html).toContain("queryIntent.needsLiteratureRetrieval !== true");
     expect(html).toContain("fetch('/api/retrieval/detect'");
     expect(html).toContain("fetch('/api/retrieval/execute'");
-    expect(html).toContain("context.autonomousRetrieval = autonomousRetrieval;");
-    expect(html).toContain("context.relevantLiterature = autonomousRetrieval.contextMarkdown;");
-    expect(html).toContain("齿轮入口继续保留");
+    expect(prepare).not.toContain("await runAutonomousRetrievalForMessage(");
+    expect(prepare).toContain("agentToolRouting: 'formal-agent'");
+    expect(prepare).toContain('正式 Agent 决定何时检索，不预取论文或摘要');
   });
 
   it("keeps the manual gear action as an explicit force-generate fallback", () => {
@@ -47,8 +49,11 @@ describe("autonomous literature and file retrieval defaults", () => {
 
     expect(prompt).toContain("不要要求用户先点击消息下方齿轮");
     expect(prompt).toContain("file_search、grep_files、list_dir、read_file");
-    expect(route).toContain("## AI 自主检索证据（本轮自动生成检索词并执行）");
-    expect(route).toContain("无需再让用户点击齿轮或确认检索");
+    // 自主检索证据已 manifest 化：所有 provider 仍可通过按需资源读取，
+    // 无需用户点击齿轮或确认检索。
+    expect(route).toContain("## AI 自主检索证据（manifest）");
+    expect(route).toContain('resourceId="autonomous-retrieval"');
+    expect(route).toContain("引用前必须先调用 read_page_context");
     expect(server).toContain("const codexDetectionAvailable = isCodexCliLikelyAvailableForPdfWiki();");
     expect(server).toContain('forceProvider: "codex"');
     expect(server).toContain("detectionProvider");

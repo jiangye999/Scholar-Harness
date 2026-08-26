@@ -44,6 +44,10 @@ describe('AI output attachment collections', () => {
 
   it('removes the raw verified path block from the final prose and initializes image stacks after rendering', () => {
     expect(html).toContain(".replace(/\\[\\[SH_VERIFIED_ARTIFACTS_BEGIN\\]\\][\\s\\S]*?\\[\\[SH_VERIFIED_ARTIFACTS_END\\]\\]/g, '')");
+    expect(html).toContain(".replace(/\\[\\[SH_VERIFIED_ARTIFACTS_BEGIN\\]\\][\\s\\S]*$/g, '')");
+    expect(html).toContain("var progress = stripVerifiedCodexArtifactMarkers(parts.progress || '');");
+    expect(html).toContain("var answerText = stripVerifiedCodexArtifactMarkers(parts.answer || '');");
+    expect(html).toContain("var verifiedCodexArtifacts = extractVerifiedCodexArtifactText((parts.progress || '') + '\\n' + (parts.answer || ''));");
     expect(html).toContain('initWorkspaceImageStacks(contentDiv);');
     expect(html).toContain('initWorkspaceImageStacks(div);');
     expect(html).toContain('data-thumbnail-source-url="');

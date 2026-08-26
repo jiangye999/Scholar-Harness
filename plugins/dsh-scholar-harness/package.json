@@ -1,0 +1,45 @@
+{
+  "name": "dsh-scholar-harness",
+  "version": "0.1.0",
+  "description": "Scholar Harness 核心功能接入 DSH：PDF Wiki 句子级证据库、文献检索、Meta 分析、论文写作状态面板与 Agent 工具。Host 半部连接本机 Scholar Harness 本地服务（默认 http://127.0.0.1:18789），提供 scholar_* 工具、/api/dsh-scholar/* 路由与系统提示段；浏览器半部渲染侧边栏「Scholar」入口与概览/文献/PDF Wiki/Meta 面板。",
+  "author": "sjs@cau.edu.cn",
+  "license": "UNLICENSED",
+  "type": "module",
+  "main": "lib/index.js",
+  "scripts": {
+    "smoke": "node scripts/smoke-test.cjs",
+    "restart-dsh-web": "scripts\\restart-dsh-web.bat"
+  },
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [],
+      "platform": "web"
+    }
+  },
+  "files": [
+    "lib",
+    "skills",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/dsh-tools": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-host-webserver": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-system-prompt": "^0.1.0-rc.6"
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/dsh-tools": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-host-webserver": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-system-prompt": "^0.1.0-rc.6"
+  }
+}

@@ -18,13 +18,13 @@ describe('Meta analysis Pi Agent integration', () => {
     expect(routeSource).toContain('executionKernel.detachTransport(');
     expect(routeSource).not.toContain("cancelActiveRun('client-disconnected')");
     expect(routeSource).toContain('piAgentSessionManager.validateContinuationClaim(');
-    expect(routeSource).toContain('.takeSteeringMessages(userId, conversationId, takeOptions)');
-    expect(routeSource).toContain("piAgentSessionManager.markApplied(userId, conversationId, messageId, 'steered')");
+    expect(routeSource).toContain('.takeSteeringMessages(userId, conversationId, takeOptions, projectId)');
+    expect(routeSource).toContain("piAgentSessionManager.markApplied(userId, conversationId, messageId, 'steered', projectId)");
   });
 
   it('uses the persistent ChatBridge/Codex App Server execution path', () => {
     expect(serverSource).toContain('async function callMetaAnalysisPiAgent(');
-    expect(serverSource).toContain('return chatBridge.chat({');
+    expect(serverSource).toContain('await chatBridge.chat({');
     expect(serverSource).toContain('piSession: input.piSession');
     expect(serverSource).toContain('isCancelled: input.isCancelled');
     expect(serverSource).toContain('codexTimeoutMs: -1');

@@ -67,11 +67,6 @@ export interface RegisterResponse {
 export interface Subscription {
   plan_type: 'monthly' | 'quarterly' | 'yearly' | 'lifetime' | 'trial';
   status: string;
-  quota_total: number;
-  quota_used: number;
-  quota_remaining: number;
-  max_file_upload: number;
-  file_upload_used: number;
   start_date: string;
   end_date: string;
 }
@@ -117,10 +112,7 @@ export interface Plan {
   plan_type: string;
   price: number;
   validity_days: number;
-  quota_total: number;
-  max_file_upload: number;
   features: {
-    max_file_upload: number;
     ai_model_access: string[];
   };
 }
@@ -682,8 +674,6 @@ export interface DailyStatsResponse {
   daily_stats: DailyStat[];
   subscription: {
     plan_type: string;
-    quota_remaining: number;
-    quota_total: number;
   };
 }
 

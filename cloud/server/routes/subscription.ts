@@ -20,11 +20,8 @@ export function initializeSubscriptionRoutes(database: DatabaseConnection): void
  */
 type PlanStrategy = {
   validity_days: number;
-  quota_total: number;
   price: number;
-  max_file_upload: number;
   features: {
-    max_file_upload: number;
     ai_model_access: string[];
   };
 };
@@ -32,55 +29,47 @@ type PlanStrategy = {
 const PLAN_STRATEGIES: Record<PlanType, PlanStrategy> = {
   monthly: {
     validity_days: 30,
-    quota_total: 5000000,      // 500万字
     price: 39,
-    max_file_upload: 10,
     features: {
-      max_file_upload: 10,
       ai_model_access: ['gpt-4o', 'qwen3.5-plus']
     }
   },
   quarterly: {
     validity_days: 90,
-    quota_total: 20000000,     // 2000万字
     price: 80,
-    max_file_upload: 30,
     features: {
-      max_file_upload: 30,
       ai_model_access: ['gpt-4o', 'claude-sonnet-4-5', 'qwen-max']
     }
   },
   yearly: {
     validity_days: 365,
-    quota_total: 100000000,    // 1亿字
     price: 299,
-    max_file_upload: 100,
     features: {
-      max_file_upload: 100,
       ai_model_access: ['gpt-4o', 'claude-sonnet-4-5', 'qwen-max', 'gemini-pro']
     }
   },
   lifetime: {
     validity_days: -1,
-    quota_total: -1,
     price: 0,
-    max_file_upload: -1,
     features: {
-      max_file_upload: -1,
       ai_model_access: ['gpt-4o', 'claude-sonnet-4-5', 'qwen-max', 'gemini-pro']
     }
   },
   trial: {
     validity_days: 30,
-    quota_total: 5000000,
     price: 0,
-    max_file_upload: 10,
     features: {
-      max_file_upload: 10,
       ai_model_access: ['gpt-4o', 'qwen3.5-plus']
     }
   }
 };
+
+const PURCHASABLE_PLAN_TYPES = ['monthly', 'quarterly', 'yearly'] as const;
+
+function isPurchasablePlanType(value: unknown): value is typeof PURCHASABLE_PLAN_TYPES[number] {
+  return typeof value === 'string'
+    && PURCHASABLE_PLAN_TYPES.includes(value as typeof PURCHASABLE_PLAN_TYPES[number]);
+}
 
 function getPurchaseUrl(): string {
   return process.env.PURCHASE_URL || 'https://scholarharness.com/register/';
@@ -100,14 +89,10 @@ async function refreshSubscriptionStatus(subscription: Subscription): Promise<Su
     return subscription;
   }
 
-  if (
-    subscription.quota_total !== -1
-    && subscription.quota_used >= subscription.quota_total
-    && subscription.status !== 'exhausted'
-    && subscription.status !== 'expired'
-  ) {
-    await subscriptionStore.updateStatus(subscription.id, 'exhausted');
-    subscription.status = 'exhausted';
+  if (subscription.status === 'exhausted' && endDate > now) {
+    const activeStatus = subscription.plan_type === 'trial' ? 'trial' : 'active';
+    await subscriptionStore.updateStatus(subscription.id, activeStatus);
+    subscription.status = activeStatus;
   }
 
   return subscription;
@@ -125,19 +110,11 @@ function serializeSubscription(subscription: Subscription): Record<string, unkno
     id: subscription.id,
     plan_type: subscription.plan_type,
     status: subscription.status,
-    quota_total: subscription.quota_total,
-    quota_used: subscription.quota_used,
-    quota_remaining: subscription.quota_remaining,
-    max_file_upload: subscription.max_file_upload,
-    file_upload_used: subscription.file_upload_used,
     start_date: subscription.start_date,
     end_date: subscription.end_date,
     source,
     purchase_url: getPurchaseUrl(),
-    features: planConfig?.features || {
-      max_file_upload: subscription.max_file_upload,
-      ai_model_access: [],
-    },
+    features: planConfig?.features || { ai_model_access: [] },
   };
 }
 
@@ -189,7 +166,7 @@ router.post('/purchase', authMiddleware, async (req: AuthenticatedRequest, res: 
       });
     }
     
-    if (!['monthly', 'quarterly', 'yearly'].includes(plan_type)) {
+    if (!isPurchasablePlanType(plan_type)) {
       return res.status(400).json({
         error: 'Bad Request',
         message: 'Invalid plan_type. Valid options: monthly, quarterly, yearly',
@@ -227,8 +204,6 @@ router.post('/purchase', authMiddleware, async (req: AuthenticatedRequest, res: 
         plan_type,
         price: planConfig.price,
         validity_days: planConfig.validity_days,
-        quota_total: planConfig.quota_total,
-        max_file_upload: planConfig.max_file_upload,
         features: planConfig.features,
       },
       purchase_url: purchaseUrl,
@@ -369,13 +344,13 @@ router.post('/upgrade', authMiddleware, async (req: AuthenticatedRequest, res: R
       });
     }
     
-    const newPlanConfig = PLAN_STRATEGIES[new_plan_type as PlanType];
-    if (!newPlanConfig) {
+    if (!isPurchasablePlanType(new_plan_type)) {
       return res.status(400).json({
         error: 'Bad Request',
-        message: 'Invalid new_plan_type',
+        message: 'Invalid new_plan_type. Valid options: monthly, quarterly, yearly',
       });
     }
+    const newPlanConfig = PLAN_STRATEGIES[new_plan_type];
     
     // 计算升级差价（简化处理，实际需要更复杂的逻辑）
     const priceDiff = newPlanConfig.price - PLAN_STRATEGIES[currentSubscription.plan_type as PlanType].price;
@@ -394,9 +369,8 @@ router.post('/upgrade', authMiddleware, async (req: AuthenticatedRequest, res: R
       subscription: {
         id: updatedSubscription?.id,
         plan_type: updatedSubscription?.plan_type,
-        quota_total: updatedSubscription?.quota_total,
-        quota_used: updatedSubscription?.quota_used,
-        quota_remaining: updatedSubscription?.quota_remaining,
+        start_date: updatedSubscription?.start_date,
+        end_date: updatedSubscription?.end_date,
       },
       price_difference: Math.max(0, priceDiff),
     });
@@ -414,13 +388,11 @@ router.post('/upgrade', authMiddleware, async (req: AuthenticatedRequest, res: R
  * 获取所有可用套餐信息
  */
 router.get('/plans', async (req: Request, res: Response) => {
-  const plans = Object.entries(PLAN_STRATEGIES).map(([type, config]) => ({
+  const plans = PURCHASABLE_PLAN_TYPES.map((type) => ({
     plan_type: type,
-    price: config.price,
-    validity_days: config.validity_days === 36500 ? -1 : config.validity_days,
-    quota_total: config.quota_total,
-    max_file_upload: config.max_file_upload,
-    features: config.features,
+    price: PLAN_STRATEGIES[type].price,
+    validity_days: PLAN_STRATEGIES[type].validity_days,
+    features: PLAN_STRATEGIES[type].features,
   }));
   
   return res.json({ plans });

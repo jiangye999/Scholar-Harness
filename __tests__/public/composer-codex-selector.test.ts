@@ -37,9 +37,11 @@ describe('composer Codex model and reasoning selection', () => {
     expect(html).toContain("selector.classList.toggle('codex-flyout-open'");
     expect(html).not.toContain('.composer-provider-selector.open.codex-flyout-open #composerProviderMenu');
     expect(html).toContain('var composerCodexFlyoutOpen = false;');
-    expect(html).toContain("&& composerCodexFlyoutOpen");
+    expect(html).toContain('var expanded = composerCodexFlyoutOpen');
     expect(html).toContain("var shouldOpen = !selector.classList.contains('open');");
     expect(html).toContain('composerCodexFlyoutOpen = true;');
+    expect(html).toContain('function openComposerCodingAgentContainer(event)');
+    expect(html).toContain('data-provider="coding-agent"');
     expect(html).not.toContain('function positionComposerProviderMenuForCodexFlyout()');
     expect(html).toContain('width: min(272px, calc(100vw - 32px));');
     expect(html).toContain('left: 0;');
@@ -62,6 +64,19 @@ describe('composer Codex model and reasoning selection', () => {
     expect(html).toContain('requestBody.codexReasoningEffort = composerCodexSelection.reasoningEffort');
   });
 
+  it('gives Pi and OpenCode isolated model and reasoning controls in the coding Agent container', () => {
+    expect(html).toContain('id="composerPortableRuntimeModelSelect"');
+    expect(html).toContain('id="composerPortableRuntimeEffortSelect"');
+    expect(html).toContain("selectComposerPortableRuntimeProvider('pi', event)");
+    expect(html).toContain("selectComposerPortableRuntimeProvider('opencode', event)");
+    expect(html).toContain('function loadComposerPortableRuntimeModels(runtimeId, forceRefresh)');
+    expect(html).toContain("fetch('/api/chat-bridge/agent-runtimes/' + runtimeId + '/models?_='");
+    expect(html).toContain('function getComposerPortableRuntimeSelection(runtimeId)');
+    expect(html).toContain('composerPortableRuntimeModels = { pi: [], opencode: [] }');
+    expect(html).toContain('body: JSON.stringify({ agent_runtimes: runtimePayload })');
+    expect(html).toContain('var portableSelection = getComposerPortableRuntimeSelection(provider);');
+  });
+
   it('validates and applies per-request Codex overrides end to end', () => {
     expect(validation).toContain('codexModel: z.string().max(200).optional()');
     expect(validation).toContain("codexReasoningEffort: z.enum(['low', 'medium', 'high', 'xhigh', 'max', 'ultra']).optional()");
@@ -72,5 +87,13 @@ describe('composer Codex model and reasoning selection', () => {
     expect(metaRoute).toContain('codexModel: codexModel || undefined');
     expect(localServer).toContain('codexModel: input.codexModel');
     expect(localServer).toContain('codexReasoningEffort: input.codexReasoningEffort');
+  });
+
+  it('reports model capacity separately and keeps retries on App Server', () => {
+    expect(html).toContain('CODEX_MODEL_CAPACITY');
+    expect(html).toContain('这不是上下文过长，也不是 Codex CLI 或 App Server 连接故障');
+    expect(chatBridge).toContain('CODEX_CAPACITY_RETRY_DELAYS_MS = [2_000, 5_000, 10_000]');
+    expect(chatBridge).toContain('buildCodexCapacityAttemptModels');
+    expect(chatBridge).toContain('if (isCodexModelCapacityError(appServerError))');
   });
 });

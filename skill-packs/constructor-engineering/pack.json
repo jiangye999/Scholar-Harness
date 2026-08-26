@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "id": "constructor-engineering",
+  "name": "构造 Agent 工程实施 Skills",
+  "version": "1.1.0",
+  "sourceRepository": "https://github.com/esengine/DeepSeek-Reasonix",
+  "license": "Scholar Harness Proprietary; optional executor Reasonix is MIT",
+  "noticeFile": "THIRD_PARTY_NOTICES.md",
+  "skills": [
+    { "id": "requirements-contract", "name": "构造需求与验收契约", "category": "engineering", "description": "把用户对软件功能的自然语言描述转换为范围明确、可测试、可回滚的实施契约。", "entry": "skills/requirements-contract/SKILL.md", "aliases": ["构造 Agent", "增加功能", "修改软件", "删除功能", "验收标准"], "policyOverlay": "未确认数据范围、受影响页面和验收条件前，只能生成计划和预览，不能启用功能包。" },
+    { "id": "architecture-impact", "name": "架构影响分析", "category": "engineering", "description": "追踪前端、路由、服务、数据和恢复链路，判断功能能否以运行时功能包实现。", "entry": "skills/architecture-impact/SKILL.md", "aliases": ["架构分析", "影响范围", "前后端链路"], "policyOverlay": "认证、支付、更新器、Electron 主进程和云端授权不允许由运行时功能包覆盖。" },
+    { "id": "feature-package-build", "name": "运行时功能包构建", "category": "engineering", "description": "按 Scholar Harness Feature Package v1 规范生成沙箱页面、导航贡献和功能私有存储。", "entry": "skills/feature-package-build/SKILL.md", "aliases": ["功能包", "运行时扩展", "Reasonix", "DeepSeek 编程"], "policyOverlay": "只能写入本次暂存目录；不得覆盖 app.asar、安装目录或其他功能包。" },
+    { "id": "api-contract", "name": "前后端 API 契约", "category": "engineering", "description": "为功能包的输入、输出、错误和状态恢复建立稳定契约。", "entry": "skills/api-contract/SKILL.md", "aliases": ["API 契约", "接口字段", "错误响应"], "policyOverlay": "所有外部输入必须校验；错误响应必须包含 code、message 和 recoverable。" },
+    { "id": "security-permission-review", "name": "功能包安全与权限审查", "category": "engineering", "description": "审查功能包声明权限、路径、网络访问和敏感边界，阻止越权安装。", "entry": "skills/security-permission-review/SKILL.md", "aliases": ["权限审查", "安全审查", "路径穿越"], "policyOverlay": "拒绝任意 shell、核心文件改写、明文密钥、越目录路径和未声明网络访问。" },
+    { "id": "test-release-gate", "name": "测试与启用门禁", "category": "engineering", "description": "执行语法、构建、契约和窄屏检查，并决定功能包能否从预览进入启用。", "entry": "skills/test-release-gate/SKILL.md", "aliases": ["测试门禁", "发布检查", "启用检查"], "policyOverlay": "测试失败时保持停用并显示可操作错误，不得以隐藏错误代替修复。" },
+    { "id": "migration-rollback", "name": "迁移与回滚", "category": "engineering", "description": "为功能包升级、数据迁移、禁用、卸载和版本回滚建立可恢复流程。", "entry": "skills/migration-rollback/SKILL.md", "aliases": ["版本回滚", "数据迁移", "卸载功能"], "policyOverlay": "升级前保留上一可用版本；回滚不得删除用户私有数据，清理数据必须再次确认。" },
+    { "id": "core-change-governance", "name": "核心变更治理", "category": "engineering", "description": "治理跨前端、后端、Electron、云端和数据层的核心修改，执行风险分级、双重批准、隔离候选、备份验证与自动回滚。", "entry": "skills/core-change-governance/SKILL.md", "aliases": ["核心改造", "重大修改", "修改软件架构", "构造 Agent", "回滚策略"], "policyOverlay": "重大修改不得把候选生成等同于应用许可；应用前必须再次批准并建立逐文件回滚点。" }
+  ]
+}

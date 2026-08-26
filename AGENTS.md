@@ -1,7 +1,7 @@
 # AGENTS.md - Scholar Harness 当前开发指南
 
 **项目**: Scholar Harness 论文写作助手  
-**当前版本**: 1.0.8  
+**当前版本**: 1.0.9
 **产品形态**: Electron 桌面软件 + 本地 Express 服务 + 云端账号/授权服务 + 官网下载页  
 **技术栈**: Node.js 22+ / TypeScript / Express / Electron / Vitest / Next.js  
 **核心架构**: 两级 AI Agent 协作 + PDF Wiki 句子级证据库 + 混合检索 + 数据分析/R 作图工作流
@@ -68,6 +68,7 @@ Scholar Harness 当前不是单一聊天应用，而是一个桌面科研写作�
 6. **云端账号和授权**: `cloud/`，负责注册、登录、验证码、订阅、激活码、内测码、下载统计。
 7. **官网**: `scholarharness-website/`，负责产品展示、注册入口、帮助文档、下载入口。
 8. **部署和安装包**: `dist-electron/`、`scholarharness-website/public/downloads/`、服务器 `/root/website/out/downloads/`。
+9. **DSH 插件（能力外放）**: `plugins/dsh-scholar-harness/`，把本地 Scholar Harness 服务以 DeepSeek Harness 插件形式暴露给 DSH Agent 与 Web GUI（`scholar_*` 工具、`/api/dsh-scholar/*` 路由、侧边栏「Scholar」面板、SKILL.md 技能）。只读接入，不碰产品底线；与 `docs/pi-agent-cache-and-dsh-plan.md` 的路线 C 一致。
 
 ---
 
@@ -502,6 +503,8 @@ cloud/exe/
 
 `artifacts/` 用于临时生成材料，例如软著申请材料、扫描结果、部署包。默认不作为产品源码提交。
 
+`artifacts/scratch/` 是 AI 会话临时目录，所有临时代码、裁剪图、日志、实验产物都放这里，任务结束后运行 `npm run clean:scratch` 自动清空。仓库根目录或任务目录不允许再出现 `tmp_fig5_diag/`、`measure_more_tmp.js` 这类散落临时文件。
+
 ---
 
 ## 测试策略
@@ -675,6 +678,21 @@ Scholar Harness 论文写作助手软件 V1.0.6
 6. 修改云端后跑 `cd cloud && npm run build`。
 7. 修改官网后跑 `cd scholarharness-website && npm run build`。
 8. 涉及打包、下载、更新时，同步检查安装包、图标、`latest.json`、官网链接和下载统计。
+
+---
+
+## Agent 复杂问题解决协议
+
+任何多步骤复杂任务（诊断、作图、写作、代码修复）都先读 `skill-packs/agent-problem-solving/skills/problem-solving-protocol/SKILL.md` 并遵循其阶段协议：
+
+1. **P0 任务契约**：动手前先写 3-6 行 brief（目标、输入、验收标准、约束、验证命令），验收标准不明先问清。
+2. **P1 基准校准**：先建立坐标系和已知参考点再测量，禁止盲扫候选坐标。
+3. **P2 工具化**：同类操作第 3 次必须工具化。图件/像素诊断复用 `skill-packs/agent-problem-solving/skills/diagnostic-runner/`（`scripts/pixel_scan.py`），禁止堆 `diag_v9b.py → diag_v9c.py` 版本号脚本，禁止超过 5 行的 `python -c "..."` 内联命令。所有临时代码、裁剪图、日志和实验产物一律放 `artifacts/scratch/`，禁止散落仓库根目录或任务目录。
+4. **P3 结构化执行**：输出契约 `{status, summary, next_actions, artifacts}`，结论化输出，原始日志落盘不灌会话。
+5. **P4 验证**：独立方法交叉验证，回查验收标准。
+6. **P5 收敛**：fix forward 标准工具，删除实验产物，运行 `npm run clean:scratch` 清空 `artifacts/scratch/`。
+
+任务契约模板见 `skill-packs/agent-problem-solving/templates/task-brief.md`。
 
 ---
 

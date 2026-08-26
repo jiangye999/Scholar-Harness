@@ -24,6 +24,13 @@ describe('Chat prompt deduplication', () => {
     expect(countOccurrences(prompt, CHAT_SYSTEM_PROMPT_VERSION)).toBe(1);
     expect(prompt).toContain('文末参考文献条目直接从完整作者信息开始');
     expect(prompt).toContain('不得在条目前重复添加 `(Yang et al., 2024)`');
+    expect(prompt).toContain('最终回答只呈现论文正文');
+    expect(prompt).toContain('禁止添加面向用户的应答、解释或元话语');
+    expect(prompt).toContain('必须定位并修改源数据');
+    expect(prompt).toContain('禁止直接在 PNG/JPG/TIFF 等成品图上');
+    expect(prompt).toContain('视觉工具只允许用于读取、诊断和复核');
+    expect(prompt).toContain('createdAt（生成/创建时间）与 modifiedAt（最后修改时间）');
+    expect(prompt).toContain('默认优先选择类型和语义相关候选中的最新文件');
     expect(prompt).not.toContain('(第一作者姓氏 et al., 年份) 全部作者');
   });
 

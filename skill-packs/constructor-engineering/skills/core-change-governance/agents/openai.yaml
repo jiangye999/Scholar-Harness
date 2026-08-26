@@ -1,0 +1,4 @@
+interface:
+  display_name: "核心变更治理"
+  short_description: "治理构造 Agent 的重大核心源码变更、双重批准、备份验证与回滚"
+  default_prompt: "分析本次 Scholar Harness 核心改造的风险、影响、批准门槛、验证与回滚方案。"

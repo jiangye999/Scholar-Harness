@@ -61,14 +61,35 @@ export interface PiSessionRuntime {
   requeueSteeringMessage: (messageId: string) => Promise<void>;
 }
 
+/** Token accounting reported by the active model provider for one model call. */
+export interface ChatTokenUsage {
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  reasoningTokens?: number;
+  /** True when the provider omitted usage and Scholar Harness estimated it. */
+  estimated?: boolean;
+  /**
+   * Tokens served from the provider KV/prefix cache. Undefined when the
+   * provider reported no cache information; 0 when it explicitly reported
+   * zero cache reads.
+   */
+  cacheReadTokens?: number;
+}
+
 export interface ChatOptions {
   model?: string;
   messages: Message[];
   userId?: string;
+  /** Immutable project identity captured when the turn starts. */
+  projectId?: string | null;
   conversationId?: string | null;
   temperature?: number;
   maxTokens?: number;
+  reasoningEffort?: string;
   onProgress?: (chunk: string) => void;
+  onThinking?: (chunk: string) => void;
+  onUsage?: (usage: ChatTokenUsage) => void;
   newPage?: boolean;
   /**
    * 强制指定使用的 provider/agent
@@ -79,7 +100,18 @@ export interface ChatOptions {
    * - 'codex': 使用本机 Codex CLI
    * - undefined: 自动选择
    */
-  forceProvider?: 'browser' | 'api' | 'primary' | 'secondary' | 'codex';
+  forceProvider?: 'browser' | 'api' | 'primary' | 'secondary' | 'codex' | 'pi' | 'opencode';
+  /** Explicit Coding Agent runtime. Prefer this field over provider-specific flags for new callers. */
+  agentRuntime?: 'codex' | 'pi' | 'opencode';
+  agentRuntimeModel?: string;
+  agentRuntimeReasoningEffort?: string;
+  agentRuntimeTimeoutMs?: number;
+  /**
+   * 模型池条目 id. 当 forceProvider='primary'/'secondary'/'secondary_vision' 时,
+   * 显式指定要使用 pool 中哪个 entry (前端手动切换).
+   * 缺失则使用 pool.active_model_id 或 priority 最小的启用 entry.
+   */
+  modelId?: string;
   /** 强制直接使用指定 API provider，不允许“优先 Codex”设置接管；用于隔离评测。 */
   bypassCodexPreference?: boolean;
   /**
@@ -111,6 +143,8 @@ export interface ChatOptions {
   agentSkillCatalogPrompt?: string;
   /** Codex CLI 首轮需要授权读取的 Skill 包和用户 Skill 镜像目录。 */
   agentSkillRoots?: string[];
+  /** 当前 Skill/MCP 注册结果的稳定摘要；变化时 Coding Agent 自动建立新能力会话。 */
+  agentCapabilitySignature?: string;
   /** Codex resume 轮次需要重新附加的用户显式斜杠 Skill 内容。 */
   explicitAgentSkillPrompt?: string;
   /**
@@ -123,6 +157,8 @@ export interface ChatOptions {
     permission?: 'read-only' | 'workspace-write' | 'danger-full-access';
     aiWorkRoot?: string;
     safeWorkRoot?: string;
+    /** Internal request-scoped marker: the safe workbench was refreshed before runtime launch. */
+    preparedForTurn?: boolean;
   };
   queryEnvelope?: {
     id?: string;
@@ -162,6 +198,10 @@ export interface ChatOptions {
     role: 'user' | 'assistant' | 'system';
     content: string;
   }>;
+  /** Internal: force a native Agent resume prompt to consume an unsynchronized visible-message delta. */
+  forceConversationHandoff?: boolean;
+  /** Internal: changed session-state blocks for an already-running native Agent. */
+  runtimeContextDelta?: Record<string, string>;
   /** Codex App Server 专用的 Scholar Harness 原生工具桥；API provider 不读取此字段。 */
   codexToolSet?: CodexBridgeToolSet;
   /**

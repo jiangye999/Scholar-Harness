@@ -32,7 +32,6 @@
                 <div class="review-subtitle">${escapeHtml(reviewSubtitle)}</div>
               </div>
               <div style="display:flex;align-items:center;justify-content:flex-end;gap:8px;flex-wrap:wrap;">
-                ${renderAcademicWorkflowTopActions('paper-writing')}
                 <div id="reviewWriterInlineModalActions" style="display:inline-flex;align-items:center;gap:8px;"></div>
               </div>
             </div>
@@ -2546,6 +2545,23 @@
       };
     }
 
+    function updateWorkspaceRPlotStatusMessage(messageElement, text) {
+      if (!messageElement || !messageElement.isConnected) {
+        return appendMessage(text, 'bot', false, true);
+      }
+      var replacement = createSharedChatMessageElement(text, 'bot', false, true);
+      var currentContent = messageElement.querySelector(':scope > .content');
+      var replacementContent = replacement.querySelector(':scope > .content');
+      if (!currentContent || !replacementContent) {
+        return messageElement;
+      }
+      currentContent.replaceWith(replacementContent);
+      syncMessageLocalFileVisibilityClass(messageElement);
+      scheduleChatMessageLayoutRepair(messageElement);
+      maybeScrollChatToBottom(shouldAutoScrollChat());
+      return messageElement;
+    }
+
     async function runWorkspaceRPlotFromMessage(message, workspacePayload) {
       if (!isWorkspaceRPlotRequest(message)) return false;
       workspacePayload = workspacePayload || getWorkspaceDirectoryPayloadForMessage(message);
@@ -2565,12 +2581,15 @@
       sendBtn.disabled = false;
       sendBtn.classList.add('sending');
       isGenerating = true;
-      appendMessage('已识别为工作目录 R 作图任务，正在定位数据文件并调用 R 插件...', 'bot', false, true);
+      var progressMessage = appendMessage('已识别为工作目录 R 作图任务，正在定位数据文件并调用 R 插件...', 'bot', false, true);
 
       try {
         var dataFile = await locateWorkspaceRPlotDataFile(message, workspacePayload || { enabled: true, path: directPath, permission: 'read-only' });
         if (!dataFile || dataFile.needsUserChoice) return true;
-        appendMessage('已定位数据文件：' + dataFile.sourceDataFilePath + '\n正在生成 R 作图代码...', 'bot', false, true);
+        progressMessage = updateWorkspaceRPlotStatusMessage(
+          progressMessage,
+          '已定位数据文件：' + dataFile.sourceDataFilePath + '\n正在生成 R 作图代码...'
+        );
 
         var themeId = 'paper_clean';
         var selectedTheme = Array.isArray(R_THEMES) ? R_THEMES.find(function(theme) { return theme.id === themeId; }) : null;

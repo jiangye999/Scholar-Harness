@@ -25,7 +25,8 @@ describe('chat background themes', () => {
     expect(appSource).toContain('id="chatBackgroundOpacity"');
     expect(appSource).toContain('id="chatBackgroundOpacityValue"');
     expect(appSource).toContain('背景透明度');
-    expect(appSource).toContain('选择本地图片');
+    expect(appSource).toContain('上传背景图片');
+    expect(appSource).toContain('multiple');
   });
 
   it('renders the complete theme picker as a frosted-glass surface', () => {
@@ -151,12 +152,20 @@ describe('chat background themes', () => {
     expect(shellLayoutSource).toContain('scrollbar-width: none');
   });
 
-  it('persists built-in and compressed custom background choices locally', () => {
+  it('persists built-in choices and multiple compressed custom backgrounds', () => {
     expect(moduleSource).toContain("var CHAT_BACKGROUND_KEY = 'scholarharness_chat_background';");
     expect(moduleSource).toContain("var CHAT_BACKGROUND_CUSTOM_KEY = 'scholarharness_chat_background_custom';");
+    expect(moduleSource).toContain("var CHAT_BACKGROUND_DB_STORE = 'custom-backgrounds';");
+    expect(moduleSource).toContain('database.createObjectStore(CHAT_BACKGROUND_DB_STORE');
+    expect(moduleSource).toContain("label: '艺术纹理'");
+    expect(moduleSource).toContain("label: '自定义'");
+    expect(moduleSource.indexOf("label: '自定义'")).toBeGreaterThan(moduleSource.indexOf("label: '艺术纹理'"));
+    expect(moduleSource).not.toContain("label: '推荐'");
     expect(moduleSource).toContain("canvas.toDataURL('image/webp'");
-    expect(moduleSource).toContain("localStorage.setItem(CHAT_BACKGROUND_CUSTOM_KEY, optimized)");
-    expect(moduleSource).toContain("applyChatBackground('custom', false)");
+    expect(moduleSource).toContain('Array.from(input.files)');
+    expect(moduleSource).toContain('await saveCustomBackgroundRecords(added)');
+    expect(moduleSource).toContain('customBackgrounds = added.slice().reverse().concat(customBackgrounds)');
+    expect(moduleSource).toContain('removeCustomBackgroundRecord(record.id)');
   });
 
   it('removes redundant secondary-model instructions from the primary-model dialog', () => {

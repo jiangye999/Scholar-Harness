@@ -272,6 +272,89 @@ describe('LiteratureCollectionManager', () => {
     expect(importedText).toContain('UT WOS:FULL-RECORD-1');
   });
 
+  it('uses the configured Starter API only for bounded recent discovery', async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+      metadata: { total: 1 },
+      hits: [{
+        uid: 'WOS:RECENT-1',
+        title: 'Recent soil carbon evidence',
+        abstract: 'A recent abstract suitable for downstream screening.',
+        source: { sourceTitle: 'Soil Biology', publishYear: 2026, publishDate: '2026-08-19' },
+        names: { authors: [{ displayName: 'Researcher, A' }] },
+        identifiers: { doi: '10.1000/recent-wos' },
+      }],
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+    vi.stubGlobal('fetch', fetchMock);
+    const manager = new LiteratureCollectionManager({ dataDir });
+    manager.saveConfig('tester', { wosApiKey: 'starter-key', wosMode: 'starter' });
+
+    const result = await manager.discoverWos({
+      userId: 'tester',
+      terms: ['soil carbon', 'microbial necromass'],
+      dateFrom: '2026-08-18',
+      dateTo: '2026-08-19',
+      limit: 10,
+    });
+
+    expect(result.mode).toBe('starter');
+    expect(result.records).toHaveLength(1);
+    expect(result.records[0]).toMatchObject({
+      sourceRecordId: 'WOS:RECENT-1',
+      publishedAt: '2026-08-19',
+      doi: '10.1000/recent-wos',
+    });
+    const requestedUrl = new URL(String(fetchMock.mock.calls[0][0]));
+    expect(requestedUrl.pathname).toContain('/wos-starter/v1/documents');
+    expect(requestedUrl.searchParams.get('modified_time_span')).toBe('2026-08-18+2026-08-19');
+    expect(requestedUrl.searchParams.get('q')).toContain('TS=(');
+  });
+
+  it('imports a WoS Full Record file into the literature library and bibliometrics hook', async () => {
+    const importedFiles: string[] = [];
+    const manager = new LiteratureCollectionManager({
+      dataDir,
+      importWosPlainText: ({ fileName }) => {
+        importedFiles.push(fileName);
+      },
+    });
+    const content = [
+      'FN Clarivate Web of Science',
+      'VR 1.0',
+      'PT J',
+      'AU Researcher, A',
+      'AF Alice Researcher',
+      'TI A manually exported full record',
+      'SO Complete Journal',
+      'AB This abstract is complete enough for recommendation and retrieval.',
+      'DE soil carbon; evidence synthesis',
+      'PY 2026',
+      'DI 10.1000/manual-full-record',
+      'UT WOS:MANUAL-FULL-1',
+      'CR Example A, 2024, COMPLETE JOURNAL',
+      'ER',
+      'EF',
+    ].join('\n');
+
+    const result = await manager.importWosPlainTextFiles({
+      userId: 'tester',
+      files: [{ fileName: 'savedrecs.txt', content }],
+    });
+
+    expect(result).toMatchObject({
+      filesImported: 1,
+      addedRecords: 1,
+      missingAbstractRecords: 0,
+      bibliometricsImported: true,
+    });
+    expect(importedFiles).toEqual(['savedrecs.txt']);
+    const library = JSON.parse(fs.readFileSync(path.join(dataDir, 'uploads', 'tester', 'literature.json'), 'utf-8'));
+    expect(library.papers[0]).toMatchObject({
+      title: 'A manually exported full record',
+      doi: '10.1000/manual-full-record',
+      abstract: 'This abstract is complete enough for recommendation and retrieval.',
+    });
+  });
+
   it('creates a CNKI assisted handoff without attempting hidden automation', () => {
     const manager = new LiteratureCollectionManager({ dataDir });
     const job = manager.createJob({

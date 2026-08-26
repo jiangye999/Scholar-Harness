@@ -28,18 +28,34 @@ describe('right article progress sidebar', () => {
     expect(body).toContain('openArticleWritingProgressPanel();');
   });
 
-  it('builds visible chapters only from persisted TXT drafts', () => {
+  it('builds visible chapters from the current project framework and only uses TXT as hidden status metadata', () => {
     const body = readFunctionBody('getArticleWritingProgressItemsForContext()', 'getArticleWritingProgressSnapshot()');
     expect(body).toContain('articleDraftProgressCache.drafts');
-    expect(body).not.toContain('loadDiscussionFrameworkState');
-    expect(body).not.toContain("type: 'framework'");
+    expect(body).toContain('loadDiscussionFrameworkState');
+    expect(body).toContain("type: 'framework'");
+    expect(body).not.toContain('content: draft.content');
   });
 
-  it('renders chapter content read-only and no longer attaches manual framework context', () => {
+  it('renders framework planning without chapter draft prose and attaches it to every Agent turn', () => {
     const body = readFunctionBody('renderArticleWritingProgressPanel(forceDraftReload)', 'scheduleArticleChapterDraftSave(textarea)');
-    expect(body).toContain('article-draft-readonly-content');
-    expect(body).not.toContain('<textarea');
-    expect(html).not.toContain('context.discussionFramework = await buildDiscussionFrameworkContextForChat()');
+    expect(body).toContain('当前项目论文框架');
+    expect(body).toContain('本章定位与写作目标');
+    expect(body).toContain('小节与论证顺序');
+    expect(body).toContain('证据、图表与材料安排');
+    expect(body).toContain('调整本章规划');
+    expect(body).not.toContain('article-draft-readonly-content');
+    expect(body).not.toContain('draft.content');
+    expect(html).toContain('context.discussionFramework = discussionFramework');
+    expect(html).toContain("planningStatus: state.planningStatus");
+  });
+
+  it('requires user confirmation before正文 writing and exposes planning actions', () => {
+    expect(html).toContain('function startArticleFrameworkPlanning()');
+    expect(html).toContain('function confirmArticleFrameworkPlanning()');
+    expect(html).toContain("state.planningStatus = 'confirmed'");
+    expect(html).toContain('必须等我在右侧确认框架后再开始正文写作');
+    expect(html).toContain('与 AI 规划');
+    expect(html).toContain('确认框架');
   });
 
   it('uses three eighths of the window as the default sidebar width', () => {

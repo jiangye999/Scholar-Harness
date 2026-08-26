@@ -42,7 +42,7 @@ const LANDING_FETCH_TIMEOUT_MS = parsePositiveInteger(process.env.PAPER_DOWNLOAD
 const OA_CANDIDATE_ATTEMPT_LIMIT = parsePositiveInteger(process.env.OA_CANDIDATE_ATTEMPT_LIMIT, 10, 3, 50);
 const OA_DISCOVERED_PDF_ATTEMPT_LIMIT = parsePositiveInteger(process.env.OA_DISCOVERED_PDF_ATTEMPT_LIMIT, 3, 1, 12);
 
-type PaperDownloadResult = {
+export type PaperDownloadResult = {
   doi: string;
   status: "downloaded" | "linked" | "failed";
   buffer?: Buffer;
@@ -51,6 +51,12 @@ type PaperDownloadResult = {
   source?: string;
   message?: string;
 };
+
+export interface DownloadablePaperPdf {
+  doi?: string;
+  title?: string;
+  pdfUrl?: string;
+}
 
 type BrowserDownloadLike = {
   path(): Promise<string | null>;
@@ -882,6 +888,48 @@ export async function downloadOpenAccessPaperByDoi(
     message: candidates.length > 0
       ? `找到了候选 OA 链接但未能下载 PDF：${errors.join("; ")}`
       : "未找到开放获取 PDF 链接",
+  };
+}
+
+export async function downloadPaperPdfForLibrary(
+  paper: DownloadablePaperPdf,
+): Promise<PaperDownloadResult> {
+  const doi = normalizeDoi(paper.doi || '');
+  const pdfUrl = String(paper.pdfUrl || '').trim();
+  const errors: string[] = [];
+  if (/^https?:\/\//i.test(pdfUrl)) {
+    const direct = await fetchPdfByUrl(pdfUrl, '');
+    if (direct.buffer) {
+      const titleName = sanitizeZipName(String(paper.title || '').trim()) || 'daily-paper';
+      return {
+        doi,
+        status: 'downloaded',
+        buffer: direct.buffer,
+        filename: `${titleName.slice(0, 150)}.pdf`,
+        link: pdfUrl,
+        source: '每日论文 PDF 链接',
+        message: `已从每日论文 PDF 链接下载 ${direct.buffer.length} bytes`,
+      };
+    }
+    errors.push(`每日论文 PDF 链接：${direct.error || '无法下载 PDF'}`);
+  }
+
+  if (doi) {
+    const oaResult = await downloadOpenAccessPaperByDoi(doi, paper as Partial<LiteratureRecord>);
+    if (oaResult.status === 'downloaded' && oaResult.buffer) return oaResult;
+    if (oaResult.message) errors.push(oaResult.message);
+    return {
+      ...oaResult,
+      message: errors.filter(Boolean).join(' | ') || '未找到开放获取 PDF',
+    };
+  }
+
+  return {
+    doi: '',
+    status: 'failed',
+    link: pdfUrl || undefined,
+    source: pdfUrl ? '每日论文 PDF 链接' : undefined,
+    message: errors.filter(Boolean).join(' | ') || '该论文没有可下载的 PDF 链接或 DOI。',
   };
 }
 

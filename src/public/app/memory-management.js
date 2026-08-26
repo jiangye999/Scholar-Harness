@@ -527,7 +527,7 @@
           resetMainChatPiQueueHost();
           messagesDiv.innerHTML = '';
           emptyState.style.display = 'flex';
-          emptyState.innerHTML = BRAND_TITLE_HTML + '<p>记忆已清空，准备开始新的' + labels.projectWork + '。</p><p style="margin-top:12px;">发送消息开始对话</p>';
+          emptyState.innerHTML = BRAND_TITLE_HTML + '<p>记忆已清空，准备开始新的' + labels.projectWork + '。</p><p style="margin-top:12px;">发送消息开始对话</p>' + HOME_WORKFLOW_SHORTCUTS_HTML;
           
           // 重置上传文件列表
           uploadedFiles = [];

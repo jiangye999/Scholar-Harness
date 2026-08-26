@@ -9,6 +9,7 @@ import {
   callChatCompletionWithTools,
   createLLMApiClient,
   normalizeChatCompletionUrl,
+  repairToolMessagePairing,
 } from "../../src/utils/llm-client";
 
 vi.mock("https", () => ({
@@ -101,6 +102,47 @@ function mockHttpsJsonResponseSequence(payloads: unknown[]): CapturedHttpsReques
   return captured;
 }
 
+function mockHttpsStreamingResponse(bodies: string[]): CapturedHttpsRequest[] {
+  const captured: CapturedHttpsRequest[] = [];
+  httpsRequestMock.mockImplementation(((options: https.RequestOptions, callback: (response: PassThrough & {
+    statusCode?: number;
+    statusMessage?: string;
+  }) => void) => {
+    const request = new EventEmitter() as EventEmitter & {
+      setTimeout: ReturnType<typeof vi.fn>;
+      write: ReturnType<typeof vi.fn>;
+      end: ReturnType<typeof vi.fn>;
+      destroy: ReturnType<typeof vi.fn>;
+    };
+    const record: CapturedHttpsRequest = { options, body: "" };
+    const responseIndex = captured.length;
+    captured.push(record);
+
+    request.setTimeout = vi.fn();
+    request.write = vi.fn((chunk: string | Buffer) => {
+      record.body += Buffer.isBuffer(chunk) ? chunk.toString("utf-8") : String(chunk);
+    });
+    request.end = vi.fn(() => {
+      queueMicrotask(() => {
+        const response = new PassThrough() as PassThrough & {
+          statusCode?: number;
+          statusMessage?: string;
+        };
+        response.statusCode = 200;
+        response.statusMessage = "OK";
+        callback(response);
+        response.write(bodies[Math.min(responseIndex, bodies.length - 1)]);
+        response.end();
+      });
+    });
+    request.destroy = vi.fn((error?: Error) => {
+      if (error) request.emit("error", error);
+    });
+    return request;
+  }) as typeof https.request);
+  return captured;
+}
+
 describe("llm-client", () => {
   afterEach(() => {
     vi.clearAllMocks();
@@ -158,6 +200,116 @@ describe("llm-client", () => {
     });
   });
 
+  it("reports provider token usage for non-streaming responses", async () => {
+    mockHttpsJsonResponse({
+      choices: [{ message: { content: "response text" } }],
+      usage: {
+        prompt_tokens: 123,
+        completion_tokens: 45,
+        total_tokens: 168,
+        completion_tokens_details: { reasoning_tokens: 7 },
+      },
+    });
+    const onUsage = vi.fn();
+
+    await callChatCompletion(
+      { apiUrl: "https://api.example.com/v1", apiKey: "test-key", label: "Test" },
+      {
+        messages: [{ role: "user", content: "hello" }],
+        onUsage,
+      }
+    );
+
+    expect(onUsage).toHaveBeenCalledWith({
+      inputTokens: 123,
+      outputTokens: 45,
+      totalTokens: 168,
+      reasoningTokens: 7,
+    });
+  });
+
+  it("reports DeepSeek OpenAI-compat cache reads and subtracts them from paid input", async () => {
+    mockHttpsJsonResponse({
+      choices: [{ message: { content: "response text" } }],
+      usage: {
+        prompt_tokens: 283,
+        completion_tokens: 2,
+        total_tokens: 285,
+        prompt_tokens_details: { cached_tokens: 256 },
+      },
+    });
+    const onUsage = vi.fn();
+
+    await callChatCompletion(
+      { apiUrl: "https://api.example.com/v1", apiKey: "test-key", label: "Test" },
+      {
+        messages: [{ role: "user", content: "hello" }],
+        onUsage,
+      }
+    );
+
+    expect(onUsage).toHaveBeenCalledWith({
+      inputTokens: 27,
+      outputTokens: 2,
+      totalTokens: 285,
+      cacheReadTokens: 256,
+    });
+  });
+
+  it("reports DeepSeek native prompt_cache_hit_tokens spelling", async () => {
+    mockHttpsJsonResponse({
+      choices: [{ message: { content: "response text" } }],
+      usage: {
+        prompt_tokens: 283,
+        completion_tokens: 2,
+        total_tokens: 285,
+        prompt_cache_hit_tokens: 256,
+      },
+    });
+    const onUsage = vi.fn();
+
+    await callChatCompletion(
+      { apiUrl: "https://api.example.com/v1", apiKey: "test-key", label: "Test" },
+      {
+        messages: [{ role: "user", content: "hello" }],
+        onUsage,
+      }
+    );
+
+    expect(onUsage).toHaveBeenCalledWith({
+      inputTokens: 27,
+      outputTokens: 2,
+      totalTokens: 285,
+      cacheReadTokens: 256,
+    });
+  });
+
+  it("omits cacheReadTokens when the provider reports no cache fields", async () => {
+    mockHttpsJsonResponse({
+      choices: [{ message: { content: "response text" } }],
+      usage: {
+        prompt_tokens: 40,
+        completion_tokens: 2,
+        total_tokens: 42,
+      },
+    });
+    const onUsage = vi.fn();
+
+    await callChatCompletion(
+      { apiUrl: "https://api.example.com/v1", apiKey: "test-key", label: "Test" },
+      {
+        messages: [{ role: "user", content: "hello" }],
+        onUsage,
+      }
+    );
+
+    expect(onUsage).toHaveBeenCalledWith({
+      inputTokens: 40,
+      outputTokens: 2,
+      totalTokens: 42,
+    });
+  });
+
   it("retries a non-streaming chat request once when the upstream response is empty", async () => {
     mockHttpsJsonResponseSequence([
       { choices: [{ message: { content: "" }, finish_reason: "stop" }] },
@@ -174,21 +326,11 @@ describe("llm-client", () => {
   });
 
   it("retries an empty tool-call response once with the same request", async () => {
-    const requests = mockHttpsJsonResponseSequence([
-      { choices: [{ message: { content: "", tool_calls: [] }, finish_reason: "stop" }] },
-      {
-        choices: [{
-          message: {
-            content: "",
-            tool_calls: [{
-              id: "call-1",
-              type: "function",
-              function: { name: "lookup", arguments: "{\"query\":\"hello\"}" },
-            }],
-          },
-          finish_reason: "tool_calls",
-        }],
-      },
+    const requests = mockHttpsStreamingResponse([
+      'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n',
+      'data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call-1","type":"function","function":{"name":"lookup","arguments":""}}]},"finish_reason":null}]}\n\n' +
+      'data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\\"query\\":\\"hello\\"}"}}]},"finish_reason":null}]}\n\n' +
+      'data: {"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}\n\ndata: [DONE]\n\n',
     ]);
 
     const result = await callChatCompletionWithTools(
@@ -209,9 +351,9 @@ describe("llm-client", () => {
   });
 
   it("reports an empty response only after the retry is also empty", async () => {
-    mockHttpsJsonResponse({
-      choices: [{ message: { content: "", tool_calls: [] }, finish_reason: "stop" }],
-    });
+    mockHttpsStreamingResponse([
+      'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n',
+    ]);
 
     await expect(callChatCompletionWithTools(
       { apiUrl: "https://api.example.com/v1", apiKey: "test-key", label: "Test" },
@@ -280,5 +422,60 @@ describe("llm-client", () => {
     await expect(pending).rejects.toMatchObject({ name: "AbortError" });
     expect(destroy).toHaveBeenCalledTimes(1);
     expect(httpsRequestMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("repairToolMessagePairing", () => {
+  const assistantWithCalls = (ids: string[]): any => ({
+    role: "assistant",
+    content: null,
+    tool_calls: ids.map(id => ({ id, type: "function", function: { name: "tool_" + id, arguments: "{}" } })),
+  });
+
+  it("leaves a complete pairing untouched", () => {
+    const messages = [
+      { role: "user", content: "hi" },
+      assistantWithCalls(["c1", "c2"]),
+      { role: "tool", tool_call_id: "c1", name: "a", content: "ok1" },
+      { role: "tool", tool_call_id: "c2", name: "b", content: "ok2" },
+    ];
+    const result = repairToolMessagePairing(messages);
+    expect(result.repaired).toBe(false);
+    expect(result.messages.length).toBe(4);
+  });
+
+  it("backfills missing tool responses so the request cannot 400", () => {
+    const messages = [
+      assistantWithCalls(["c1"]),
+      // tool response for c1 is missing entirely
+      { role: "user", content: "next request" },
+    ];
+    const result = repairToolMessagePairing(messages);
+    expect(result.repaired).toBe(true);
+    const toolMessages = result.messages.filter(m => m.role === "tool");
+    expect(toolMessages.length).toBe(1);
+    expect((toolMessages[0] as { tool_call_id?: string }).tool_call_id).toBe("c1");
+    // backfill must come before the user message (contiguous assistant->tool)
+    const toolIndex = result.messages.findIndex(m => m.role === "tool");
+    const userIndex = result.messages.findIndex(m => m.role === "user");
+    expect(toolIndex).toBeLessThan(userIndex);
+  });
+
+  it("demotes orphan tool messages to user text", () => {
+    const messages = [
+      { role: "assistant", content: "no calls here" },
+      { role: "tool", tool_call_id: "ghost", name: "x", content: "orphan result" },
+    ];
+    const result = repairToolMessagePairing(messages);
+    expect(result.repaired).toBe(true);
+    expect(result.messages.some(m => m.role === "tool")).toBe(false);
+    expect(result.messages.some(m => m.role === "user" && String(m.content).includes("orphan result"))).toBe(true);
+  });
+
+  it("backfills trailing pending call ids at the end of the list", () => {
+    const messages = [assistantWithCalls(["c1"])];
+    const result = repairToolMessagePairing(messages);
+    expect(result.repaired).toBe(true);
+    expect(result.messages.filter(m => m.role === "tool").length).toBe(1);
   });
 });

@@ -5,6 +5,33 @@
 
 import { contextBridge, ipcRenderer, shell, webUtils } from 'electron';
 
+type WindowControlAction = 'minimize' | 'maximize' | 'close';
+
+async function runWindowControl(action: WindowControlAction): Promise<{
+  success: boolean;
+  maximized?: boolean;
+  fallback?: boolean;
+  error?: string;
+}> {
+  try {
+    const result = await ipcRenderer.invoke('window-control', action) as {
+      success?: boolean;
+      maximized?: boolean;
+      error?: string;
+    };
+    if (result?.success === true) return { ...result, success: true };
+    throw new Error(result?.error || '窗口控制 IPC 未执行');
+  } catch (error) {
+    // 兼容仍在运行的旧主进程：旧版本只监听单向 channel。
+    ipcRenderer.send('window-control-action', action);
+    return {
+      success: true,
+      fallback: true,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
 // 暴露给渲染进程的 API
 contextBridge.exposeInMainWorld('electronAPI', {
   // 登录相关
@@ -139,8 +166,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('app-update-open-download', downloadUrl),
 
   // 自定义窗口控制
-  windowControl: (action: 'minimize' | 'maximize' | 'close') =>
-    ipcRenderer.invoke('window-control', action),
+  windowControl: (action: WindowControlAction) => runWindowControl(action),
   
   // === R 代码文件保存相关 ===
   
@@ -273,6 +299,7 @@ export interface ElectronAPI {
   windowControl: (action: 'minimize' | 'maximize' | 'close') => Promise<{
     success: boolean;
     maximized?: boolean;
+    fallback?: boolean;
     error?: string;
   }>;
   // R 代码文件保存

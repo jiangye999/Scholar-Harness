@@ -14,26 +14,39 @@ const codexBridge = readFileSync(path.join(repoRoot, 'src/bridge/chat-bridge/cha
 const legacyLocalChat = readFileSync(path.join(repoRoot, 'src/server/local-server.ts'), 'utf-8');
 const unifiedProcessor = readFileSync(path.join(repoRoot, 'src/server/unified-chat-processor.ts'), 'utf-8');
 const taskOrchestrator = readFileSync(path.join(repoRoot, 'src/orchestrator/task-orchestrator.ts'), 'utf-8');
+const mainChat = readFileSync(path.join(repoRoot, 'src/public/app/chat.js'), 'utf-8');
 
 describe('unified main-chat query intent orchestration', () => {
-  it('classifies against conversation and workspace context before preparing the main request', () => {
+  it('sends a deterministic QueryEnvelope directly to the formal Agent without blocking on semantic classification', () => {
+    const prepareStart = html.indexOf('async function prepareChatBridgeContext(');
+    const prepareEnd = html.indexOf('async function loadBibliometricsWritingContext(', prepareStart);
+    const prepare = html.slice(prepareStart, prepareEnd);
+
+    expect(html).toContain('function buildChatQueryEnvelope(');
+    expect(html).toContain("mode: 'formal-agent'");
+    expect(html).toContain("decisionOwner: 'agent'");
+    expect(prepare).toContain("agentToolRouting: 'formal-agent'");
+    expect(prepare).toContain("queryIntentAuthority: 'formal-agent'");
+    expect(prepare).not.toContain('await classifyMainChatQueryIntent(');
+
+    // The legacy endpoint remains available to diagnostics and special entry
+    // points, but it is no longer part of the normal main-chat critical path.
     expect(html).toContain('async function classifyMainChatQueryIntent(message, routingInput, onProgress)');
     expect(html).toContain("fetch('/api/chat-bridge/query-intent'");
-    expect(html).toContain('var recentIntentHistorySource = (Array.isArray(routingInput.history) ? routingInput.history : []).slice(-8);');
-    expect(html).toContain('history: recentIntentHistory');
-    expect(html).toContain('workspaceFileMentions: workspaceFileMentions');
-    expect(html).toContain('chatBridgeContext.queryIntent');
-    expect(html).toContain('var intentTimeoutMs = 23000;');
-    expect(html).toContain('任务意图识别超时，已切换本地安全路由并继续执行...');
+    expect(route).toContain('兼容/诊断接口');
     expect(route).toContain('const QUERY_INTENT_CLASSIFIER_TIMEOUT_MS = 20_000;');
     expect(route).toContain('shouldUseAiQueryIntentClassifier(classifierInput)');
-    expect(route).not.toContain("provider: 'local-rules'");
-    expect(html).toContain('contextItems: contextItems');
-    expect(html).toContain("type: 'selected_context_sources'");
-    expect(html).toContain("type: 'selected_skills'");
-    expect(html).toContain("type: 'latest_assistant_result'");
     expect(route).toContain('waitForQueryIntentClassifier');
-    expect(html).toContain('var queryIntent = await classifyMainChatQueryIntent(intentMessage, routingInput, onProgress);');
+  });
+
+  it('does not let legacy R-plot routers intercept ordinary composer messages before the formal Agent', () => {
+    const sendStart = mainChat.indexOf('async function sendMessage(');
+    const sendEnd = mainChat.indexOf('async function updateMemoryWithAPI(', sendStart);
+    const sendMessage = mainChat.slice(sendStart, sendEnd);
+
+    expect(sendMessage).not.toContain('await classifyRecentRPlotToolIntent(message)');
+    expect(sendMessage).not.toContain('await runWorkspaceRPlotFromMessage(');
+    expect(sendMessage).toContain('普通聊天的工具意图统一交给正式 Agent');
   });
 
   it('leaves literature retrieval and page reads to the formal Agent tool loop', () => {
@@ -51,16 +64,21 @@ describe('unified main-chat query intent orchestration', () => {
     expect(retrievalServer).toContain('loadPageContextResource: async');
   });
 
-  it('validates the intent again on the main endpoint and supplies it to every provider', () => {
+  it('keeps compatibility intent non-authoritative while every provider receives formal-Agent routing', () => {
     expect(route).toContain("router.post('/query-intent'");
     expect(route).toContain('parseQueryIntentResponse(JSON.stringify(submittedQueryIntent), queryIntentInput)');
+    expect(route).toContain("agentToolRouting = 'formal-agent'");
+    expect(route).toContain("queryIntentAuthority = submittedQueryIntent");
+    expect(route).toContain('formal Agent owns routing');
     expect(route).toContain('buildQueryIntentPromptBlock(context.queryIntent)');
+    expect(systemPrompt).toContain('普通聊天不经过独立 AI 意图分类器');
+    expect(systemPrompt).toContain('QueryEnvelope');
     expect(systemPrompt).toContain('workspace_file、literature_collection 与 literature_retrieval 必须严格区分');
-    expect(systemPrompt).toContain('primaryIntent=literature_collection 时，主页聊天输入框暂不开放 WoS/CNKI 外部采集');
+    expect(systemPrompt).toContain('从现有脚本提取/拆分某个 Figure 的代码');
     expect(route).toContain('const MAIN_CHAT_EXTERNAL_LITERATURE_COLLECTION_ENABLED = false');
     expect(route).toContain('verifiedCollectionIntent');
     expect(route).toContain('MAIN_CHAT_EXTERNAL_LITERATURE_COLLECTION_ENABLED');
-    expect(route).toContain("contextForPrompt.queryIntent?.primaryIntent === 'literature_collection'");
+    expect(route).toContain("String(options.draftContext?.queryIntent?.primaryIntent || '') === 'literature_collection'");
     expect(codexBridge).toContain('function buildCodexQueryIntentSummary(options: ChatOptions)');
     expect(codexBridge).toContain("primaryIntent === 'literature_collection'");
     expect(codexBridge).toContain('queryIntentSummary');
@@ -77,8 +95,9 @@ describe('unified main-chat query intent orchestration', () => {
     expect(taskOrchestrator).toContain('queryIntent.needsWebSearch');
   });
 
-  it('enforces literature authorization again at tool-execution boundaries', () => {
+  it('treats a formal-Agent literature tool call as the retrieval decision while legacy boundaries remain protected', () => {
     expect(route).toContain('function isLiteratureRetrievalAuthorized(context: any)');
+    expect(route).toContain("context?.agentToolRouting === 'formal-agent'");
     expect(route).toContain('Blocked sentence_search because verified Query Intent');
     expect(legacyLocalChat).toContain('!queryIntent.needsLiteratureRetrieval');
     expect(unifiedProcessor).toContain('allowLiteratureRetrieval: queryIntent.needsLiteratureRetrieval');

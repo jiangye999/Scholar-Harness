@@ -10,7 +10,7 @@ const router = Router();
 let db: DatabaseConnection;
 let subscriptionStore: SubscriptionStore;
 
-const QUOTA_DEDUCTING_USAGE_TYPES = new Set([
+const TRACKED_TEXT_USAGE_TYPES = new Set([
   'word_generation',
   'cloud_prompt_bundle',
   'autoresearch_orchestration',
@@ -24,7 +24,7 @@ type PgClient = {
 
 type UsageWriteResult = {
   success: boolean;
-  code?: 'NO_ACTIVE_SUBSCRIPTION' | 'INSUFFICIENT_QUOTA' | 'FILE_UPLOAD_LIMIT_REACHED';
+  code?: 'NO_ACTIVE_SUBSCRIPTION';
   remaining?: number;
 };
 
@@ -87,7 +87,7 @@ async function insertUsageEvent(
   );
 }
 
-async function consumeQuotaAndRecordUsage(input: {
+async function recordTextUsage(input: {
   userId: string;
   usageType: string;
   amount: number;
@@ -100,35 +100,6 @@ async function consumeQuotaAndRecordUsage(input: {
       return { success: false, code: 'NO_ACTIVE_SUBSCRIPTION' };
     }
 
-    const quotaTotal = Number(subscription.quota_total);
-    const quotaUsed = Number(subscription.quota_used || 0);
-    let remaining = Number(subscription.quota_remaining || 0);
-
-    if (quotaTotal !== -1) {
-      const newUsed = quotaUsed + input.amount;
-      remaining = quotaTotal - newUsed;
-
-      if (remaining < 0) {
-        return {
-          success: false,
-          code: 'INSUFFICIENT_QUOTA',
-          remaining: Number(subscription.quota_remaining || 0),
-        };
-      }
-
-      await client.query(
-        `UPDATE subscriptions
-         SET quota_used = $1,
-             quota_remaining = $2,
-             status = CASE WHEN $2 <= 0 THEN 'exhausted' ELSE status END,
-             updated_at = CURRENT_TIMESTAMP
-         WHERE id = $3`,
-        [newUsed, Math.max(0, remaining), subscription.id]
-      );
-    } else {
-      remaining = -1;
-    }
-
     await insertUsageEvent(client, {
       userId: input.userId,
       subscriptionId: subscription.id,
@@ -136,14 +107,13 @@ async function consumeQuotaAndRecordUsage(input: {
       deviceId: input.deviceId,
       eventData: {
         amount: input.amount,
-        remaining: quotaTotal === -1 ? -1 : Math.max(0, remaining),
         ...(input.metadata || {}),
       },
     });
 
     return {
       success: true,
-      remaining: quotaTotal === -1 ? -1 : Math.max(0, remaining),
+      remaining: -1,
     };
   });
 }
@@ -158,20 +128,6 @@ async function incrementFileUploadAndRecordUsage(input: {
     const subscription = await getActiveSubscriptionForUpdate(client, input.userId);
     if (!subscription) {
       return { success: false, code: 'NO_ACTIVE_SUBSCRIPTION' };
-    }
-
-    const maxFileUpload = Number(subscription.max_file_upload);
-    const fileUploadUsed = Number(subscription.file_upload_used || 0);
-
-    if (maxFileUpload !== -1 && fileUploadUsed >= maxFileUpload) {
-      return { success: false, code: 'FILE_UPLOAD_LIMIT_REACHED' };
-    }
-
-    if (maxFileUpload !== -1) {
-      await client.query(
-        'UPDATE subscriptions SET file_upload_used = file_upload_used + 1, updated_at = CURRENT_TIMESTAMP WHERE id = $1',
-        [subscription.id]
-      );
     }
 
     await insertUsageEvent(client, {
@@ -245,9 +201,9 @@ router.post('/report', authMiddleware, async (req: AuthenticatedRequest, res: Re
       ? metadata as Record<string, unknown>
       : {};
     
-    // 根据使用类型处理
-    if (QUOTA_DEDUCTING_USAGE_TYPES.has(usage_type)) {
-      const result = await consumeQuotaAndRecordUsage({
+    // 使用量只用于运行观测和成本分析，不作为套餐门禁。
+    if (TRACKED_TEXT_USAGE_TYPES.has(usage_type)) {
+      const result = await recordTextUsage({
         userId: req.user!.userId,
         usageType: usage_type,
         amount: normalizedAmount,
@@ -262,16 +218,12 @@ router.post('/report', authMiddleware, async (req: AuthenticatedRequest, res: Re
             message: 'No active subscription found',
           });
         }
-        return res.status(403).json({
-          error: 'Forbidden',
-          message: 'Insufficient quota',
-          remaining: result.remaining,
-        });
+        return res.status(404).json({ error: 'Not Found', message: 'No active subscription found' });
       }
 
       return res.json({
         recorded: true,
-        quota_remaining: result.remaining,
+        unlimited: true,
       });
     }
     
@@ -290,10 +242,7 @@ router.post('/report', authMiddleware, async (req: AuthenticatedRequest, res: Re
             message: 'No active subscription found',
           });
         }
-        return res.status(403).json({
-          error: 'Forbidden',
-          message: 'File upload limit reached',
-        });
+        return res.status(404).json({ error: 'Not Found', message: 'No active subscription found' });
       }
 
       return res.json({
@@ -370,11 +319,6 @@ router.get('/my-stats', authMiddleware, async (req: AuthenticatedRequest, res: R
       subscription: {
         plan_type: subscription.plan_type,
         status: subscription.status,
-        quota_total: subscription.quota_total,
-        quota_used: subscription.quota_used,
-        quota_remaining: subscription.quota_remaining,
-        max_file_upload: subscription.max_file_upload,
-        file_upload_used: subscription.file_upload_used,
       },
       usage: {
         today: {
@@ -458,8 +402,6 @@ router.get('/daily-stats', authMiddleware, async (req: AuthenticatedRequest, res
       daily_stats: result,
       subscription: {
         plan_type: subscription.plan_type,
-        quota_remaining: subscription.quota_remaining,
-        quota_total: subscription.quota_total,
       },
     });
   } catch (error) {

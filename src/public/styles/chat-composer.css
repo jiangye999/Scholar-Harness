@@ -90,6 +90,9 @@
       border-color: var(--accent-color);
     }
     .pi-queue-panel[hidden] { display: none !important; }
+    .message.bot[data-pi-response-started="true"] > #mainChatPiQueuePanel {
+      display: none !important;
+    }
     .pi-queue-head {
       min-height: 30px;
       padding: 3px 8px;
@@ -236,8 +239,10 @@
       border-radius: 8px;
     }
     /* Keep the preflight/queue strip directly under the user instruction that
-       started the turn. The user footer still retains its own copy-button room. */
-    .message.user:has(+ .message.bot.pi-preflight-message) {
+       started the turn. The user footer still retains its own copy-button room.
+       The marker class is set by startMainChatPreflightHeader() so no relational
+       sibling selector is needed. */
+    .message.user.has-preflight-follow {
       padding-bottom: 0;
     }
     .message.user + .message.bot.pi-preflight-message {
@@ -427,18 +432,123 @@
       letter-spacing: 0;
       text-transform: none;
       color: var(--brand-title-color);
-      margin-bottom: 28px;
+      margin-bottom: 14px;
       white-space: nowrap;
     }
     @media (max-width: 1180px) {
       .empty-state .brand-title { font-size: 62px; }
     }
     .empty-state p { font-size: 14px; max-width: 400px; }
+    .home-workflow-shortcuts {
+      width: min(980px, 96%);
+      display: grid;
+      grid-template-columns: repeat(6, minmax(0, 1fr));
+      gap: 8px;
+      margin: 0 auto 4px;
+      padding: 3px 2px 7px;
+      overflow: visible;
+    }
+    .home-workflow-shortcut {
+      min-width: 0;
+      min-height: 70px;
+      display: flex;
+      flex-direction: column;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 9px;
+      padding: 11px 12px 10px;
+      border: 1px solid transparent;
+      border-radius: 14px;
+      background:
+        linear-gradient(
+          145deg,
+          color-mix(in srgb, var(--theme-primary) 18%, transparent),
+          color-mix(in srgb, var(--theme-primary) 10%, transparent)
+        );
+      color: var(--text-primary);
+      box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.34);
+      -webkit-backdrop-filter: blur(20px) saturate(132%);
+      backdrop-filter: blur(20px) saturate(132%);
+      cursor: pointer;
+      font-family: inherit;
+      text-align: left;
+      transition:
+        transform 180ms cubic-bezier(0.22, 1, 0.36, 1),
+        border-color 180ms ease,
+        background-color 180ms ease,
+        box-shadow 180ms ease;
+    }
+    .home-workflow-shortcut:hover {
+      transform: translateY(-2px);
+      border-color: color-mix(in srgb, var(--theme-primary) 38%, rgb(255 255 255 / 0.52));
+      background:
+        linear-gradient(
+          145deg,
+          color-mix(in srgb, var(--theme-primary) 26%, transparent),
+          color-mix(in srgb, var(--theme-primary) 16%, transparent)
+        );
+      box-shadow:
+        0 8px 18px rgb(var(--theme-shadow-rgb, 17 24 39) / 0.12),
+        0 0 0 1px color-mix(in srgb, var(--theme-primary) 8%, transparent),
+        inset 0 1px 0 rgb(255 255 255 / 0.42);
+    }
+    .home-workflow-shortcut:active {
+      transform: translateY(0) scale(0.985);
+    }
+    .home-workflow-shortcut:focus-visible {
+      outline: 2px solid var(--theme-primary);
+      outline-offset: 2px;
+    }
+    .home-workflow-shortcut .app-academic-workflow-icon {
+      width: 18px;
+      height: 18px;
+      flex-basis: 18px;
+      color: var(--theme-primary);
+    }
+    .home-workflow-shortcut-label {
+      display: block;
+      max-width: none;
+      color: var(--text-primary);
+      font-size: 13px;
+      font-weight: 600;
+      line-height: 1.3;
+      overflow-wrap: anywhere;
+      white-space: normal;
+    }
+    @media (max-width: 620px) {
+      .empty-state { padding-inline: 22px; }
+      .empty-state .brand-title { font-size: clamp(42px, 12vw, 58px); }
+      .home-workflow-shortcuts {
+        width: 100%;
+      }
+      .home-workflow-shortcut {
+        min-height: 66px;
+        padding: 10px 11px 9px;
+      }
+    }
+    @media (max-height: 720px) {
+      .empty-state .brand-title {
+        font-size: 56px;
+        margin-bottom: 16px;
+      }
+      .home-workflow-shortcuts {
+        margin-bottom: 10px;
+      }
+      .home-workflow-shortcut {
+        min-height: 62px;
+        gap: 7px;
+        padding-block: 9px;
+      }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .home-workflow-shortcut { transition: none; }
+    }
     .empty-state .typing-greeting {
       display: inline-block;
       width: auto;
       max-width: none;
       min-height: 1.4em;
+      margin: 0 0 15px;
       text-align: left;
     }
     .empty-state .typing-greeting span {
@@ -714,6 +824,190 @@
       }
       .first-run-intro {
         flex-direction: column;
+      }
+    }
+    .first-run-onboarding-bubble {
+      position: fixed;
+      top: calc(var(--app-chrome-height) + 14px);
+      right: 18px;
+      z-index: 11800;
+      width: min(380px, calc(100vw - 36px));
+      padding: 14px;
+      border: 1px solid color-mix(in srgb, var(--theme-primary, var(--accent-color)) 34%, var(--border-color));
+      border-radius: 12px;
+      background: color-mix(in srgb, var(--modal-bg) 88%, transparent);
+      box-shadow: 0 18px 48px rgba(15, 23, 42, 0.16);
+      color: var(--text-primary);
+      opacity: 0;
+      pointer-events: none;
+      transform: translateY(-8px);
+      transition: opacity 180ms ease, transform 180ms ease;
+      backdrop-filter: blur(18px) saturate(135%);
+      -webkit-backdrop-filter: blur(18px) saturate(135%);
+    }
+    .first-run-onboarding-bubble.show {
+      opacity: 1;
+      pointer-events: auto;
+      transform: translateY(0);
+    }
+    .first-run-bubble-head {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 12px;
+    }
+    .first-run-bubble-heading {
+      min-width: 0;
+    }
+    .first-run-bubble-heading strong {
+      display: block;
+      color: var(--text-primary);
+      font-size: 14px;
+      font-weight: 800;
+      line-height: 1.4;
+    }
+    .first-run-bubble-heading span {
+      display: block;
+      margin-top: 3px;
+      color: var(--text-secondary);
+      font-size: 11px;
+      line-height: 1.55;
+    }
+    .first-run-bubble-close {
+      display: inline-flex;
+      flex: 0 0 28px;
+      align-items: center;
+      justify-content: center;
+      width: 28px;
+      height: 28px;
+      padding: 0;
+      border: 1px solid transparent;
+      border-radius: 7px;
+      background: transparent;
+      color: var(--text-secondary);
+      cursor: pointer;
+      font-size: 18px;
+      line-height: 1;
+    }
+    .first-run-bubble-close:hover {
+      border-color: var(--border-color);
+      background: color-mix(in srgb, var(--theme-primary, var(--accent-color)) 8%, transparent);
+      color: var(--theme-primary, var(--accent-color));
+    }
+    .first-run-bubble-actions {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      margin-top: 12px;
+    }
+    .first-run-bubble-action {
+      display: grid;
+      grid-template-columns: 26px minmax(0, 1fr) 16px;
+      align-items: center;
+      gap: 9px;
+      width: 100%;
+      min-height: 52px;
+      padding: 8px 10px;
+      border: 1px solid var(--border-color);
+      border-radius: 9px;
+      background: color-mix(in srgb, var(--modal-bg) 72%, transparent);
+      color: var(--text-primary);
+      cursor: pointer;
+      text-align: left;
+      transition: border-color 140ms ease, background-color 140ms ease, transform 140ms ease;
+    }
+    .first-run-bubble-action:hover {
+      border-color: color-mix(in srgb, var(--theme-primary, var(--accent-color)) 52%, var(--border-color));
+      background: color-mix(in srgb, var(--theme-primary, var(--accent-color)) 8%, var(--modal-bg));
+    }
+    .first-run-bubble-action:active {
+      transform: translateY(1px);
+    }
+    .first-run-bubble-action:focus-visible,
+    .first-run-bubble-close:focus-visible {
+      outline: 2px solid color-mix(in srgb, var(--theme-primary, var(--accent-color)) 54%, #ffffff);
+      outline-offset: 2px;
+    }
+    .first-run-bubble-action-mark {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 24px;
+      height: 24px;
+      border: 1px solid color-mix(in srgb, var(--text-secondary) 42%, transparent);
+      border-radius: 50%;
+      color: transparent;
+      font-size: 12px;
+      font-weight: 850;
+    }
+    .first-run-bubble-action.visited .first-run-bubble-action-mark {
+      border-color: var(--theme-primary, var(--accent-color));
+      background: var(--theme-primary, var(--accent-color));
+      color: #ffffff;
+    }
+    .first-run-bubble-action-copy {
+      min-width: 0;
+    }
+    .first-run-bubble-action-copy strong,
+    .first-run-bubble-action-copy small {
+      display: block;
+    }
+    .first-run-bubble-action-copy strong {
+      color: var(--text-primary);
+      font-size: 12px;
+      font-weight: 780;
+      line-height: 1.4;
+    }
+    .first-run-bubble-action-copy small {
+      margin-top: 2px;
+      overflow: hidden;
+      color: var(--text-secondary);
+      font-size: 10.5px;
+      line-height: 1.35;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .first-run-bubble-action-arrow {
+      color: var(--text-secondary);
+      font-size: 18px;
+      line-height: 1;
+      text-align: right;
+    }
+    .first-run-bubble-action:hover .first-run-bubble-action-arrow {
+      color: var(--theme-primary, var(--accent-color));
+    }
+    .first-run-bubble-progress {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      margin-top: 10px;
+      color: var(--text-secondary);
+      font-size: 10px;
+      line-height: 1.4;
+    }
+    .first-run-bubble-progress span:first-child {
+      color: var(--theme-primary, var(--accent-color));
+      font-weight: 800;
+      white-space: nowrap;
+    }
+    @media (max-width: 520px) {
+      .first-run-onboarding-bubble {
+        top: calc(var(--app-chrome-height) + 10px);
+        right: 10px;
+        left: 10px;
+        width: auto;
+      }
+      .first-run-bubble-progress {
+        align-items: flex-start;
+        flex-direction: column;
+        gap: 2px;
+      }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .first-run-onboarding-bubble,
+      .first-run-bubble-action {
+        transition: none;
       }
     }
     .config-center-icon {

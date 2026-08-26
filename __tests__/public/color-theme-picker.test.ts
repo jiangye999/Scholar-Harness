@@ -226,7 +226,7 @@ describe('color theme picker', () => {
   });
 
   it('keeps the theme picker wide enough for two readable option columns', () => {
-    expect(themeCss).toContain('width: 360px;');
+    expect(themeCss).toContain('width: min(720px, calc(100vw - 24px));');
     expect(themeCss).toContain('width: min(360px, calc(100vw - 20px)) !important;');
   });
 
@@ -283,7 +283,7 @@ describe('color theme picker', () => {
   it('maps the major black status and action surfaces to the selected primary color', () => {
     expect(themeCss).toContain('#mainChatPiQueuePanel.pi-queue-panel');
     expect(themeCss).toContain('.agent-transcript.is-running .agent-transcript-header');
-    expect(themeCss).toContain('.message.bot .agent-transcript-answer');
+    expect(themeCss).toContain('.message.bot .agent-transcript');
     expect(themeCss).toContain('border-color: var(--theme-ink) !important;');
     expect(themeCss).toContain('#pdfPaperChatReturnBar .pdf-paper-chat-return-btn');
     expect(themeCss).toContain('.mcp-market-search .mcp-online-search-btn');
@@ -293,12 +293,15 @@ describe('color theme picker', () => {
 
   it('themes every query navigation dot instead of only the active dot', () => {
     expect(themeCss).toContain('.query-nav-dot::before {');
-    expect(themeCss).toContain('background: var(--theme-soft) !important;');
-    expect(themeCss).toContain('.query-nav-dot.active-neighbor::before');
-    expect(themeCss).toContain('.query-nav-dot.hover-neighbor::before');
-    expect(themeCss).toContain('background: var(--theme-border) !important;');
-    expect(themeCss).toContain('.query-nav-dot.active::before');
+    // Every dot keeps one theme color; hover/current state is size-only.
     expect(themeCss).toContain('background: var(--theme-primary) !important;');
+    expect(themeCss).not.toContain('.query-nav-dot.active-neighbor::before');
+    expect(themeCss).not.toContain('.query-nav-dot.active-second-neighbor::before');
+    expect(themeCss).not.toContain('.query-nav-dot.active-third-neighbor::before');
+    expect(themeCss).not.toContain('.query-nav-dot.hover-neighbor::before');
+    expect(themeCss).not.toContain('.query-nav-dot:hover::before,');
+    expect(themeCss).not.toContain('.query-nav-dot.hover-focus::before {\n  background:');
+    expect(themeCss).not.toContain('.query-nav-dot.active::before');
   });
 
   it('themes homepage and Meta composer buttons in idle and running states', () => {

@@ -7,8 +7,6 @@ import { logger } from '../utils/logger';
  */
 interface PlanConfig {
   validity_days: number;
-  quota_total: number;
-  max_file_upload: number;
   price: number;
 }
 
@@ -50,8 +48,8 @@ export class SubscriptionStore {
       input.price,
       input.payment_method,
       input.auto_renew || false,
-      input.quota_total || planConfig.quota_total,
-      input.max_file_upload || planConfig.max_file_upload,
+      -1,
+      -1,
     ];
     
     const subscription = await this.db.queryOne<Subscription>(sql, params);
@@ -71,7 +69,7 @@ export class SubscriptionStore {
     const sql = `
       SELECT * FROM subscriptions
       WHERE user_id = $1 
-        AND status IN ('active', 'trial')
+        AND status IN ('active', 'trial', 'exhausted')
         AND end_date > CURRENT_TIMESTAMP
       ORDER BY created_at DESC
       LIMIT 1
@@ -79,13 +77,11 @@ export class SubscriptionStore {
     
     const subscription = await this.db.queryOne<Subscription>(sql, [userId]);
     
-    // 检查额度是否耗尽
-    if (subscription && subscription.quota_total !== -1) {
-      if (subscription.quota_used >= subscription.quota_total) {
-        // 更新状态为exhausted
-        await this.updateStatus(subscription.id, 'exhausted');
-        subscription.status = 'exhausted';
-      }
+    // 兼容旧数据：字符额度不再是使用权门禁。
+    if (subscription?.status === 'exhausted') {
+      const activeStatus = subscription.plan_type === 'trial' ? 'trial' : 'active';
+      await this.updateStatus(subscription.id, activeStatus);
+      subscription.status = activeStatus;
     }
     
     return subscription;
@@ -142,79 +138,20 @@ export class SubscriptionStore {
   }
   
   /**
-   * 使用额度（扣除字数）
+   * @deprecated 订阅已改为按有效期授权。保留方法只为兼容旧调用方。
    */
-  async consumeQuota(subscriptionId: string, amount: number): Promise<{ success: boolean; remaining: number }> {
+  async consumeQuota(subscriptionId: string, _amount: number): Promise<{ success: boolean; remaining: number }> {
     const subscription = await this.findById(subscriptionId);
-    
     if (!subscription) {
       return { success: false, remaining: 0 };
     }
-    
-    // 无限额度套餐（quota_total === -1）不消耗额度
-    if (subscription.quota_total === -1) {
-      return { success: true, remaining: -1 };
-    }
-    
-    // 检查剩余额度
-    const newUsed = subscription.quota_used + amount;
-    const newRemaining = subscription.quota_total - newUsed;
-    
-    if (newRemaining < 0) {
-      return { success: false, remaining: subscription.quota_remaining };
-    }
-    
-    // 更新额度
-    const sql = `
-      UPDATE subscriptions 
-      SET quota_used = $1, quota_remaining = $2, updated_at = CURRENT_TIMESTAMP
-      WHERE id = $3
-      RETURNING quota_remaining
-    `;
-    
-    const result = await this.db.queryOne<{ quota_remaining: number }>(sql, [
-      newUsed,
-      Math.max(0, newRemaining),
-      subscriptionId,
-    ]);
-    
-    // 检查是否需要更新状态为exhausted
-    if (newRemaining <= 0) {
-      await this.updateStatus(subscriptionId, 'exhausted');
-    }
-    
-    return {
-      success: true,
-      remaining: result?.quota_remaining || 0,
-    };
+    return { success: true, remaining: -1 };
   }
   
-  /**
-   * 上传文件计数增加
-   */
+  /** @deprecated 文件上传数量不再作为套餐门禁。 */
   async incrementFileUpload(subscriptionId: string): Promise<boolean> {
     const subscription = await this.findById(subscriptionId);
-    
-    if (!subscription) {
-      return false;
-    }
-    
-    // 无限文件上传套餐（max_file_upload === -1）不计数
-    if (subscription.max_file_upload === -1) {
-      return true;
-    }
-    
-    // 检查是否超过限制
-    if (subscription.file_upload_used >= subscription.max_file_upload) {
-      return false;
-    }
-    
-    await this.db.query(
-      'UPDATE subscriptions SET file_upload_used = file_upload_used + 1, updated_at = CURRENT_TIMESTAMP WHERE id = $1',
-      [subscriptionId]
-    );
-    
-    return true;
+    return subscription !== null;
   }
   
   /**
@@ -231,40 +168,24 @@ export class SubscriptionStore {
       return null;
     }
     
-    // 计算新的额度（保留已使用的额度）
-    let newQuotaTotal = newPlanConfig.quota_total;
-    let newQuotaUsed = currentSubscription.quota_used;
-    let newQuotaRemaining = newQuotaTotal === -1 ? -1 : newQuotaTotal - newQuotaUsed;
-    
-    // 如果新套餐额度无限，保留无限
-    if (newQuotaTotal === -1) {
-      newQuotaRemaining = -1;
-      newQuotaUsed = 0;
-    }
-    
     const sql = `
       UPDATE subscriptions 
       SET plan_type = $1,
-          quota_total = $2,
-          quota_used = $3,
-          quota_remaining = $4,
-          max_file_upload = $5,
-          price = $6,
+          quota_total = -1,
+          quota_remaining = -1,
+          max_file_upload = -1,
+          price = $2,
           end_date = CASE 
-            WHEN $7 = -1 THEN CURRENT_TIMESTAMP + INTERVAL '100 years'
-            ELSE CURRENT_TIMESTAMP + INTERVAL '1 day' * $7
+            WHEN $3 = -1 THEN CURRENT_TIMESTAMP + INTERVAL '100 years'
+            ELSE CURRENT_TIMESTAMP + INTERVAL '1 day' * $3
           END,
           updated_at = CURRENT_TIMESTAMP
-      WHERE id = $8
+      WHERE id = $4
       RETURNING *
     `;
     
     const subscription = await this.db.queryOne<Subscription>(sql, [
       newPlanType,
-      newQuotaTotal,
-      newQuotaUsed,
-      newQuotaRemaining,
-      newPlanConfig.max_file_upload,
       newPlanConfig.price,
       newPlanConfig.validity_days,
       subscriptionId,
@@ -317,32 +238,22 @@ export class SubscriptionStore {
     const configs: Record<string, PlanConfig> = {
       monthly: {
         validity_days: 30,
-        quota_total: 5000000,
-        max_file_upload: 10,
         price: 39,
       },
       quarterly: {
         validity_days: 90,
-        quota_total: 20000000,
-        max_file_upload: 30,
         price: 80,
       },
       yearly: {
         validity_days: 365,
-        quota_total: 100000000,
-        max_file_upload: 100,
         price: 299,
       },
       lifetime: {
         validity_days: 36500,
-        quota_total: -1,
-        max_file_upload: -1,
         price: 0,
       },
       trial: {
         validity_days: 30,
-        quota_total: 5000000,
-        max_file_upload: 10,
         price: 0,
       },
     };
@@ -382,8 +293,6 @@ export default SubscriptionStore;
 export interface CreateTrialSubscriptionInput {
   user_id: string;
   validity_days: number;           // 试用天数
-  quota_total?: number;            // 默认试用额度
-  max_file_upload?: number;        // 默认试用文件上传限制
 }
 
 export async function createTrialSubscription(
@@ -393,11 +302,6 @@ export async function createTrialSubscription(
   const startDate = new Date();
   const endDate = new Date(Date.now() + input.validity_days * 24 * 60 * 60 * 1000);
   
-  // 试用期默认额度：500万字
-  const quotaTotal = input.quota_total || 5000000;
-  // 试用期默认文件上传限制：10个
-  const maxFileUpload = input.max_file_upload || 10;
-  
   const sql = `
     INSERT INTO subscriptions (
       user_id, plan_type, status, start_date, end_date,
@@ -406,7 +310,7 @@ export async function createTrialSubscription(
       max_file_upload, file_upload_used,
       trial_start, trial_end
     )
-    VALUES ($1, 'trial', 'trial', $2, $3, 0, 'CNY', false, $4, 0, $4, $5, 0, $2, $3)
+    VALUES ($1, 'trial', 'trial', $2, $3, 0, 'CNY', false, -1, 0, -1, -1, 0, $2, $3)
     RETURNING *
   `;
   
@@ -414,8 +318,6 @@ export async function createTrialSubscription(
     input.user_id,
     startDate,
     endDate,
-    quotaTotal,
-    maxFileUpload,
   ];
   
   const subscription = await db.queryOne<Subscription>(sql, params);

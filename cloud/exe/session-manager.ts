@@ -24,13 +24,16 @@ export interface SessionData {
   createdAt: number;
   lastValidatedAt: number;
   
-  // 订阅信息缓存（字数额度）
+  // 订阅信息缓存（按有效期授权）
   subscription?: {
     plan_type: string;
     status: string;
-    quota_remaining: number;  // 剩余字数额度
-    quota_total: number;      // 总字数额度
-    quota_used?: number;      // 已使用字数额度
+    /** @deprecated 兼容旧 session，套餐不再按字符数授权。 */
+    quota_remaining?: number;
+    /** @deprecated 兼容旧 session，固定按无限处理。 */
+    quota_total?: number;
+    /** @deprecated 仅作历史用量统计。 */
+    quota_used?: number;
     end_date?: string;
   };
   
@@ -247,8 +250,6 @@ export class SessionManager {
       session.subscription = {
         plan_type: '',
         status: '',
-        quota_remaining: 0,
-        quota_total: 0,
       };
     }
     
@@ -313,26 +314,22 @@ export class SessionManager {
   }
   
   /**
-   * 获取剩余使用额度
+   * 兼容旧接口：订阅期内不限字符数。
    */
   async getRemainingQuota(): Promise<number> {
     const session = await this.getSession();
-    if (!session || !session.subscription) return 0;
-    
-    return session.subscription.quota_remaining;
+    return session?.subscription ? -1 : 0;
   }
   
   /**
-   * 检查是否有足够额度
+   * 兼容旧接口：只要存在有效期订阅就视为可用。
    */
-  async hasEnoughQuota(requiredAmount: number): Promise<boolean> {
-    const remaining = await this.getRemainingQuota();
-    
-    // quota_total为-1表示无限额度
+  async hasEnoughQuota(_requiredAmount: number): Promise<boolean> {
     const session = await this.getSession();
-    if (session?.subscription?.quota_total === -1) return true;
-    
-    return remaining >= requiredAmount;
+    return Boolean(
+      session?.subscription
+      && (session.subscription.status === 'active' || session.subscription.status === 'trial')
+    );
   }
 }
 

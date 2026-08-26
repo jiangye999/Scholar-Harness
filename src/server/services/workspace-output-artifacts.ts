@@ -2,6 +2,8 @@ import * as path from 'path';
 
 const SEQUENTIAL_PAGE_IMAGE_PATTERN = /^(page|sheet|slide)[\s_-]*0*(\d+)\.(png|jpe?g|webp|bmp|tiff?)$/i;
 const TRANSIENT_QA_DIRECTORY_PATTERN = /^(?:\.?scholar[-_]?harness[-_]?(?:qa|temp)|qa(?:[-_].*)?|review(?:[-_].*)?|render(?:ed)?(?:[-_].*)?|preview(?:[-_].*)?|docx[-_]?(?:pages?|render|preview|qa)|pdf[-_]?(?:pages?|render|preview|qa)|pages?|temp|tmp)$/i;
+const TRANSIENT_DIRECTORY_PATTERN = /^(?:tmp|temp|logs?|cache|\.cache|\.pytest_cache|\.ruff_cache|__pycache__)$/i;
+const TRANSIENT_FILE_PATTERN = /(?:\.tmp|\.temp|\.log|\.pid|\.lock|\.bak|\.py[co])$/i;
 
 interface SequentialPageImage {
   directory: string;
@@ -39,6 +41,17 @@ export function isTransientPageQaArtifact(filePath: string): boolean {
     .some(segment => TRANSIENT_QA_DIRECTORY_PATTERN.test(segment));
 }
 
+/** Detect generic runtime by-products that must stay internal to a session. */
+export function isTransientWorkspaceArtifact(filePath: string): boolean {
+  const value = String(filePath || '').trim();
+  if (!value) return false;
+  if (isTransientPageQaArtifact(value)) return true;
+  if (TRANSIENT_FILE_PATTERN.test(path.basename(value))) return true;
+  // Only classify the file's direct parent. An authorized workspace itself
+  // may legitimately live below a directory named "temp" or "logs".
+  return TRANSIENT_DIRECTORY_PATTERN.test(path.basename(path.dirname(path.resolve(value))));
+}
+
 /**
  * Keep real deliverables while removing sequential page render sets. The
  * directory-name check handles one-at-a-time mirroring; grouping also catches
@@ -62,7 +75,7 @@ export function filterUserFacingWorkspaceOutputPaths(filePaths: string[]): strin
   });
 
   return values.filter(filePath => {
-    if (isTransientPageQaArtifact(filePath)) return false;
+    if (isTransientWorkspaceArtifact(filePath)) return false;
     const parsed = parseSequentialPageImage(filePath);
     if (!parsed) return true;
     const groupKey = [

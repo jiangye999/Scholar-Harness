@@ -11,6 +11,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import * as os from 'os';
 import { logger } from './logger';
+import { resolveProjectOwnedDirectory } from './project-runtime-context';
 
 let cachedDataDir: string | null = null;
 
@@ -76,10 +77,20 @@ export function getDataDir(): string {
 }
 
 /**
+ * Resolve a directory that belongs to the project captured when the current
+ * async request started. Global configuration continues to use getDataDir().
+ */
+export function getProjectOwnedDataDir(directoryName: string): string {
+  const target = resolveProjectOwnedDirectory(directoryName, path.join(getDataDir(), directoryName));
+  if (!fs.existsSync(target)) fs.mkdirSync(target, { recursive: true });
+  return target;
+}
+
+/**
  * 获取上传目录路径
  */
 export function getUploadDir(): string {
-  const uploadDir = path.join(getDataDir(), 'uploads');
+  const uploadDir = getProjectOwnedDataDir('uploads');
   
   if (!fs.existsSync(uploadDir)) {
     fs.mkdirSync(uploadDir, { recursive: true });
@@ -132,7 +143,7 @@ export function getUserLiteratureTxtPath(userId: string): string {
  * 获取会话存储目录
  */
 export function getSessionDir(): string {
-  const sessionDir = path.join(getDataDir(), 'sessions');
+  const sessionDir = getProjectOwnedDataDir('sessions');
   
   if (!fs.existsSync(sessionDir)) {
     fs.mkdirSync(sessionDir, { recursive: true });
@@ -145,7 +156,7 @@ export function getSessionDir(): string {
  * 获取记忆存储目录
  */
 export function getMemoryDir(): string {
-  const memoryDir = path.join(getDataDir(), 'memory');
+  const memoryDir = getProjectOwnedDataDir('memory');
   
   if (!fs.existsSync(memoryDir)) {
     fs.mkdirSync(memoryDir, { recursive: true });
@@ -163,6 +174,7 @@ export function clearPathCache(): void {
 
 export default {
   getDataDir,
+  getProjectOwnedDataDir,
   getUploadDir,
   sanitizeUserId,
   getUserUploadDir,

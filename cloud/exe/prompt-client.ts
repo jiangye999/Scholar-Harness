@@ -210,7 +210,7 @@ export class PromptClient {
   }
   
   /**
-   * 获取生成 Prompt（消耗额度）
+   * 获取生成 Prompt（需要有效订阅，不扣减字符额度）
    */
   async getGeneratePrompt(input: {
     chapterName: string;
@@ -247,18 +247,13 @@ export class PromptClient {
     
     const data = await response.json() as GeneratePromptResult;
     
-    // 更新本地额度缓存
-    await this.authClient.getSessionManager().updateSubscriptionCache({
-      quota_remaining: data.quotaRemaining,
-    });
-    
-    logger.info(`[PromptClient] Generated prompt, consumed ${data.creditsConsumed} credits`);
+    logger.info('[PromptClient] Generated prompt for active subscription');
     
     return data;
   }
   
   /**
-   * 获取写作 Prompt（消耗额度）
+   * 获取写作 Prompt（需要有效订阅，不扣减字符额度）
    */
   async getWritePrompt(input: {
     chapterName: string;
@@ -291,11 +286,6 @@ export class PromptClient {
       creditsConsumed: number;
       quotaRemaining: number;
     };
-    
-    // 更新本地额度缓存
-    await this.authClient.getSessionManager().updateSubscriptionCache({
-      quota_remaining: data.quotaRemaining,
-    });
     
     return data;
   }

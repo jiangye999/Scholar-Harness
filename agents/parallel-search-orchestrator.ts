@@ -14,6 +14,8 @@ export interface SentenceSearchResult {
   searchQuery: string;
   papers: SearchResult[];
   searchTime: number;
+  /** P1-5: present when this sentence's search failed; papers will be empty. */
+  error?: string;
 }
 
 export interface ParallelSearchResult {
@@ -55,7 +57,17 @@ export class ParallelSearchOrchestrator {
       const batch = sentences.slice(i, i + this.maxConcurrency);
       logger.info(`[Orchestrator] Processing batch ${Math.floor(i / this.maxConcurrency) + 1}: sentences ${i + 1}-${Math.min(i + this.maxConcurrency, sentences.length)}`);
 
-      const batchPromises = batch.map(sentence => this.searchSingleSentence(sentence));
+      const batchPromises = batch.map(sentence => (
+        // P1-5: per-item failure isolation — one failed sentence search must
+        // not abort the whole batch (Promise.all would reject everything).
+        this.searchSingleSentence(sentence).catch(error => ({
+          sentenceId: sentence.id,
+          searchQuery: sentence.searchQuery,
+          papers: [],
+          searchTime: 0,
+          error: (error as Error)?.message || String(error || 'unknown search error'),
+        } as SentenceSearchResult))
+      ));
       const batchResults = await Promise.all(batchPromises);
 
       for (const result of batchResults) {

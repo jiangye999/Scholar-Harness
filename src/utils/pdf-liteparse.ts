@@ -1,6 +1,7 @@
 import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
+import { fork } from 'child_process';
 import { logger } from './logger';
 
 export interface PdfLiteParseResult {
@@ -8,6 +9,7 @@ export interface PdfLiteParseResult {
   text: string;
   outputPath: string;
   jsonPath: string;
+  textPath: string;
   pageCount: number;
 }
 
@@ -17,6 +19,18 @@ export interface PdfLiteParseOptions {
   maxPages?: number;
   timeoutMs?: number;
   label?: string;
+}
+
+export type PdfLiteParseWorkerErrorCode = 'LITEPARSE_WORKER_OOM' | 'LITEPARSE_WORKER_TIMEOUT' | 'LITEPARSE_WORKER_EXIT';
+
+export class PdfLiteParseWorkerError extends Error {
+  constructor(
+    message: string,
+    readonly code: PdfLiteParseWorkerErrorCode
+  ) {
+    super(message);
+    this.name = 'PdfLiteParseWorkerError';
+  }
 }
 
 type LiteParseModule = {
@@ -83,6 +97,16 @@ export async function extractPdfTextWithLiteParse(
   pdfPath: string,
   options: PdfLiteParseOptions = {}
 ): Promise<PdfLiteParseResult> {
+  if (process.env.VITEST || process.env.LITEPARSE_IN_PROCESS === '1') {
+    return extractPdfTextWithLiteParseInProcess(pdfPath, options);
+  }
+  return extractPdfTextWithLiteParseWorker(pdfPath, options);
+}
+
+export async function extractPdfTextWithLiteParseInProcess(
+  pdfPath: string,
+  options: PdfLiteParseOptions = {}
+): Promise<PdfLiteParseResult> {
   if (!fs.existsSync(pdfPath)) {
     throw new Error(`PDF 文件不存在：${pdfPath}`);
   }
@@ -97,6 +121,7 @@ export async function extractPdfTextWithLiteParse(
   const suffix = crypto.randomBytes(4).toString('hex');
   const outputPath = path.join(outputDir, `${baseName}-${suffix}.md`);
   const jsonPath = path.join(outputDir, `${baseName}-${suffix}.liteparse.json`);
+  const textPath = path.join(outputDir, `${baseName}-${suffix}.txt`);
 
   logger.info(`[LiteParse] Extracting ${options.label || path.basename(pdfPath)}`);
 
@@ -127,6 +152,7 @@ export async function extractPdfTextWithLiteParse(
 
   const markdown = buildLiteParseMarkdown(parsed.pages || [], text);
   await fs.promises.writeFile(outputPath, markdown, 'utf-8');
+  await fs.promises.writeFile(textPath, text, 'utf-8');
   await fs.promises.writeFile(jsonPath, JSON.stringify(parsed, null, 2), 'utf-8');
 
   return {
@@ -134,7 +160,107 @@ export async function extractPdfTextWithLiteParse(
     text,
     outputPath,
     jsonPath,
+    textPath,
     pageCount: parsed.pages?.length || 0,
+  };
+}
+
+interface PdfLiteParseWorkerResponse {
+  success: boolean;
+  outputPath?: string;
+  jsonPath?: string;
+  textPath?: string;
+  pageCount?: number;
+  error?: string;
+}
+
+async function extractPdfTextWithLiteParseWorker(
+  pdfPath: string,
+  options: PdfLiteParseOptions
+): Promise<PdfLiteParseResult> {
+  if (!fs.existsSync(pdfPath)) {
+    throw new Error(`PDF 文件不存在：${pdfPath}`);
+  }
+
+  const timeoutMs = resolveNumber(options.timeoutMs || process.env.LITEPARSE_TIMEOUT_MS, 300000, 1000, 1800000);
+  const workerPath = path.join(__dirname, 'pdf-liteparse-worker.js');
+  if (!fs.existsSync(workerPath)) {
+    logger.warn(`[LiteParse] Worker not found at ${workerPath}; using in-process compatibility mode`);
+    return extractPdfTextWithLiteParseInProcess(pdfPath, options);
+  }
+
+  const workerHeapMb = resolveNumber(process.env.LITEPARSE_WORKER_HEAP_MB, 2048, 768, 8192);
+  const inheritedExecArgv = process.execArgv.filter(arg => !/^--max-old-space-size(?:=|$)/.test(arg));
+  let stderr = '';
+
+  const response = await new Promise<PdfLiteParseWorkerResponse>((resolve, reject) => {
+    const worker = fork(workerPath, [], {
+      env: {
+        ...process.env,
+        ELECTRON_RUN_AS_NODE: process.env.ELECTRON_RUN_AS_NODE || '1',
+        LITEPARSE_WORKER_PROCESS: '1',
+      },
+      execArgv: [...inheritedExecArgv, `--max-old-space-size=${workerHeapMb}`],
+      stdio: ['ignore', 'ignore', 'pipe', 'ipc'],
+    });
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      worker.kill();
+      reject(new PdfLiteParseWorkerError(
+        `LiteParse 独立进程超时（${timeoutMs}ms）`,
+        'LITEPARSE_WORKER_TIMEOUT'
+      ));
+    }, timeoutMs + 5_000);
+
+    worker.stderr?.on('data', chunk => {
+      stderr = `${stderr}${String(chunk)}`.slice(-8_000);
+    });
+    worker.once('message', raw => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(raw as PdfLiteParseWorkerResponse);
+    });
+    worker.once('error', error => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      reject(new PdfLiteParseWorkerError(error.message, 'LITEPARSE_WORKER_EXIT'));
+    });
+    worker.once('exit', (code, signal) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      const outOfMemory = /heap out of memory|reached heap limit|allocation failed/i.test(stderr);
+      const detail = stderr.trim() ? `：${stderr.trim().slice(-2_000)}` : '';
+      reject(new PdfLiteParseWorkerError(
+        `LiteParse 独立进程异常退出（code=${code ?? 'null'}, signal=${signal || 'none'}）${detail}`,
+        outOfMemory ? 'LITEPARSE_WORKER_OOM' : 'LITEPARSE_WORKER_EXIT'
+      ));
+    });
+    worker.send({ pdfPath, options });
+  });
+
+  if (!response.success) {
+    throw new Error(response.error || 'LiteParse 独立进程处理失败');
+  }
+  if (!response.outputPath || !response.jsonPath || !response.textPath) {
+    throw new Error('LiteParse 独立进程没有返回完整产物路径');
+  }
+
+  const [markdown, text] = await Promise.all([
+    fs.promises.readFile(response.outputPath, 'utf-8'),
+    fs.promises.readFile(response.textPath, 'utf-8'),
+  ]);
+  return {
+    markdown,
+    text,
+    outputPath: response.outputPath,
+    jsonPath: response.jsonPath,
+    textPath: response.textPath,
+    pageCount: Math.max(0, Number(response.pageCount || 0)),
   };
 }
 

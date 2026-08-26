@@ -3,11 +3,24 @@ import * as path from 'path';
 import { describe, expect, it } from 'vitest';
 
 import {
+  getMcpGatewayToolDefinitions,
+  isMcpGatewayToolName,
   McpStdioSession,
   type McpPluginRecord,
 } from '../../../src/server/services/mcp-plugin-manager';
 
 describe('McpStdioSession', () => {
+  it('exposes a constant-size lazy gateway instead of every user MCP schema', () => {
+    const definitions = getMcpGatewayToolDefinitions();
+    expect(definitions.map(item => item.function.name)).toEqual([
+      'list_user_mcp_tools',
+      'invoke_user_mcp_tool',
+    ]);
+    expect(definitions).toHaveLength(2);
+    expect(isMcpGatewayToolName('list_user_mcp_tools')).toBe(true);
+    expect(isMcpGatewayToolName('user_mcp__memory__read_graph')).toBe(false);
+  });
+
   it('discovers and calls newline-delimited stdio MCP tools', async () => {
     const plugin: McpPluginRecord = {
       id: 'fake',

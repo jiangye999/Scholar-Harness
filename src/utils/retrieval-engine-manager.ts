@@ -13,11 +13,13 @@ import { normalizePapers } from './literature-helpers';
 import { logger } from './logger';
 import * as fs from 'fs';
 import * as path from 'path';
+import { getProjectRuntimeContext } from './project-runtime-context';
 
 interface EngineEntry {
   engine: HybridRetrievalEngine;
   lastAccess: number;
   userId: string;
+  projectId?: string;
 }
 
 interface RetrievalEngineManagerOptions {
@@ -66,7 +68,9 @@ export class RetrievalEngineManager {
    * 如果引擎不存在，会自动创建并加载用户文献
    */
   async getEngine(userId: string): Promise<HybridRetrievalEngine> {
-    const entry = this.engines.get(userId);
+    const projectId = getProjectRuntimeContext()?.projectId || '';
+    const engineKey = `${projectId || 'current-workspace'}\u0001${userId}`;
+    const entry = this.engines.get(engineKey);
     
     if (entry) {
       // 更新访问时间
@@ -82,10 +86,11 @@ export class RetrievalEngineManager {
     // 创建新引擎
     const engine = await this.createEngineForUser(userId);
     
-    this.engines.set(userId, {
+    this.engines.set(engineKey, {
       engine,
       lastAccess: Date.now(),
       userId,
+      projectId: projectId || undefined,
     });
     
     logger.info(`[RetrievalManager] Created engine for user ${userId} (total: ${this.engines.size})`);
@@ -162,12 +167,12 @@ export class RetrievalEngineManager {
    * 清理指定用户的引擎
    */
   clearUserEngine(userId: string): void {
-    const entry = this.engines.get(userId);
-    if (entry) {
+    for (const [key, entry] of this.engines.entries()) {
+      if (entry.userId !== userId) continue;
       entry.engine.clear();
-      this.engines.delete(userId);
-      logger.info(`[RetrievalManager] Cleared engine for user ${userId}`);
+      this.engines.delete(key);
     }
+    logger.info(`[RetrievalManager] Cleared engines for user ${userId}`);
   }
 
   /**
@@ -194,7 +199,8 @@ export class RetrievalEngineManager {
     }
     
     if (oldest) {
-      this.engines.delete(oldest.userId);
+      const oldestKey = Array.from(this.engines.entries()).find(([, entry]) => entry === oldest)?.[0];
+      if (oldestKey) this.engines.delete(oldestKey);
       logger.info(`[RetrievalManager] Cleaned up oldest engine for user ${oldest.userId}`);
     }
   }
@@ -206,15 +212,15 @@ export class RetrievalEngineManager {
     const now = Date.now();
     const toDelete: string[] = [];
     
-    for (const [userId, entry] of this.engines) {
+    for (const [engineKey, entry] of this.engines) {
       if (now - entry.lastAccess > this.idleTimeoutMs) {
-        toDelete.push(userId);
+        toDelete.push(engineKey);
       }
     }
     
-    for (const userId of toDelete) {
-      this.engines.delete(userId);
-      logger.info(`[RetrievalManager] Cleaned up idle engine for user ${userId}`);
+    for (const engineKey of toDelete) {
+      this.engines.delete(engineKey);
+      logger.info(`[RetrievalManager] Cleaned up idle engine ${engineKey}`);
     }
   }
 

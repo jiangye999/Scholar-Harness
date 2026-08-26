@@ -19,8 +19,9 @@ import { parseDraftSaveBlocks } from '../utils/draft-save-block';
 import { mergeDraftChapterContent } from '../utils/draft-content-merger';
 import { createDynamicDraftChapter } from '../utils/draft-section-classifier';
 import type { Message } from '../types';
+import { getSessionLog, type SessionLog } from './services/session-log';
+import { buildCompactionSummaryPrompt, considerAutoCompaction } from './services/compaction';
 import {
-  anchorPromptWithCurrentRequest,
   buildAnchoredUserMessage,
   getPromptAnchorDiagnostics,
 } from '../utils/prompt-request-anchor';
@@ -484,11 +485,16 @@ export async function processUnifiedChatMessage(
       }
     }
     
-    memoryContext = '\n## 🧠 跨会话长期记忆（完整）\n';
+    memoryContext = '\n## 🧠 跨会话长期记忆\n';
+    let memoryChars = 0;
     for (const entry of userMemory.entries) {
-      if (!['writing_progress', 'completed_chapters', 'pending_chapters'].includes(entry.key)) {
-        memoryContext += `- ${entry.key}: ${entry.value}\n`;
-      }
+      if (['writing_progress', 'completed_chapters', 'pending_chapters'].includes(entry.key)) continue;
+      const value = String(entry.value || '').trim().slice(0, 400);
+      if (!value) continue;
+      const line = `- ${entry.key}: ${value}\n`;
+      if (memoryChars + line.length > 4_000) break;
+      memoryContext += line;
+      memoryChars += line.length;
     }
   }
   memoryContext = [
@@ -720,6 +726,8 @@ sentences:
   
   // 11. 构建系统提示词
   // 注：文献由用户自行发送，不再在系统提示词中预塞检索结果
+  // Phase 1（缓存友好重构）：当前用户请求锚点只放在 user 消息（buildAnchoredUserMessage），
+  // 不再把每轮变化的请求塞进 system——否则 system 前缀每轮都从第一个变化字节起全部失效。
   const finalSystemPrompt = buildSystemPrompt({
     soulContent,
     memoryIntro,
@@ -730,18 +738,26 @@ sentences:
     webSearchContext,
     taskHint,
   });
-  const anchoredSystemPrompt = anchorPromptWithCurrentRequest(finalSystemPrompt, userMessage, {
-    source: 'unified-chat-system',
-    taskType
-  });
   
   // 12. 构建消息历史
   const messages: Array<{ role: string; content: string }> = [
-    { role: 'system', content: anchoredSystemPrompt }
+    { role: 'system', content: finalSystemPrompt }
   ];
   
   const historyForMessages = options?.history || conversationHistories.get(userId) || [];
   
+  // Phase 2（缓存友好重构）：服务端追加式会话日志是历史的事实源；请求历史只做一次性种子。
+  const logConversationId = String(options?.conversationId || '').trim() || `uc-${userId}`;
+  const sessionLog = getSessionLog({ userId, conversationId: logConversationId });
+  if (sessionLog.lastSeq() === 0) {
+    for (const item of historyForMessages.slice(-40)) {
+      const role = item.role === 'assistant' ? 'assistant' : 'user';
+      const content = String(item.content || '').trim();
+      if (!content) continue;
+      sessionLog.append(role === 'assistant' ? { type: 'assistant', content } : { type: 'user', content });
+    }
+  }
+
   // 新会话时：注入服务端保存的近期对话消息作为上下文
   if (isNewConversation && recentMessages.length > 0) {
     // 添加分隔说明，让 LLM 知道这是之前对话的上下文
@@ -758,7 +774,18 @@ sentences:
     });
   }
   
-  for (const msg of historyForMessages.slice(-5)) {
+  let derivedOverflow = false;
+  const derivedHistory = sessionLog.lastSeq() > 0
+    ? (() => {
+        const stats = sessionLog.deriveMessagesWithStats({ maxChars: 60_000 });
+        derivedOverflow = stats.droppedChars > 0;
+        return stats.messages.map(derived => ({
+          role: derived.role,
+          content: derived.content,
+        }));
+      })()
+    : historyForMessages.slice(-5);
+  for (const msg of derivedHistory) {
     messages.push({ role: msg.role, content: msg.content });
   }
   
@@ -768,7 +795,7 @@ sentences:
   });
   messages.push({ role: 'user', content: anchoredUserMessage });
   const anchorDiagnostics = getPromptAnchorDiagnostics(
-    `${anchoredSystemPrompt}\n${anchoredUserMessage}`,
+    `${finalSystemPrompt}\n${anchoredUserMessage}`,
     userMessage
   );
   logger.info(`[UnifiedChat] Current request anchor: ${JSON.stringify(anchorDiagnostics)}`);
@@ -797,7 +824,7 @@ sentences:
       apiKey,
       model: secondaryModel || model,
       allowLiteratureRetrieval: queryIntent.needsLiteratureRetrieval,
-    });
+    }, sessionLog);
     
     // 15. 更新对话历史
     const currentHistory = conversationHistories.get(userId) || [];
@@ -808,6 +835,39 @@ sentences:
     }
     conversationHistories.set(userId, currentHistory);
     
+    // Phase 2：本轮写入追加式会话日志（前缀稳定，重连后历史一致）
+    sessionLog.append({ type: 'user', content: userMessage });
+    sessionLog.append({ type: 'assistant', content: response });
+
+    // P0-2：回合结束后自动压缩最老历史（压力阈值触发；历史预算已丢消息时强制）。
+    // fire-and-forget：总结失败只保留原历史，不影响本轮响应。
+    void considerAutoCompaction({
+      sessionLog,
+      force: derivedOverflow,
+      summarize: async (rangeText) => {
+        const summarizeModel = secondaryModel || model;
+        const summary = await callChatCompletion(
+          {
+            apiUrl,
+            apiKey,
+            label: 'UnifiedChatCompact',
+            defaultModel: summarizeModel,
+          },
+          {
+            model: summarizeModel,
+            messages: [{ role: 'user', content: buildCompactionSummaryPrompt(rangeText) }],
+            temperature: 0.2,
+            maxTokens: 600,
+          },
+        );
+        return String(summary || '').trim();
+      },
+    }).then(result => {
+      if (result.compacted) logger.info(`[UnifiedChat] Auto-compaction: ${result.reason}`);
+    }).catch(error => {
+      logger.warn('[UnifiedChat] Auto-compaction failed:', error);
+    });
+
     // 16. 异步持久化对话消息到服务端 + 更新对话摘要 + 更新记忆
     const conversationId = options?.conversationId || `conv-${Date.now()}`;
     const effectiveSecondaryModel = secondaryModel || 'gpt-4o-mini';  // fallback
@@ -1287,7 +1347,8 @@ async function processToolCalls(
     apiKey: string;
     model: string;
     allowLiteratureRetrieval: boolean;
-  }
+  },
+  sessionLog?: SessionLog | null,
 ): Promise<string> {
   // 处理记忆保存（新增）
   const memorySaveMatch = response.match(/```[\s\S]*?🔧 调用工具：save_memory[\s\S]*?```/);
@@ -1329,10 +1390,12 @@ async function processToolCalls(
           await saveUserMemory(memory);
           response = response.replace(memoryBlock, `\n✅ 已保存到长期记忆：${key}\n`);
           logger.info(`[UnifiedChat] Memory saved via tool: ${key} for ${userId}`);
+          sessionLog?.append({ type: 'tool', name: 'save_memory', output: `key=${key}`, ok: true });
         }
       } catch (e) {
         logger.error('[UnifiedChat] Failed to save memory via tool:', e);
         response = response.replace(memoryBlock, `\n⚠️ 记忆保存失败：${(e as Error).message}\n`);
+        sessionLog?.append({ type: 'tool', name: 'save_memory', output: String((e as Error).message || '').slice(0, 1000), ok: false });
       }
     }
   }
@@ -1369,6 +1432,7 @@ async function processToolCalls(
           draftBlock.raw,
           `\n⚠️ 未保存草稿：${rawSection} 不是有效的顶级章节名称。\n`
         );
+        sessionLog?.append({ type: 'tool', name: 'save_draft', output: `invalid-section=${rawSection}`, ok: false });
       } else try {
         const savedDraft = await sessionStore.updateDraft(userId, section, current => (
           mergeDraftChapterContent(current?.content || '', finalContent, 'merge')
@@ -1380,9 +1444,11 @@ async function processToolCalls(
         const refsInfo = referencesContent ? '（含参考文献）' : '';
         response = response.replace(draftBlock.raw, `\n✅ 已保存到 ${section} 草稿 ${section}.txt${refsInfo}\n`);
         logger.info(`[UnifiedChat] Draft saved: ${section} for ${userId}${refsInfo}`);
+        sessionLog?.append({ type: 'tool', name: 'save_draft', output: `section=${section}${refsInfo}`, ok: true });
       } catch (e) {
         logger.error('[UnifiedChat] Failed to save draft:', e);
         response = response.replace(draftBlock.raw, `\n⚠️ 草稿保存失败：${(e as Error).message}\n`);
+        sessionLog?.append({ type: 'tool', name: 'save_draft', output: String((e as Error).message || '').slice(0, 1000), ok: false });
       }
     }
     if (draftSaveParseResult.markerCount > 0 && draftSaveParseResult.blocks.length === 0) {
@@ -1398,6 +1464,7 @@ async function processToolCalls(
       sentenceSearchMatch[0],
       '\n[系统未执行文献检索：本轮经过校验的 Query Intent 未授权文献检索。]\n'
     );
+    sessionLog?.append({ type: 'tool', name: 'sentence_search', ok: false, output: 'blocked-by-query-intent' });
   } else if (sentenceSearchMatch && retrievalEngine) {
     const searchBlock = sentenceSearchMatch[0];
     const sentencesMatch = searchBlock.match(/sentences:\s*([\s\S]*?)(?=```|$)/);
@@ -1477,9 +1544,16 @@ async function processToolCalls(
           }
           
           response = response.replace(sentenceSearchMatch[0], searchResultText);
+          sessionLog?.append({
+            type: 'tool',
+            name: 'sentence_search',
+            output: `${sentences.length} sentences, ${Object.keys(searchResults).length} result groups`,
+            ok: true,
+          });
         }
       } catch (e) {
         logger.error('[UnifiedChat] Sentence search failed:', e);
+        sessionLog?.append({ type: 'tool', name: 'sentence_search', output: String((e as Error).message || '').slice(0, 1000), ok: false });
       }
     }
   }

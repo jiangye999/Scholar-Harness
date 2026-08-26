@@ -22,9 +22,21 @@ interface GatewayResponse {
   error?: string;
 }
 
-const gatewayUrl = String(process.env.SCHOLAR_HARNESS_CODEX_GATEWAY_URL || '').trim();
-const gatewayToken = String(process.env.SCHOLAR_HARNESS_CODEX_GATEWAY_TOKEN || '').trim();
-const sessionKey = String(process.env.SCHOLAR_HARNESS_CODEX_SESSION_KEY || '').trim();
+const gatewayUrl = String(
+  process.env.SCHOLAR_HARNESS_AGENT_GATEWAY_URL
+  || process.env.SCHOLAR_HARNESS_CODEX_GATEWAY_URL
+  || ''
+).trim();
+const gatewayToken = String(
+  process.env.SCHOLAR_HARNESS_AGENT_GATEWAY_TOKEN
+  || process.env.SCHOLAR_HARNESS_CODEX_GATEWAY_TOKEN
+  || ''
+).trim();
+const sessionKey = String(
+  process.env.SCHOLAR_HARNESS_AGENT_SESSION_KEY
+  || process.env.SCHOLAR_HARNESS_CODEX_SESSION_KEY
+  || ''
+).trim();
 
 function writeJson(value: unknown): void {
   process.stdout.write(`${JSON.stringify(value)}\n`);
@@ -40,7 +52,7 @@ function writeError(id: string | number | null | undefined, code: number, messag
 
 async function requestGateway(method: 'GET' | 'POST', pathname: string, payload?: unknown): Promise<GatewayResponse> {
   if (!gatewayUrl || !gatewayToken || !sessionKey) {
-    throw new Error('Scholar Harness Codex tool gateway is not configured');
+    throw new Error('Scholar Harness Agent tool gateway is not configured');
   }
   const target = new URL(pathname, gatewayUrl);
   const body = payload === undefined ? '' : JSON.stringify(payload);
@@ -95,7 +107,7 @@ async function handleRequest(request: JsonRpcRequest): Promise<void> {
     writeResult(request.id, {
       protocolVersion: requestedVersion || '2024-11-05',
       capabilities: { tools: { listChanged: false } },
-      serverInfo: { name: 'scholar-harness', version: '1.0.8' },
+      serverInfo: { name: 'scholar-harness', version: '1.0.9' },
     });
     return;
   }

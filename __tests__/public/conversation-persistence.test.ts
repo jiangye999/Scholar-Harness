@@ -6,11 +6,15 @@ import { describe, expect, it } from 'vitest';
 import { readPublicAppSource } from '../helpers/public-app-source';
 
 const html = readPublicAppSource();
+const memoryRouteSource = readFileSync(
+  path.resolve(process.cwd(), 'src/server/routes/memory.ts'),
+  'utf8',
+);
 
 describe('conversation persistence', () => {
   it('stores the user turn immediately instead of waiting for the AI response', () => {
     expect(html).toMatch(
-      /savedMsgs\.push\(\{ role: 'user', content: actualMessage,[\s\S]*?\}\);\s*storeConversationMessagesLocally\(activeConversationId, savedMsgs\);/,
+      /savedMsgs\.push\(\{ role: 'user', content: actualMessage,[\s\S]*?\}\);\s*storeConversationMessagesLocally\(activeConversationId, savedMsgs, \{ projectId: activeProjectId \}\);/,
     );
     expect(html).toMatch(
       /savedMsgs\.push\(\{ role: 'user', content: originalMessage \|\| address,[\s\S]*?\}\);\s*storeConversationMessagesLocally\(projectImportConversationId, savedMsgs\);/,
@@ -24,7 +28,7 @@ describe('conversation persistence', () => {
   });
 
   it('syncs conversation changes and flushes the latest local copy during shutdown', () => {
-    expect(html).toContain('function scheduleConversationPersistence(conversationId)');
+    expect(html).toContain('function scheduleConversationPersistence(conversationId, options)');
     expect(html).toContain("window.addEventListener('pagehide', persistCurrentConversationForLifecycle)");
     expect(html).toContain("window.addEventListener('beforeunload', persistCurrentConversationForLifecycle)");
     expect(html).toContain("navigator.sendBeacon(");
@@ -32,19 +36,67 @@ describe('conversation persistence', () => {
   });
 
   it('recovers old locally stored conversations that were never added to history', () => {
-    expect(html).toContain('function recoverLocalConversationsIntoHistory()');
+    expect(html).toContain('function recoverLocalConversationsIntoHistory(restoredStorageKeys)');
     expect(html).toMatch(
       /recoverLocalConversationsIntoHistory\(\);[\s\S]*?currentConversationId = createConversationId\(\);/,
     );
   });
 
-  it('hydrates project-scoped server conversations and lazily restores their messages', () => {
-    expect(html).toContain('async function hydrateConversationHistoryFromServer()');
-    expect(html).toContain("fetch('/api/memory/conversations/' + encodeURIComponent(currentUserId) + '?limit=300')");
-    expect(html).toContain('async function fetchPersistedConversationMessages(convId, signal)');
+  it('hydrates both current and legacy project-scoped histories and lazily restores messages', () => {
+    expect(html).toContain('async function hydrateConversationHistoryFromServer(hydrationGeneration)');
+    expect(html).toContain('function getConversationHistoryRestoreUserIds()');
     expect(html).toContain("if (userIds[0] !== 'web-user') userIds.push('web-user')");
+    expect(html).toContain("var historyQuery = '?limit=300' + (projectId ? '&projectId=' + encodeURIComponent(projectId) : '')");
+    expect(html).toContain("fetch('/api/memory/conversations/' + encodeURIComponent(userId) + historyQuery)");
+    expect(html).toContain('var restoreResults = await Promise.all(restoreUserIds.map(fetchConversationHistoryForUser));');
+    expect(html).toContain('recentConversations.concat(conversationSummaries).forEach(function(item)');
+    expect(html).toContain('async function fetchPersistedConversationMessages(convId, signal)');
     expect(html).toContain("messages = readConversationMessagesFromStorageKey(MSG_KEY + 'web-user_' + convId, convId)");
     expect(html).toContain("skipServerPersistence: restoredFromUserId !== 'web-user'");
+    expect(html).toContain('function refreshConversationHistory(options)');
+    expect(html).toContain('window.refreshConversationHistory = refreshConversationHistory;');
+    expect(html).toContain('renderHistory(merged);');
+    expect(html).toContain('已忽略过期项目的历史恢复结果');
+    expect(html).toMatch(/renderHistory\(\);\s*refreshConversationHistory\(\);/);
+  });
+
+  it('refreshes history when the panel opens and isolates malformed legacy entries', () => {
+    expect(html).toContain("if (panelKey === 'history' && !collapsed && typeof window.refreshConversationHistory === 'function')");
+    expect(html).toContain('function revealConversationHistoryPanel(options)');
+    expect(html).toContain('function getConversationHistoryListElement()');
+    expect(html).toContain("console.warn('[RenderHistory] 单条历史记录渲染失败，已跳过:'");
+    expect(html).toContain("title.addEventListener('click'");
+    expect(html).toContain("archiveButton.addEventListener('click'");
+  });
+
+  it('rebuilds an empty project history from restored message keys and restores the visible legacy conversation', () => {
+    expect(html).toMatch(
+      /Object\.keys\(clientState\.messages\)\.forEach\(function\(key\)[\s\S]*?recoverLocalConversationsIntoHistory\(Object\.keys\(clientState\.messages\)\);/,
+    );
+    expect(html).toContain('var restoredConversation = readConversationMessagesFromRestoreNamespacesLocal(currentConversationId);');
+    expect(html).toContain('if (restoredConversation.messages.length > 0)');
+    expect(html).toContain('var archivedIds = new Set(getArchivedConversationHistoryIds());');
+    expect(html).toContain('archivedIds.has(conversationId)');
+    expect(html).toContain("return STORAGE_KEY + '_archived_' + (getConversationHistoryProjectId() || 'workspace');");
+    expect(html).toContain("'?projectId=' + encodeURIComponent(projectId)");
+  });
+
+  it('archives history only after the server has persisted the full conversation', () => {
+    expect(html).toContain('async function archiveHistoryItem(convId)');
+    expect(html).toContain("'/api/memory/conversation/' + encodeURIComponent(currentUserId || 'web-user')");
+    expect(html).toContain("+ '/' + encodeURIComponent(convId) + '/archive'");
+    expect(html).toContain('cancelConversationPersistence(convId, projectId);');
+    expect(html).toContain('rememberArchivedConversationHistoryId(convId);');
+    expect(html).toMatch(/if \(!response\.ok \|\| !result\.success\)[\s\S]*?history = history\.filter/);
+    expect(html).toContain("archiveButton.setAttribute('aria-label', '归档历史对话')");
+    expect(html).toContain('本地服务版本过旧。请从系统托盘完全退出 Scholar Harness 后重新打开');
+  });
+
+  it('derives a usable title from each persisted conversation file', () => {
+    expect(memoryRouteSource).toContain("const firstUserMessage = messages.find((message: unknown) => {");
+    expect(memoryRouteSource).toContain("const firstUserContent = String(firstUserMessage?.content || '').replace(/\\s+/g, ' ').trim();");
+    expect(memoryRouteSource).toContain("const title = storedTitle || (firstUserContent");
+    expect(memoryRouteSource).toMatch(/return \{[\s\S]*?title,[\s\S]*?messageCount:/);
   });
 
   it('mounts restored history atomically before doing non-critical preview authorization work', () => {
@@ -86,7 +138,7 @@ describe('conversation persistence', () => {
     expect(html).toContain('var storedLocally = false;');
     expect(html).toContain('会话体积超出本地缓存容量，继续使用服务端持久化');
     expect(html).toMatch(
-      /if \(storedLocally\) \{[\s\S]*?scheduleConversationPersistence\(conversationId\);[\s\S]*?\} else \{[\s\S]*?sendConversationPersistenceRequest/,
+      /if \(storedLocally\) \{[\s\S]*?scheduleConversationPersistence\(conversationId, \{ projectId: targetProjectId, messages: messages \}\);[\s\S]*?\} else \{[\s\S]*?sendConversationPersistenceRequest/,
     );
   });
 
@@ -95,7 +147,7 @@ describe('conversation persistence', () => {
   });
 
   it('keeps long history titles and their delete control on one row', () => {
-    expect(html).toContain('class="history-item-title"');
+    expect(html).toContain("title.className = 'history-item-title'");
     expect(html).toMatch(/\.history-item\s*\{[^}]*display:\s*flex;[^}]*flex-wrap:\s*nowrap;/);
     expect(html).toMatch(/\.history-item-title\s*\{[^}]*flex:\s*1 1 auto;[^}]*text-overflow:\s*ellipsis;[^}]*white-space:\s*nowrap;/);
     expect(html).toMatch(/\.history-item \.delete\s*\{[^}]*flex:\s*0 0 auto;/);

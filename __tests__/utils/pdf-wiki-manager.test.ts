@@ -1261,6 +1261,74 @@ describe('PdfWikiManager', () => {
     expect(processSpy.mock.calls[0][1][0].originalname).toBe('recovered.pdf');
   });
 
+  it('marks an orphaned PDF processing status as recoverable after restart', async () => {
+    const wikiDir = path.join(tempDir, 'uploads', 'web-user', 'pdf-wiki');
+    fs.mkdirSync(wikiDir, { recursive: true });
+    fs.writeFileSync(path.join(wikiDir, 'status.json'), JSON.stringify({
+      status: 'processing',
+      taskKind: 'pdf-wiki',
+      totalPdfs: 1,
+      processedPdfs: 0,
+      totalChunks: 1,
+      processedChunks: 0,
+      entryCount: 0,
+      message: '正在重新识别 PDF',
+      startedAt: '2026-08-22T12:23:28.000Z',
+      updatedAt: '2026-08-22T12:23:28.000Z',
+    }, null, 2));
+
+    const recoveredManager = new PdfWikiManager(tempDir);
+    await recoveredManager.recoverPersistentQueues();
+    const status = await recoveredManager.getStatus('web-user');
+
+    expect(status.status).toBe('error');
+    expect(status.stalled).toBe(true);
+    expect(status.error).toBe('PDF_TASK_INTERRUPTED_BY_SERVER_RESTART');
+    expect(status.message).toContain('请重新提交');
+  });
+
+  it('runs PDF heavy tasks serially for the same user', async () => {
+    const events: string[] = [];
+    let releaseFirst: (() => void) | undefined;
+    const firstGate = new Promise<void>(resolve => {
+      releaseFirst = resolve;
+    });
+
+    const first = (manager as any).runExclusiveBuild('web-user', async () => {
+      events.push('first-start');
+      await firstGate;
+      events.push('first-end');
+      return 'first-result';
+    });
+    const second = (manager as any).runExclusiveBuild('web-user', async () => {
+      events.push('second-start');
+      return 'second-result';
+    });
+
+    await new Promise(resolve => setTimeout(resolve, 10));
+    expect(events).toEqual(['first-start']);
+    releaseFirst?.();
+
+    await expect(first).resolves.toBe('first-result');
+    await expect(second).resolves.toBe('second-result');
+    expect(events).toEqual(['first-start', 'first-end', 'second-start']);
+  });
+
+  it('routes deep PDF analysis through the shared heavy-task lock', async () => {
+    const expected = { pdfId: 'pdf-locked', analyzedAt: new Date().toISOString() } as any;
+    const lockSpy = vi.spyOn(manager as any, 'runExclusiveBuild').mockResolvedValue(expected);
+
+    await expect(manager.analyzePdfDeep('web-user', 'pdf-locked', {
+      apiUrl: '',
+      apiKey: '',
+      model: '',
+    })).resolves.toBe(expected);
+
+    expect(lockSpy).toHaveBeenCalledTimes(1);
+    expect(lockSpy.mock.calls[0][0]).toBe('web-user');
+    expect(lockSpy.mock.calls[0][1]).toEqual(expect.any(Function));
+  });
+
   it('persists a whole PDF recognition batch and continues after an individual item fails', async () => {
     const wikiDir = path.join(tempDir, 'uploads', 'web-user', 'pdf-wiki');
     fs.mkdirSync(wikiDir, { recursive: true });

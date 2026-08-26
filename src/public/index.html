@@ -4,15 +4,18 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Scholar Harness</title>
-    <link rel="stylesheet" href="/styles/core.css?v=1.0.8-modules2">
-  <link rel="stylesheet" href="/styles/shell-layout.css?v=1.0.8-modules2">
-  <link rel="stylesheet" href="/styles/experiment-upload.css?v=1.0.8-modules2">
-  <link rel="stylesheet" href="/styles/chat-composer.css?v=1.0.8-modules2">
-  <link rel="stylesheet" href="/styles/popovers.css?v=1.0.8-modules2">
-  <link rel="stylesheet" href="/styles/compatibility.css?v=1.0.8-modules2">
-  <link rel="stylesheet" href="/styles/responsive.css?v=1.0.8-top-workflows">
-  <link rel="stylesheet" href="/styles/color-theme.css?v=1.0.8-top-workflows">
-  <link rel="stylesheet" href="/styles/chat-backgrounds.css?v=1.0.8-wide-picker">
+    <link rel="stylesheet" href="/styles/core.css?v=1.0.9-modules2">
+  <link rel="stylesheet" href="/styles/shell-layout.css?v=1.0.9-single-running-bubble">
+  <link rel="stylesheet" href="/styles/experiment-upload.css?v=1.0.9-modules2">
+  <link rel="stylesheet" href="/styles/chat-composer.css?v=1.0.9-hide-preflight-on-output">
+  <link rel="stylesheet" href="/styles/popovers.css?v=1.0.9-modules2">
+  <link rel="stylesheet" href="/styles/compatibility.css?v=1.0.9-modules2">
+  <link rel="stylesheet" href="/styles/responsive.css?v=1.0.9-composer-selected-dot">
+  <link rel="stylesheet" href="/styles/color-theme.css?v=1.0.9-single-running-bubble&scrollbar=theme-primary">
+  <link rel="stylesheet" href="/styles/chat-backgrounds.css?v=1.0.9-wide-picker">
+  <link rel="stylesheet" href="/styles/constructor-agent.css?v=1.0.9-close-right">
+  <link rel="stylesheet" href="/styles/email-workspace.css?v=1.0.9-mail-reply-routing-v13">
+  <link rel="stylesheet" href="/styles/daily-paper-workspace.css?v=1.0.9-daily-papers-project-library-picker">
   <script>
     try {
       var initialColorTheme = localStorage.getItem('scholarharness_color_theme') || 'ink';
@@ -27,21 +30,21 @@
 </head>
 <body>
   <script>
-    if (window.electronAPI) {
-      document.documentElement.classList.add('electron-titlebar-overlay');
-    }
+    // The frameless Electron window relies on the custom controls below. The
+    // preload bridge can be unavailable during an early renderer failure, so
+    // also use Electron's stable user-agent marker and only hide the controls
+    // when this page is explicitly running in a regular browser.
+    var isElectronWindow = Boolean(window.electronAPI)
+      || /\bElectron\//i.test(String(navigator.userAgent || ''));
+    document.documentElement.classList.toggle('electron-titlebar-overlay', isElectronWindow);
+    document.documentElement.classList.toggle('browser-runtime', !isElectronWindow);
   </script>
   <div class="modal-overlay" id="modalOverlay" onclick="closeModal()">
     <div class="modal" onclick="event.stopPropagation()">
       <div class="modal-header">
         <h3 id="modalTitle">设置</h3>
         <div class="modal-header-actions" id="modalHeaderActions">
-          <button id="modalFullscreenBtn" class="modal-icon-btn" type="button" onclick="toggleModalFullscreen(event)" title="全屏" aria-label="全屏">
-            <svg class="ui-icon sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3H3v5"></path><path d="M16 3h5v5"></path><path d="M21 16v5h-5"></path><path d="M3 16v5h5"></path></svg>
-          </button>
-          <button id="modalCloseBtn" class="modal-icon-btn danger" type="button" onclick="closeModal()" title="关闭页面" aria-label="关闭页面">
-            <svg class="ui-icon sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6L6 18"></path><path d="M6 6l12 12"></path></svg>
-          </button>
+          <button id="modalCloseBtn" class="lit-btn" style="width:auto;margin:0;padding:8px 12px;" type="button" onclick="closeModal()" title="关闭" aria-label="关闭">关闭</button>
         </div>
       </div>
       <div id="modalContent"></div>
@@ -87,6 +90,19 @@
             <path d="M12 17.5h.01"></path>
           </svg>
         </button>
+        <button type="button" id="appEmailButton" class="app-menu-item app-menu-icon-item email-menu-button-with-badge" onclick="showEmailWorkspace()" title="邮件" aria-label="邮件">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <rect x="3.5" y="5.5" width="17" height="13" rx="2.5"></rect>
+            <path d="m5 7 7 5 7-5"></path>
+          </svg>
+          <span id="appEmailUnreadBadge" class="email-unread-badge" hidden aria-label="未读邮件"></span>
+        </button>
+        <button type="button" id="appDailyPaperButton" class="app-menu-item app-menu-icon-item daily-paper-menu-button" onclick="showDailyPaperWorkspace()" title="每日论文推荐" aria-label="每日论文推荐">
+          <svg viewBox="0 -960 960 960" fill="currentColor" aria-hidden="true">
+            <path d="M350-63q-46 0-82.5-24T211-153q-16 21-40.5 32.5T120-109q-51 0-85.5-35T0-229q0-43 28-77.5T99-346q-14-20-21.5-42.5T70-436q0-40 20.5-75t57.5-57q5 18 13.5 38.5T181-494q-14 11-22 26.5t-8 32.5q0 56 46 69t87 21l19 32q-11 32-19 54.5t-8 40.5q0 30 21.5 52.5T350-143q38 0 63-34t41-80q16-46 24.5-93t13.5-72l78 21q-9 45-22 103t-36.5 110.5Q488-135 449.5-99T350-63ZM120-189q17 0 28.5-11.5T160-229q0-17-11.5-28.5T120-269q-17 0-28.5 11.5T80-229q0 17 11.5 28.5T120-189Zm284-158q-46-41-83.5-76.5t-64.5-69q-27-33.5-41.5-67T200-629q0-65 44.5-109.5T354-783q4 0 7 .5t7 .5q-4-10-6-20t-2-21q0-50 35-85t85-35q50 0 85 35t35 85q0 11-2 20.5t-6 19.5h14q60 0 102 38.5t50 95.5q-18-3-40.5-3t-41.5 2q-7-23-25.5-38T606-703q-35 0-54.5 20.5T498-623h-37q-35-41-54.5-60.5T354-703q-32 0-53 21t-21 53q0 23 13 47.5t36.5 52q23.5 27.5 57 58.5t74.5 67l-57 57Zm104.5-447.5Q520-806 520-823t-11.5-28.5Q497-863 480-863t-28.5 11.5Q440-840 440-823t11.5 28.5Q463-783 480-783t28.5-11.5ZM609-63q-22 0-43.5-6T524-88q11-14 22-33t20-35q11 7 22 10t22 3q32 0 53.5-22.5T685-219q0-19-8-41t-19-54l19-32q42-8 87.5-21t45.5-69q0-40-29.5-58T716-512q-42 0-98 16t-131 41l-21-78q78-25 139-42t112-17q69 0 121 41t52 115q0 25-7.5 47.5T861-346q43 5 71 39.5t28 77.5q0 50-34.5 85T840-109q-26 0-50.5-11.5T749-153q-20 42-56.5 66T609-63Zm260-137.5q11-11.5 11-28.5t-11.5-29Q857-270 840-270t-28.5 11.5Q800-247 800-230t12 29q12 12 29 12t28-11.5ZM120-229Zm360-594Zm360 593Z"/>
+          </svg>
+          <span id="dailyPaperMenuBadge" class="daily-paper-menu-badge" hidden aria-label="每日论文状态"></span>
+        </button>
       </nav>
       <div class="app-menu-popover" id="appMenuPopover" hidden></div>
     </div>
@@ -115,6 +131,9 @@
       </button>
       <button type="button" class="app-chrome-icon-btn app-academic-workflow-btn" onclick="showResearchEnhancementWorkspace()" title="科研增强工具" aria-label="科研增强工具">
         <span class="app-academic-workflow-icon research-enhancement" aria-hidden="true"></span>
+      </button>
+      <button type="button" class="app-chrome-icon-btn app-academic-workflow-btn" onclick="showConstructorAgentWorkspace()" title="构造 Agent" aria-label="构造 Agent">
+        <span class="app-academic-workflow-icon constructor-agent" aria-hidden="true"></span>
       </button>
     </nav>
     <div class="app-chrome-actions">
@@ -384,11 +403,11 @@
           </div>
           <p class="chat-background-note">仅主页聊天界面生效，背景图片将直接铺满整个工作区。</p>
           <div class="chat-background-options" id="chatBackgroundOptions" role="radiogroup" aria-label="可用聊天背景"></div>
-          <button type="button" class="chat-background-custom-action" onclick="chooseCustomChatBackground(event)">选择本地图片</button>
-          <input type="file" id="customChatBackgroundInput" class="chat-background-file-input" accept="image/png,image/jpeg,image/webp,image/gif" aria-label="选择自定义聊天背景">
+          <button type="button" class="chat-background-custom-action" onclick="chooseCustomChatBackground(event)">上传背景图片</button>
+          <input type="file" id="customChatBackgroundInput" class="chat-background-file-input" accept="image/png,image/jpeg,image/webp,image/gif" aria-label="上传自定义聊天背景" multiple>
         </div>
       </div>
-      <button class="history-toggle app-chrome-icon-btn" onclick="toggleRightSidebar()" title="隐藏/显示文章写作进度" aria-label="隐藏/显示文章写作进度">
+      <button class="history-toggle app-chrome-icon-btn" onclick="toggleRightSidebar()" title="隐藏/显示论文框架规划" aria-label="隐藏/显示论文框架规划">
         <svg class="app-sidebar-icon" viewBox="0 0 24 24" aria-hidden="true">
           <rect x="4.5" y="5" width="15" height="14" rx="3"></rect>
           <path d="M14.5 5v14"></path>
@@ -419,7 +438,6 @@
     <div class="sidebar">
       <div class="sidebar-panels">
         <div class="project-section sidebar-panel create-panel project-panel">
-          <div class="sidebar-panel-title">新建</div>
           <div class="sidebar-panel-body">
             <button class="new-chat" onclick="newChat()">
               <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -428,10 +446,27 @@
               </svg>
               新建对话
             </button>
-            <button class="lit-btn" onclick="showNewProjectDialog()"><svg class="ui-icon sm" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"></rect><path d="M12 8v8"></path><path d="M8 12h8"></path></svg>新项目</button>
-            <button class="lit-btn" onclick="showProjectManagerDialog()"><svg class="ui-icon sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path></svg>项目管理</button>
           </div>
         </div>
+
+        <section class="sidebar-panel project-manager-panel is-collapsed" data-sidebar-collapse-key="projects" aria-labelledby="sidebarProjectManagerTitle">
+          <div class="project-manager-heading">
+            <button type="button" class="sidebar-panel-title sidebar-panel-toggle project-manager-toggle" data-sidebar-toggle-key="projects" aria-expanded="false" aria-controls="sidebarProjectManagerBody">
+              <span id="sidebarProjectManagerTitle">项目管理</span>
+              <svg class="sidebar-panel-folder ui-icon sm" viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M3.5 7.5V6a2 2 0 0 1 2-2h4l2 2h7a2 2 0 0 1 2 2v1.5"></path>
+                <path d="M3.5 8.5h17l-1.4 9.2a2 2 0 0 1-2 1.7H6.9a2 2 0 0 1-2-1.7L3.5 8.5Z"></path>
+              </svg>
+            </button>
+            <button type="button" class="project-manager-add" onclick="event.stopPropagation(); showNewProjectDialog()" title="新建项目" aria-label="新建项目">＋</button>
+          </div>
+          <div class="sidebar-panel-body project-manager-body" id="sidebarProjectManagerBody">
+            <div class="project-manager-status" id="sidebarProjectManagerStatus" role="status" aria-live="polite" hidden></div>
+            <div class="project-manager-list" id="sidebarProjectManagerList" aria-busy="false">
+              <div class="project-manager-empty">展开后加载项目</div>
+            </div>
+          </div>
+        </section>
 
         <div class="upload-section sidebar-panel upload-panel literature-panel" data-sidebar-collapse-key="upload">
           <button type="button" class="sidebar-panel-title sidebar-panel-toggle" data-sidebar-toggle-key="upload" aria-expanded="true">
@@ -522,11 +557,6 @@
             <svg class="sidebar-panel-chevron ui-icon sm" viewBox="0 0 24 24" aria-hidden="true"><polyline points="6 9 12 15 18 9"></polyline></svg>
           </button>
           <div class="sidebar-panel-body">
-            <button class="lit-btn" onclick="showSentenceClaimSearchDialog()"><svg class="ui-icon sm" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"></circle><path d="m20 20-3.5-3.5"></path><path d="M8 11h6"></path><path d="M11 8v6"></path></svg>句子论点检索</button>
-            <button class="lit-btn" onclick="showDataAnalysisDialog()"><svg class="ui-icon sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19V5"></path><path d="M4 19h16"></path><rect x="7" y="11" width="3" height="5"></rect><rect x="12" y="7" width="3" height="9"></rect><rect x="17" y="4" width="3" height="12"></rect></svg>数据分析</button>
-            <button class="lit-btn" onclick="showRPlotDialog()"><svg class="ui-icon sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 3v18h18"></path><path d="m7 15 4-4 3 3 5-7"></path></svg>R语言作图</button>
-            <button class="lit-btn" onclick="showFlowchartMakerDialog()"><svg class="ui-icon sm" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="6" height="5" rx="1"></rect><rect x="15" y="4" width="6" height="5" rx="1"></rect><rect x="9" y="15" width="6" height="5" rx="1"></rect><path d="M9 6.5h6"></path><path d="M18 9v2.5a3.5 3.5 0 0 1-3.5 3.5H12"></path><path d="M6 9v2.5A3.5 3.5 0 0 0 9.5 15H12"></path></svg>流程图制作</button>
-            <button class="lit-btn" onclick="showPptMasterDialog()"><svg class="ui-icon sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h16v12H4z"></path><path d="M8 20h8"></path><path d="M12 16v4"></path><path d="M8 9h8"></path><path d="M8 12h5"></path></svg>PPT汇报生成</button>
           </div>
         </div>
 
@@ -553,6 +583,32 @@
         <div class="empty-state" id="emptyState">
           <h1 class="brand-title">Scholar Harness</h1>
           <p class="typing-greeting"><span>你好！我是学术论文写作助手！</span></p>
+          <section class="home-workflow-shortcuts" aria-label="常用科研工具">
+            <button type="button" class="home-workflow-shortcut" onclick="showAutoResearchMode()" aria-label="打开 Auto Research">
+              <span class="app-academic-workflow-icon auto-research" aria-hidden="true"></span>
+              <span class="home-workflow-shortcut-label">Auto Research</span>
+            </button>
+            <button type="button" class="home-workflow-shortcut" onclick="showReviewWriterDialog()" aria-label="打开一键写论文">
+              <span class="app-academic-workflow-icon paper-writing" aria-hidden="true"></span>
+              <span class="home-workflow-shortcut-label">一键写论文</span>
+            </button>
+            <button type="button" class="home-workflow-shortcut" onclick="showBibliometricsDialog()" aria-label="打开文献计量分析">
+              <span class="app-academic-workflow-icon bibliometrics" aria-hidden="true"></span>
+              <span class="home-workflow-shortcut-label">文献计量分析</span>
+            </button>
+            <button type="button" class="home-workflow-shortcut" onclick="showPdfWikiPdfManager()" aria-label="打开 PDF 管理">
+              <span class="app-academic-workflow-icon pdf-manager" aria-hidden="true"></span>
+              <span class="home-workflow-shortcut-label">PDF 管理</span>
+            </button>
+            <button type="button" class="home-workflow-shortcut" onclick="showPdfWikiMetaDatabase()" aria-label="打开 Meta 分析">
+              <span class="app-academic-workflow-icon meta-analysis" aria-hidden="true"></span>
+              <span class="home-workflow-shortcut-label">Meta 分析</span>
+            </button>
+            <button type="button" class="home-workflow-shortcut" onclick="showConstructorAgentWorkspace()" aria-label="打开构造 Agent">
+              <span class="app-academic-workflow-icon constructor-agent" aria-hidden="true"></span>
+              <span class="home-workflow-shortcut-label">构造 Agent</span>
+            </button>
+          </section>
         </div>
         <div id="messages"></div>
       </div>
@@ -585,8 +641,24 @@
                   <svg class="ui-icon md" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14"></path><path d="M5 12h14"></path></svg>
                   <input type="file" id="experimentFileInput" class="file-input" accept=".png,.jpg,.jpeg,.gif,.bmp,.webp,.tiff,.tif,.heic,.heif,.svg,.pdf,.doc,.docx,.xlsx,.xls,.csv,.txt,.md" multiple>
                 </button>
-                <div id="mainContextSourceBar" class="main-context-source-bar" onmouseenter="expandMainContextSourceBar()" onmouseleave="handleMainContextSourceBarPointerLeave()"></div>
-                <button type="button" class="composer-framework-btn" id="articleWritingProgressBtn" onclick="toggleArticleWritingProgressPanel()" title="文章写作进度" aria-label="文章写作进度" aria-controls="articleProgressPage" aria-expanded="false">
+                <div id="mainContextSourceBar" class="main-context-source-bar" onmouseenter="expandMainContextSourceBar()" onmouseleave="handleMainContextSourceBarPointerLeave()">
+                  <!--
+                    Keep the context / Skill plug visible before the dynamic context
+                    module finishes hydrating. renderMainContextSourceBar() replaces
+                    this fallback with the fully populated button and menu. The bar
+                    is hover-only (no click toggle), matching the product contract.
+                  -->
+                  <button type="button" class="main-context-source-trigger composer-context-btn" aria-label="持续使用的上下文" aria-expanded="false" title="持续使用的上下文">
+                    <svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true">
+                      <path d="M8 5h8"></path>
+                      <path d="M9 3v4"></path>
+                      <path d="M15 3v4"></path>
+                      <path d="M7 8h10l-1 5H8z"></path>
+                      <path d="M12 13v8"></path>
+                    </svg>
+                  </button>
+                </div>
+                <button type="button" class="composer-framework-btn" id="articleWritingProgressBtn" onclick="toggleArticleWritingProgressPanel()" title="论文框架规划" aria-label="论文框架规划" aria-controls="articleProgressPage" aria-expanded="false">
                   <svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true">
                     <rect x="4" y="5" width="16" height="14" rx="2"></rect>
                     <path d="M8 9h8"></path>
@@ -604,7 +676,7 @@
               <div class="composer-actions">
                 <div class="composer-provider-selector" id="composerProviderSelector">
                 <button type="button" class="composer-provider-btn" id="composerProviderBtn" onclick="toggleComposerProviderMenu(event)" title="选择本次对话使用的模型">
-                  <span id="composerProviderLabel">小牛马</span>
+                  <span id="composerProviderLabel">Little corse</span>
                   <span class="composer-provider-current-model" id="composerProviderModel"></span>
                   <svg class="ui-icon sm" viewBox="0 0 24 24" aria-hidden="true"><polyline points="6 9 12 15 18 9"></polyline></svg>
                 </button>
@@ -616,26 +688,54 @@
                         <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06A2 2 0 0 1 7.1 4.3l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v-.09A1.65 1.65 0 0 0 15 4.6a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9c.14.32.23.66.26 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
                       </button>
                     </div>
-                    <button type="button" class="composer-provider-option" data-provider="secondary" onclick="setComposerChatProvider('secondary')" role="menuitem"><span class="composer-provider-option-copy"><strong class="composer-provider-option-role">小牛马</strong><span class="composer-provider-option-model"></span></span><span class="composer-provider-option-check">✓</span></button>
-                    <button type="button" class="composer-provider-option" data-provider="primary" onclick="setComposerChatProvider('primary')" role="menuitem"><span class="composer-provider-option-copy"><strong class="composer-provider-option-role">大牛马</strong><span class="composer-provider-option-model"></span></span><span class="composer-provider-option-check">✓</span></button>
-                    <button type="button" class="composer-provider-option" data-provider="codex" onclick="selectComposerCodexProvider(event)" role="menuitem" aria-controls="composerCodexOptions" aria-expanded="false"><span class="composer-provider-option-copy"><strong class="composer-provider-option-role">Codex</strong><span class="composer-provider-option-model"></span></span><span class="composer-provider-option-check">✓</span></button>
+                    <button type="button" class="composer-provider-option" data-provider="secondary" onclick="selectComposerMainChatProvider('secondary', event)" role="menuitem" aria-controls="composerMainChatOptions" aria-expanded="false"><span class="composer-provider-option-copy"><strong class="composer-provider-option-role">Little corse</strong><span class="composer-provider-option-model"></span></span><span class="composer-provider-option-check" aria-hidden="true"></span></button>
+                    <button type="button" class="composer-provider-option" data-provider="primary" onclick="selectComposerMainChatProvider('primary', event)" role="menuitem" aria-controls="composerMainChatOptions" aria-expanded="false"><span class="composer-provider-option-copy"><strong class="composer-provider-option-role">Free corse</strong><span class="composer-provider-option-model"></span></span><span class="composer-provider-option-check" aria-hidden="true"></span></button>
+                    <button type="button" class="composer-provider-option" data-provider="coding-agent" onclick="openComposerCodingAgentContainer(event)" role="menuitem" aria-controls="composerCodexOptions" aria-expanded="false"><span class="composer-provider-option-copy"><strong class="composer-provider-option-role">Agent corse</strong><span class="composer-provider-option-model">Codex · Pi · OpenCode</span></span><span class="composer-provider-option-check" aria-hidden="true"></span></button>
                   </div>
                   <div class="composer-codex-options" id="composerCodexOptions" hidden>
                     <div class="composer-codex-options-header">
                       <button type="button" class="composer-codex-back-btn" onclick="backToComposerProviderMenu(event)" title="返回模型列表" aria-label="返回模型列表">
                         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 18-6-6 6-6"></path></svg>
                       </button>
-                      <span class="composer-codex-options-title">Codex 配置</span>
+                      <span class="composer-codex-options-title">Agent corse</span>
                     </div>
-                    <label class="composer-codex-field">
-                      <span>模型类型</span>
-                      <select id="composerCodexModelSelect" onchange="handleComposerCodexModelChange(this.value, event)" aria-label="选择 Codex 模型"></select>
-                    </label>
-                    <label class="composer-codex-field">
-                      <span>Reasoning Effort</span>
-                      <select id="composerCodexEffortSelect" onchange="handleComposerCodexEffortChange(this.value, event)" aria-label="选择 Codex 推理强度"></select>
-                    </label>
-                    <div class="composer-codex-status" id="composerCodexStatus" aria-live="polite"></div>
+                    <div id="composerCodingAgentRuntimeList" aria-label="选择 Agent 运行时">
+                      <button type="button" class="composer-provider-option" data-provider="codex" onclick="selectComposerCodexProvider(event)" role="menuitem"><span class="composer-provider-option-copy"><strong class="composer-provider-option-role">Codex</strong><span class="composer-provider-option-model"></span></span><span class="composer-provider-option-check" aria-hidden="true"></span></button>
+                      <button type="button" class="composer-provider-option" data-provider="pi" onclick="selectComposerPortableRuntimeProvider('pi', event)" role="menuitem"><span class="composer-provider-option-copy"><strong class="composer-provider-option-role">Pi</strong><span class="composer-provider-option-model"></span></span><span class="composer-provider-option-check" aria-hidden="true"></span></button>
+                      <button type="button" class="composer-provider-option" data-provider="opencode" onclick="selectComposerPortableRuntimeProvider('opencode', event)" role="menuitem"><span class="composer-provider-option-copy"><strong class="composer-provider-option-role">OpenCode</strong><span class="composer-provider-option-model"></span></span><span class="composer-provider-option-check" aria-hidden="true"></span></button>
+                    </div>
+                    <div id="composerCodexRuntimeSettings">
+                      <label class="composer-codex-field">
+                        <span>Codex 模型</span>
+                        <select id="composerCodexModelSelect" onchange="handleComposerCodexModelChange(this.value, event)" aria-label="选择 Codex 模型"></select>
+                      </label>
+                      <label class="composer-codex-field">
+                        <span>Reasoning Effort</span>
+                        <select id="composerCodexEffortSelect" onchange="handleComposerCodexEffortChange(this.value, event)" aria-label="选择 Codex 推理强度"></select>
+                      </label>
+                      <div class="composer-codex-status" id="composerCodexStatus" aria-live="polite"></div>
+                    </div>
+                    <div id="composerPortableRuntimeSettings" hidden>
+                      <label class="composer-codex-field">
+                        <span id="composerPortableRuntimeModelLabel">Agent 模型</span>
+                        <select id="composerPortableRuntimeModelSelect" onchange="handleComposerPortableRuntimeModelChange(this.value, event)" aria-label="选择 Agent 模型"></select>
+                      </label>
+                      <label class="composer-codex-field">
+                        <span>Reasoning Effort</span>
+                        <select id="composerPortableRuntimeEffortSelect" onchange="handleComposerPortableRuntimeEffortChange(this.value, event)" aria-label="选择 Agent 推理强度"></select>
+                      </label>
+                      <div class="composer-codex-status" id="composerPortableRuntimeStatus" aria-live="polite"></div>
+                    </div>
+                  </div>
+                  <div class="composer-codex-options" id="composerMainChatOptions" hidden>
+                    <div class="composer-codex-options-header">
+                      <button type="button" class="composer-codex-back-btn" onclick="composerMainChatBack(event)" title="返回" aria-label="返回">
+                        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 18-6-6 6-6"></path></svg>
+                      </button>
+                      <span class="composer-codex-options-title" id="composerMainChatOptionsTitle">Little corse</span>
+                    </div>
+                    <div id="composerMainChatBody"></div>
+                    <div class="composer-codex-status" id="composerMainChatStatus" aria-live="polite"></div>
                   </div>
                 </div>
                 </div>
@@ -717,16 +817,16 @@
     <div class="query-nav-rail empty" id="queryNavRail" aria-label="用户 query 导航"></div>
     </div>
 
-    <!-- 右侧文章写作进度面板 -->
+    <!-- 右侧论文框架规划面板 -->
     <div class="right-sidebar">
       <div class="right-sidebar-resizer" id="rightSidebarResizer" title="拖动调整右侧栏宽度" aria-hidden="true"></div>
       <div class="right-sidebar-header">
         <div class="right-sidebar-title-row">
-          <div class="right-sidebar-title" id="rightSidebarTitle">文章写作进度</div>
-          <div class="right-sidebar-meta" id="articleWritingProgressMeta">未读取章节 TXT</div>
+          <div class="right-sidebar-title" id="rightSidebarTitle">论文框架规划</div>
+          <div class="right-sidebar-meta" id="articleWritingProgressMeta">待读取框架</div>
         </div>
         <div class="right-sidebar-tabs" role="tablist" aria-label="论文内容视图">
-          <button type="button" class="right-sidebar-tab active" id="rightSidebarArticleTab" onclick="setRightSidebarTab('article')" role="tab" aria-selected="true">章节草稿</button>
+          <button type="button" class="right-sidebar-tab active" id="rightSidebarArticleTab" onclick="setRightSidebarTab('article')" role="tab" aria-selected="true">论文框架</button>
           <button type="button" class="right-sidebar-tab" id="rightSidebarFiguresTab" onclick="setRightSidebarTab('figures')" role="tab" aria-selected="false">论文图片</button>
           <button type="button" class="right-sidebar-tab" id="rightSidebarFilePreviewTab" onclick="setRightSidebarTab('preview')" role="tab" aria-selected="false" hidden>文件预览</button>
           <button type="button" class="right-sidebar-tab" id="rightSidebarVendorConfigTab" onclick="setRightSidebarTab('vendor')" role="tab" aria-selected="false" hidden>厂商官网</button>
@@ -743,7 +843,7 @@
           </svg>
           <span class="right-sidebar-word-import-copy">
             <strong>拖入 Word，识别章节与 Figure</strong>
-            <small id="rightSidebarWordImportStatus">自动填入章节草稿，并把嵌入图片归档到论文图片</small>
+            <small id="rightSidebarWordImportStatus">识别文章章节结构，并把嵌入图片归档到论文图片</small>
           </span>
         </button>
         <button type="button" class="article-structure-btn right-sidebar-paper-figure-refresh" id="paperFigureRefreshButton" onclick="renderPaperFigureLibraryPanel(true)" hidden>刷新</button>
@@ -784,31 +884,35 @@
       </div>
     </div>
   </div>
-    <script src="/app/module-runtime.js?v=1.0.8-modules"></script>
-  <script src="/app/app-core.js?v=1.0.8-modules2"></script>
-  <script src="/app/shell-navigation.js?v=1.0.8-wide-theme-picker"></script>
-  <script src="/app/chat-backgrounds.js?v=1.0.8-background-groups"></script>
-  <script src="/app/chat-context.js?v=1.0.8-modules2"></script>
-  <script src="/app/writing-workspace.js?v=1.0.8-modules2"></script>
-  <script src="/app/experiment-composer.js?v=1.0.8-modules2"></script>
-  <script src="/app/settings-runtime.js?v=1.0.8-modules2"></script>
-  <script src="/app/skill-config.js?v=1.0.8-modules2"></script>
-  <script src="/app/provider-config.js?v=1.0.8-modules2"></script>
-  <script src="/app/content-tools.js?v=1.0.8-modules2"></script>
-  <script src="/app/memory-management.js?v=1.0.8-modules2"></script>
-  <script src="/app/project-runtime.js?v=1.0.8-startup-summary"></script>
-  <script src="/app/feature-state.js?v=1.0.8-modules2"></script>
-  <script src="/app/academic-workflows.js?v=1.0.8-modules2"></script>
+    <script src="/app/module-runtime.js?v=1.0.9-modules"></script>
+  <script src="/app/app-core.js?v=1.0.9-modules2"></script>
+  <script src="/app/shell-navigation.js?v=1.0.9-project-sidebar"></script>
+  <script src="/app/chat-backgrounds.js?v=1.0.9-custom-background-gallery"></script>
+  <script src="/app/chat-context.js?v=1.0.9-workspace-directory-persistence&labels=free-agent-corse&errors=word-file-busy"></script>
+  <script src="/app/writing-workspace.js?v=1.0.9-modules2"></script>
+  <script src="/app/experiment-composer.js?v=1.0.9-modules2"></script>
+  <script src="/app/settings-runtime.js?v=1.0.9-modules2"></script>
+  <script src="/app/skill-config.js?v=1.0.9-modules2"></script>
+  <script src="/app/provider-config.js?v=1.0.9-composer-unconfigured-state"></script>
+  <script src="/app/model-pool.js?v=1.0.9-composer-bootstrap-first"></script>
+  <script src="/app/content-tools.js?v=1.0.9-modules2"></script>
+  <script src="/app/memory-management.js?v=1.0.9-modules2"></script>
+  <script src="/app/project-runtime.js?v=1.0.9-workspace-directory-persistence"></script>
+  <script src="/app/feature-state.js?v=1.0.9-modules2"></script>
+  <script src="/app/academic-workflows.js?v=1.0.9-modules2"></script>
+  <script src="/app/constructor-agent.js?v=1.0.9-constructor-header-v3"></script>
+<script src="/app/email-workspace.js?v=1.0.9-mail-reply-layout-v8"></script>
+  <script src="/app/daily-paper-workspace.js?v=1.0.9-daily-papers-project-library-picker"></script>
   <script src="/embedding-library.js"></script>
-  <script src="/bibliometrics.js?v=1.0.8-20260724-workspace-folders"></script>
-    <script src="/app/pdf-wiki-core.js?v=1.0.8-modules"></script>
-  <script src="/app/meta-analysis.js?v=1.0.8-modules"></script>
-  <script src="/app/pdf-wiki-workspace.js?v=1.0.8-modules"></script>
-  <script src="/app/auto-research.js?v=1.0.8-modules"></script>
-  <script src="/app/chat-history.js?v=1.0.8-history-atomic"></script>
-  <script src="/app/pdf-wiki-upload.js?v=1.0.8-modules"></script>
-  <script src="/app/chat.js?v=1.0.8-startup-summary"></script>
-  <script src="/app/analysis-tools.js?v=1.0.8-modules"></script>
+  <script src="/bibliometrics.js?v=1.0.9-20260724-workspace-folders"></script>
+    <script src="/app/pdf-wiki-core.js?v=1.0.9-modules"></script>
+  <script src="/app/meta-analysis.js?v=1.0.9-modules"></script>
+  <script src="/app/pdf-wiki-workspace.js?v=1.0.9-pdf-manager-actions"></script>
+  <script src="/app/auto-research.js?v=1.0.9-modules"></script>
+  <script src="/app/chat-history.js?v=1.0.9-single-running-bubble"></script>
+  <script src="/app/pdf-wiki-upload.js?v=1.0.9-modules"></script>
+  <script src="/app/chat.js?v=1.0.9-hide-preflight-on-output&progress=agent-preflight&scroll=preflight-follow"></script>
+  <script src="/app/analysis-tools.js?v=1.0.9-modules"></script>
 </body>
 </html>
 

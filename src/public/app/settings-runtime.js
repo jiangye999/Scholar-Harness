@@ -80,13 +80,13 @@
             api_url: secondaryVisionApiConfig.url,
             api_key: secondaryVisionApiConfig.key || undefined,
             model: secondaryVisionApiConfig.model,
-            description: '小牛马视觉 - 图片、图表截图、多模态输入'
+            description: 'Little corse 视觉 - 图片、图表截图、多模态输入'
           }
         })
       });
       var result = await response.json().catch(function() { return null; });
       if (!response.ok || !result || !result.success) {
-        throw new Error((result && result.error) || '小牛马视觉配置保存失败');
+        throw new Error((result && result.error) || 'Little corse 视觉配置保存失败');
       }
       if (result.config && result.config.secondary_vision) {
         secondaryVisionApiConfig.url = result.config.secondary_vision.api_url || secondaryVisionApiConfig.url || '';
@@ -95,7 +95,7 @@
           apiUrl: result.config.secondary_vision.api_url || '',
           hasApiKey: !!result.config.secondary_vision.has_api_key,
           model: result.config.secondary_vision.model || secondaryVisionApiConfig.model || 'gpt-4o',
-          description: result.config.secondary_vision.description || '小牛马视觉 - 图片、图表截图、多模态输入'
+          description: result.config.secondary_vision.description || 'Little corse 视觉 - 图片、图表截图、多模态输入'
         };
         localStorage.setItem(CHAT_BRIDGE_KEY, JSON.stringify(chatBridgeConfig));
         localStorage.setItem(SECONDARY_VISION_API_KEY, JSON.stringify(secondaryVisionApiConfig));
@@ -141,7 +141,8 @@
         body: JSON.stringify({ 
           apiUrl: normalizeApiBaseUrl(apiConfig.url), 
           apiKey: apiConfig.key, 
-          model: currentModel 
+          model: currentModel,
+          reasoningEffort: currentReasoningEffort
         })
       }).catch(e => console.warn('Failed to sync settings:', e));
 
@@ -154,7 +155,7 @@
             api_url: normalizeApiBaseUrl(apiConfig.url),
             api_key: apiConfig.key || undefined,
             model: currentModel,
-            description: '小牛马文本 - 日常聊天、写作执行、引用验证'
+            description: 'Little corse 文本 - 日常聊天、写作执行、引用验证'
           }
         })
       }).catch(function(e) {
@@ -174,6 +175,13 @@
         if (serverResponse.ok) {
           var serverData = await serverResponse.json();
           console.log('[Init] 后端配置:', serverData);
+          if (serverData.reasoningEffort && ['low', 'medium', 'high'].indexOf(serverData.reasoningEffort) >= 0) {
+            currentReasoningEffort = serverData.reasoningEffort;
+            try {
+              localStorage.setItem('scholarharness_main_chat_reasoning_effort', serverData.reasoningEffort);
+            } catch (e) {}
+            console.log('[Init] reasoning_effort 已从后端加载:', currentReasoningEffort);
+          }
           
           // 如果后端有配置，使用后端配置
           if (serverData.apiUrl && serverData.hasApiKey) {
@@ -360,7 +368,7 @@
     function shouldOpenSidebarPageFullscreen(title, wide) {
       if (wide) return true;
       var normalizedTitle = String(title || '')
-        .replace(/[🐄🐂🌐📖🔤🗑️]/g, '')
+        .replace(/[🐄🐂🌾🌐📖🔤🗑️]/g, '')
         .replace(/[「」]/g, '')
         .replace(/\s+/g, '')
         .trim();
@@ -420,6 +428,7 @@
     function clearModalRuntimeClasses() {
       var overlay = document.getElementById('modalOverlay');
       if (!overlay) return;
+      overlay.style.removeProperty('--modal-anchor-top');
       var modalEl = overlay.querySelector('.modal');
       if (modalEl && modalEl.dataset.modalClass) {
         modalEl.dataset.modalClass.split(/\s+/).filter(Boolean).forEach(function(className) {
@@ -559,6 +568,17 @@
           overlay.classList.add(className);
         });
         overlay.dataset.modalOverlayClass = overlayClassNames.join(' ');
+      }
+      if (modalOptions.anchorElement && typeof modalOptions.anchorElement.getBoundingClientRect === 'function') {
+        var anchorElement = typeof modalOptions.anchorElement.closest === 'function'
+          ? (modalOptions.anchorElement.closest('.project-manager-card, .project-manager-heading') || modalOptions.anchorElement)
+          : modalOptions.anchorElement;
+        var anchorRect = anchorElement.getBoundingClientRect();
+        var overlayRect = overlay.getBoundingClientRect();
+        var modalHeight = modalEl ? Math.min(modalEl.scrollHeight, Math.max(180, overlay.clientHeight - 16)) : 240;
+        var requestedTop = Math.max(8, anchorRect.top - overlayRect.top - 4);
+        var maximumTop = Math.max(8, overlay.clientHeight - modalHeight - 8);
+        overlay.style.setProperty('--modal-anchor-top', Math.min(requestedTop, maximumTop) + 'px');
       }
       setFullscreenButtonState(document.getElementById('modalFullscreenBtn'), shouldFullscreen);
       placeModalHeaderActions(modalOptions.inlineHeaderActionsTargetId || '');

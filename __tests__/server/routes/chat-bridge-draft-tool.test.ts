@@ -16,7 +16,11 @@ describe('ChatBridge native draft tool', () => {
 
   it('writes a canonical chapter through the configured draft service', async () => {
     const saveDraft = vi.fn(async () => undefined);
-    initializeChatBridgeRoutes({} as any, { saveDraft });
+    const getDraftContext = vi.fn(async () => ({
+      available: true,
+      exportContent: '\\section{Discussion}\nCurrent complete draft.',
+    }));
+    initializeChatBridgeRoutes({} as any, { saveDraft, getDraftContext });
 
     expect(getAgentDraftSaveToolDefinitions().map(tool => tool.function.name)).toContain('save_draft');
     const result = await executeAgentDraftSaveTool({
@@ -49,6 +53,7 @@ describe('ChatBridge native draft tool', () => {
 
     expect(result).toMatchObject({
       ok: true,
+      draftExportContent: '\\section{Discussion}\nCurrent complete draft.',
       data: {
         chapter: 'discussion',
         fileName: 'discussion.txt',
@@ -64,6 +69,7 @@ describe('ChatBridge native draft tool', () => {
         subsection: expect.objectContaining({ title: 'Moisture mechanism' }),
       }),
     );
+    expect(getDraftContext).toHaveBeenCalledWith('user-1', '把这段保存到 Discussion 草稿');
   });
 
   it('ignores a model-declared Results target when the page target is Discussion', async () => {
@@ -156,6 +162,31 @@ describe('ChatBridge native draft tool', () => {
     expect(saveDraft).not.toHaveBeenCalled();
   });
 
+  it('blocks正文 saving until the current project framework is confirmed by the user', async () => {
+    const saveDraft = vi.fn(async () => undefined);
+    initializeChatBridgeRoutes({} as any, { saveDraft });
+
+    const result = await executeAgentDraftSaveTool({
+      id: 'draft-call-unconfirmed-framework',
+      type: 'function',
+      function: {
+        name: 'save_draft',
+        arguments: JSON.stringify({ content: 'Draft paragraph.', section: 'discussion' }),
+      },
+    }, 'user-1', '开始写 Discussion', {
+      discussionFramework: {
+        available: true,
+        planningStatus: 'draft',
+        chapters: [{ key: 'discussion', title: 'Discussion' }],
+      },
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.summary).toBe('论文正文尚未保存');
+    expect(result.error).toContain('当前项目既没有确认论文框架');
+    expect(saveDraft).not.toHaveBeenCalled();
+  });
+
   it('does not redirect an explicit workspace file update into the active chapter draft', async () => {
     const saveDraft = vi.fn(async () => undefined);
     initializeChatBridgeRoutes({} as any, { saveDraft });
@@ -243,6 +274,22 @@ describe('ChatBridge native draft tool', () => {
     expect(shouldSyncWorkspaceDraftFiles('保存到结论部分的txt', receipt, {
       workspaceDirectory: { available: true },
     })).toBe(false);
+  });
+
+  it('does not treat paper-framework confirmations as chapter draft saves', () => {
+    initializeChatBridgeRoutes({} as any, { saveDraft: vi.fn(async () => undefined) });
+    const context = { workspaceDirectory: { available: true } };
+
+    expect(shouldSyncWorkspaceDraftFiles(
+      '请更新右侧论文的章节框架，先让我确认',
+      '已保存并同步章节框架，等待你在右侧确认。',
+      context,
+    )).toBe(false);
+    expect(shouldSyncWorkspaceDraftFiles(
+      '把这段正文保存到 Discussion 草稿',
+      '已保存 Discussion 章节。',
+      context,
+    )).toBe(true);
   });
 
   it('does not expose the tool when the draft service is unavailable', () => {

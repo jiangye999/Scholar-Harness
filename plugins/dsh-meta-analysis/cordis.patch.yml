@@ -1,0 +1,12 @@
+# dsh-meta-analysis bundle patch: inserts the dual-face plugin row into the
+# web profile roster. Applied as a profile bundle layer (the `dsh.bundle.patch`
+# manifest field) over dsh-base; activate with
+# `dsh plugin --profile web add link:<abs path to this package>`.
+#
+# The row is a bare plugin by package name: the node half (exports ".") runs
+# in the host process (Meta analysis engine + local JSON storage, /api/dsh-meta
+# routes, dsh_meta_* agent tools), and the `dsh.client` declaration makes the
+# browser half (exports "./client") load in the web GUI.
+- insert:
+    - id: meta-analysis
+      name: 'dsh-meta-analysis'

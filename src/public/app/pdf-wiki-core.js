@@ -43,7 +43,6 @@ window.showPdfWikiViewer = async function(options) {
               '<div id="pdfWikiViewerContextActions" style="display:none;flex:1 1 auto;min-width:0;align-items:center;justify-content:flex-start;gap:6px;flex-wrap:wrap;"></div>' +
             '</div>' +
             '<div style="display:flex;gap:8px;align-items:center;justify-content:flex-end;min-width:0;">' +
-              '<button id="pdfWikiViewerFullscreenBtn" class="modal-icon-btn" type="button" onclick="toggleCustomModalFullscreen(\'pdfWikiViewerModal\',\'pdfWikiViewerPanel\',\'pdfWikiViewerFullscreenBtn\')" title="全屏" aria-label="全屏"><svg class="ui-icon sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3H3v5"></path><path d="M16 3h5v5"></path><path d="M21 16v5h-5"></path><path d="M3 16v5h5"></path></svg></button>' +
               '<button id="pdfWikiViewerRefreshBtn" class="lit-btn" style="width:auto;margin:0;padding:8px 12px;" onclick="refreshActivePdfWikiWorkspace()">刷新</button>' +
               '<button id="pdfWikiViewerCloseBtn" class="lit-btn" style="width:auto;margin:0;padding:8px 12px;" onclick="handlePdfWikiViewerClose()">关闭</button>' +
             '</div>' +

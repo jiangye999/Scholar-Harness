@@ -91,5 +91,8 @@ describe('draft save block parser', () => {
     expect(isDraftSaveRequest('看一下摘要的txt里面是不是有标题，把标题单独拿出来，放到一个txt文件里面')).toBe(true);
     expect(isDraftSaveRequest('把运行日志单独放到一个 txt 文件里面')).toBe(false);
     expect(isDraftSaveRequest('只解释一下这段结果')).toBe(false);
+    expect(isDraftSaveRequest('更新右侧论文的章节框架并等待我确认')).toBe(false);
+    expect(isDraftSaveRequest('已同步章节框架和每章的证据需求')).toBe(false);
+    expect(isDraftSaveRequest('根据章节框架，把这段论文正文保存到 Discussion 草稿')).toBe(true);
   });
 });

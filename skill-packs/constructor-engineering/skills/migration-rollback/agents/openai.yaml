@@ -1,0 +1,3 @@
+interface:
+  display_name: "Migration Rollback"
+  short_description: "Help with Migration Rollback tasks"

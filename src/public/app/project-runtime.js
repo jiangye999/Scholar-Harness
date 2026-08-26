@@ -22,21 +22,45 @@
       localStorage.setItem(STORAGE_KEY, JSON.stringify(history));
     }
 
-    function getDeletedConversationHistoryIds() {
+    function getConversationHistoryProjectId() {
+      return String(
+        projectManagerCurrentProject
+          ? projectManagerCurrentProject.projectId || ''
+          : ''
+      ).trim();
+    }
+    window.getConversationHistoryProjectId = getConversationHistoryProjectId;
+
+    function getArchivedConversationHistoryStorageKey() {
+      return STORAGE_KEY + '_archived_' + (getConversationHistoryProjectId() || 'workspace');
+    }
+
+    function readConversationHistoryIdList(storageKey) {
       try {
-        var ids = JSON.parse(localStorage.getItem(STORAGE_KEY + '_deleted') || '[]');
+        var ids = JSON.parse(localStorage.getItem(storageKey) || '[]');
         return Array.isArray(ids) ? ids : [];
       } catch (e) {
         return [];
       }
     }
 
-    function rememberDeletedConversationHistoryId(conversationId) {
+    function getArchivedConversationHistoryIds() {
+      var projectScope = getConversationHistoryProjectId() || 'workspace';
+      var archived = readConversationHistoryIdList(getArchivedConversationHistoryStorageKey());
+      // Preserve old local deletion markers as hidden/archived records during
+      // migration. New actions only write the archived key.
+      var legacyDeleted = readConversationHistoryIdList(STORAGE_KEY + '_deleted_' + projectScope);
+      return archived.concat(legacyDeleted).filter(function(id, index, ids) {
+        return id && ids.indexOf(id) === index;
+      });
+    }
+
+    function rememberArchivedConversationHistoryId(conversationId) {
       if (!conversationId) return;
-      var ids = getDeletedConversationHistoryIds();
+      var ids = readConversationHistoryIdList(getArchivedConversationHistoryStorageKey());
       if (ids.indexOf(conversationId) === -1) {
         ids.push(conversationId);
-        localStorage.setItem(STORAGE_KEY + '_deleted', JSON.stringify(ids.slice(-500)));
+        localStorage.setItem(getArchivedConversationHistoryStorageKey(), JSON.stringify(ids.slice(-2000)));
       }
     }
 
@@ -86,6 +110,35 @@
         console.warn('[ConversationPersistence] 会话消息解析失败:', conversationId, e);
         return [];
       }
+    }
+
+    function getConversationHistoryRestoreUserIds() {
+      var userIds = [String(currentUserId || 'web-user')];
+      if (userIds[0] !== 'web-user') userIds.push('web-user');
+      return userIds;
+    }
+
+    function readConversationMessagesForUserLocal(userId, conversationId) {
+      if (!conversationId) return [];
+      try {
+        var storageKey = MSG_KEY + String(userId || 'web-user') + '_' + conversationId;
+        var messages = JSON.parse(localStorage.getItem(storageKey) || '[]');
+        return Array.isArray(messages) ? messages : [];
+      } catch (e) {
+        console.warn('[ConversationPersistence] 会话消息解析失败:', conversationId, e);
+        return [];
+      }
+    }
+
+    function readConversationMessagesFromRestoreNamespacesLocal(conversationId) {
+      var userIds = getConversationHistoryRestoreUserIds();
+      for (var i = 0; i < userIds.length; i++) {
+        var messages = readConversationMessagesForUserLocal(userIds[i], conversationId);
+        if (messages.length > 0) {
+          return { messages: messages, restoredFromUserId: userIds[i] };
+        }
+      }
+      return { messages: [], restoredFromUserId: '' };
     }
 
     function getFirstConversationUserMessage(messages) {
@@ -155,17 +208,26 @@
 
     function persistConversationNow(conversationId, options) {
       var targetConversationId = conversationId || currentConversationId;
-      var messages = readConversationMessagesLocal(targetConversationId);
+      var targetProjectId = options && Object.prototype.hasOwnProperty.call(options, 'projectId')
+        ? String(options.projectId || '')
+        : getConversationHistoryProjectId();
+      var messages = options && Array.isArray(options.messages)
+        ? options.messages
+        : readConversationMessagesLocal(targetConversationId);
       if (!targetConversationId || messages.length === 0) return Promise.resolve(false);
 
-      if (conversationPersistTimers[targetConversationId]) {
-        clearTimeout(conversationPersistTimers[targetConversationId]);
-        delete conversationPersistTimers[targetConversationId];
+      var persistenceKey = (targetProjectId || 'current-workspace') + '\u0001' + targetConversationId;
+      if (conversationPersistTimers[persistenceKey]) {
+        clearTimeout(conversationPersistTimers[persistenceKey]);
+        delete conversationPersistTimers[persistenceKey];
       }
-      ensureConversationHistoryEntry(targetConversationId, messages);
+      if (targetProjectId === getConversationHistoryProjectId()) {
+        ensureConversationHistoryEntry(targetConversationId, messages);
+      }
 
       var payload = {
         userId: currentUserId,
+        projectId: targetProjectId || undefined,
         conversationId: targetConversationId,
         messages: messages
       };
@@ -173,27 +235,50 @@
         return sendConversationPersistenceRequest(payload, options);
       }
 
-      var previous = conversationPersistChains[targetConversationId] || Promise.resolve();
+      var previous = conversationPersistChains[persistenceKey] || Promise.resolve();
       var next = previous
         .catch(function() { return false; })
         .then(function() { return sendConversationPersistenceRequest(payload, options); });
-      conversationPersistChains[targetConversationId] = next;
+      conversationPersistChains[persistenceKey] = next;
       return next;
     }
 
-    function scheduleConversationPersistence(conversationId) {
+    function scheduleConversationPersistence(conversationId, options) {
       if (!conversationId) return;
-      if (conversationPersistTimers[conversationId]) {
-        clearTimeout(conversationPersistTimers[conversationId]);
+      var projectId = options && Object.prototype.hasOwnProperty.call(options, 'projectId')
+        ? String(options.projectId || '')
+        : getConversationHistoryProjectId();
+      var messageSnapshot = options && Array.isArray(options.messages)
+        ? options.messages.slice()
+        : readConversationMessagesLocal(conversationId);
+      var persistenceKey = (projectId || 'current-workspace') + '\u0001' + conversationId;
+      if (conversationPersistTimers[persistenceKey]) {
+        clearTimeout(conversationPersistTimers[persistenceKey]);
       }
-      conversationPersistTimers[conversationId] = setTimeout(function() {
-        delete conversationPersistTimers[conversationId];
-        persistConversationNow(conversationId);
+      conversationPersistTimers[persistenceKey] = setTimeout(function() {
+        delete conversationPersistTimers[persistenceKey];
+        persistConversationNow(conversationId, { projectId: projectId, messages: messageSnapshot });
       }, 350);
     }
 
+    function cancelConversationPersistence(conversationId, projectId) {
+      if (!conversationId) return;
+      var persistenceKey = (String(projectId || '') || 'current-workspace') + '\u0001' + conversationId;
+      if (conversationPersistTimers[persistenceKey]) {
+        clearTimeout(conversationPersistTimers[persistenceKey]);
+        delete conversationPersistTimers[persistenceKey];
+      }
+    }
+    window.cancelConversationPersistence = cancelConversationPersistence;
+
     function storeConversationMessagesLocally(conversationId, messages, options) {
       if (!conversationId || !Array.isArray(messages)) return;
+      var targetProjectId = options && Object.prototype.hasOwnProperty.call(options, 'projectId')
+        ? String(options.projectId || '')
+        : getConversationHistoryProjectId();
+      if (targetProjectId !== getConversationHistoryProjectId()) {
+        return;
+      }
       var storedLocally = false;
       try {
         localStorage.setItem(getConversationStorageKey(conversationId), JSON.stringify(messages));
@@ -208,10 +293,11 @@
       ensureConversationHistoryEntry(conversationId, messages, options);
       if (!(options && options.skipServerPersistence)) {
         if (storedLocally) {
-          scheduleConversationPersistence(conversationId);
+          scheduleConversationPersistence(conversationId, { projectId: targetProjectId, messages: messages });
         } else {
           sendConversationPersistenceRequest({
             userId: currentUserId,
+            projectId: targetProjectId || undefined,
             conversationId: conversationId,
             messages: messages
           });
@@ -223,13 +309,16 @@
       var conversationId = currentConversationId;
       var messages = readConversationMessagesLocal(conversationId);
       if (!conversationId || messages.length === 0) return;
+      var projectId = getConversationHistoryProjectId();
       ensureConversationHistoryEntry(conversationId, messages, { skipAiTitle: true });
-      if (conversationPersistTimers[conversationId]) {
-        clearTimeout(conversationPersistTimers[conversationId]);
-        delete conversationPersistTimers[conversationId];
+      var persistenceKey = (projectId || 'current-workspace') + '\u0001' + conversationId;
+      if (conversationPersistTimers[persistenceKey]) {
+        clearTimeout(conversationPersistTimers[persistenceKey]);
+        delete conversationPersistTimers[persistenceKey];
       }
       sendConversationPersistenceRequest({
         userId: currentUserId,
+        projectId: projectId || undefined,
         conversationId: conversationId,
         messages: messages
       }, { preferBeacon: true, keepalive: true });
@@ -245,32 +334,55 @@
       });
     }
 
-    function recoverLocalConversationsIntoHistory() {
+    function recoverLocalConversationsIntoHistory(restoredStorageKeys) {
       var history = getHistory();
+      var archivedIds = new Set(getArchivedConversationHistoryIds());
       var knownIds = Object.create(null);
       history.forEach(function(item) {
-        if (item && item.id) knownIds[item.id] = true;
+        if (item && item.id && !archivedIds.has(item.id)) knownIds[item.id] = true;
       });
 
-      var prefix = MSG_KEY + currentUserId + '_';
-      var recovered = [];
-      for (var i = 0; i < localStorage.length; i++) {
-        var key = localStorage.key(i);
-        if (!key || key.indexOf(prefix) !== 0) continue;
-        var conversationId = key.substring(prefix.length);
-        if (!conversationId || knownIds[conversationId]) continue;
+      var restoreUserIds = getConversationHistoryRestoreUserIds();
+      var prefixes = restoreUserIds.map(function(userId) {
+        return MSG_KEY + userId + '_';
+      });
+      var candidateKeys = Array.isArray(restoredStorageKeys)
+        ? restoredStorageKeys.slice()
+        : [];
+      if (!Array.isArray(restoredStorageKeys)) {
+        var currentPrefix = MSG_KEY + currentUserId + '_';
+        for (var storageIndex = 0; storageIndex < localStorage.length; storageIndex++) {
+          var storageKey = localStorage.key(storageIndex);
+          if (storageKey && storageKey.indexOf(currentPrefix) === 0) candidateKeys.push(storageKey);
+        }
+      }
 
-        var messages = readConversationMessagesLocal(conversationId);
+      var recovered = [];
+      candidateKeys.forEach(function(key) {
+        if (!key) return;
+        var matchingPrefix = prefixes.find(function(prefix) { return key.indexOf(prefix) === 0; });
+        if (!matchingPrefix) return;
+        var conversationId = key.substring(matchingPrefix.length);
+        if (!conversationId || knownIds[conversationId] || archivedIds.has(conversationId)) return;
+
+        var messages;
+        try {
+          messages = JSON.parse(localStorage.getItem(key) || '[]');
+        } catch (error) {
+          console.warn('[ConversationPersistence] 项目会话消息解析失败:', conversationId, error);
+          return;
+        }
+        if (!Array.isArray(messages)) return;
         var firstUserMessage = getFirstConversationUserMessage(messages);
-        if (!firstUserMessage) continue;
+        if (!firstUserMessage) return;
         var lastMessage = messages[messages.length - 1] || {};
         recovered.push({
           id: conversationId,
           title: generateHistoryTitle(String(firstUserMessage.content || '')),
-          updatedAt: Number(lastMessage.timestamp) || 0
+          updatedAt: Number(lastMessage.timestamp) || Date.parse(lastMessage.updatedAt || '') || 0
         });
         knownIds[conversationId] = true;
-      }
+      });
 
       if (recovered.length > 0) {
         recovered.sort(function(a, b) { return b.updatedAt - a.updatedAt; });
@@ -283,28 +395,72 @@
       return recovered.map(function(item) { return item.id; });
     }
 
-    async function hydrateConversationHistoryFromServer() {
+    async function fetchConversationHistoryForUser(userId) {
       try {
-        var response = await fetch('/api/memory/conversations/' + encodeURIComponent(currentUserId) + '?limit=300');
+        var projectId = getConversationHistoryProjectId();
+        var historyQuery = '?limit=300' + (projectId ? '&projectId=' + encodeURIComponent(projectId) : '');
+        var response = await fetch('/api/memory/conversations/' + encodeURIComponent(userId) + historyQuery);
         var result = await response.json().catch(function() { return {}; });
         if (!response.ok || !result.success) {
           throw new Error(result.error || ('HTTP ' + response.status));
         }
+        return { success: true, userId: userId, result: result };
+      } catch (error) {
+        console.warn('[ConversationPersistence] 用户历史索引恢复失败:', userId, error);
+        return { success: false, userId: userId, result: {} };
+      }
+    }
 
-        var serverHistory = Array.isArray(result.conversations) && result.conversations.length
-          ? result.conversations
-          : (Array.isArray(result.recentConversations) ? result.recentConversations : []);
-        var deletedIds = new Set(getDeletedConversationHistoryIds());
+    var conversationHistoryHydrationPromise = null;
+    var conversationHistoryHydrationGeneration = 0;
+
+    async function hydrateConversationHistoryFromServer(hydrationGeneration) {
+      try {
+        var restoreUserIds = getConversationHistoryRestoreUserIds();
+        var restoreResults = await Promise.all(restoreUserIds.map(fetchConversationHistoryForUser));
+        if (!restoreResults.some(function(entry) { return entry.success; })) {
+          throw new Error('所有历史会话命名空间均恢复失败');
+        }
+
+        var serverById = Object.create(null);
+        restoreResults.forEach(function(entry) {
+          if (!entry.success) return;
+          var result = entry.result || {};
+          var recentConversations = Array.isArray(result.recentConversations)
+            ? result.recentConversations
+            : [];
+          var conversationSummaries = Array.isArray(result.conversations)
+            ? result.conversations
+            : [];
+          recentConversations.concat(conversationSummaries).forEach(function(item) {
+            var conversationId = String(item && (item.id || item.conversationId) || '').trim();
+            if (!conversationId) return;
+            var existing = serverById[conversationId] || {};
+            var existingUpdatedAt = Date.parse(existing.updatedAt || existing.createdAt || '') || 0;
+            var incomingUpdatedAt = Date.parse(item.updatedAt || item.createdAt || '') || 0;
+            serverById[conversationId] = Object.assign({}, existing, item, {
+              id: conversationId,
+              title: String(item.title || existing.title || item.summary || existing.summary || '历史对话'),
+              updatedAt: incomingUpdatedAt >= existingUpdatedAt
+                ? String(item.updatedAt || item.createdAt || existing.updatedAt || '')
+                : String(existing.updatedAt || existing.createdAt || item.updatedAt || '')
+            });
+          });
+        });
+        var serverHistory = Object.keys(serverById).map(function(conversationId) {
+          return serverById[conversationId];
+        });
+        var archivedIds = new Set(getArchivedConversationHistoryIds());
         var localHistory = getHistory();
         var localById = Object.create(null);
         localHistory.forEach(function(item) {
-          if (item && item.id && !deletedIds.has(item.id)) localById[item.id] = item;
+          if (item && item.id && !archivedIds.has(item.id)) localById[item.id] = item;
         });
 
         var merged = [];
         serverHistory.forEach(function(item) {
           var conversationId = String(item && (item.id || item.conversationId) || '').trim();
-          if (!conversationId || deletedIds.has(conversationId)) return;
+          if (!conversationId || archivedIds.has(conversationId)) return;
           var localItem = localById[conversationId];
           merged.push({
             id: conversationId,
@@ -321,17 +477,40 @@
           var bTime = Date.parse(b.updatedAt || '') || 0;
           return bTime - aTime;
         });
+        if (hydrationGeneration && hydrationGeneration !== conversationHistoryHydrationGeneration) {
+          console.log('[ConversationPersistence] 已忽略过期项目的历史恢复结果');
+          return getHistory();
+        }
         saveHistory(merged.map(function(item) {
           return { id: item.id, title: item.title, updatedAt: item.updatedAt || '' };
         }));
-        renderHistory();
+        renderHistory(merged);
         console.log('[ConversationPersistence] 已从服务端恢复历史会话:', serverHistory.length);
         return merged;
       } catch (error) {
         console.warn('[ConversationPersistence] 服务端历史恢复失败，继续使用本地记录:', error);
-        return getHistory();
+        var localHistory = getHistory();
+        renderHistory(localHistory);
+        return localHistory;
       }
     }
+
+    function refreshConversationHistory(options) {
+      var settings = options || {};
+      if (conversationHistoryHydrationPromise && !settings.force) {
+        return conversationHistoryHydrationPromise;
+      }
+      var hydrationGeneration = ++conversationHistoryHydrationGeneration;
+      var hydrationPromise = hydrateConversationHistoryFromServer(hydrationGeneration)
+        .finally(function() {
+          if (conversationHistoryHydrationPromise === hydrationPromise) {
+            conversationHistoryHydrationPromise = null;
+          }
+        });
+      conversationHistoryHydrationPromise = hydrationPromise;
+      return hydrationPromise;
+    }
+    window.refreshConversationHistory = refreshConversationHistory;
 
     function saveConversationMessageLocal(role, content, isHtml) {
       var text = String(content || '').trim();
@@ -608,7 +787,7 @@
         renderRightSidebarActivePanel();
       }
       if (emptyState && emptyState.style.display !== 'none' && (!messagesDiv || messagesDiv.children.length === 0)) {
-        emptyState.innerHTML = BRAND_TITLE_HTML + GREETING_HTML;
+        emptyState.innerHTML = BRAND_TITLE_HTML + GREETING_HTML + HOME_WORKFLOW_SHORTCUTS_HTML;
       }
     }
 
@@ -820,6 +999,9 @@
         });
       }
       applyProjectWritingProfileUi(profile.id);
+      if (typeof window.reloadDiscussionFrameworkForCurrentProject === 'function') {
+        await window.reloadDiscussionFrameworkForCurrentProject({ scanWorkspace: false });
+      }
       return projectManagerCurrentProject;
     }
 
@@ -833,6 +1015,12 @@
         projectManagerCurrentProject = result.currentProject || null;
         applyProjectWritingProfileUi(getCurrentProjectProfileId());
         renderMainContextSourceBar();
+        if (typeof window.syncWorkspaceDirectorySettingFromServer === 'function' && currentConversationId) {
+          window.syncWorkspaceDirectorySettingFromServer(currentConversationId);
+        }
+        if (typeof window.reloadDiscussionFrameworkForCurrentProject === 'function') {
+          await window.reloadDiscussionFrameworkForCurrentProject({ scanWorkspace: true });
+        }
         return projectManagerCurrentProject;
       } catch (e) {
         console.warn('[Project] Failed to resolve current project:', e);
@@ -847,10 +1035,13 @@
       var messageKeys = [];
       var messages = {};
       var messagePrefix = MSG_KEY + currentUserId + '_';
+      var archivedIds = new Set(getArchivedConversationHistoryIds());
       for (var i = 0; i < localStorage.length; i++) {
         var key = localStorage.key(i);
         if (!key) continue;
         if (key.indexOf(messagePrefix) === 0 || key === MSG_KEY + currentUserId) {
+          var conversationId = key.indexOf(messagePrefix) === 0 ? key.substring(messagePrefix.length) : '';
+          if (conversationId && archivedIds.has(conversationId)) continue;
           messageKeys.push(key);
           try {
             messages[key] = JSON.parse(localStorage.getItem(key) || '[]');
@@ -864,7 +1055,9 @@
         archivedAt: new Date().toISOString(),
         currentUserId: currentUserId,
         currentConversationId: currentConversationId,
-        history: getHistory(),
+        history: getHistory().filter(function(item) {
+          return item && item.id && !archivedIds.has(item.id);
+        }),
         uploadedFiles: uploadedFiles,
         messages: messages,
         workspaceDirectoryStore: loadWorkspaceDirectoryStore(currentConversationId),
@@ -915,7 +1108,7 @@
       renderMainMetaAnalysisReturnBar();
       renderMainAnalysisWorkflowReturnBar();
       var labels = getProjectUiLabels();
-      emptyState.innerHTML = BRAND_TITLE_HTML + '<p>已创建新项目。</p><p style="margin-top:12px;">上传资料或发送消息开始新的' + labels.projectWork + '。</p>';
+      emptyState.innerHTML = BRAND_TITLE_HTML + '<p>已创建新项目。</p><p style="margin-top:12px;">上传资料或发送消息开始新的' + labels.projectWork + '。</p>' + HOME_WORKFLOW_SHORTCUTS_HTML;
       emptyState.style.display = 'flex';
       renderFileList();
       renderHistory();
@@ -931,13 +1124,17 @@
       }
 
       if (Array.isArray(clientState.history)) {
-        saveHistory(clientState.history);
+        var archivedIds = new Set(getArchivedConversationHistoryIds());
+        saveHistory(clientState.history.filter(function(item) {
+          return item && item.id && !archivedIds.has(item.id);
+        }));
       }
 
       if (clientState.messages && typeof clientState.messages === 'object') {
         Object.keys(clientState.messages).forEach(function(key) {
           localStorage.setItem(key, JSON.stringify(clientState.messages[key]));
         });
+        recoverLocalConversationsIntoHistory(Object.keys(clientState.messages));
       }
 
       if (Array.isArray(clientState.uploadedFiles)) {
@@ -958,12 +1155,15 @@
       needsFullPrompt = true;
       renderFileList();
       renderHistory();
-      hydrateConversationHistoryFromServer();
+      if (typeof window.revealConversationHistoryPanel === 'function') {
+        window.revealConversationHistoryPanel({ refresh: false });
+      }
+      refreshConversationHistory({ force: true });
 
-      var restoredMessages = localStorage.getItem(MSG_KEY + currentUserId + '_' + currentConversationId);
-      if (restoredMessages) {
+      var restoredConversation = readConversationMessagesFromRestoreNamespacesLocal(currentConversationId);
+      if (restoredConversation.messages.length > 0) {
         try {
-          var messages = JSON.parse(restoredMessages);
+          var messages = restoredConversation.messages;
           resetMainChatPiQueueHost();
           messagesDiv.innerHTML = '';
           emptyState.style.display = 'none';
@@ -981,7 +1181,7 @@
         resetMainChatPiQueueHost();
         messagesDiv.innerHTML = '';
         var labels = getProjectUiLabels();
-        emptyState.innerHTML = BRAND_TITLE_HTML + '<p>项目已恢复。</p><p style="margin-top:12px;">继续发送消息或查看' + labels.draft + '。</p>';
+        emptyState.innerHTML = BRAND_TITLE_HTML + '<p>项目已恢复。</p><p style="margin-top:12px;">继续发送消息或查看' + labels.draft + '。</p>' + HOME_WORKFLOW_SHORTCUTS_HTML;
         emptyState.style.display = 'flex';
       }
 
@@ -990,32 +1190,36 @@
     }
 
     async function showNewProjectDialog() {
-      showModal('新项目', '<div style="padding:20px;color:var(--text-secondary);">正在识别当前项目...</div>', true, false);
+      var projectPopoverAnchor = document.querySelector('.project-manager-add') || document.querySelector('.project-manager-heading');
+      var showNewProjectPopover = function(title, content) {
+        return showModal(title, content, false, false, {
+          modalClass: 'project-manager-popover project-new-popover',
+          overlayClass: 'project-manager-popover-overlay project-new-popover-overlay',
+          anchorElement: projectPopoverAnchor
+        });
+      };
+      showNewProjectPopover('新项目', '<div style="padding:20px;color:var(--text-secondary);">正在识别当前项目...</div>');
       var currentProject = await fetchCurrentProjectInfo();
       var isSavedProject = currentProject && currentProject.isArchivedProject && currentProject.projectId;
       var currentProjectName = isSavedProject ? (currentProject.name || currentProject.projectId) : '';
       var currentProfile = getProjectWritingProfile(currentProject && currentProject.writingProfileId);
 
-      showModal(
+      showNewProjectPopover(
         '新项目',
-        '<div style="line-height:1.7;color:var(--text-primary);">' +
-          '<p>当前项目的聊天记录、长期记忆、草稿、上传资料和检索索引会保存到独立项目目录。</p>' +
-          '<p style="margin-top:8px;color:var(--text-secondary);">API 配置、模型配置、登录状态和软件设置会继续保留。</p>' +
-          '<label style="display:block;margin-top:14px;font-size:13px;color:var(--text-secondary);">项目主题</label>' +
-          '<select id="newProjectWritingProfile" onchange="previewNewProjectWritingProfile(this.value)" style="width:100%;margin-top:6px;padding:10px;background:var(--modal-input-bg);border:1px solid var(--modal-input-border);border-radius:6px;color:var(--text-primary);">' +
+        '<div style="line-height:1.5;color:var(--text-primary);">' +
+          '<label style="display:block;font-size:12.5px;color:var(--text-secondary);">项目主题</label>' +
+          '<select id="newProjectWritingProfile" onchange="previewNewProjectWritingProfile(this.value)" style="width:100%;margin-top:5px;padding:8px 10px;background:var(--modal-input-bg);border:1px solid var(--modal-input-border);border-radius:6px;color:var(--text-primary);">' +
             buildProjectWritingProfileOptions(currentProfile.id) +
           '</select>' +
-          '<div id="newProjectProfilePreview" style="margin-top:8px;font-size:12px;color:var(--text-secondary);">将创建：' + escapeHtml(currentProfile.label) + '</div>' +
+          '<div id="newProjectProfilePreview" style="margin-top:5px;font-size:12px;color:var(--text-secondary);">将创建：' + escapeHtml(currentProfile.label) + '</div>' +
           (isSavedProject
-            ? '<div style="margin-top:12px;padding:10px 12px;border:1px solid var(--border-color);border-radius:8px;background:var(--bg-secondary);font-size:13px;color:var(--text-secondary);">当前项目已识别为：<strong style="color:var(--text-primary);">' + escapeHtml(currentProjectName) + '</strong><br>创建新项目时会先保存回该项目，不需要重新命名。</div>'
-            : '<input id="newProjectName" placeholder="项目名称（可选）" style="width:100%;margin-top:14px;padding:10px;background:var(--modal-input-bg);border:1px solid var(--modal-input-border);border-radius:6px;color:var(--text-primary);">') +
+            ? '<div style="margin-top:8px;padding:8px 10px;border:1px solid var(--border-color);border-radius:7px;background:var(--bg-secondary);font-size:12px;line-height:1.5;color:var(--text-secondary);">当前项目已识别为：<strong style="color:var(--text-primary);">' + escapeHtml(currentProjectName) + '</strong><br>创建新项目时会先保存回该项目，不需要重新命名。</div>'
+            : '<input id="newProjectName" placeholder="项目名称（可选）" style="width:100%;margin-top:8px;padding:8px 10px;background:var(--modal-input-bg);border:1px solid var(--modal-input-border);border-radius:6px;color:var(--text-primary);">') +
         '</div>' +
         '<div class="btns">' +
           '<button class="cancel" onclick="closeModal()">取消</button>' +
           '<button class="ok" id="newProjectConfirmBtn" onclick="createNewProject()">创建新项目</button>' +
-        '</div>',
-        false,
-        false
+        '</div>'
       );
     }
 
@@ -1063,20 +1267,21 @@
         await persistCurrentProjectWritingProfile(selectedProfile.id);
         clearProjectLocalState();
         closeModal();
-        appendMessage(
+        var projectCreatedMessage =
           result.savedExistingProjectId
-            ? '✅ 当前项目已保存，并已创建新项目。\n项目主题：' + selectedProfile.label + '\n已保存项目：' + (result.savedExistingProjectName || result.savedExistingProjectId)
-            : '✅ 新项目已创建。\n项目主题：' + selectedProfile.label + '\n旧项目已归档到：' + result.projectDir,
-          'bot',
-          false,
-          true
-        );
+            ? '当前项目已保存，并已创建“' + selectedProfile.label + '”项目。已保存项目：' + (result.savedExistingProjectName || result.savedExistingProjectId)
+            : '已创建“' + selectedProfile.label + '”项目；旧项目已归档。';
+        if (typeof window.completeSidebarProjectManagerAction === 'function') {
+          await window.completeSidebarProjectManagerAction(projectCreatedMessage, 'success');
+        }
       } catch (e) {
         if (btn) {
           btn.disabled = false;
           btn.textContent = '创建新项目';
         }
-        appendMessage('❌ 新项目创建失败：' + e.message, 'bot', false, true);
+        if (typeof window.showProjectManagerActionError === 'function') {
+          window.showProjectManagerActionError('新项目创建失败：' + e.message);
+        }
       }
     }
 

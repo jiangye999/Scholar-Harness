@@ -75,6 +75,12 @@
       var input = document.getElementById('mainInputContainer');
       if (!page) return;
       document.body.classList.add('home-utility-open');
+      // The email layout CSS widens the chat gutters only while the mailbox
+      // page is the visible utility page (class-based state, no relational
+      // sibling selector); switching to any other page clears it.
+      document.body.classList.toggle('email-page-open', String(pageId || '') === 'email');
+      var dailyPaperButton = document.getElementById('appDailyPaperButton');
+      if (dailyPaperButton) dailyPaperButton.classList.toggle('active', String(pageId || '') === 'daily-papers');
       hideQueryNavPreview();
       activeHomeUtilityPage = String(pageId || '');
       page.dataset.pageId = activeHomeUtilityPage;
@@ -100,18 +106,18 @@
       var isSettingsPage = settingsPageIds.indexOf(activeHomeUtilityPage) >= 0;
       var backButton = isSettingsPage
         ? ''
-        : '<button type="button" class="home-utility-back" onclick="closeHomeUtilityPage()" title="返回聊天" aria-label="返回聊天">‹</button>';
+        : '<button id="homeUtilityCloseBtn" type="button" class="lit-btn home-utility-back" style="width:auto;margin:0;padding:8px 12px;" onclick="closeHomeUtilityPage()" title="关闭" aria-label="关闭">关闭</button>';
       var settingsChatReturn = isSettingsPage
         ? '<button type="button" class="home-utility-chat-return" onclick="closeHomeUtilityPage()" title="返回聊天">返回聊天</button>'
         : '';
       page.innerHTML = '<div class="home-utility-shell">' +
         settingsTabs +
         '<div class="home-utility-header">' +
-          backButton +
-          '<div style="min-width:0;">' +
+          '<div class="home-utility-heading">' +
             '<div class="home-utility-title">' + escapeHtml(title || '') + '</div>' +
             (subtitle ? '<div class="home-utility-subtitle">' + escapeHtml(subtitle) + '</div>' : '') +
           '</div>' +
+          backButton +
           settingsChatReturn +
         '</div>' +
         '<div class="home-utility-body"><div class="home-utility-content">' + settingsSearch + (content || '') + '</div></div>' +
@@ -131,8 +137,13 @@
       var page = document.getElementById('homeUtilityPage');
       var chat = document.getElementById('chatContainer');
       var input = document.getElementById('mainInputContainer');
+      if ((activeHomeUtilityPage === 'email' || activeHomeUtilityPage === 'email-settings') && typeof window.closeEmailWorkspace === 'function') {
+        window.closeEmailWorkspace();
+      }
       activeHomeUtilityPage = '';
       document.body.classList.remove('home-utility-open');
+      var dailyPaperButton = document.getElementById('appDailyPaperButton');
+      if (dailyPaperButton) dailyPaperButton.classList.remove('active');
       if (page) {
         page.hidden = true;
         page.innerHTML = '';
@@ -432,8 +443,11 @@
     async function handleWindowControl(action) {
       try {
         if (window.electronAPI && window.electronAPI.windowControl) {
-          await window.electronAPI.windowControl(action);
-          return;
+          var result = await window.electronAPI.windowControl(action);
+          if (!result || result.success !== true) {
+            throw new Error(result && result.error ? result.error : '窗口控制操作未执行');
+          }
+          return result;
         }
         if (action === 'close') window.close();
       } catch (error) {
@@ -839,8 +853,25 @@
       var collapsed = !panel.classList.contains('is-collapsed');
       setSidebarPanelCollapsed(panel, collapsed);
       localStorage.setItem(getSidebarPanelCollapseKey(panelKey), collapsed ? 'true' : 'false');
+      if (panelKey === 'history' && !collapsed && typeof window.refreshConversationHistory === 'function') {
+        window.refreshConversationHistory();
+      }
+      if (panelKey === 'projects' && !collapsed && typeof window.refreshSidebarProjectManager === 'function') {
+        window.refreshSidebarProjectManager();
+      }
     }
     window.toggleSidebarPanel = toggleSidebarPanel;
+
+    function revealConversationHistoryPanel(options) {
+      var panel = document.querySelector('[data-sidebar-collapse-key="history"]');
+      if (!panel) return;
+      setSidebarPanelCollapsed(panel, false);
+      localStorage.setItem(getSidebarPanelCollapseKey('history'), 'false');
+      if (!(options && options.refresh === false) && typeof window.refreshConversationHistory === 'function') {
+        window.refreshConversationHistory();
+      }
+    }
+    window.revealConversationHistoryPanel = revealConversationHistoryPanel;
 
     function initSidebarPanelCollapse() {
       document.querySelectorAll('[data-sidebar-toggle-key]').forEach(function(toggle) {
@@ -854,9 +885,28 @@
       document.querySelectorAll('[data-sidebar-collapse-key]').forEach(function(panel) {
         var panelKey = panel.getAttribute('data-sidebar-collapse-key');
         if (!panelKey) return;
-        var collapsed = localStorage.getItem(getSidebarPanelCollapseKey(panelKey)) === 'true';
+        var storedCollapseState = localStorage.getItem(getSidebarPanelCollapseKey(panelKey));
+        var collapsed = storedCollapseState === null
+          ? panelKey === 'projects'
+          : storedCollapseState === 'true';
         setSidebarPanelCollapsed(panel, collapsed);
       });
+      var historyPanel = document.querySelector('[data-sidebar-collapse-key="history"]');
+      if (historyPanel && !historyPanel.classList.contains('is-collapsed')) {
+        setTimeout(function() {
+          if (typeof window.refreshConversationHistory === 'function') {
+            window.refreshConversationHistory();
+          }
+        }, 0);
+      }
+      var projectsPanel = document.querySelector('[data-sidebar-collapse-key="projects"]');
+      if (projectsPanel && !projectsPanel.classList.contains('is-collapsed')) {
+        setTimeout(function() {
+          if (typeof window.refreshSidebarProjectManager === 'function') {
+            window.refreshSidebarProjectManager();
+          }
+        }, 0);
+      }
     }
 
     initSidebarPanelCollapse();
@@ -972,7 +1022,7 @@
               ? String(rightSidebarPdfOverviewState && rightSidebarPdfOverviewState.title || '论文一览图')
               : (activeTab === 'avatar'
                 ? (rightSidebarAvatarPickerState && rightSidebarAvatarPickerState.role === 'user' ? '我的头像' : 'AI 头像')
-                : (activeTab === 'figures' ? '论文图片' : '文章写作进度'))));
+                : (activeTab === 'figures' ? '论文图片' : '论文框架规划'))));
       }
       if (meta && activeTab === 'preview') {
         meta.textContent = getOutputAttachmentKindLabel(rightSidebarFilePreviewState && rightSidebarFilePreviewState.kind || 'file');
@@ -1042,6 +1092,9 @@
             : (tabName === 'avatar' && rightSidebarAvatarPickerState
               ? 'avatar'
               : (tabName === 'figures' ? 'figures' : 'article'))));
+      if (nextTab !== 'preview' && typeof window.hideRightSidebarPreviewSelectionAsk === 'function') {
+        window.hideRightSidebarPreviewSelectionAsk();
+      }
       if (nextTab === 'preview' || nextTab === 'vendor' || nextTab === 'pdf-overview' || nextTab === 'avatar') {
         rightSidebarTransientTab = nextTab;
       } else {
@@ -1116,7 +1169,7 @@
       );
       button.classList.toggle('active', expanded);
       button.setAttribute('aria-expanded', expanded ? 'true' : 'false');
-      button.title = expanded ? '关闭文章写作进度' : '文章写作进度';
+      button.title = expanded ? '关闭论文框架规划' : '论文框架规划';
       button.setAttribute('aria-label', button.title);
     }
 
@@ -1484,6 +1537,9 @@
       var rightToggle = document.querySelector('.history-toggle');
       var themeToggle = document.querySelector('.theme-toggle');
       if (!rightSidebar || !rightToggle) return;
+      if (collapsed === true && typeof window.hideRightSidebarPreviewSelectionAsk === 'function') {
+        window.hideRightSidebarPreviewSelectionAsk();
+      }
       var mainChatViewportAnchor = captureMainChatViewportAnchor();
       if (collapsed !== true && ensureDefaultWidth) {
         ensureRightSidebarExpandedWidth();

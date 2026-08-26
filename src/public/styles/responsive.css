@@ -109,14 +109,15 @@
     }
 
     .app-window-controls {
-      display: none;
+      display: inline-flex;
+      flex: 0 0 auto;
       gap: 2px;
       margin-left: 4px;
       -webkit-app-region: no-drag;
     }
 
-    .electron-titlebar-overlay .app-window-controls {
-      display: inline-flex;
+    .browser-runtime .app-window-controls {
+      display: none;
     }
 
     .app-window-control-close:hover {
@@ -408,7 +409,7 @@
       background: var(--bg-primary) !important;
     }
 
-    button,
+    button:not(.home-workflow-shortcut),
     .lit-btn,
     .config-center-btn,
     .da-small-btn,
@@ -424,7 +425,7 @@
       box-shadow: none !important;
     }
 
-    button:hover,
+    button:not(.home-workflow-shortcut):hover,
     .lit-btn:hover,
     .config-center-btn:hover,
     .da-small-btn:hover,
@@ -1710,6 +1711,19 @@
       right: 122px;
     }
 
+    /* 句子论点检索输入框：加号按钮从左上角移到左下角（窄屏 static 布局下的专项定位） */
+    .input-area-container.sentence-claim-input-area .upload-experiment-btn {
+      position: absolute !important;
+      left: 8px;
+      top: auto;
+      bottom: 8px;
+      transform: none !important;
+      width: 32px !important;
+      min-width: 32px !important;
+      height: 32px !important;
+      min-height: 32px !important;
+    }
+
     .composer-actions {
       display: flex;
       align-items: center;
@@ -1901,6 +1915,28 @@
 
     .composer-provider-option.active .composer-provider-option-check {
       opacity: 1;
+    }
+
+    #composerProviderMenu .composer-provider-option-check,
+    #composerCodingAgentRuntimeList .composer-provider-option-check,
+    .composer-mm-check {
+      width: 14px;
+      height: 14px;
+      flex: 0 0 14px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    #composerProviderMenu .composer-provider-option-check::before,
+    #composerCodingAgentRuntimeList .composer-provider-option-check::before,
+    .composer-mm-check::before {
+      content: "";
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--theme-primary-hover, var(--theme-primary, #111827));
+      box-shadow: 0 0 0 2px rgb(var(--theme-shadow-rgb, 17 24 39) / 0.16);
     }
 
     #composerProviderMenu .composer-provider-option {
@@ -3122,3 +3158,55 @@
         border-left: 0;
       }
     }
+
+/* 模型池"添加提供方"按钮: 虚线边框 (高特异性, 覆盖窄屏 button[style] 透明边框规则) */
+#modalOverlay #modalContent button.mp-add-preset,
+#modalOverlay #modalContent button.mp-add-custom {
+  border: 1.5px dashed var(--border-color) !important;
+  background: transparent !important;
+  color: var(--text-secondary) !important;
+  border-radius: 10px !important;
+}
+#modalOverlay #modalContent button.mp-add-preset:hover,
+#modalOverlay #modalContent button.mp-add-custom:hover {
+  border-color: var(--accent-color) !important;
+  color: var(--text-primary) !important;
+}
+
+/* 输入框"推理强度"气泡 (low/medium/high), 全宽度生效 */
+.composer-effort-bubbles {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 4px 0 8px;
+}
+.composer-effort-bubble {
+  padding: 7px 16px;
+  border: 1px solid var(--border-color);
+  border-radius: 999px;
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+}
+.composer-effort-bubble:hover {
+  border-color: var(--accent-color);
+}
+.composer-effort-bubble.selected {
+  background: var(--accent-color);
+  border-color: var(--accent-color);
+  color: #fff;
+}
+
+/* 输入框"模型/推理等级"两行菜单 + 子列表 */
+.composer-mm-row { display:flex; align-items:center; gap:8px; width:100%; padding:11px 12px; border:0; border-radius:10px; background:transparent; color:var(--text-primary); cursor:pointer; font-size:13px; text-align:left; }
+.composer-mm-row:hover { background: var(--bg-secondary); }
+.composer-mm-row + .composer-mm-row { margin-top:4px; }
+.composer-mm-label { font-weight:700; color:var(--text-primary); }
+.composer-mm-value { margin-left:auto; color:var(--text-secondary); font-size:13px; }
+.composer-mm-chev { color:var(--text-secondary); font-size:14px; }
+.composer-mm-item { display:flex; align-items:center; justify-content:space-between; gap:8px; width:100%; padding:10px 12px; border:0; border-radius:10px; background:transparent; color:var(--text-primary); cursor:pointer; font-size:13px; text-align:left; }
+.composer-mm-item:hover { background: var(--bg-secondary); }
+.composer-mm-item.selected { font-weight:700; }
+.composer-mm-check { color: var(--theme-primary-hover, var(--theme-primary, #111827)); }

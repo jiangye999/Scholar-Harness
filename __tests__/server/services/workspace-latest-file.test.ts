@@ -40,8 +40,43 @@ describe('workspace latest file ranking', () => {
     expect(result.results[0]).toMatchObject({
       path: 'paper-draft-revised.docx',
       kind: 'word',
+      createdAt: expect.any(String),
       modifiedAt: '2026-07-12T00:00:00.000Z',
     });
+  });
+
+  it('defaults to the freshest relevant candidate when the user omits the word latest', async () => {
+    const root = createWordVersions();
+
+    const result = await searchWorkspaceFiles(root, 'Word 草稿文件', 20);
+
+    expect(result.results[0]).toEqual(expect.objectContaining({
+      path: 'paper-draft-revised.docx',
+      createdAt: expect.any(String),
+      modifiedAt: '2026-07-12T00:00:00.000Z',
+    }));
+  });
+
+  it('distinguishes newly generated files from recently modified files', async () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'sh-workspace-file-times-'));
+    roots.push(root);
+    const olderCreatedPath = path.join(root, 'figure-analysis-a.txt');
+    const newerCreatedPath = path.join(root, 'figure-analysis-b.txt');
+    writeFileSync(olderCreatedPath, 'created first');
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 30);
+    writeFileSync(newerCreatedPath, 'created second');
+    utimesSync(olderCreatedPath, new Date('2026-08-21T00:00:00.000Z'), new Date('2026-08-21T00:00:00.000Z'));
+    utimesSync(newerCreatedPath, new Date('2026-08-20T00:00:00.000Z'), new Date('2026-08-20T00:00:00.000Z'));
+
+    const generated = await searchWorkspaceFiles(root, '最新生成的 figure analysis 文件', 20);
+    const modified = await searchWorkspaceFiles(root, '最近修改的 figure analysis 文件', 20);
+
+    expect(generated.results[0]?.path).toBe('figure-analysis-b.txt');
+    expect(modified.results[0]?.path).toBe('figure-analysis-a.txt');
+    expect(generated.results[0]).toEqual(expect.objectContaining({
+      createdAt: expect.any(String),
+      modifiedAt: '2026-08-20T00:00:00.000Z',
+    }));
   });
 
   it('refreshes the workspace index so a newly saved Word version is visible immediately', async () => {
@@ -83,11 +118,12 @@ describe('workspace latest file ranking', () => {
         arguments: JSON.stringify({ query: '最新的 Word 文件', limit: 20 }),
       },
     });
-    const data = result.data as { results: Array<{ path: string; modifiedAt: string }> };
+    const data = result.data as { results: Array<{ path: string; createdAt: string; modifiedAt: string }> };
 
     expect(result.ok).toBe(true);
     expect(data.results[0]).toEqual(expect.objectContaining({
       path: 'paper-draft-revised.docx',
+      createdAt: expect.any(String),
       modifiedAt: '2026-07-12T00:00:00.000Z',
     }));
   });
@@ -160,6 +196,52 @@ describe('workspace latest file ranking', () => {
     expect(context.safeWorkRoot).toBe(context.aiWorkRoot);
   });
 
+  it('defers the duplicate manifest scan for native Agent turns', async () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'sh-workspace-deferred-manifest-'));
+    roots.push(root);
+    writeFileSync(path.join(root, 'large-project-file.txt'), 'source');
+
+    const context = await buildWorkspaceDirectoryContext({
+      enabled: true,
+      path: root,
+      permission: 'workspace-write',
+      conversationId: 'conv-deferred',
+    }, { deferDiscovery: true });
+
+    expect(context.discoveryDeferred).toBe(true);
+    expect(context.fileCount).toBe(0);
+    expect(context.files).toEqual([]);
+    expect(context.contextMarkdown).toContain('避免在同一轮递归扫描两次');
+  });
+
+  it('isolates the same conversation workspace between projects', async () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'sh-workspace-project-root-'));
+    roots.push(root);
+
+    const projectA = await buildWorkspaceDirectoryContext({
+      enabled: true,
+      path: root,
+      permission: 'workspace-write',
+      projectId: 'project-a',
+      conversationId: 'shared-conversation',
+    });
+    const projectB = await buildWorkspaceDirectoryContext({
+      enabled: true,
+      path: root,
+      permission: 'workspace-write',
+      projectId: 'project-b',
+      conversationId: 'shared-conversation',
+    });
+
+    expect(projectA.aiWorkRoot).toBe(path.join(
+      root,
+      'ScholarHarness_AI_Workspaces',
+      'Project-project-a',
+      'Conversation-shared-conversation',
+    ));
+    expect(projectB.aiWorkRoot).not.toBe(projectA.aiWorkRoot);
+  });
+
   it('does not advertise or create a conversation AI work directory in read-only mode', async () => {
     const root = mkdtempSync(path.join(os.tmpdir(), 'sh-workspace-read-only-root-'));
     roots.push(root);
@@ -207,7 +289,7 @@ describe('workspace latest file ranking', () => {
     );
   });
 
-  it('refreshes the complete AI workspace container so another conversation output is immediately searchable', async () => {
+  it('does not surface another conversation output in scoped preflight search by default', async () => {
     const root = mkdtempSync(path.join(os.tmpdir(), 'sh-workspace-ai-container-refresh-'));
     roots.push(root);
     const containerRoot = path.join(root, 'ScholarHarness_AI_Workspaces');
@@ -224,15 +306,15 @@ describe('workspace latest file ranking', () => {
       'utf-8',
     );
 
+    // P0 scoped retrieval: the previous conversation is an archive and must not
+    // appear in the default (source + current conversation) search.
     const result = await searchWorkspaceFiles(
       root,
       'historical-analysis-output',
       20,
       [currentAiWorkRoot],
     );
-    expect(result.results[0]?.path).toBe(
-      'ScholarHarness_AI_Workspaces/Conversation-previous/historical-analysis-output.md',
-    );
+    expect(result.results.some(item => item.path.includes('Conversation-previous'))).toBe(false);
   });
 
   it('shows the AI workspace container and its conversation folders in the automatic preflight context', async () => {
@@ -253,7 +335,7 @@ describe('workspace latest file ranking', () => {
 
     expect(prelude).toContain('### AI 工作区容器直接内容');
     expect(prelude).toContain('ScholarHarness_AI_Workspaces/Conversation-previous/');
-    expect(prelude).toContain('递归覆盖整个容器');
+    expect(prelude).toContain('归档');
   });
 
   it('does not create a duplicated AI workspace container when the configured root is the container itself', async () => {

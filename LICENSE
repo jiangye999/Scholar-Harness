@@ -1,0 +1,53 @@
+Scholar Harness Proprietary Software License
+
+Copyright (c) 2026 Scholar Harness. All rights reserved.
+
+This repository and the Scholar Harness software, including its source code,
+desktop application, local services, cloud services, workflows, prompts,
+skills, documentation, designs, and related assets (collectively, the
+"Software"), are proprietary and confidential unless a file or component
+explicitly states otherwise.
+
+1. Authorized use
+
+An authorized user may install and use released builds of the Software only
+for the subscription period and purposes granted by Scholar Harness. A
+subscription grants a right to use the Software; it does not transfer
+ownership of the Software or its source code.
+
+2. Restrictions
+
+Without prior written permission from the copyright holder, you may not copy,
+modify, publish, distribute, sublicense, sell, lease, provide as a hosted
+service, reverse engineer, decompile, or create derivative works from the
+Software, except to the limited extent that applicable law expressly permits
+such activity despite this restriction.
+
+3. Third-party components
+
+Third-party libraries, tools, skill packs, and other bundled components remain
+subject to their own license terms. Where a component includes a separate
+LICENSE or NOTICE file, that file governs that component only and does not
+license the Scholar Harness repository as a whole.
+
+4. User content
+
+This license does not claim ownership of manuscripts, datasets, prompts,
+documents, or other content supplied or created by users. Users remain
+responsible for the legality and academic integrity of their content.
+
+5. No warranty
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR
+PURPOSE, NON-INFRINGEMENT, ACCURACY, OR AVAILABILITY. TO THE MAXIMUM EXTENT
+PERMITTED BY LAW, THE COPYRIGHT HOLDER SHALL NOT BE LIABLE FOR ANY CLAIM,
+DAMAGES, OR OTHER LIABILITY ARISING FROM USE OF THE SOFTWARE.
+
+6. No implied rights
+
+No rights to trademarks, service marks, datasets, model weights, hosted APIs,
+or commercial distribution are granted except by a separate written
+agreement.
+
+For licensing enquiries, contact: sjs@cau.edu.cn

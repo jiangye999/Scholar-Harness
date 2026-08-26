@@ -7,6 +7,7 @@ import { readPublicAppSource } from '../helpers/public-app-source';
 
 const html = readPublicAppSource();
 const server = readFileSync(path.resolve(__dirname, '../../src/server/local-server.ts'), 'utf-8');
+const shellLayoutCss = readFileSync(path.resolve(__dirname, '../../src/public/styles/shell-layout.css'), 'utf-8');
 
 describe('AI output attachment sidebar preview', () => {
   it('provides a transient right-sidebar preview page without replacing draft tabs', () => {
@@ -114,11 +115,29 @@ describe('AI output attachment sidebar preview', () => {
   it('uses format-aware read-only previews for spreadsheets, Word, and R/code files', () => {
     expect(html).toContain('/api/local-file/formatted-preview?path=');
     expect(html).toContain('supportsRightSidebarFormattedPreview(extension)');
-    expect(html).toContain('sandbox=""');
+    expect(html).toContain('sandbox="allow-same-origin"');
     expect(server).toContain('app.get("/api/local-file/formatted-preview"');
     expect(server).toContain('buildLocalSpreadsheetPreview');
     expect(server).toContain('buildLocalWordPreview');
     expect(server).toContain('buildLocalCodePreview');
     expect(server).toContain('mammoth.convertToHtml');
+  });
+
+  it('offers the selected preview sentence to the main AI composer with file provenance', () => {
+    expect(html).toContain('rightSidebarPreviewSelectionAsk');
+    expect(html).toContain("bubble.textContent = '询问 AI'");
+    expect(html).toContain("'文件路径：' + (selected.path || selected.name || '当前预览文件')");
+    expect(html).toContain("'选中文本：'");
+    expect(html).toContain('userInput.dispatchEvent(new Event(\'input\', { bubbles: true }))');
+    expect(html).toContain('bindRightSidebarPreviewSelectionDocument(doc, frame)');
+    expect(html).toContain('window.hideRightSidebarPreviewSelectionAsk = hideRightSidebarPreviewSelectionAsk;');
+    expect(html).toContain("nextTab !== 'preview' && typeof window.hideRightSidebarPreviewSelectionAsk === 'function'");
+    expect(html).toContain("collapsed === true && typeof window.hideRightSidebarPreviewSelectionAsk === 'function'");
+    expect(shellLayoutCss).toMatch(
+      /\.right-sidebar-preview-selection-ask\s*\{[\s\S]*background:\s*var\(--theme-softer,[\s\S]*color:\s*var\(--theme-primary,/,
+    );
+    expect(shellLayoutCss).toMatch(
+      /\.right-sidebar-preview-selection-ask:hover,[\s\S]*background:\s*var\(--theme-primary,[\s\S]*color:\s*#fff\s*!important/,
+    );
   });
 });

@@ -77,21 +77,6 @@ interface PromptBundleRequest {
   promptIds?: string[];
 }
 
-// ============ 额度消耗配置 ============
-
-const CREDIT_COSTS: Record<string, number> = {
-  core_get: 0,
-  bundle_get: 0,
-  skill_get: 0,
-  skill_list: 0,
-  skill_cache: 0,
-  generate: 1,
-  write_introduction: 2,
-  write_discussion: 3,
-  write_methods: 2,
-  write_results: 2,
-};
-
 const CORE_PROMPT_BUNDLES: Record<string, string[]> = {
   'paper-writing-full': [
     '01_title_skill',
@@ -374,36 +359,12 @@ router.post('/bundles/:bundleId', authMiddleware, requireSource('exe'), async (r
 /**
  * POST /prompts/generate
  * 生成 Skill（PrimaryAgent 大牛马）
- * 消耗 1 credit
+ * 需要有效的软件订阅；调用次数只做内部统计，不扣减字符额度
  */
 router.post('/generate', authMiddleware, requireSource('exe'), async (req: AuthenticatedRequest, res: Response) => {
   try {
+    if (!(await requirePromptEntitlement(req, res))) return;
     const input = req.body as PromptGenerateRequest;
-
-    // 检查额度
-    const subscription = await db.queryOne<{
-      quota_remaining: number;
-      status: string;
-    }>(
-      `SELECT quota_remaining, status FROM subscriptions WHERE user_id = $1`,
-      [req.user!.userId]
-    );
-
-    if (!subscription || subscription.quota_remaining < CREDIT_COSTS.generate) {
-      return res.status(403).json({ 
-        error: 'Insufficient credits', 
-        message: '需要 1 credit，请充值或升级套餐',
-        creditsRequired: CREDIT_COSTS.generate,
-      });
-    }
-
-    // trial 状态是内测码激活的试用期订阅，属于有效状态
-    if (subscription.status !== 'active' && subscription.status !== 'trial') {
-      return res.status(403).json({ 
-        error: 'Subscription inactive', 
-        message: `订阅状态: ${subscription.status}`,
-      });
-    }
 
     // 获取用户 Skill（如果有）
     let skillContent = '';
@@ -420,25 +381,18 @@ router.post('/generate', authMiddleware, requireSource('exe'), async (req: Authe
     // 构建 Prompt 模板（这里返回模板，实际 AI 调用在 exe 本地完成）
     const promptTemplate = buildPrimaryAgentPromptTemplate(input, skillContent);
 
-    // 消耗额度
-    await db.query(
-      `UPDATE subscriptions SET quota_used = quota_used + $1, quota_remaining = quota_remaining - $1 
-       WHERE user_id = $2`,
-      [CREDIT_COSTS.generate, req.user!.userId]
-    );
-
-    // 记录使用
+    // 只记录功能调用，不扣减任何订阅额度。
     await db.query(
       `INSERT INTO prompt_usage (user_id, prompt_type, prompt_id, credits_consumed) 
-       VALUES ($1, 'generate', $2, $3)`,
-      [req.user!.userId, input.userSkillId || 'default', CREDIT_COSTS.generate]
+       VALUES ($1, 'generate', $2, 0)`,
+      [req.user!.userId, input.userSkillId || 'default']
     );
 
     res.json({
       promptTemplate,
       skillId: input.userSkillId,
-      creditsConsumed: CREDIT_COSTS.generate,
-      quotaRemaining: subscription.quota_remaining - CREDIT_COSTS.generate,
+      creditsConsumed: 0,
+      quotaRemaining: -1,
     });
   } catch (error) {
     logger.error('[Prompts] Failed to generate:', error);
@@ -449,57 +403,33 @@ router.post('/generate', authMiddleware, requireSource('exe'), async (req: Authe
 /**
  * POST /prompts/write
  * 获取写作 Prompt（SecondaryAgent 小牛马）
- * 根据章节类型消耗不同额度
+ * 需要有效的软件订阅；章节类型不再对应任何数字额度
  */
 router.post('/write', authMiddleware, requireSource('exe'), async (req: AuthenticatedRequest, res: Response) => {
   try {
+    if (!(await requirePromptEntitlement(req, res))) return;
     const { chapterName, skill, literatureCount } = req.body as {
       chapterName: string;
       skill: GeneratedSkill;
       literatureCount: number;
     };
 
-    // 根据章节确定额度消耗
     const normalizedChapter = normalizeChapterName(chapterName);
-    const creditCost = CREDIT_COSTS[`write_${normalizedChapter}`] || 2;
-
-    // 检查额度
-    const subscription = await db.queryOne<{
-      quota_remaining: number;
-      status: string;
-    }>(
-      `SELECT quota_remaining, status FROM subscriptions WHERE user_id = $1`,
-      [req.user!.userId]
-    );
-
-    if (!subscription || subscription.quota_remaining < creditCost) {
-      return res.status(403).json({ 
-        error: 'Insufficient credits',
-        creditsRequired: creditCost,
-      });
-    }
 
     // 构建写作 Prompt 模板
     const promptTemplate = buildSecondaryAgentPromptTemplate(skill, normalizedChapter, literatureCount);
 
-    // 消耗额度
-    await db.query(
-      `UPDATE subscriptions SET quota_used = quota_used + $1, quota_remaining = quota_remaining - $1 
-       WHERE user_id = $2`,
-      [creditCost, req.user!.userId]
-    );
-
-    // 记录使用
+    // 只记录功能调用，不扣减任何订阅额度。
     await db.query(
       `INSERT INTO prompt_usage (user_id, prompt_type, prompt_id, credits_consumed) 
-       VALUES ($1, 'write', $2, $3)`,
-      [req.user!.userId, normalizedChapter, creditCost]
+       VALUES ($1, 'write', $2, 0)`,
+      [req.user!.userId, normalizedChapter]
     );
 
     res.json({
       promptTemplate,
-      creditsConsumed: creditCost,
-      quotaRemaining: subscription.quota_remaining - creditCost,
+      creditsConsumed: 0,
+      quotaRemaining: -1,
     });
   } catch (error) {
     logger.error('[Prompts] Failed to write:', error);
@@ -510,8 +440,8 @@ router.post('/write', authMiddleware, requireSource('exe'), async (req: Authenti
 // ============ 辅助函数 ============
 
 async function requirePromptEntitlement(req: AuthenticatedRequest, res: Response): Promise<boolean> {
-  const subscription = await db.queryOne<{ status: string; quota_total: number; quota_remaining: number }>(
-    `SELECT status, quota_total, quota_remaining
+  const subscription = await db.queryOne<{ status: string; end_date: Date }>(
+    `SELECT status, end_date
      FROM subscriptions
      WHERE user_id = $1
      ORDER BY created_at DESC
@@ -519,18 +449,19 @@ async function requirePromptEntitlement(req: AuthenticatedRequest, res: Response
     [req.user!.userId]
   );
 
-  if (!subscription || (subscription.status !== 'active' && subscription.status !== 'trial')) {
+  const isWithinSubscriptionPeriod = subscription
+    ? new Date(subscription.end_date).getTime() > Date.now()
+    : false;
+  const hasEligibleStatus = subscription
+    ? subscription.status === 'active'
+      || subscription.status === 'trial'
+      || subscription.status === 'exhausted'
+    : false;
+
+  if (!subscription || !isWithinSubscriptionPeriod || !hasEligibleStatus) {
     res.status(403).json({
       error: 'Subscription inactive',
       message: subscription ? `订阅状态: ${subscription.status}` : '未找到有效订阅',
-    });
-    return false;
-  }
-
-  if (subscription.quota_total !== -1 && subscription.quota_remaining <= 0) {
-    res.status(403).json({
-      error: 'Insufficient quota',
-      message: '额度不足，请充值或升级套餐',
     });
     return false;
   }

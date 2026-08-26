@@ -1,10 +1,8 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
 
-import {
-  filterUserFacingWorkspaceOutputPaths,
-  isTransientPageQaArtifact,
-} from './workspace-output-artifacts';
+import { filterUserFacingWorkspaceOutputPaths } from './workspace-output-artifacts';
+import { finalizeWorkspaceWorkbench } from './workspace-workbench';
 
 export interface WorkspaceOutputMirrorResult {
   sourcePath: string;
@@ -24,17 +22,10 @@ function normalizeComparablePath(value: string): string {
   return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
 }
 
-function isInternalWorkspacePath(relativePath: string): boolean {
-  const segments = relativePath.split(/[\\/]+/).filter(Boolean);
-  return segments.some(segment => segment === '.git')
-    || segments.some(segment => /^README_ScholarHarness_AI_Workspace\.md$/i.test(segment));
-}
-
 /**
- * Mirror one generated/updated file between the current conversation AI work
- * directory and the user-configured workspace while preserving its relative
- * path. This is intentionally deterministic: the model does not need to copy
- * the file itself or remember two output paths.
+ * Backward-compatible publication entry point. It no longer copies files into
+ * the source tree: publication means refreshing a shortcut under 用户查看 and
+ * updating the workbench README.
  */
 export async function mirrorWorkspaceOutputFile(
   sourcePath: string,
@@ -45,50 +36,11 @@ export async function mirrorWorkspaceOutputFile(
   const configured = path.resolve(String(configuredRoot || '').trim());
   const aiWork = path.resolve(String(aiWorkRoot || '').trim());
   if (!sourcePath || !configuredRoot || !aiWorkRoot) return null;
-  if (normalizeComparablePath(configured) === normalizeComparablePath(aiWork)) return null;
-
-  let targetRoot = '';
-  let relativePath = '';
-  if (isPathInside(aiWork, source)) {
-    targetRoot = configured;
-    relativePath = path.relative(aiWork, source);
-  } else if (isPathInside(configured, source) && !isPathInside(aiWork, source)) {
-    targetRoot = aiWork;
-    relativePath = path.relative(configured, source);
-  } else {
-    return null;
-  }
-
-  if (!relativePath || relativePath.startsWith('..') || path.isAbsolute(relativePath)) return null;
-  if (isInternalWorkspacePath(relativePath)) return null;
-  if (isTransientPageQaArtifact(relativePath)) return null;
-
-  const targetPath = path.resolve(targetRoot, relativePath);
-  if (!isPathInside(targetRoot, targetPath) || normalizeComparablePath(source) === normalizeComparablePath(targetPath)) {
-    return null;
-  }
-
-  try {
-    const stat = await fs.stat(source);
-    if (!stat.isFile()) return null;
-    await fs.mkdir(path.dirname(targetPath), { recursive: true });
-    await fs.copyFile(source, targetPath);
-    await fs.utimes(targetPath, stat.atime, stat.mtime).catch(() => undefined);
-    return {
-      sourcePath: source,
-      targetPath,
-      relativePath,
-      mirrored: true,
-    };
-  } catch (error) {
-    return {
-      sourcePath: source,
-      targetPath,
-      relativePath,
-      mirrored: false,
-      error: (error as Error).message,
-    };
-  }
+  if (!isPathInside(aiWork, source)) return null;
+  const stat = await fs.stat(source).catch(() => null);
+  if (!stat?.isFile()) return null;
+  const [result] = await publishWorkspaceOutputFiles([source], configured, aiWork);
+  return result || null;
 }
 
 export async function mirrorWorkspaceOutputFiles(
@@ -108,4 +60,29 @@ export async function mirrorWorkspaceOutputFiles(
     if (result) results.push(result);
   }
   return results;
+}
+
+/**
+ * Publish selected files from the conversation AI workspace. The user source
+ * tree stays immutable; publication only refreshes 用户查看 shortcuts and the
+ * per-workbench README.
+ */
+export async function publishWorkspaceOutputFiles(
+  sourcePaths: string[],
+  configuredRoot: string,
+  aiWorkRoot: string,
+): Promise<WorkspaceOutputMirrorResult[]> {
+  const resolvedAiWorkRoot = path.resolve(String(aiWorkRoot || '').trim());
+  if (!aiWorkRoot) return [];
+  const selectedPaths = filterUserFacingWorkspaceOutputPaths(sourcePaths)
+    .map(sourcePath => path.resolve(String(sourcePath || '').trim()))
+    .filter(sourcePath => isPathInside(resolvedAiWorkRoot, sourcePath));
+  const finalized = await finalizeWorkspaceWorkbench(configuredRoot, resolvedAiWorkRoot, selectedPaths);
+  return finalized.shortcuts.map(result => ({
+    sourcePath: result.sourcePath,
+    targetPath: result.shortcutPath,
+    relativePath: result.relativePath,
+    mirrored: result.created,
+    error: result.error,
+  }));
 }

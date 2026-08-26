@@ -5,6 +5,14 @@
     var apiConfig = { url: '', key: '', model: '' };
     var secondaryVisionApiConfig = { url: '', key: '', model: 'gpt-4o' };
     var currentModel = 'qwen3.5-plus';
+    // 主聊天 reasoning_effort（low/medium/high）。从 /api/settings 同步，随聊天请求透传。
+    var currentReasoningEffort = 'low';
+    try {
+      var savedMainChatReasoningEffort = localStorage.getItem('scholarharness_main_chat_reasoning_effort');
+      if (savedMainChatReasoningEffort && ['low', 'medium', 'high'].indexOf(savedMainChatReasoningEffort) >= 0) {
+        currentReasoningEffort = savedMainChatReasoningEffort;
+      }
+    } catch (e) {}
     var chatContainer = document.getElementById('chatContainer');
     var messagesDiv = document.getElementById('messages');
     var userInput = document.getElementById('userInput');
@@ -18,6 +26,7 @@
     var mainChatExperimentUploadBusyOwner = false;
     var currentAbortController = null;
     var activeMainChatConversationId = null;
+    var activeMainChatProjectId = null;
     var activeMainChatProvider = null;
     var activeMainChatWorkspaceSnapshot = null;
     var mainChatQueryQueue = [];
@@ -34,6 +43,38 @@
     var mainChatAttachedRunMessage = null;
     var mainChatAttachedRunText = '';
     var mainChatAttachedRunRenderer = null;
+    // 多会话并行：登记所有正在运行的对话（conversationId -> abortController），
+    // 让“这个对话在跑，我切去新对话做别的”成为可能。isGenerating 仍表示
+    // “当前可视会话在跑”，用于按钮/输入框 UI；真正的运行登记在这里。
+    var mainChatActiveRuns = new Map();
+    var mainChatRunConversationByController = new Map();
+    function getMainChatRunKey(conversationId, projectId) {
+      var id = String(conversationId || currentConversationId || '');
+      var resolvedProjectId = projectId !== undefined
+        ? String(projectId || '')
+        : (typeof getConversationHistoryProjectId === 'function' ? String(getConversationHistoryProjectId() || '') : '');
+      return id ? (resolvedProjectId || 'current-workspace') + '\u0001' + id : '';
+    }
+    function isMainChatConversationRunning(conversationId, projectId) {
+      var key = getMainChatRunKey(conversationId, projectId);
+      return !!key && mainChatActiveRuns.has(key);
+    }
+    function registerMainChatActiveRun(conversationId, abortController, projectId) {
+      var key = getMainChatRunKey(conversationId, projectId);
+      if (!key || !abortController) return;
+      mainChatActiveRuns.set(key, { abortController: abortController, projectId: projectId || '' });
+      mainChatRunConversationByController.set(abortController, key);
+    }
+    function unregisterMainChatActiveRun(conversationId, abortController, projectId) {
+      var key = getMainChatRunKey(conversationId, projectId);
+      if (key) mainChatActiveRuns.delete(key);
+      if (abortController) mainChatRunConversationByController.delete(abortController);
+    }
+    function releaseMainChatActiveRunByController(abortController) {
+      var key = abortController ? mainChatRunConversationByController.get(abortController) : '';
+      if (key) mainChatActiveRuns.delete(key);
+      if (abortController) mainChatRunConversationByController.delete(abortController);
+    }
     var mainContextSourceBarExpanded = false;
     var mainContextSourceBarHoverTimer = null;
     var chatTurnAnchorEl = null;
@@ -1108,36 +1149,56 @@
     }
 
     function getConfiguredSecondaryModelLabel() {
-      var storedModel = '';
-      try {
-        var stored = localStorage.getItem(API_KEY);
-        if (stored) {
-          var parsed = JSON.parse(stored);
-          storedModel = String(parsed && parsed.model ? parsed.model : '').trim();
-        }
-      } catch (e) {}
-      var bridgeModel = chatBridgeConfig && chatBridgeConfig.secondary ? chatBridgeConfig.secondary.model : '';
-      var model = String((apiConfig && apiConfig.model) || storedModel || currentModel || bridgeModel || 'qwen3.5-plus').trim();
-      return model || 'qwen3.5-plus';
+      var textConfig = chatBridgeConfig && chatBridgeConfig.secondary ? chatBridgeConfig.secondary : {};
+      var visionConfig = chatBridgeConfig && chatBridgeConfig.secondaryVision ? chatBridgeConfig.secondaryVision : {};
+      var textActive = getComposerPoolActive(textConfig.pool);
+      var visionActive = getComposerPoolActive(visionConfig.pool);
+      var legacyModel = apiConfig && apiConfig.url && apiConfig.key ? apiConfig.model : '';
+      var textPoolConfigured = isComposerApiEntryConfigured(textActive, textConfig);
+      var visionPoolConfigured = isComposerApiEntryConfigured(visionActive, visionConfig);
+      var textModel = String(
+        (textPoolConfigured && textActive.model)
+        || (textConfig.apiUrl && textConfig.hasApiKey && textConfig.model ? textConfig.model : '')
+        || legacyModel
+        || ''
+      ).trim();
+      var visionModel = String(
+        (visionPoolConfigured && visionActive.model)
+        || (visionConfig.apiUrl && visionConfig.hasApiKey && visionConfig.model ? visionConfig.model : '')
+        || ''
+      ).trim();
+      if (!textModel && !visionModel) return '未配置';
+      if (textModel && visionModel && visionModel !== textModel) {
+        return '文本 ' + textModel + ' · 视觉 ' + visionModel;
+      }
+      return textModel || visionModel || '未配置';
     }
 
     function getConfiguredPrimaryModelLabel() {
-      var bridgeModel = chatBridgeConfig && chatBridgeConfig.primary ? chatBridgeConfig.primary.model : '';
-      return String(bridgeModel || 'claude-sonnet-4-5').trim() || 'claude-sonnet-4-5';
+      var primary = chatBridgeConfig && chatBridgeConfig.primary ? chatBridgeConfig.primary : {};
+      var active = getComposerPoolActive(primary.pool);
+      var model = isComposerApiEntryConfigured(active, primary)
+        ? active.model
+        : (primary.apiUrl && primary.hasApiKey ? primary.model : '');
+      return String(model || '').trim() || '未配置';
     }
 
     function getConfiguredCodexModelLabel() {
       var codex = chatBridgeConfig && chatBridgeConfig.codex ? chatBridgeConfig.codex : {};
-      var model = String(codex.model || 'gpt-5.5').trim() || 'gpt-5.5';
+      if (codex.enabled !== true) return '未配置';
+      var model = String(codex.model || '').trim();
+      if (!model) return '未配置';
       var effort = String(codex.reasoning_effort || '').trim();
       return effort ? (model + ' ' + effort) : model;
     }
 
     var COMPOSER_PROVIDER_KEY = 'scholarharness_composer_chat_provider';
     var COMPOSER_PROVIDER_LABELS = {
-      secondary: '小牛马',
-      primary: '大牛马',
-      codex: 'Codex'
+      secondary: 'Little corse',
+      primary: 'Free corse',
+      codex: 'Codex',
+      pi: 'Pi',
+      opencode: 'OpenCode'
     };
     var COMPOSER_CODEX_EFFORTS_KEY = 'scholarharness_codex_effort_by_model';
     var COMPOSER_CODEX_ALLOWED_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
@@ -1182,6 +1243,24 @@
     var composerCodexSaveTimer = null;
     var composerCodexSaveChain = Promise.resolve();
     var composerCodexFlyoutOpen = false;
+    var COMPOSER_PORTABLE_RUNTIME_IDS = ['pi', 'opencode'];
+    var composerPortableRuntimeModels = { pi: [], opencode: [] };
+    var composerPortableRuntimeModelsLoaded = { pi: false, opencode: false };
+    var composerPortableRuntimeModelsPromise = { pi: null, opencode: null };
+    var composerPortableRuntimePendingSelection = { pi: null, opencode: null };
+    var composerPortableRuntimeSaveTimer = { pi: null, opencode: null };
+    var composerPortableRuntimeSaveChain = { pi: Promise.resolve(), opencode: Promise.resolve() };
+    var composerPortableRuntimeStatus = {
+      pi: { message: '', isError: false },
+      opencode: { message: '', isError: false }
+    };
+    var composerMainChatFlyoutOpen = false;
+    var composerMainChatFlyoutProvider = 'secondary';
+    var composerMainChatPoolProvider = 'secondary';
+    var composerMainChatSelectedEntryId = '';
+    var composerMainChatSelectionSavePromise = Promise.resolve();
+    var composerMainChatSelectionRevision = 0;
+    var COMPOSER_MAIN_CHAT_EFFORTS = ['low', 'medium', 'high'];
     // WORKSPACE_DIRECTORY_KEY is kept only for one-time migration from versions
     // where a single directory was shared by every conversation.
     var WORKSPACE_DIRECTORY_KEY = 'scholarharness_workspace_directory';
@@ -1190,6 +1269,9 @@
     var workspaceDirectoryLastPreview = null;
     var workspaceDirectoryPreviewsByConversation = new Map();
     var workspacePreviewSelectedFiles = new Map();
+    var workspaceUserViewReconcileInFlight = new Map();
+    var workspaceDirectoryMemorySettings = new Map();
+    var workspaceDirectoryRemoteSyncInFlight = new Map();
 
     function getMainChatProviderLabel(provider) {
       var key = String(provider || '').trim();
@@ -1224,6 +1306,20 @@
       };
     }
 
+    function getWorkspaceDirectoryProjectId() {
+      return typeof getConversationHistoryProjectId === 'function'
+        ? String(getConversationHistoryProjectId() || '').trim()
+        : '';
+    }
+
+    function getWorkspaceDirectoryRuntimeKey(conversationId, projectId) {
+      var id = String(conversationId || currentConversationId || '').trim();
+      var scopeId = projectId !== undefined
+        ? String(projectId || '').trim()
+        : getWorkspaceDirectoryProjectId();
+      return (scopeId || 'current-workspace') + '\u0001' + id;
+    }
+
     function getWorkspaceDirectoryStoreKey() {
       return WORKSPACE_DIRECTORIES_BY_CONVERSATION_KEY + '_' + String(currentUserId || 'web-user');
     }
@@ -1255,8 +1351,17 @@
 
     function persistWorkspaceDirectoryStore(store) {
       try {
-        localStorage.setItem(getWorkspaceDirectoryStoreKey(), JSON.stringify(normalizeWorkspaceDirectoryStore(store)));
-      } catch (e) {}
+        var storageKey = getWorkspaceDirectoryStoreKey();
+        var serialized = JSON.stringify(normalizeWorkspaceDirectoryStore(store));
+        localStorage.setItem(storageKey, serialized);
+        if (localStorage.getItem(storageKey) !== serialized) {
+          throw new Error('工作目录本地存储写后校验失败');
+        }
+        return true;
+      } catch (e) {
+        console.warn('[WorkspaceDirectory] 本地持久化失败，将使用内存与后端备份:', e);
+        return false;
+      }
     }
 
     function migrateLegacyWorkspaceDirectoryStore(store, conversationHint) {
@@ -1321,6 +1426,8 @@
     function loadWorkspaceDirectorySetting(conversationId) {
       var id = String(conversationId || currentConversationId || '').trim();
       if (!id) return getEmptyWorkspaceDirectorySetting();
+      var memorySetting = workspaceDirectoryMemorySettings.get(getWorkspaceDirectoryRuntimeKey(id));
+      if (memorySetting) return normalizeWorkspaceDirectorySetting(memorySetting);
       var store = loadWorkspaceDirectoryStore(id);
       return store.directories[id]
         ? normalizeWorkspaceDirectorySetting(store.directories[id])
@@ -1337,16 +1444,98 @@
 
     function saveWorkspaceDirectorySetting(setting, conversationId) {
       var id = String(conversationId || currentConversationId || '').trim();
-      if (!id) return;
+      if (!id) return false;
       var store = loadWorkspaceDirectoryStore(id);
-      store.directories[id] = Object.assign({}, normalizeWorkspaceDirectorySetting(setting), {
+      var normalizedSetting = Object.assign({}, normalizeWorkspaceDirectorySetting(setting), {
         updatedAt: Date.now()
       });
+      workspaceDirectoryMemorySettings.set(getWorkspaceDirectoryRuntimeKey(id), normalizedSetting);
+      store.directories[id] = normalizedSetting;
       if (!currentConversationId || id === currentConversationId) {
         store.lastConversationId = id;
       }
-      persistWorkspaceDirectoryStore(store);
+      return persistWorkspaceDirectoryStore(store);
     }
+
+    async function persistWorkspaceDirectorySettingRemote(setting, conversationId) {
+      var id = String(conversationId || currentConversationId || '').trim();
+      if (!id) throw new Error('当前会话尚未初始化');
+      var projectId = getWorkspaceDirectoryProjectId();
+      var response = await fetch('/api/chat-bridge/workspace/preference', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          userId: currentUserId || 'web-user',
+          projectId: projectId,
+          conversationId: id,
+          setting: normalizeWorkspaceDirectorySetting(setting)
+        })
+      });
+      var data = await response.json().catch(function() { return {}; });
+      if (!response.ok || !data.success || !data.setting) {
+        throw new Error(data.error || '工作目录后端持久化失败');
+      }
+      var savedSetting = Object.assign({}, normalizeWorkspaceDirectorySetting(data.setting), {
+        updatedAt: Number(data.setting.updatedAt) || Date.now()
+      });
+      workspaceDirectoryMemorySettings.set(getWorkspaceDirectoryRuntimeKey(id, projectId), savedSetting);
+      var store = loadWorkspaceDirectoryStore(id);
+      store.directories[id] = savedSetting;
+      store.lastConversationId = id;
+      persistWorkspaceDirectoryStore(store);
+      return savedSetting;
+    }
+
+    function syncWorkspaceDirectorySettingFromServer(conversationId) {
+      var id = String(conversationId || currentConversationId || '').trim();
+      if (!id || typeof fetch !== 'function') return Promise.resolve(null);
+      var projectId = getWorkspaceDirectoryProjectId();
+      var runtimeKey = getWorkspaceDirectoryRuntimeKey(id, projectId);
+      if (workspaceDirectoryRemoteSyncInFlight.has(runtimeKey)) {
+        return workspaceDirectoryRemoteSyncInFlight.get(runtimeKey);
+      }
+      var query = '?userId=' + encodeURIComponent(currentUserId || 'web-user')
+        + '&conversationId=' + encodeURIComponent(id)
+        + '&projectId=' + encodeURIComponent(projectId);
+      var request = fetch('/api/chat-bridge/workspace/preference' + query)
+        .then(function(response) {
+          return response.json().catch(function() { return {}; }).then(function(data) {
+            if (!response.ok || !data.success) throw new Error(data.error || '工作目录配置恢复失败');
+            return data;
+          });
+        })
+        .then(function(data) {
+          if (!data.setting) return null;
+          var remoteSetting = Object.assign({}, normalizeWorkspaceDirectorySetting(data.setting), {
+            updatedAt: Number(data.setting.updatedAt) || 0
+          });
+          var localStore = loadWorkspaceDirectoryStore(id);
+          var localRaw = localStore.directories[id] || null;
+          var localSetting = loadWorkspaceDirectorySetting(id);
+          var shouldRestore = !localRaw
+            || remoteSetting.updatedAt > Number(localRaw.updatedAt || 0)
+            || ((!localSetting.enabled || !localSetting.path) && remoteSetting.enabled && remoteSetting.path);
+          if (!shouldRestore) return localSetting;
+          workspaceDirectoryMemorySettings.set(runtimeKey, remoteSetting);
+          localStore.directories[id] = remoteSetting;
+          localStore.lastConversationId = id;
+          persistWorkspaceDirectoryStore(localStore);
+          if (id === currentConversationId && projectId === getWorkspaceDirectoryProjectId()) {
+            renderWorkspaceDirectoryUi('已恢复当前会话保存的工作目录。');
+          }
+          return normalizeWorkspaceDirectorySetting(remoteSetting);
+        })
+        .catch(function(error) {
+          console.warn('[WorkspaceDirectory] 后端配置恢复失败，继续使用本地设置:', error);
+          return null;
+        })
+        .finally(function() {
+          workspaceDirectoryRemoteSyncInFlight.delete(runtimeKey);
+        });
+      workspaceDirectoryRemoteSyncInFlight.set(runtimeKey, request);
+      return request;
+    }
+    window.syncWorkspaceDirectorySettingFromServer = syncWorkspaceDirectorySettingFromServer;
 
     function initializeWorkspaceDirectoryForConversation(conversationId, previousConversationId) {
       var targetId = String(conversationId || '').trim();
@@ -1388,6 +1577,7 @@
         store.lastConversationId = remaining[0] || '';
       }
       persistWorkspaceDirectoryStore(store);
+      workspaceDirectoryMemorySettings.delete(getWorkspaceDirectoryRuntimeKey(id));
       workspaceDirectoryPreviewsByConversation.delete(id);
       deleteWorkspaceConversationRoot(id);
     }
@@ -1421,6 +1611,7 @@
       workspaceDirectoryLastPreview = workspaceDirectoryPreviewsByConversation.get(id) || null;
       renderWorkspaceDirectoryPreview(workspaceDirectoryLastPreview);
       renderWorkspaceDirectoryUi(message);
+      syncWorkspaceDirectorySettingFromServer(id);
     }
 
     function loadWorkspaceConversationRoots() {
@@ -1448,22 +1639,38 @@
       } catch (e) {}
     }
 
+    function getWorkspaceConversationRootKey(conversationId, projectId) {
+      var id = String(conversationId || '').trim();
+      var resolvedProjectId = projectId !== undefined
+        ? String(projectId || '')
+        : (typeof getConversationHistoryProjectId === 'function' ? String(getConversationHistoryProjectId() || '') : '');
+      return (resolvedProjectId || 'current-workspace') + '\u0001' + id;
+    }
+
     function deleteWorkspaceConversationRoot(conversationId) {
       var id = String(conversationId || '').trim();
       if (!id) return;
       var roots = loadWorkspaceConversationRoots();
-      if (!Object.prototype.hasOwnProperty.call(roots, id)) return;
+      var rootKey = getWorkspaceConversationRootKey(id);
+      if (!Object.prototype.hasOwnProperty.call(roots, rootKey) && !Object.prototype.hasOwnProperty.call(roots, id)) return;
+      delete roots[rootKey];
       delete roots[id];
       saveWorkspaceConversationRoots(roots);
     }
 
-    function buildConversationScopedAiWorkRoot(workspacePath, conversationId) {
+    function buildConversationScopedAiWorkRoot(workspacePath, conversationId, projectId) {
       var safeConversationId = String(conversationId || '')
+        .replace(/[^a-zA-Z0-9_-]/g, '-')
+        .slice(0, 120);
+      var safeProjectId = String(projectId || '')
         .replace(/[^a-zA-Z0-9_-]/g, '-')
         .slice(0, 120);
       if (!workspacePath || !safeConversationId) return '';
       var workspaceContainer = joinLocalRPath(workspacePath, 'ScholarHarness_AI_Workspaces');
-      return joinLocalRPath(workspaceContainer, 'Conversation-' + safeConversationId);
+      var projectContainer = safeProjectId
+        ? joinLocalRPath(workspaceContainer, 'Project-' + safeProjectId)
+        : workspaceContainer;
+      return joinLocalRPath(projectContainer, 'Conversation-' + safeConversationId);
     }
 
     function getConversationScopedAiWorkRoot(setting, conversationId) {
@@ -1471,16 +1678,22 @@
       var scopedConversationId = String(conversationId || currentConversationId || '').trim();
       if (!scopedConversationId) return setting.aiWorkRoot || '';
       var roots = loadWorkspaceConversationRoots();
-      var existing = roots[scopedConversationId];
+      var projectId = typeof getConversationHistoryProjectId === 'function'
+        ? String(getConversationHistoryProjectId() || '')
+        : '';
+      var rootKey = getWorkspaceConversationRootKey(scopedConversationId, projectId);
+      var existing = roots[rootKey];
       if (existing && existing.workspacePath === setting.path && existing.root) {
         return String(existing.root);
       }
       if (setting.permission === 'read-only') return setting.aiWorkRoot || '';
-      var scopedRoot = buildConversationScopedAiWorkRoot(setting.path, scopedConversationId);
+      var scopedRoot = buildConversationScopedAiWorkRoot(setting.path, scopedConversationId, projectId);
       if (!scopedRoot) return setting.aiWorkRoot || '';
-      roots[scopedConversationId] = {
+      roots[rootKey] = {
         workspacePath: setting.path,
         root: scopedRoot,
+        projectId: projectId,
+        conversationId: scopedConversationId,
         updatedAt: Date.now()
       };
       var entries = Object.keys(roots).map(function(key) {
@@ -1504,12 +1717,19 @@
         permission: setting.permission,
         aiWorkRoot: conversationAiWorkRoot,
         safeWorkRoot: conversationAiWorkRoot,
-        conversationId: String(conversationId || currentConversationId || '').trim()
+        conversationId: String(conversationId || currentConversationId || '').trim(),
+        projectId: typeof getConversationHistoryProjectId === 'function'
+          ? String(getConversationHistoryProjectId() || '')
+          : ''
       };
     }
 
     function extractWorkspacePathFromMessage(message) {
-      var text = String(message || '');
+      // A URL such as "https://doi.org/..." contains the substring "s:/".
+      // Without removing web URLs first, the Windows drive-path matcher below
+      // can mistake that substring for an S: drive and override the workspace
+      // directory that the user has already validated in the composer.
+      var text = String(message || '').replace(/\bhttps?:\/\/[^\s"'<>]+/gi, ' ');
       var matches = text.match(/[A-Za-z]:[\\/][^\r\n"'<>|]+/g) || [];
       for (var i = 0; i < matches.length; i += 1) {
         var candidate = String(matches[i] || '')
@@ -1707,8 +1927,8 @@
         { id: 'open_draft', label: '打开论文草稿弹窗' },
         { id: 'open_memory', label: '打开长期记忆管理' },
         { id: 'open_config', label: '打开配置中心' },
-        { id: 'open_secondary_config', label: '打开小牛马安全配置' },
-        { id: 'open_primary_config', label: '打开大牛马安全配置' },
+        { id: 'open_secondary_config', label: '打开 Little corse 安全配置' },
+        { id: 'open_primary_config', label: '打开 Grass OpenRouter 配置' },
         { id: 'open_embedding_config', label: '打开 Embedding 安全配置' },
         { id: 'open_vendor_config', label: '在右侧打开模型厂商官网；vendor_id 仅允许 openrouter、dashscope、qwen、deepseek、zhipu、moonshot、volcengine、baidu、tencent' },
         { id: 'open_codex_config', label: '打开 Codex 配置并展开' },
@@ -1922,6 +2142,11 @@
           acc[key] = !!contextMap[key];
           return acc;
         }, {}),
+        routing: {
+          mode: 'formal-agent',
+          decisionOwner: 'agent',
+          preclassified: false
+        },
         createdAt: new Date().toISOString()
       };
     }
@@ -2394,6 +2619,7 @@
       var runningWorkspaceSnapshot = isGenerating && activeMainChatWorkspaceSnapshot
         ? Object.assign({}, activeMainChatWorkspaceSnapshot)
         : null;
+      var persistenceWarning = '';
       if (!dirPath) {
         renderWorkspaceDirectoryUi('请先粘贴工作目录路径。');
         return false;
@@ -2408,10 +2634,25 @@
         var data = await response.json();
         if (!response.ok || !data.success) throw new Error(data.error || '目录检查失败');
         var aiWorkRoot = data.workspace.aiWorkRoot || data.workspace.safeWorkRoot || '';
-        saveWorkspaceDirectorySetting(
-          { enabled: true, path: data.workspace.root || dirPath, permission: permission, aiWorkRoot: aiWorkRoot, safeWorkRoot: aiWorkRoot },
-          inspectionConversationId
-        );
+        var inspectedSetting = {
+          enabled: true,
+          path: data.workspace.root || dirPath,
+          permission: permission,
+          aiWorkRoot: aiWorkRoot,
+          safeWorkRoot: aiWorkRoot
+        };
+        var localSaved = saveWorkspaceDirectorySetting(inspectedSetting, inspectionConversationId);
+        var remoteSaved = false;
+        try {
+          await persistWorkspaceDirectorySettingRemote(inspectedSetting, inspectionConversationId);
+          remoteSaved = true;
+        } catch (persistenceError) {
+          console.warn('[WorkspaceDirectory] 后端持久化失败:', persistenceError);
+          persistenceWarning = '\n注意：后端备份暂时失败；当前页面已保存，建议稍后再次确认。';
+        }
+        if (!localSaved && !remoteSaved) {
+          throw new Error('目录检查成功，但配置未能写入本地或后端存储，请检查磁盘空间后重试');
+        }
         deleteWorkspaceConversationRoot(inspectionConversationId);
         setWorkspaceDirectoryPreview(data.workspace.preview || null, inspectionConversationId);
         if (inspectionConversationId !== currentConversationId) return;
@@ -2438,11 +2679,15 @@
             : '未配置工作目录';
           permissionMessage += '\n当前运行任务仍使用“' + previousPermission + '”快照；新设置从下一轮任务生效。下一轮 Codex 会自动按新权限重启运行环境，同时保留当前对话上下文。';
         }
-        renderWorkspaceDirectoryUi('当前会话已启用工作目录：' + (data.workspace.root || dirPath) + '；已索引文件 ' + data.workspace.fileCount + ' 个；权限：' + permission + permissionMessage);
+        renderWorkspaceDirectoryUi('当前会话已启用工作目录：' + (data.workspace.root || dirPath) + '；已索引文件 ' + data.workspace.fileCount + ' 个；权限：' + permission + permissionMessage + persistenceWarning);
         renderWorkspaceDirectoryPreview(workspaceDirectoryLastPreview);
         return true;
       } catch (e) {
-        saveWorkspaceDirectorySetting({ enabled: false, path: dirPath, permission: permission, aiWorkRoot: '' }, inspectionConversationId);
+        var failedSetting = { enabled: false, path: dirPath, permission: permission, aiWorkRoot: '' };
+        saveWorkspaceDirectorySetting(failedSetting, inspectionConversationId);
+        persistWorkspaceDirectorySettingRemote(failedSetting, inspectionConversationId).catch(function(persistenceError) {
+          console.warn('[WorkspaceDirectory] 失败状态后端持久化失败:', persistenceError);
+        });
         deleteWorkspaceConversationRoot(inspectionConversationId);
         setWorkspaceDirectoryPreview(null, inspectionConversationId);
         if (inspectionConversationId !== currentConversationId) return;
@@ -2460,7 +2705,11 @@
     window.confirmWorkspaceDirectory = confirmWorkspaceDirectory;
 
     function clearWorkspaceDirectory() {
-      saveWorkspaceDirectorySetting({ enabled: false, path: '', permission: 'read-only', aiWorkRoot: '' }, currentConversationId);
+      var clearedSetting = { enabled: false, path: '', permission: 'read-only', aiWorkRoot: '' };
+      saveWorkspaceDirectorySetting(clearedSetting, currentConversationId);
+      persistWorkspaceDirectorySettingRemote(clearedSetting, currentConversationId).catch(function(error) {
+        console.warn('[WorkspaceDirectory] 清除状态后端持久化失败:', error);
+      });
       deleteWorkspaceConversationRoot(currentConversationId);
       clearWorkspacePreviewSelections(false);
       setWorkspaceDirectoryPreview(null, currentConversationId);
@@ -2481,22 +2730,131 @@
       provider = normalizeComposerChatProvider(provider);
       if (provider === 'primary') return getConfiguredPrimaryModelLabel();
       if (provider === 'codex') return getConfiguredCodexModelLabel();
+      if (provider === 'pi' || provider === 'opencode') {
+        var runtime = chatBridgeConfig && chatBridgeConfig.agentRuntimes
+          ? chatBridgeConfig.agentRuntimes[provider]
+          : null;
+        return runtime && String(runtime.model || '').trim()
+          ? String(runtime.model).trim()
+          : '未配置';
+      }
       return getConfiguredSecondaryModelLabel();
     }
+
+    function getComposerCodingRuntimeSelection(provider) {
+      provider = normalizeComposerChatProvider(provider);
+      if (provider === 'codex') {
+        var codexSelection = getComposerCodexSelection();
+        return { runtime: 'codex', model: codexSelection.model, reasoningEffort: codexSelection.reasoningEffort };
+      }
+      if (provider !== 'pi' && provider !== 'opencode') return null;
+      var portableSelection = getComposerPortableRuntimeSelection(provider);
+      var runtime = getComposerPortableRuntimeConfig(provider);
+      return {
+        runtime: provider,
+        model: portableSelection.model,
+        reasoningEffort: portableSelection.reasoningEffort,
+        timeoutMs: Number(runtime.timeout_ms || 1800000)
+      };
+    }
+
+    function reconcileWorkspaceUserViewForConversation(conversationId) {
+      var id = String(conversationId || currentConversationId || '').trim();
+      if (!id) return Promise.resolve(null);
+      var payload = getWorkspaceDirectoryPayload(id);
+      if (!payload || !payload.path || !payload.aiWorkRoot) return Promise.resolve(null);
+      var requestKey = [payload.path, payload.aiWorkRoot].join('\u0001').toLowerCase();
+      if (workspaceUserViewReconcileInFlight.has(requestKey)) {
+        return workspaceUserViewReconcileInFlight.get(requestKey);
+      }
+      var request = fetch('/api/chat-bridge/workspace/reconcile-user-view', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      }).then(async function(response) {
+        var data = await response.json().catch(function() { return {}; });
+        if (!response.ok || !data.success) {
+          throw new Error(data.error || '用户查看同步失败');
+        }
+        window.dispatchEvent(new CustomEvent('scholarharness:workspace-user-view-reconciled', {
+          detail: {
+            conversationId: id,
+            userViewRoot: data.userViewRoot || '',
+            artifactCount: Number(data.artifactCount || 0),
+            shortcutCount: Number(data.shortcutCount || 0),
+            workbenchCount: Number(data.workbenchCount || 0)
+          }
+        }));
+        return data;
+      }).catch(function(error) {
+        console.warn('[WorkspaceDirectory] User-view reconciliation failed:', error);
+        return null;
+      }).finally(function() {
+        workspaceUserViewReconcileInFlight.delete(requestKey);
+      });
+      workspaceUserViewReconcileInFlight.set(requestKey, request);
+      return request;
+    }
+    window.getComposerCodingRuntimeSelection = getComposerCodingRuntimeSelection;
 
     function getComposerProviderTroubleshooting(provider) {
       provider = normalizeComposerChatProvider(provider);
       if (provider === 'primary') {
-        return '\n\n建议：请在输入框右侧切换到小牛马，或检查大牛马的 URL 和凭据配置。';
+        return '\n\n建议：请在输入框右侧切换到 Little corse，或检查 Grass 的 OpenRouter API Key。';
       }
       if (provider === 'codex') {
-        return '\n\n建议：请在输入框右侧切换到小牛马，或检查 Codex CLI、模型和推理强度配置。';
+        return '\n\n建议：请在输入框右侧切换到 Little corse，或检查 Codex CLI、模型和推理强度配置。';
       }
-      return '\n\n建议：请检查小牛马 API URL、API Key 和模型名；也可以通过输入框右侧的模型选择器切换服务。';
+      if (provider === 'pi' || provider === 'opencode') {
+        return '\n\n建议：请在配置中心检查 ' + COMPOSER_PROVIDER_LABELS[provider] + ' CLI 路径、登录状态和模型配置，或切换到其他运行时。';
+      }
+      return '\n\n建议：请检查 Little corse API URL、API Key 和模型名；也可以通过输入框右侧的模型选择器切换服务。';
     }
 
     function getComposerFailureDisplay(provider, errorText, requestLabel) {
       var detail = String(errorText || '未知错误').trim();
+      var wordFileBusy = /\.docx(?:['"\s]|$)/i.test(detail)
+        && (/\bEBUSY\b/i.test(detail)
+          || /resource busy or locked|being used by another process|另一个进程.*(?:使用|占用)|文件.*(?:被占用|正在使用)/i.test(detail));
+      if (wordFileBusy) {
+        return {
+          message: 'Word 文件被占用',
+          hint: '\n\n请关闭正在打开该文件的 Word/WPS 窗口及资源管理器预览窗格，等待几秒后重试。无需检查 Pi CLI、登录状态或模型配置。',
+        };
+      }
+      if (/CODEX_MODEL_CAPACITY|selected model is at capacity|model[^\n]{0,80}\bat capacity\b|temporarily unavailable due to (?:high )?(?:load|demand)/i.test(detail)) {
+        var capacityMessage = detail.indexOf('CODEX_MODEL_CAPACITY:') >= 0
+          ? detail.slice(detail.indexOf('CODEX_MODEL_CAPACITY:') + 'CODEX_MODEL_CAPACITY:'.length).trim()
+          : 'Codex 所选模型当前没有可用容量。';
+        return {
+          message: capacityMessage,
+          hint: '\n\n这不是上下文过长，也不是 Codex CLI 或 App Server 连接故障。系统只会在没有正文输出和工具副作用时自动重试、切换本机 Codex 可用模型；仍失败时请稍后重试或在输入框右侧选择其他 Codex 模型。',
+        };
+      }
+      if (/AGENT_CONTEXT_RECOVERY_FAILED/i.test(detail)) {
+        return {
+          message: detail.replace(/^.*AGENT_CONTEXT_RECOVERY_FAILED:\s*/i, ''),
+          hint: '\n\n系统已经自动清理原生 Agent 会话，并用 Scholar Harness 的 compact 摘要安全重试了一次。当前仍超限通常表示本轮附件、Skill 内容或单次请求本身过大；请减少一次性材料，或选择上下文窗口更大的模型。',
+        };
+      }
+      if (/PI_RPC_HANDSHAKE_/i.test(detail)) {
+        return {
+          message: 'Pi CLI 启动握手失败。',
+          hint: '\n\n系统已在旧会话加载失败时自动保留原 JSONL，并尝试从 Scholar Harness 压缩历史新建会话。若新会话仍失败，请升级或重新部署 Pi CLI，并检查安全软件是否阻止 Node/Pi 子进程读写用户目录。',
+        };
+      }
+      if (/context[_\s-]?length[_\s-]?exceeded|input exceeds (?:the )?context|maximum context (?:length|window)|context window[^\n]{0,100}(?:exceed|overflow)|prompt (?:is )?too (?:large|long)|too many (?:input )?tokens|ran out of room in [^\n]{0,80}context/i.test(detail)) {
+        return {
+          message: 'Agent 原生会话超过所选模型的上下文窗口。',
+          hint: '\n\n系统仅在本轮尚未产生正文或工具副作用时自动 compact 并重试；如果已经发生工具活动，为避免重复修改文件会安全停止。请直接重试，系统将从压缩后的 Scholar Harness 历史继续。',
+        };
+      }
+      if (/单条历史消息过长|历史消息过多|history message.*too long|history.*too many/i.test(detail)) {
+        return {
+          message: '对话历史上下文过长，本次请求未发送。',
+          hint: '\n\n系统不会删除本地完整记录。请直接重试；如果仍然出现此提示，可新建对话后继续。切换模型或检查 Codex CLI 无法解决历史长度问题。',
+        };
+      }
       if (/failed to fetch|fetch failed|networkerror|network request failed|load failed/i.test(detail)) {
         return {
           message: '本地服务连接中断，当前请求没有收到完整响应。',
@@ -2509,9 +2867,17 @@
           hint: '\n\n系统会自动重建一次 MCP 会话；若仍失败，请在“插件”页面重新检测对应插件。',
         };
       }
+      // 请求被中断（用户点停止、页面刷新、或连接断开）不是 API 配置错误：
+      // 不能套用“检查 URL/Key/模型”的建议，否则会误导用户。
+      if (/aborted|abort|interrupt|cancel|取消|中断|ChatRequestCancelled/i.test(detail)) {
+        return {
+          message: '已停止生成（请求被中断）。',
+          hint: '\n\n这是主动停止或连接断开，不是 API 配置问题。请重新发送即可；若每次都在同一位置中断，再检查网络或本地服务。',
+        };
+      }
       provider = normalizeComposerChatProvider(provider);
       return {
-        message: (COMPOSER_PROVIDER_LABELS[provider] || '小牛马') + (requestLabel || '连接失败: ') + detail,
+        message: (COMPOSER_PROVIDER_LABELS[provider] || 'Little corse') + (requestLabel || '连接失败: ') + detail,
         hint: getComposerProviderTroubleshooting(provider),
       };
     }
@@ -2669,23 +3035,34 @@
 
     function renderComposerCodexSelectors() {
       var panel = document.getElementById('composerCodexOptions');
+      var settings = document.getElementById('composerCodexRuntimeSettings');
+      var portableSettings = document.getElementById('composerPortableRuntimeSettings');
       var modelSelect = document.getElementById('composerCodexModelSelect');
       var effortSelect = document.getElementById('composerCodexEffortSelect');
       var codexOption = document.querySelector('#composerProviderSelector .composer-provider-option[data-provider="codex"]');
+      var containerOption = document.querySelector('#composerProviderSelector .composer-provider-main-page .composer-provider-option[data-provider="coding-agent"]');
       var menu = document.getElementById('composerProviderMenu');
       if (!panel || !modelSelect || !effortSelect) return;
       var selectedProvider = getComposerChatProvider();
       var selector = document.getElementById('composerProviderSelector');
-      var expanded = selectedProvider === 'codex'
-        && composerCodexFlyoutOpen
+      var expanded = composerCodexFlyoutOpen
         && !!(selector && selector.classList.contains('open'));
       panel.hidden = !expanded;
+      if (settings) settings.hidden = selectedProvider !== 'codex';
+      if (portableSettings) portableSettings.hidden = COMPOSER_PORTABLE_RUNTIME_IDS.indexOf(selectedProvider) === -1;
       if (selector) {
         selector.classList.toggle('codex-flyout-open', expanded);
       }
       if (menu) menu.classList.toggle('codex-page-open', expanded);
       if (codexOption) codexOption.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+      if (containerOption) containerOption.setAttribute('aria-expanded', expanded ? 'true' : 'false');
       if (!expanded) return;
+      if (selectedProvider !== 'codex') {
+        if (COMPOSER_PORTABLE_RUNTIME_IDS.indexOf(selectedProvider) !== -1) {
+          renderComposerPortableRuntimeSelectors(selectedProvider);
+        }
+        return;
+      }
 
       var selection = getComposerCodexSelection();
       var models = dedupeComposerCodexModels(getComposerCodexModels());
@@ -2721,6 +3098,571 @@
         effortSelect.appendChild(option);
       });
     }
+
+    var composerMainChatView = 'menu';
+
+    function getComposerProviderConfig(provider) {
+      if (provider === 'primary') return chatBridgeConfig.primary;
+      if (provider === 'secondary_vision') return chatBridgeConfig.secondaryVision;
+      return chatBridgeConfig.secondary;
+    }
+    function getComposerProviderPool(provider) {
+      var cfg = getComposerProviderConfig(provider);
+      return (cfg && cfg.pool) ? cfg.pool : null;
+    }
+    function getComposerPoolModels(pool) {
+      if (!pool || !pool.models) return [];
+      return pool.models.filter(function (m) { return m.enabled !== false && m.model; });
+    }
+    function getComposerPoolActive(pool) {
+      if (!pool) return null;
+      var models = getComposerPoolModels(pool);
+      for (var i = 0; i < models.length; i++) if (models[i].id === pool.active_model_id) return models[i];
+      return models.length ? models[0] : null;
+    }
+    function isComposerApiEntryConfigured(entry, config) {
+      if (!entry || !String(entry.model || '').trim()) return false;
+      var apiUrl = String(entry.api_url || config && config.apiUrl || '').trim();
+      var hasApiKey = !!(entry.api_key || entry.has_api_key || config && config.hasApiKey);
+      return !!apiUrl && hasApiKey;
+    }
+    function composerModelDisplayName(m) { return m.model || m.label || '选择模型'; }
+    function composerProviderEntryDisplayName(m) {
+      var label = String(m && m.label || '').trim();
+      var model = String(m && m.model || '').trim();
+      return label && model && label !== model ? (label + ' · ' + model) : (label || model || '未命名厂商');
+    }
+
+    function getComposerActivePoolSelection(provider, requiresVision) {
+      var poolProvider = provider === 'primary'
+        ? 'primary'
+        : (provider === 'secondary' && requiresVision ? 'secondary_vision' : 'secondary');
+      var pool = getComposerProviderPool(poolProvider);
+      var active = getComposerPoolActive(pool);
+      if (!active) return null;
+      return {
+        provider: poolProvider,
+        id: active.id,
+        model: active.model || '',
+        apiUrl: active.api_url || '',
+        label: active.label || ''
+      };
+    }
+    window.getComposerActivePoolSelection = getComposerActivePoolSelection;
+
+    function renderComposerMainChatSelectors() {
+      var panel = document.getElementById('composerMainChatOptions');
+      var body = document.getElementById('composerMainChatBody');
+      var title = document.getElementById('composerMainChatOptionsTitle');
+      var selector = document.getElementById('composerProviderSelector');
+      var menu = document.getElementById('composerProviderMenu');
+      if (!panel || !body) return;
+      var selectedProvider = getComposerChatProvider();
+      var expanded = (selectedProvider === 'secondary' || selectedProvider === 'primary')
+        && composerMainChatFlyoutOpen
+        && !!(selector && selector.classList.contains('open'));
+      panel.hidden = !expanded;
+      if (selector) selector.classList.toggle('main-chat-flyout-open', expanded);
+      if (menu) menu.classList.toggle('codex-page-open', expanded);
+      if (!expanded) return;
+      var provider = composerMainChatFlyoutProvider;
+      var label = COMPOSER_PROVIDER_LABELS[provider] || 'Little corse';
+      if (title) title.textContent = label;
+
+      if (composerMainChatView === 'providers') {
+        var pool = getComposerProviderPool(composerMainChatPoolProvider);
+        var entries = getComposerPoolModels(pool);
+        if (!entries.length) {
+          body.innerHTML = '<div class="composer-codex-status">未配置提供方，请先到 设置 → ' + escapeHtml(label) + ' 添加厂家和 API</div>';
+        } else {
+          var providerHtml = '';
+          entries.forEach(function(entry) {
+            var selected = pool && entry.id === pool.active_model_id;
+            var encodedId = encodeURIComponent(String(entry.id || ''));
+            providerHtml += mmItem(
+              composerProviderEntryDisplayName(entry),
+              selected,
+              "openComposerMainChatVendorModels(decodeURIComponent('" + encodedId + "'), event)"
+            );
+          });
+          body.innerHTML = providerHtml;
+        }
+      } else if (composerMainChatView === 'models') {
+        var modelPool = getComposerProviderPool(composerMainChatPoolProvider);
+        var modelEntries = getComposerPoolModels(modelPool);
+        var selectedEntry = modelEntries.find(function(entry) { return entry.id === composerMainChatSelectedEntryId; })
+          || getComposerPoolActive(modelPool)
+          || modelEntries[0];
+        if (!selectedEntry) {
+          body.innerHTML = '<div class="composer-codex-status">未配置可用厂商</div>';
+        } else {
+          body.innerHTML = '<div class="composer-codex-status">正在读取 ' + escapeHtml(selectedEntry.label || '当前厂商') + ' 的模型…</div>';
+          loadComposerModelList(composerMainChatPoolProvider, selectedEntry, body);
+        }
+      } else if (composerMainChatView === 'effort') {
+        var ehtml = '';
+        COMPOSER_MAIN_CHAT_EFFORTS.forEach(function (eff) {
+          var sel = eff === currentReasoningEffort;
+          ehtml += '<button type="button" class="composer-mm-item' + (sel ? ' selected' : '') + '" onclick="handleComposerMainChatEffortChange(\'' + eff + '\', event)">'
+            + '<span>' + eff + '</span>'
+            + (sel ? '<span class="composer-mm-check" aria-hidden="true"></span>' : '')
+            + '</button>';
+        });
+        body.innerHTML = ehtml;
+      } else {
+        var textPoolProvider = provider === 'primary' ? 'primary' : 'secondary';
+        var pool2 = getComposerProviderPool(textPoolProvider);
+        var active = getComposerPoolActive(pool2);
+        var menuHtml =
+            '<button type="button" class="composer-mm-row" onclick="openComposerMainChatModels(event, \'' + textPoolProvider + '\')">'
+          +   '<span class="composer-mm-label">' + (provider === 'secondary' ? '文本厂商 / 模型' : '厂商 / 模型') + '</span>'
+          +   '<span class="composer-mm-value">' + escapeHtml(active ? composerProviderEntryDisplayName(active) : '未配置') + '</span>'
+          +   '<span class="composer-mm-chev">›</span>'
+          + '</button>';
+        if (provider === 'secondary') {
+          var visionPool = getComposerProviderPool('secondary_vision');
+          var visionActive = getComposerPoolActive(visionPool);
+          menuHtml += '<button type="button" class="composer-mm-row" onclick="openComposerMainChatModels(event, \'secondary_vision\')">'
+            + '<span class="composer-mm-label">视觉厂商 / 模型</span>'
+            + '<span class="composer-mm-value">' + escapeHtml(visionActive ? composerProviderEntryDisplayName(visionActive) : '未配置') + '</span>'
+            + '<span class="composer-mm-chev">›</span>'
+            + '</button>';
+        }
+        body.innerHTML = menuHtml
+          + '<button type="button" class="composer-mm-row" onclick="openComposerMainChatEfforts(event)">'
+          +   '<span class="composer-mm-label">推理等级</span>'
+          +   '<span class="composer-mm-value">' + escapeHtml(String(currentReasoningEffort || 'low')) + '</span>'
+          +   '<span class="composer-mm-chev">›</span>'
+          + '</button>';
+      }
+    }
+
+    function mmItem(text, sel, onclick) {
+      return '<button type="button" class="composer-mm-item' + (sel ? ' selected' : '') + '" onclick="' + onclick + '">'
+        + '<span>' + escapeHtml(text) + '</span>' + (sel ? '<span class="composer-mm-check" aria-hidden="true"></span>' : '') + '</button>';
+    }
+
+    function loadComposerModelList(provider, entry, body) {
+      function fallbackList() {
+        if (!entry) {
+          body.innerHTML = '<div class="composer-codex-status">无可用模型</div>';
+          return;
+        }
+        var encodedId = encodeURIComponent(String(entry.id || ''));
+        var encodedModel = encodeURIComponent(String(entry.model || ''));
+        body.innerHTML = mmItem(
+          (entry.model || '使用当前配置模型') + '（当前配置）',
+          true,
+          "selectComposerMainChatModel(decodeURIComponent('" + encodedId + "'), event, decodeURIComponent('" + encodedModel + "'))"
+        ) + '<div class="composer-codex-status">厂商未返回模型列表；可在配置中心手动填写模型名称。</div>';
+      }
+      if (!entry || !entry.api_url) { fallbackList(); return; }
+      fetch('/api/chat-bridge/models', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ agent: provider, apiUrl: entry.api_url, modelId: entry.id })
+      }).then(function (r) { return r.json(); }).then(function (data) {
+        var models = data.models || [];
+        if (!models.length) { fallbackList(); return; }
+        var html = '';
+        models.forEach(function (mo) {
+          var sel = entry.model === mo;
+          var encodedId = encodeURIComponent(String(entry.id || ''));
+          var encodedModel = encodeURIComponent(String(mo || ''));
+          html += mmItem(mo, sel, "selectComposerMainChatModel(decodeURIComponent('" + encodedId + "'), event, decodeURIComponent('" + encodedModel + "'))");
+        });
+        body.innerHTML = html;
+      }).catch(fallbackList);
+    }
+
+    function openComposerMainChatModels(e, poolProvider) {
+      if (e) e.stopPropagation();
+      composerMainChatPoolProvider = poolProvider || composerMainChatFlyoutProvider;
+      composerMainChatSelectedEntryId = '';
+      composerMainChatView = 'providers';
+      renderComposerMainChatSelectors();
+    }
+    function openComposerMainChatVendorModels(entryId, e) {
+      if (e) e.stopPropagation();
+      composerMainChatSelectedEntryId = String(entryId || '');
+      composerMainChatView = 'models';
+      renderComposerMainChatSelectors();
+    }
+    function openComposerMainChatEfforts(e) { if (e) e.stopPropagation(); composerMainChatView = 'effort'; renderComposerMainChatSelectors(); }
+    function composerMainChatBack(e) {
+      if (e) e.stopPropagation();
+      if (composerMainChatView === 'models') { composerMainChatView = 'providers'; renderComposerMainChatSelectors(); return; }
+      if (composerMainChatView !== 'menu') { composerMainChatView = 'menu'; renderComposerMainChatSelectors(); return; }
+      backToComposerProviderMenu(e);
+    }
+    function selectComposerMainChatModel(id, e, model) {
+      if (e) e.stopPropagation();
+      var provider = composerMainChatPoolProvider;
+      var cfg = getComposerProviderConfig(provider);
+      if (!cfg || !cfg.pool) return;
+      var previousPool = JSON.parse(JSON.stringify(cfg.pool));
+      var previousModel = cfg.model;
+      if (cfg && cfg.pool) {
+        cfg.pool.active_model_id = id;
+        cfg.pool.models.forEach(function (m) { if (m.id === id && model) m.model = model; });
+        var act = null;
+        cfg.pool.models.forEach(function (m) { if (m.id === id) act = m; });
+        if (act) cfg.model = act.model;
+      }
+      composerMainChatView = 'menu';
+      renderComposerProviderSelector();
+      var bodySave = { mode: 'api' };
+      bodySave[provider] = { pool: JSON.parse(JSON.stringify(cfg.pool)) };
+      var revision = ++composerMainChatSelectionRevision;
+      var status = document.getElementById('composerMainChatStatus');
+      if (status) {
+        status.textContent = '正在保存模型选择…';
+        status.classList.remove('error');
+      }
+      var saveOperation = composerMainChatSelectionSavePromise.catch(function() {}).then(function() {
+        return fetch('/api/chat-bridge/config', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(bodySave)
+        });
+      }).then(function(response) {
+        return response.json().then(function(data) {
+          if (!response.ok || !data.success) throw new Error(data.error || '模型配置保存失败');
+          return window.ScholarHarnessModelPool.switchActiveModel(provider, id);
+        });
+      }).then(function (r) {
+        if (!r || !r.success) throw new Error(r && r.error ? r.error : '激活模型失败');
+        var status = document.getElementById('composerMainChatStatus');
+        if (status && revision === composerMainChatSelectionRevision) {
+          status.textContent = '已切换到 ' + (r.model || model || '');
+          status.classList.remove('error');
+        }
+        return r;
+      }).catch(function(error) {
+        if (revision === composerMainChatSelectionRevision) {
+          cfg.pool = previousPool;
+          cfg.model = previousModel;
+          renderComposerProviderSelector();
+          var errorStatus = document.getElementById('composerMainChatStatus');
+          if (errorStatus) {
+            errorStatus.textContent = '切换失败：' + (error && error.message ? error.message : String(error));
+            errorStatus.classList.add('error');
+          }
+        }
+        throw error;
+      });
+      composerMainChatSelectionSavePromise = saveOperation;
+      saveOperation.catch(function() {});
+    }
+    window.openComposerMainChatModels = openComposerMainChatModels;
+    window.openComposerMainChatVendorModels = openComposerMainChatVendorModels;
+    window.openComposerMainChatEfforts = openComposerMainChatEfforts;
+    window.composerMainChatBack = composerMainChatBack;
+    window.selectComposerMainChatModel = selectComposerMainChatModel;
+    window.flushComposerMainChatSelectionSave = function() {
+      return composerMainChatSelectionSavePromise;
+    };
+
+    function selectComposerMainChatProvider(provider, event) {
+      if (event) {
+        event.preventDefault();
+        event.stopPropagation();
+      }
+      var normalized = normalizeComposerChatProvider(provider);
+      if (normalized === 'codex') {
+        selectComposerCodexProvider(event);
+        return;
+      }
+      if (normalized === 'pi' || normalized === 'opencode') {
+        setComposerChatProvider(normalized);
+        return;
+      }
+      try {
+        localStorage.setItem(COMPOSER_PROVIDER_KEY, normalized);
+      } catch (e) {}
+      composerMainChatFlyoutProvider = normalized;
+      composerMainChatPoolProvider = normalized === 'primary' ? 'primary' : 'secondary';
+      composerMainChatSelectedEntryId = '';
+      composerMainChatFlyoutOpen = true;
+      composerMainChatView = 'menu';
+      var selector = document.getElementById('composerProviderSelector');
+      if (selector) selector.classList.add('open');
+      renderComposerProviderSelector();
+    }
+    window.selectComposerMainChatProvider = selectComposerMainChatProvider;
+
+    function handleComposerMainChatEffortChange(effort, event) {
+      if (event) event.stopPropagation();
+      if (COMPOSER_MAIN_CHAT_EFFORTS.indexOf(effort) === -1) return;
+      currentReasoningEffort = effort;
+      try {
+        localStorage.setItem('scholarharness_main_chat_reasoning_effort', effort);
+      } catch (e) {}
+      fetch('/api/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ reasoningEffort: effort })
+      }).catch(function(error) {
+        console.warn('[Composer] reasoning_effort sync failed:', error);
+      });
+      var status = document.getElementById('composerMainChatStatus');
+      if (status) {
+        status.textContent = '已保存：' + effort + '，从下一轮请求生效';
+        status.classList.remove('error');
+      }
+      renderComposerProviderSelector();
+    }
+    window.handleComposerMainChatEffortChange = handleComposerMainChatEffortChange;
+
+    function getComposerPortableRuntimeConfig(runtimeId) {
+      if (COMPOSER_PORTABLE_RUNTIME_IDS.indexOf(runtimeId) === -1) return {};
+      return chatBridgeConfig && chatBridgeConfig.agentRuntimes
+        ? chatBridgeConfig.agentRuntimes[runtimeId] || {}
+        : {};
+    }
+
+    function getComposerPortableRuntimeModelMeta(runtimeId, model) {
+      var normalizedModel = String(model || '').trim();
+      return (composerPortableRuntimeModels[runtimeId] || []).find(function(item) {
+        return String(item && (item.slug || item.id) || '').trim() === normalizedModel;
+      }) || null;
+    }
+
+    function getComposerPortableRuntimeEffortLevels(runtimeId, model) {
+      var meta = getComposerPortableRuntimeModelMeta(runtimeId, model) || {};
+      var levels = Array.isArray(meta.supportedReasoningLevels)
+        ? meta.supportedReasoningLevels.map(function(level) {
+            return {
+              effort: String(level && typeof level === 'object' ? level.effort : level || '').trim(),
+              description: String(level && typeof level === 'object' ? level.description || '' : '').trim()
+            };
+          }).filter(function(level) { return !!level.effort; })
+        : [];
+      if (!levels.length) {
+        levels = ['low', 'medium', 'high', 'xhigh'].map(function(effort) {
+          return { effort: effort, description: '' };
+        });
+      }
+      return levels;
+    }
+
+    function getComposerPortableRuntimeSelection(runtimeId) {
+      var runtime = getComposerPortableRuntimeConfig(runtimeId);
+      var availableModels = composerPortableRuntimeModels[runtimeId] || [];
+      var model = String(runtime.model || '').trim();
+      if (!model && availableModels.length) {
+        model = String(availableModels[0].slug || availableModels[0].id || '').trim();
+      }
+      var meta = getComposerPortableRuntimeModelMeta(runtimeId, model) || {};
+      var levels = getComposerPortableRuntimeEffortLevels(runtimeId, model);
+      var supported = levels.map(function(level) { return level.effort; });
+      var effort = String(runtime.reasoning_effort || '').trim();
+      if (supported.indexOf(effort) === -1) {
+        var recommended = String(meta.defaultReasoningLevel || '').trim();
+        effort = supported.indexOf(recommended) !== -1 ? recommended : (supported[0] || 'medium');
+      }
+      return { model: model, reasoningEffort: effort };
+    }
+    window.getComposerPortableRuntimeSelection = getComposerPortableRuntimeSelection;
+
+    function setComposerPortableRuntimeStatus(message, isError, runtimeId) {
+      if (COMPOSER_PORTABLE_RUNTIME_IDS.indexOf(runtimeId) !== -1) {
+        composerPortableRuntimeStatus[runtimeId] = {
+          message: String(message || ''),
+          isError: isError === true
+        };
+        if (getComposerChatProvider() !== runtimeId) return;
+      }
+      var status = document.getElementById('composerPortableRuntimeStatus');
+      if (!status) return;
+      status.textContent = String(message || '');
+      status.classList.toggle('error', isError === true);
+    }
+
+    function updateComposerPortableRuntimeLocalSelection(runtimeId, model, effort) {
+      if (COMPOSER_PORTABLE_RUNTIME_IDS.indexOf(runtimeId) === -1) return null;
+      var normalizedModel = String(model || '').trim();
+      var levels = getComposerPortableRuntimeEffortLevels(runtimeId, normalizedModel);
+      var supported = levels.map(function(level) { return level.effort; });
+      var meta = getComposerPortableRuntimeModelMeta(runtimeId, normalizedModel) || {};
+      var normalizedEffort = String(effort || '').trim();
+      if (supported.indexOf(normalizedEffort) === -1) {
+        var recommended = String(meta.defaultReasoningLevel || '').trim();
+        normalizedEffort = supported.indexOf(recommended) !== -1 ? recommended : (supported[0] || 'medium');
+      }
+      if (!chatBridgeConfig || typeof chatBridgeConfig !== 'object') chatBridgeConfig = {};
+      chatBridgeConfig.agentRuntimes = Object.assign({}, chatBridgeConfig.agentRuntimes || {});
+      chatBridgeConfig.agentRuntimes[runtimeId] = Object.assign({}, chatBridgeConfig.agentRuntimes[runtimeId] || {}, {
+        model: normalizedModel,
+        reasoning_effort: normalizedEffort
+      });
+      try {
+        localStorage.setItem(CHAT_BRIDGE_KEY, JSON.stringify(chatBridgeConfig));
+      } catch (e) {}
+      return { runtimeId: runtimeId, model: normalizedModel, reasoningEffort: normalizedEffort };
+    }
+
+    function renderComposerPortableRuntimeSelectors(runtimeId) {
+      if (COMPOSER_PORTABLE_RUNTIME_IDS.indexOf(runtimeId) === -1) return;
+      var modelLabel = document.getElementById('composerPortableRuntimeModelLabel');
+      var modelSelect = document.getElementById('composerPortableRuntimeModelSelect');
+      var effortSelect = document.getElementById('composerPortableRuntimeEffortSelect');
+      if (!modelSelect || !effortSelect) return;
+      var runtimeLabel = COMPOSER_PROVIDER_LABELS[runtimeId] || runtimeId;
+      if (modelLabel) modelLabel.textContent = runtimeLabel + ' 模型';
+      var savedStatus = composerPortableRuntimeStatus[runtimeId];
+      if (savedStatus && savedStatus.message) {
+        setComposerPortableRuntimeStatus(savedStatus.message, savedStatus.isError, runtimeId);
+      }
+      var selection = getComposerPortableRuntimeSelection(runtimeId);
+      var models = (composerPortableRuntimeModels[runtimeId] || []).slice();
+      if (selection.model && !models.some(function(item) {
+        return String(item && (item.slug || item.id) || '').trim() === selection.model;
+      })) {
+        models.unshift({
+          slug: selection.model,
+          displayName: selection.model,
+          defaultReasoningLevel: selection.reasoningEffort,
+          supportedReasoningLevels: getComposerPortableRuntimeEffortLevels(runtimeId, selection.model),
+          unlisted: true
+        });
+      }
+      modelSelect.innerHTML = '';
+      if (!models.length) {
+        var emptyOption = document.createElement('option');
+        emptyOption.value = '';
+        emptyOption.textContent = '请先在配置中心配置模型厂商';
+        emptyOption.selected = true;
+        modelSelect.appendChild(emptyOption);
+      } else {
+        models.forEach(function(model) {
+          var slug = String(model && (model.slug || model.id) || '').trim();
+          if (!slug) return;
+          var option = document.createElement('option');
+          option.value = slug;
+          var displayName = String(model.displayName || model.display_name || slug);
+          var provider = String(model.provider || '').trim();
+          option.textContent = (provider ? provider + ' · ' : '') + displayName + (model.unlisted ? '（当前配置）' : '');
+          option.selected = slug === selection.model;
+          modelSelect.appendChild(option);
+        });
+      }
+      modelSelect.disabled = !models.length || (!!composerPortableRuntimeModelsPromise[runtimeId] && !composerPortableRuntimeModelsLoaded[runtimeId]);
+
+      effortSelect.innerHTML = '';
+      getComposerPortableRuntimeEffortLevels(runtimeId, selection.model).forEach(function(level) {
+        var option = document.createElement('option');
+        option.value = level.effort;
+        option.textContent = level.effort;
+        option.title = level.description || level.effort;
+        option.selected = level.effort === selection.reasoningEffort;
+        effortSelect.appendChild(option);
+      });
+      effortSelect.disabled = !selection.model;
+    }
+
+    async function loadComposerPortableRuntimeModels(runtimeId, forceRefresh) {
+      if (COMPOSER_PORTABLE_RUNTIME_IDS.indexOf(runtimeId) === -1) return [];
+      if (composerPortableRuntimeModelsPromise[runtimeId] && !forceRefresh) {
+        return composerPortableRuntimeModelsPromise[runtimeId];
+      }
+      composerPortableRuntimeModelsLoaded[runtimeId] = false;
+      setComposerPortableRuntimeStatus('正在读取 ' + (COMPOSER_PROVIDER_LABELS[runtimeId] || runtimeId) + ' 可用模型…', false, runtimeId);
+      renderComposerPortableRuntimeSelectors(runtimeId);
+      composerPortableRuntimeModelsPromise[runtimeId] = (async function() {
+        try {
+          var response = await fetch('/api/chat-bridge/agent-runtimes/' + runtimeId + '/models?_=' + Date.now(), { cache: 'no-store' });
+          var data = await response.json();
+          if (!response.ok || !data.success) throw new Error(data.error || '模型列表读取失败');
+          composerPortableRuntimeModels[runtimeId] = Array.isArray(data.models) ? data.models : [];
+          if (!composerPortableRuntimeModels[runtimeId].length) throw new Error('没有读取到可用模型');
+          setComposerPortableRuntimeStatus('已读取 ' + composerPortableRuntimeModels[runtimeId].length + ' 个模型；选择会自动保存并用于下一次请求。', false, runtimeId);
+        } catch (error) {
+          composerPortableRuntimeModels[runtimeId] = [];
+          setComposerPortableRuntimeStatus('模型读取失败：' + (error && error.message ? error.message : String(error)) + '。请先在配置中心完成厂商 API 或登录配置。', true, runtimeId);
+        } finally {
+          composerPortableRuntimeModelsLoaded[runtimeId] = true;
+          composerPortableRuntimeModelsPromise[runtimeId] = null;
+          var current = getComposerPortableRuntimeSelection(runtimeId);
+          updateComposerPortableRuntimeLocalSelection(runtimeId, current.model, current.reasoningEffort);
+          renderComposerProviderSelector();
+        }
+        return composerPortableRuntimeModels[runtimeId];
+      })();
+      return composerPortableRuntimeModelsPromise[runtimeId];
+    }
+    window.loadComposerPortableRuntimeModels = loadComposerPortableRuntimeModels;
+
+    function flushComposerPortableRuntimeSelectionSave(runtimeId) {
+      if (COMPOSER_PORTABLE_RUNTIME_IDS.indexOf(runtimeId) === -1) return Promise.resolve();
+      if (composerPortableRuntimeSaveTimer[runtimeId]) {
+        clearTimeout(composerPortableRuntimeSaveTimer[runtimeId]);
+        composerPortableRuntimeSaveTimer[runtimeId] = null;
+      }
+      var selection = composerPortableRuntimePendingSelection[runtimeId];
+      if (!selection) return composerPortableRuntimeSaveChain[runtimeId];
+      composerPortableRuntimePendingSelection[runtimeId] = null;
+      composerPortableRuntimeSaveChain[runtimeId] = composerPortableRuntimeSaveChain[runtimeId].catch(function() {}).then(async function() {
+        var runtimePayload = {};
+        runtimePayload[runtimeId] = {
+          model: selection.model,
+          reasoning_effort: selection.reasoningEffort
+        };
+        var response = await fetch('/api/chat-bridge/config', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ agent_runtimes: runtimePayload })
+        });
+        var data = await response.json();
+        if (!response.ok || !data.success) throw new Error(data.error || 'Agent 模型设置保存失败');
+        var current = getComposerPortableRuntimeSelection(runtimeId);
+        if (current.model === selection.model && current.reasoningEffort === selection.reasoningEffort) {
+          setComposerPortableRuntimeStatus('已保存：' + selection.model + ' / ' + selection.reasoningEffort, false, runtimeId);
+        }
+        return selection;
+      }).catch(function(error) {
+        setComposerPortableRuntimeStatus('保存失败：' + (error && error.message ? error.message : String(error)), true, runtimeId);
+        throw error;
+      });
+      return composerPortableRuntimeSaveChain[runtimeId];
+    }
+    window.flushComposerPortableRuntimeSelectionSave = flushComposerPortableRuntimeSelectionSave;
+
+    function scheduleComposerPortableRuntimeSelectionSave(selection) {
+      if (!selection || COMPOSER_PORTABLE_RUNTIME_IDS.indexOf(selection.runtimeId) === -1) return;
+      var runtimeId = selection.runtimeId;
+      composerPortableRuntimePendingSelection[runtimeId] = selection;
+      if (composerPortableRuntimeSaveTimer[runtimeId]) clearTimeout(composerPortableRuntimeSaveTimer[runtimeId]);
+      setComposerPortableRuntimeStatus('正在保存 ' + selection.model + ' / ' + selection.reasoningEffort + '…', false, runtimeId);
+      composerPortableRuntimeSaveTimer[runtimeId] = setTimeout(function() {
+        flushComposerPortableRuntimeSelectionSave(runtimeId).catch(function() {});
+      }, 180);
+    }
+
+    function handleComposerPortableRuntimeModelChange(model, event) {
+      if (event) event.stopPropagation();
+      var runtimeId = getComposerChatProvider();
+      if (COMPOSER_PORTABLE_RUNTIME_IDS.indexOf(runtimeId) === -1) return;
+      var meta = getComposerPortableRuntimeModelMeta(runtimeId, model) || {};
+      var levels = getComposerPortableRuntimeEffortLevels(runtimeId, model).map(function(level) { return level.effort; });
+      var recommended = String(meta.defaultReasoningLevel || '').trim();
+      var effort = levels.indexOf(recommended) !== -1 ? recommended : (levels[0] || 'medium');
+      var selection = updateComposerPortableRuntimeLocalSelection(runtimeId, model, effort);
+      renderComposerProviderSelector();
+      scheduleComposerPortableRuntimeSelectionSave(selection);
+    }
+    window.handleComposerPortableRuntimeModelChange = handleComposerPortableRuntimeModelChange;
+
+    function handleComposerPortableRuntimeEffortChange(effort, event) {
+      if (event) event.stopPropagation();
+      var runtimeId = getComposerChatProvider();
+      if (COMPOSER_PORTABLE_RUNTIME_IDS.indexOf(runtimeId) === -1) return;
+      var current = getComposerPortableRuntimeSelection(runtimeId);
+      var selection = updateComposerPortableRuntimeLocalSelection(runtimeId, current.model, effort);
+      renderComposerProviderSelector();
+      scheduleComposerPortableRuntimeSelectionSave(selection);
+    }
+    window.handleComposerPortableRuntimeEffortChange = handleComposerPortableRuntimeEffortChange;
 
     async function loadComposerCodexModels(forceRefresh) {
       if (composerCodexModelsPromise && !forceRefresh) return composerCodexModelsPromise;
@@ -2824,7 +3766,9 @@
         selector.classList.remove('open');
       }
       composerCodexFlyoutOpen = false;
+      composerMainChatFlyoutOpen = false;
       renderComposerCodexSelectors();
+      renderComposerMainChatSelectors();
     }
 
     function openComposerConfigCenter(event) {
@@ -2853,17 +3797,21 @@
       if (!selector) return;
       selector.querySelectorAll('.composer-provider-option').forEach(function(option) {
         var optionProvider = option.getAttribute('data-provider');
-        var active = optionProvider === provider;
+        var isCodingRuntime = provider === 'codex' || provider === 'pi' || provider === 'opencode';
+        var active = optionProvider === provider || (optionProvider === 'coding-agent' && isCodingRuntime);
         var optionModel = option.querySelector('.composer-provider-option-model');
         if (optionModel) {
-          var configuredModel = getComposerProviderModelHint(optionProvider);
+          var configuredModel = optionProvider === 'coding-agent'
+            ? (isCodingRuntime ? ((COMPOSER_PROVIDER_LABELS[provider] || provider) + ' · ' + getComposerProviderModelHint(provider)) : 'Codex · Pi · OpenCode')
+            : getComposerProviderModelHint(optionProvider);
           optionModel.textContent = configuredModel;
-          option.title = (COMPOSER_PROVIDER_LABELS[optionProvider] || optionProvider) + '：' + configuredModel;
+          option.title = (optionProvider === 'coding-agent' ? 'Agent corse' : (COMPOSER_PROVIDER_LABELS[optionProvider] || optionProvider)) + '：' + configuredModel;
         }
         option.classList.toggle('active', active);
         option.setAttribute('aria-selected', active ? 'true' : 'false');
       });
       renderComposerCodexSelectors();
+      renderComposerMainChatSelectors();
     }
 
     function toggleComposerProviderMenu(event) {
@@ -2872,10 +3820,27 @@
       if (!selector) return;
       var shouldOpen = !selector.classList.contains('open');
       composerCodexFlyoutOpen = false;
+      composerMainChatFlyoutOpen = false;
       selector.classList.toggle('open', shouldOpen);
       renderComposerProviderSelector();
     }
     window.toggleComposerProviderMenu = toggleComposerProviderMenu;
+
+    function openComposerCodingAgentContainer(event) {
+      if (event) {
+        event.preventDefault();
+        event.stopPropagation();
+      }
+      composerMainChatFlyoutOpen = false;
+      composerCodexFlyoutOpen = true;
+      var selector = document.getElementById('composerProviderSelector');
+      if (selector) selector.classList.add('open');
+      renderComposerProviderSelector();
+      var selectedProvider = getComposerChatProvider();
+      if (selectedProvider === 'codex') loadComposerCodexModels(false);
+      else if (COMPOSER_PORTABLE_RUNTIME_IDS.indexOf(selectedProvider) !== -1) loadComposerPortableRuntimeModels(selectedProvider, false);
+    }
+    window.openComposerCodingAgentContainer = openComposerCodingAgentContainer;
 
     function setComposerChatProvider(provider) {
       var normalized = normalizeComposerChatProvider(provider);
@@ -2885,6 +3850,8 @@
       renderComposerProviderSelector();
       if (normalized === 'codex') {
         loadComposerCodexModels(false);
+      } else if (COMPOSER_PORTABLE_RUNTIME_IDS.indexOf(normalized) !== -1) {
+        loadComposerPortableRuntimeModels(normalized, false);
       } else {
         closeComposerProviderMenu();
       }
@@ -2897,7 +3864,9 @@
         event.stopPropagation();
       }
       composerCodexFlyoutOpen = true;
-      setComposerChatProvider('codex');
+      try {
+        localStorage.setItem(COMPOSER_PROVIDER_KEY, 'codex');
+      } catch (e) {}
       var selector = document.getElementById('composerProviderSelector');
       if (selector) selector.classList.add('open');
       renderComposerProviderSelector();
@@ -2905,12 +3874,30 @@
     }
     window.selectComposerCodexProvider = selectComposerCodexProvider;
 
+    function selectComposerPortableRuntimeProvider(runtimeId, event) {
+      if (event) {
+        event.preventDefault();
+        event.stopPropagation();
+      }
+      if (COMPOSER_PORTABLE_RUNTIME_IDS.indexOf(runtimeId) === -1) return;
+      composerCodexFlyoutOpen = true;
+      try {
+        localStorage.setItem(COMPOSER_PROVIDER_KEY, runtimeId);
+      } catch (e) {}
+      var selector = document.getElementById('composerProviderSelector');
+      if (selector) selector.classList.add('open');
+      renderComposerProviderSelector();
+      loadComposerPortableRuntimeModels(runtimeId, false);
+    }
+    window.selectComposerPortableRuntimeProvider = selectComposerPortableRuntimeProvider;
+
     function backToComposerProviderMenu(event) {
       if (event) {
         event.preventDefault();
         event.stopPropagation();
       }
       composerCodexFlyoutOpen = false;
+      composerMainChatFlyoutOpen = false;
       renderComposerProviderSelector();
     }
     window.backToComposerProviderMenu = backToComposerProviderMenu;

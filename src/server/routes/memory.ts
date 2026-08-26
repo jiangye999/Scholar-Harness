@@ -9,7 +9,9 @@ import { researchSessionManager } from '../../research/research-session-manager'
 import {
   getDataDir,
   getMemoryDir,
+  getSessionDir,
   getUploadDir,
+  sanitizeUserId,
 } from '../../utils/paths';
 import * as path from 'path';
 import * as fs from 'fs';
@@ -17,6 +19,11 @@ import * as fsp from 'fs/promises';
 import { z } from 'zod';
 // Bug 修复：从 session 获取 userId，避免账号数据混淆
 import { resolveUserId, getUserIdFromSession } from '../auth-guard-singleton';
+import {
+  getProjectRuntimeContext,
+  resolveProjectRuntimeContext,
+  runWithProjectRuntimeContext,
+} from '../../utils/project-runtime-context';
 
 /**
  * 类型守卫：判断错误是否为 NodeJS 文件系统错误
@@ -27,11 +34,77 @@ function isNodeError(error: unknown): error is NodeJS.ErrnoException {
 
 const router = Router();
 
+router.use((req, res, next) => {
+  try {
+    const body = req.body && typeof req.body === 'object' ? req.body as Record<string, unknown> : {};
+    const projectId = body.projectId ?? req.query.projectId ?? req.get('x-scholar-project-id');
+    const context = resolveProjectRuntimeContext(getDataDir(), projectId);
+    runWithProjectRuntimeContext(context, next);
+  } catch (error) {
+    res.status(400).json({
+      success: false,
+      code: 'INVALID_PROJECT_RUNTIME',
+      error: (error as Error).message || '无效的项目运行上下文',
+    });
+  }
+});
+
 // 使用统一的路径管理模块获取数据目录
 // 这确保 Electron 打包后路径正确
-const dataDir = getDataDir();
-const memoryDir = getMemoryDir();
-const uploadDir = getUploadDir();
+
+type ConversationListEntry = {
+  id: string;
+  title: string;
+  messageCount: number;
+  updatedAt: string;
+};
+
+function resolveConversationMemoryRoot(projectIdValue: unknown): string {
+  const projectId = String(projectIdValue || '').trim();
+  if (!projectId) return getMemoryDir();
+
+  const safeProjectId = path.basename(projectId);
+  if (safeProjectId !== projectId || !safeProjectId.startsWith('project-')) {
+    throw new Error('Invalid project id');
+  }
+
+  const projectsRoot = path.resolve(getDataDir(), 'projects');
+  const projectRoot = path.resolve(projectsRoot, safeProjectId);
+  if (!projectRoot.startsWith(projectsRoot + path.sep)) {
+    throw new Error('Invalid project path');
+  }
+  if (!fs.existsSync(path.join(projectRoot, 'project.json'))) {
+    throw new Error('Project not found');
+  }
+  return path.join(projectRoot, 'memory');
+}
+
+function validateConversationId(conversationIdValue: unknown): string {
+  const conversationId = String(conversationIdValue || '').trim();
+  if (!conversationId || path.basename(conversationId) !== conversationId || !/^[a-zA-Z0-9._-]+$/.test(conversationId)) {
+    throw new Error('Invalid conversation id');
+  }
+  return conversationId;
+}
+
+async function loadConversationSummariesFromRoot(
+  rootDir: string,
+  userIdValue: unknown,
+): Promise<ConversationSummary[]> {
+  const userId = sanitizeUserId(userIdValue);
+  const memoryFile = path.join(rootDir, userId, 'memory.json');
+  try {
+    const content = await fsp.readFile(memoryFile, 'utf-8');
+    const parsed = JSON.parse(content) as { conversations?: unknown };
+    return Array.isArray(parsed.conversations)
+      ? parsed.conversations.filter((item): item is ConversationSummary => Boolean(item && typeof item === 'object'))
+      : [];
+  } catch (error) {
+    if (isNodeError(error) && error.code === 'ENOENT') return [];
+    logger.warn(`[Memory] Failed to read project-scoped conversation summaries for ${userId}:`, error);
+    return [];
+  }
+}
 
 // Bug #5 修复：Memory 更新锁机制，避免并发竞争
 // 每个用户维护一个操作队列，确保串行执行
@@ -92,6 +165,29 @@ export interface ConversationSummary {
 export interface ConversationMessage {
   role: 'user' | 'assistant' | 'system';
   content: string;
+}
+
+export interface ArchivedConversationRecord {
+  id: string;
+  userId: string;
+  title: string;
+  messages: Array<Record<string, unknown>>;
+  messageCount: number;
+  createdAt?: string;
+  updatedAt: string;
+  archivedAt: string;
+  projectId?: string;
+  recoverySources?: Array<{
+    userId: string;
+    reason: string;
+    rawContent: string;
+  }>;
+}
+
+interface ArchivedConversationStore {
+  version: 1;
+  updatedAt: string;
+  conversations: ArchivedConversationRecord[];
 }
 
 export interface UserMemory {
@@ -1211,7 +1307,7 @@ function parseSyncedMemoryFile(content: string, fallbackKey: string): { key: str
 }
 
 async function recoverMemoryFromSyncedFiles(userId: string): Promise<UserMemory | null> {
-  const userMemoryDir = path.join(memoryDir, userId);
+  const userMemoryDir = path.join(getMemoryDir(), userId);
   const candidates: Array<{ fileName: string; fallbackKey: string }> = [
     { fileName: '试验资料总结.txt', fallbackKey: 'experiment_summary_structured' },
     { fileName: '数据详细总结.txt', fallbackKey: 'data_summary_structured' },
@@ -1261,11 +1357,11 @@ function escapeRegExp(value: string): string {
 }
 
 function getPendingMemoryEditPath(userId: string): string {
-  return path.join(memoryDir, userId, 'pending-memory-edit.json');
+  return path.join(getMemoryDir(), userId, 'pending-memory-edit.json');
 }
 
 function getMemoryEditBackupDir(userId: string): string {
-  return path.join(memoryDir, userId, 'edit-backups');
+  return path.join(getMemoryDir(), userId, 'edit-backups');
 }
 
 function normalizeEditInstruction(value: string): string {
@@ -1604,7 +1700,7 @@ async function createMemoryEditBackup(userId: string, edit: PendingMemoryEdit): 
   const backupId = `backup-${new Date().toISOString().replace(/[:.]/g, '-')}-${edit.id}`;
   const backupDir = path.join(getMemoryEditBackupDir(userId), backupId);
   await fsp.mkdir(backupDir, { recursive: true });
-  const userMemoryDir = path.join(memoryDir, userId);
+  const userMemoryDir = path.join(getMemoryDir(), userId);
   const files = ['memory.json', '试验资料总结.txt', '数据详细总结.txt', 'pending-memory-edit.json'];
   for (const fileName of files) {
     const source = path.join(userMemoryDir, fileName);
@@ -1633,7 +1729,7 @@ async function removeSyncedFileForMemoryKey(userId: string, key: string): Promis
       ? '数据详细总结.txt'
       : '';
   if (!fileName) return;
-  await fsp.rm(path.join(memoryDir, userId, fileName), { force: true }).catch(() => undefined);
+  await fsp.rm(path.join(getMemoryDir(), userId, fileName), { force: true }).catch(() => undefined);
 }
 
 export async function applyPendingMemoryEdit(userId: string): Promise<MemoryEditApplyResult> {
@@ -1713,7 +1809,7 @@ export async function rollbackMemoryEdit(userId: string, backupId?: string): Pro
   }
 
   const backupDir = path.join(backupRoot, selectedBackupId);
-  const userMemoryDir = path.join(memoryDir, userId);
+  const userMemoryDir = path.join(getMemoryDir(), userId);
   const memoryBackup = path.join(backupDir, 'memory.json');
   if (!fs.existsSync(memoryBackup)) {
     return { success: false, backupId: selectedBackupId, message: '备份缺少 memory.json，无法回滚。' };
@@ -1785,7 +1881,7 @@ export function removeFromDeletedKeys(memory: UserMemory, key: string): void {
  * 当指定 userId 无数据时，自动检查 web-user 的数据（兼容匿名用户数据迁移）
  */
 export async function loadUserMemory(userId: string): Promise<UserMemory> {
-  const userMemoryDir = path.join(memoryDir, userId);
+  const userMemoryDir = path.join(getMemoryDir(), userId);
   await fsp.mkdir(userMemoryDir, { recursive: true });
   
   const memoryFile = path.join(userMemoryDir, 'memory.json');
@@ -1820,7 +1916,7 @@ export async function loadUserMemory(userId: string): Promise<UserMemory> {
       // Bug fix: 如果不是 web-user，尝试 fallback 到 web-user 的数据
       if (userId !== 'web-user') {
         try {
-          const webUserFile = path.join(memoryDir, 'web-user', 'memory.json');
+          const webUserFile = path.join(getMemoryDir(), 'web-user', 'memory.json');
           const webContent = await fsp.readFile(webUserFile, 'utf-8');
           const webParsed = JSON.parse(webContent);
           const webValidated = UserMemorySchema.parse(webParsed);
@@ -1872,7 +1968,7 @@ export async function loadUserMemory(userId: string): Promise<UserMemory> {
  * 保存用户记忆（异步）
  */
 export async function saveUserMemory(memory: UserMemory): Promise<void> {
-  const userMemoryDir = path.join(memoryDir, memory.userId);
+  const userMemoryDir = path.join(getMemoryDir(), memory.userId);
   await fsp.mkdir(userMemoryDir, { recursive: true });
   
   const memoryFile = path.join(userMemoryDir, 'memory.json');
@@ -2066,7 +2162,7 @@ export function isSimilarValue(existingValue: string, newValue: string): boolean
  * 优先级：_structured 版本 > 原始版本
  */
 export async function saveMemoryToFiles(userId: string, memory: UserMemory): Promise<void> {
-  const userMemoryDir = path.join(memoryDir, userId);
+  const userMemoryDir = path.join(getMemoryDir(), userId);
   await fsp.mkdir(userMemoryDir, { recursive: true });
 
   // 1. 试验资料总结.txt - 优先使用 _structured 版本
@@ -2245,8 +2341,8 @@ router.get('/detail/:userId', async (req: Request, res: Response) => {
     };
     
     // 1. 会话状态
-    const sessionFile = path.join(dataDir, 'sessions', `${userId}.json`);
-    const webUserSessionFile = path.join(dataDir, 'sessions', 'web-user.json');
+    const sessionFile = path.join(getSessionDir(), `${userId}.json`);
+    const webUserSessionFile = path.join(getSessionDir(), 'web-user.json');
     const sessionCheck = checkPathWithFallback(sessionFile, webUserSessionFile);
     
     if (sessionCheck.exists) {
@@ -2271,7 +2367,7 @@ router.get('/detail/:userId', async (req: Request, res: Response) => {
     }
     
     // 2. 论文草稿
-    const draftsDir = path.join(dataDir, 'sessions', userId, 'drafts');
+    const draftsDir = path.join(getSessionDir(), userId, 'drafts');
     const draftsCheck = {
       foundPath: draftsDir,
       exists: fs.existsSync(draftsDir),
@@ -2312,8 +2408,8 @@ router.get('/detail/:userId', async (req: Request, res: Response) => {
     }
     
     // 3. 文献数据库 - 这是用户反馈的核心问题
-    const literatureFile = path.join(uploadDir, userId, 'literature.json');
-    const webUserLiteratureFile = path.join(uploadDir, 'web-user', 'literature.json');
+    const literatureFile = path.join(getUploadDir(), userId, 'literature.json');
+    const webUserLiteratureFile = path.join(getUploadDir(), 'web-user', 'literature.json');
     const litCheck = checkPathWithFallback(literatureFile, webUserLiteratureFile);
     
     if (litCheck.exists) {
@@ -2352,8 +2448,8 @@ router.get('/detail/:userId', async (req: Request, res: Response) => {
     }
     
     // 4. 索引缓存
-    const indexCacheDir = path.join(uploadDir, userId, 'index-cache');
-    const webUserIndexCacheDir = path.join(uploadDir, 'web-user', 'index-cache');
+    const indexCacheDir = path.join(getUploadDir(), userId, 'index-cache');
+    const webUserIndexCacheDir = path.join(getUploadDir(), 'web-user', 'index-cache');
     const indexCacheCheck = checkPathWithFallback(indexCacheDir, webUserIndexCacheDir);
     
     if (indexCacheCheck.exists) {
@@ -2388,8 +2484,8 @@ router.get('/detail/:userId', async (req: Request, res: Response) => {
     }
     
     // 5. 期刊风格文件
-    const journalStylesDir = path.join(uploadDir, userId, 'journal-styles');
-    const webUserJournalStylesDir = path.join(uploadDir, 'web-user', 'journal-styles');
+    const journalStylesDir = path.join(getUploadDir(), userId, 'journal-styles');
+    const webUserJournalStylesDir = path.join(getUploadDir(), 'web-user', 'journal-styles');
     const journalStylesCheck = checkPathWithFallback(journalStylesDir, webUserJournalStylesDir);
     
     if (journalStylesCheck.exists) {
@@ -2433,7 +2529,7 @@ router.get('/detail/:userId', async (req: Request, res: Response) => {
       memoryDimensions,
       memoryCategories: MEMORY_CATEGORY_DEFINITIONS,
       memoryUpdatedAt: memory.updatedAt,
-      memorySourceFile: path.join(memoryDir, memory.userId || userId, 'memory.json'),
+      memorySourceFile: path.join(getMemoryDir(), memory.userId || userId, 'memory.json'),
       
       // 存储维度：辅助数据文件/目录（文件存储、索引缓存等）
       // 注意：这些只是"物理文件/目录"的存在状态，不代表记忆内容是否丢失
@@ -2478,11 +2574,11 @@ router.get('/storage-info/:userId', async (req: Request, res: Response) => {
 
     // 检查各存储路径
     const pathsToCheck = [
-      { name: '记忆数据', path: path.join(memoryDir, userId) },
-      { name: '会话状态', path: path.join(dataDir, 'sessions', `${userId}.json`) },
-      { name: '草稿目录', path: path.join(dataDir, 'sessions', userId, 'drafts') },
-      { name: '文献数据', path: path.join(uploadDir, userId, 'literature.json') },
-      { name: '索引缓存', path: path.join(uploadDir, userId, 'index-cache') },
+      { name: '记忆数据', path: path.join(getMemoryDir(), userId) },
+      { name: '会话状态', path: path.join(getSessionDir(), `${userId}.json`) },
+      { name: '草稿目录', path: path.join(getSessionDir(), userId, 'drafts') },
+      { name: '文献数据', path: path.join(getUploadDir(), userId, 'literature.json') },
+      { name: '索引缓存', path: path.join(getUploadDir(), userId, 'index-cache') },
     ];
 
     for (const item of pathsToCheck) {
@@ -2651,7 +2747,7 @@ router.post('/clear-selected/:userId', async (req: Request, res: Response) => {
         
         const keysToCleanFromSession = memoryKeys.filter((key: string) => SESSION_FIELD_MAPPING[key]);
         if (keysToCleanFromSession.length > 0) {
-          const sessionFile = path.join(dataDir, 'sessions', `${userId}.json`);
+          const sessionFile = path.join(getSessionDir(), `${userId}.json`);
           try {
             if (fs.existsSync(sessionFile)) {
               const sessionContent = fs.readFileSync(sessionFile, 'utf-8');
@@ -2677,7 +2773,7 @@ router.post('/clear-selected/:userId', async (req: Request, res: Response) => {
         logger.info('[Memory] Deleted keys are not protected; AI can automatically extract and update them again');
 
         // P1 修复：同步清理对应的 .txt 辅助文件，避免磁盘与 memory.json 不一致
-        const userMemoryDir = path.join(memoryDir, userId);
+        const userMemoryDir = path.join(getMemoryDir(), userId);
         const txtFilesToClean: Record<string, string> = {
           'experiment_summary': path.join(userMemoryDir, '试验资料总结.txt'),
           'experiment_summary_structured': path.join(userMemoryDir, '试验资料总结.txt'),
@@ -2703,7 +2799,7 @@ router.post('/clear-selected/:userId', async (req: Request, res: Response) => {
       switch (dimension) {
         case 'session': {
           // 清空会话状态
-          const sessionFile = path.join(dataDir, 'sessions', `${userId}.json`);
+          const sessionFile = path.join(getSessionDir(), `${userId}.json`);
           try {
             if (fs.existsSync(sessionFile)) {
               fs.unlinkSync(sessionFile);
@@ -2725,7 +2821,7 @@ router.post('/clear-selected/:userId', async (req: Request, res: Response) => {
         
         case 'drafts': {
           // 清空论文草稿
-          const draftsDir = path.join(dataDir, 'sessions', userId, 'drafts');
+          const draftsDir = path.join(getSessionDir(), userId, 'drafts');
           try {
             if (fs.existsSync(draftsDir)) {
               fs.rmSync(draftsDir, { recursive: true, force: true });
@@ -2747,7 +2843,7 @@ router.post('/clear-selected/:userId', async (req: Request, res: Response) => {
         
         case 'literature': {
           // 清空文献数据库
-          const literatureFile = path.join(uploadDir, userId, 'literature.json');
+          const literatureFile = path.join(getUploadDir(), userId, 'literature.json');
           try {
             if (fs.existsSync(literatureFile)) {
               fs.unlinkSync(literatureFile);
@@ -2769,7 +2865,7 @@ router.post('/clear-selected/:userId', async (req: Request, res: Response) => {
         
         case 'indexCache': {
           // 清空索引缓存
-          const indexCacheDir = path.join(uploadDir, userId, 'index-cache');
+          const indexCacheDir = path.join(getUploadDir(), userId, 'index-cache');
           try {
             if (fs.existsSync(indexCacheDir)) {
               fs.rmSync(indexCacheDir, { recursive: true, force: true });
@@ -2791,7 +2887,7 @@ router.post('/clear-selected/:userId', async (req: Request, res: Response) => {
         
         case 'journalStyles': {
           // 清空期刊风格文件
-          const journalStylesDir = path.join(uploadDir, userId, 'journal-styles');
+          const journalStylesDir = path.join(getUploadDir(), userId, 'journal-styles');
           try {
             if (fs.existsSync(journalStylesDir)) {
               fs.rmSync(journalStylesDir, { recursive: true, force: true });
@@ -2813,7 +2909,7 @@ router.post('/clear-selected/:userId', async (req: Request, res: Response) => {
         
         case 'memoryDir': {
           // 清空用户记忆目录（仅 data/memory/{userId}/，不包含 session/drafts 等）
-          const userMemoryDir = path.join(memoryDir, userId);
+          const userMemoryDir = path.join(getMemoryDir(), userId);
           try {
             if (fs.existsSync(userMemoryDir)) {
               fs.rmSync(userMemoryDir, { recursive: true, force: true });
@@ -3000,7 +3096,7 @@ router.delete('/clear/:userId', async (req: Request, res: Response) => {
     const results: { path: string; status: 'deleted' | 'not_found' | 'error'; error?: string }[] = [];
 
     // 1. 清空用户记忆目录 (data/memory/{userId}/)
-    const userMemoryDir = path.join(memoryDir, userId);
+    const userMemoryDir = path.join(getMemoryDir(), userId);
     try {
       if (fs.existsSync(userMemoryDir)) {
         fs.rmSync(userMemoryDir, { recursive: true, force: true });
@@ -3016,7 +3112,7 @@ router.delete('/clear/:userId', async (req: Request, res: Response) => {
     }
 
     // 2. 清空用户会话文件 (data/sessions/{userId}.json)
-    const sessionFile = path.join(dataDir, 'sessions', `${userId}.json`);
+    const sessionFile = path.join(getSessionDir(), `${userId}.json`);
     try {
       if (fs.existsSync(sessionFile)) {
         fs.unlinkSync(sessionFile);
@@ -3032,7 +3128,7 @@ router.delete('/clear/:userId', async (req: Request, res: Response) => {
     }
 
     // 3. 清空用户草稿目录 (data/sessions/{userId}/drafts/)
-    const draftsDir = path.join(dataDir, 'sessions', userId, 'drafts');
+    const draftsDir = path.join(getSessionDir(), userId, 'drafts');
     try {
       if (fs.existsSync(draftsDir)) {
         fs.rmSync(draftsDir, { recursive: true, force: true });
@@ -3048,7 +3144,7 @@ router.delete('/clear/:userId', async (req: Request, res: Response) => {
     }
 
     // 4. 清空用户文献数据库 (data/uploads/{userId}/literature.json)
-    const literatureFile = path.join(uploadDir, userId, 'literature.json');
+    const literatureFile = path.join(getUploadDir(), userId, 'literature.json');
     try {
       if (fs.existsSync(literatureFile)) {
         fs.unlinkSync(literatureFile);
@@ -3064,7 +3160,7 @@ router.delete('/clear/:userId', async (req: Request, res: Response) => {
     }
 
     // 5. 清空索引缓存 (data/uploads/{userId}/index-cache/)
-    const indexCacheDir = path.join(uploadDir, userId, 'index-cache');
+    const indexCacheDir = path.join(getUploadDir(), userId, 'index-cache');
     try {
       if (fs.existsSync(indexCacheDir)) {
         fs.rmSync(indexCacheDir, { recursive: true, force: true });
@@ -3080,7 +3176,7 @@ router.delete('/clear/:userId', async (req: Request, res: Response) => {
     }
 
     // 6. 清空期刊风格文件 (data/uploads/{userId}/journal-styles/)
-    const journalStylesDir = path.join(uploadDir, userId, 'journal-styles');
+    const journalStylesDir = path.join(getUploadDir(), userId, 'journal-styles');
     try {
       if (fs.existsSync(journalStylesDir)) {
         fs.rmSync(journalStylesDir, { recursive: true, force: true });
@@ -3096,7 +3192,7 @@ router.delete('/clear/:userId', async (req: Request, res: Response) => {
     }
 
     // 7. 清空用户整个会话子目录 (data/sessions/{userId}/)
-    const userSessionDir = path.join(dataDir, 'sessions', userId);
+    const userSessionDir = path.join(getSessionDir(), userId);
     try {
       if (fs.existsSync(userSessionDir)) {
         fs.rmSync(userSessionDir, { recursive: true, force: true });
@@ -3794,25 +3890,206 @@ ${effectiveDataContent}
  * 保存对话消息到服务端文件（持久化，而非仅 localStorage）
  * 每个对话存为 data/memory/{userId}/conversations/{conversationId}.json
  */
+function getArchivedConversationFile(rootDir: string, userIdValue: unknown): string {
+  // One archive per project memory root. Conversation ids are globally unique,
+  // so this also suppresses legacy web-user copies after account migration.
+  void userIdValue;
+  return path.join(rootDir, 'archived-conversations.json');
+}
+
+async function loadArchivedConversationStore(
+  rootDir: string,
+  userIdValue: unknown,
+): Promise<ArchivedConversationStore> {
+  const archiveFile = getArchivedConversationFile(rootDir, userIdValue);
+  try {
+    const parsed = JSON.parse(await fsp.readFile(archiveFile, 'utf-8')) as Partial<ArchivedConversationStore>;
+    return {
+      version: 1,
+      updatedAt: typeof parsed.updatedAt === 'string' ? parsed.updatedAt : '',
+      conversations: Array.isArray(parsed.conversations)
+        ? parsed.conversations.filter((item): item is ArchivedConversationRecord => Boolean(
+            item && typeof item === 'object' && typeof item.id === 'string'
+          ))
+        : [],
+    };
+  } catch (error) {
+    if (isNodeError(error) && error.code === 'ENOENT') {
+      return { version: 1, updatedAt: '', conversations: [] };
+    }
+    throw error;
+  }
+}
+
+async function getArchivedConversationIds(rootDir: string, userIdValue: unknown): Promise<Set<string>> {
+  const store = await loadArchivedConversationStore(rootDir, userIdValue);
+  return new Set(store.conversations.map(item => item.id));
+}
+
+function getConversationPersistenceLockKey(rootDir: string, userIdValue: unknown): string {
+  return `${path.resolve(rootDir)}\u0001${sanitizeUserId(userIdValue)}`;
+}
+
+export async function archiveConversationMessages(input: {
+  userId: string;
+  conversationId: string;
+  rootDir?: string;
+  projectId?: string;
+  title?: string;
+  messages?: Array<Record<string, unknown>>;
+}): Promise<{ record: ArchivedConversationRecord; archiveFile: string }> {
+  const rootDir = input.rootDir || getMemoryDir();
+  const userId = sanitizeUserId(input.userId);
+  const conversationId = validateConversationId(input.conversationId);
+  const candidateUserIds = Array.from(new Set([userId, ...(userId === 'web-user' ? [] : ['web-user'])]));
+  const userDir = path.join(rootDir, userId);
+  const archiveFile = getArchivedConversationFile(rootDir, userId);
+
+  return withMemoryLock(getConversationPersistenceLockKey(rootDir, userId), async () => {
+    const activeRecords: Array<{ userId: string; file: string; data: Record<string, unknown> }> = [];
+    const malformedActiveFiles: Array<{ userId: string; file: string; reason: string; rawContent: string }> = [];
+    for (const candidateUserId of candidateUserIds) {
+      const file = path.join(rootDir, candidateUserId, 'conversations', `${conversationId}.json`);
+      let raw = '';
+      try {
+        raw = await fsp.readFile(file, 'utf-8');
+        if (!raw.trim()) {
+          malformedActiveFiles.push({ userId: candidateUserId, file, reason: 'empty file', rawContent: raw });
+          continue;
+        }
+        const parsed = JSON.parse(raw) as unknown;
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+          malformedActiveFiles.push({ userId: candidateUserId, file, reason: 'root value is not an object', rawContent: raw });
+          continue;
+        }
+        const data = parsed as Record<string, unknown>;
+        activeRecords.push({ userId: candidateUserId, file, data });
+      } catch (error) {
+        if (isNodeError(error) && error.code === 'ENOENT') continue;
+        if (error instanceof SyntaxError) {
+          malformedActiveFiles.push({ userId: candidateUserId, file, reason: error.message, rawContent: raw });
+          continue;
+        }
+        throw error;
+      }
+    }
+
+    const incomingMessages = Array.isArray(input.messages) ? input.messages : [];
+    const bestActiveRecord = activeRecords.reduce<typeof activeRecords[number] | undefined>((best, candidate) => {
+      const bestCount = Array.isArray(best?.data.messages) ? best.data.messages.length : 0;
+      const candidateCount = Array.isArray(candidate.data.messages) ? candidate.data.messages.length : 0;
+      return !best || candidateCount > bestCount ? candidate : best;
+    }, undefined);
+    const storedMessages = Array.isArray(bestActiveRecord?.data.messages)
+      ? bestActiveRecord.data.messages as Array<Record<string, unknown>>
+      : [];
+    const messages = incomingMessages.length >= storedMessages.length ? incomingMessages : storedMessages;
+    if (activeRecords.length === 0 && malformedActiveFiles.length === 0 && messages.length === 0) {
+      throw Object.assign(new Error('Conversation not found'), { code: 'ENOENT' });
+    }
+    malformedActiveFiles.forEach(item => {
+      logger.warn(`[Memory] Preserving malformed conversation source in archive because ${item.file} is ${item.reason}`);
+    });
+
+    const now = new Date().toISOString();
+    const store = await loadArchivedConversationStore(rootDir, userId);
+    const existingIndex = store.conversations.findIndex(item => item.id === conversationId);
+    const existing = existingIndex >= 0 ? store.conversations[existingIndex] : undefined;
+    const firstUserMessage = messages.find(message => message?.role === 'user');
+    const firstUserContent = String(firstUserMessage?.content || '').replace(/\s+/g, ' ').trim();
+    const record: ArchivedConversationRecord = {
+      id: conversationId,
+      userId,
+      title: String(input.title || bestActiveRecord?.data.title || existing?.title || firstUserContent || '已归档对话').trim(),
+      messages,
+      messageCount: messages.length,
+      createdAt: String(bestActiveRecord?.data.createdAt || existing?.createdAt || '').trim() || undefined,
+      updatedAt: String(bestActiveRecord?.data.updatedAt || existing?.updatedAt || now),
+      archivedAt: now,
+      projectId: String(input.projectId || existing?.projectId || '').trim() || undefined,
+      recoverySources: malformedActiveFiles.length > 0
+        ? malformedActiveFiles.map(item => ({
+            userId: item.userId,
+            reason: item.reason,
+            rawContent: item.rawContent,
+          }))
+        : undefined,
+    };
+    if (existingIndex >= 0) store.conversations[existingIndex] = record;
+    else store.conversations.push(record);
+    store.conversations.sort((left, right) => Date.parse(right.archivedAt) - Date.parse(left.archivedAt));
+    store.updatedAt = now;
+    await fsp.mkdir(userDir, { recursive: true });
+    await writeJsonFileAtomic(archiveFile, store);
+
+    for (const candidateUserId of candidateUserIds) {
+      const memoryFile = path.join(rootDir, candidateUserId, 'memory.json');
+      try {
+        const rawMemory = await fsp.readFile(memoryFile, 'utf-8');
+        if (!rawMemory.trim()) {
+          logger.warn(`[Memory] Skipped summary cleanup because ${memoryFile} is empty`);
+          continue;
+        }
+        const parsedMemory = JSON.parse(rawMemory) as unknown;
+        if (!parsedMemory || typeof parsedMemory !== 'object' || Array.isArray(parsedMemory)) {
+          logger.warn(`[Memory] Skipped summary cleanup because ${memoryFile} does not contain an object`);
+          continue;
+        }
+        const memoryData = parsedMemory as Record<string, unknown>;
+        const summaries = Array.isArray(memoryData.conversations) ? memoryData.conversations : [];
+        memoryData.conversations = summaries.filter(item => {
+          return !item || typeof item !== 'object' || String((item as Record<string, unknown>).id || '') !== conversationId;
+        });
+        memoryData.updatedAt = now;
+        await writeJsonFileAtomic(memoryFile, memoryData);
+      } catch (error) {
+        if (isNodeError(error) && error.code === 'ENOENT') continue;
+        if (error instanceof SyntaxError) {
+          logger.warn(`[Memory] Skipped summary cleanup because ${memoryFile} contains invalid JSON: ${error.message}`);
+          continue;
+        }
+        throw error;
+      }
+    }
+
+    await Promise.all(
+      activeRecords.map(item => item.file)
+        .concat(malformedActiveFiles.map(item => item.file))
+        .map(file => fsp.rm(file, { force: true })),
+    );
+    logger.info(`[Memory] Archived conversation ${conversationId} for ${userId}`);
+    return { record, archiveFile };
+  });
+}
+
 export async function saveConversationMessages(
   userId: string,
   conversationId: string,
-  messages: Array<{ role: string; content: string }>
-): Promise<void> {
-  const convDir = path.join(memoryDir, userId, 'conversations');
+  messages: Array<{ role: string; content: string }>,
+  rootDir: string = getMemoryDir(),
+): Promise<boolean> {
+  const safeUserId = sanitizeUserId(userId);
+  const safeConversationId = validateConversationId(conversationId);
+  const archivedIds = await getArchivedConversationIds(rootDir, safeUserId);
+  if (archivedIds.has(safeConversationId)) {
+    logger.info(`[Memory] Ignored late save for archived conversation ${safeConversationId}`);
+    return false;
+  }
+  const convDir = path.join(rootDir, safeUserId, 'conversations');
   await fsp.mkdir(convDir, { recursive: true });
   
-  const convFile = path.join(convDir, `${conversationId}.json`);
+  const convFile = path.join(convDir, `${safeConversationId}.json`);
   const data = {
-    id: conversationId,
-    userId,
+    id: safeConversationId,
+    userId: safeUserId,
     messages,
     messageCount: messages.length,
     updatedAt: new Date().toISOString(),
   };
   
-  await fsp.writeFile(convFile, JSON.stringify(data, null, 2), 'utf-8');
-  logger.info(`[Memory] Saved conversation ${conversationId} for ${userId} (${messages.length} messages)`);
+  await writeJsonFileAtomic(convFile, data);
+  logger.info(`[Memory] Saved conversation ${safeConversationId} for ${safeUserId} (${messages.length} messages)`);
+  return true;
 }
 
 /**
@@ -3820,9 +4097,12 @@ export async function saveConversationMessages(
  */
 export async function loadConversationMessages(
   userId: string,
-  conversationId: string
+  conversationId: string,
+  rootDir: string = getMemoryDir(),
 ): Promise<Array<{ role: string; content: string }>> {
-  const convFile = path.join(memoryDir, userId, 'conversations', `${conversationId}.json`);
+  const safeUserId = sanitizeUserId(userId);
+  const safeConversationId = validateConversationId(conversationId);
+  const convFile = path.join(rootDir, safeUserId, 'conversations', `${safeConversationId}.json`);
   
   try {
     const content = await fsp.readFile(convFile, 'utf-8');
@@ -3841,28 +4121,45 @@ export async function loadConversationMessages(
  */
 export async function listConversations(
   userId: string,
-  limit?: number
-): Promise<Array<{ id: string; messageCount: number; updatedAt: string }>> {
-  const convDir = path.join(memoryDir, userId, 'conversations');
+  limit?: number,
+  rootDir: string = getMemoryDir(),
+): Promise<ConversationListEntry[]> {
+  const safeUserId = sanitizeUserId(userId);
+  const convDir = path.join(rootDir, safeUserId, 'conversations');
   
   try {
+    const archivedIds = await getArchivedConversationIds(rootDir, safeUserId);
     const files = await fsp.readdir(convDir);
-    const conversations: Array<{ id: string; messageCount: number; updatedAt: string }> = [];
-    
-    for (const file of files.filter(f => f.endsWith('.json'))) {
+    const entries = await Promise.all(files.filter(file => {
+      return file.endsWith('.json') && !archivedIds.has(file.slice(0, -'.json'.length));
+    }).map(async (file): Promise<ConversationListEntry | null> => {
       try {
         const filePath = path.join(convDir, file);
         const content = await fsp.readFile(filePath, 'utf-8');
         const data = JSON.parse(content);
-        conversations.push({
+        const messages = Array.isArray(data.messages) ? data.messages : [];
+        const firstUserMessage = messages.find((message: unknown) => {
+          if (!message || typeof message !== 'object') return false;
+          const candidate = message as { role?: unknown; content?: unknown };
+          return candidate.role === 'user' && String(candidate.content || '').trim().length > 0;
+        }) as { content?: unknown } | undefined;
+        const firstUserContent = String(firstUserMessage?.content || '').replace(/\s+/g, ' ').trim();
+        const storedTitle = typeof data.title === 'string' ? data.title.trim() : '';
+        const title = storedTitle || (firstUserContent
+          ? firstUserContent.slice(0, 30) + (firstUserContent.length > 30 ? '...' : '')
+          : '历史对话');
+        return {
           id: data.id || file.replace('.json', ''),
-          messageCount: data.messageCount || 0,
-          updatedAt: data.updatedAt || new Date().toISOString(),
-        });
+          title,
+          messageCount: Number.isFinite(Number(data.messageCount)) ? Number(data.messageCount) : messages.length,
+          updatedAt: data.updatedAt || '',
+        };
       } catch {
         // 跳过损坏的文件
+        return null;
       }
-    }
+    }));
+    const conversations = entries.filter((item): item is ConversationListEntry => item !== null);
     
     // 按更新时间倒序
     conversations.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
@@ -3960,16 +4257,57 @@ router.post('/save-conversation', async (req: Request, res: Response) => {
       res.status(400).json({ success: false, error: 'Missing required fields: userId, conversationId, messages' });
       return;
     }
-    
-    await saveConversationMessages(userId, conversationId, messages);
-    
-    // 同时更新对话摘要
-    await updateConversationSummary(userId, conversationId, messages);
-    
-    res.json({ success: true, messageCount: messages.length });
+
+    const rootDir = getMemoryDir();
+    const safeUserId = sanitizeUserId(userId);
+    const saved = await withMemoryLock(getConversationPersistenceLockKey(rootDir, safeUserId), async () => {
+      const didSave = await saveConversationMessages(safeUserId, conversationId, messages, rootDir);
+      if (didSave) await updateConversationSummary(safeUserId, conversationId, messages);
+      return didSave;
+    });
+
+    res.json({ success: true, archived: !saved, messageCount: messages.length });
   } catch (error) {
     logger.error('[Memory] Save conversation error:', error);
     res.status(500).json({ success: false, error: (error as Error).message });
+  }
+});
+
+/**
+ * POST /api/memory/conversation/:userId/:conversationId/archive
+ * 将完整对话移入项目级 archived-conversations.json，并从活动历史移除。
+ */
+router.post('/conversation/:userId/:conversationId/archive', async (req: Request, res: Response) => {
+  try {
+    const userId = sanitizeUserId(req.params.userId);
+    const conversationId = validateConversationId(req.params.conversationId);
+    const messages = Array.isArray(req.body?.messages)
+      ? req.body.messages.filter((item: unknown) => Boolean(item && typeof item === 'object')).slice(0, 20_000)
+      : undefined;
+    const projectId = getProjectRuntimeContext()?.projectId || String(req.body?.projectId || '').trim();
+    const result = await archiveConversationMessages({
+      userId,
+      conversationId,
+      rootDir: getMemoryDir(),
+      projectId,
+      title: typeof req.body?.title === 'string' ? req.body.title.slice(0, 500) : undefined,
+      messages,
+    });
+
+    res.json({
+      success: true,
+      archived: true,
+      conversationId,
+      archivedAt: result.record.archivedAt,
+      archiveFile: path.relative(getDataDir(), result.archiveFile),
+    });
+  } catch (error) {
+    const notFound = isNodeError(error) && error.code === 'ENOENT';
+    logger[notFound ? 'warn' : 'error']('[Memory] Archive conversation error:', error);
+    res.status(notFound ? 404 : 500).json({
+      success: false,
+      error: notFound ? 'Conversation not found' : (error as Error).message,
+    });
   }
 });
 
@@ -3979,17 +4317,22 @@ router.post('/save-conversation', async (req: Request, res: Response) => {
  */
 router.get('/conversations/:userId', async (req: Request, res: Response) => {
   try {
-    const userId = req.params.userId;
+    const userId = sanitizeUserId(req.params.userId);
     const limitParam = req.query.limit as string | undefined;
     const limit = limitParam ? parseInt(limitParam, 10) : undefined;
-    
-    const conversations = await listConversations(userId, limit);
-    const memory = await loadUserMemory(userId);
+    const projectId = String(req.query.projectId || '').trim();
+    const projectMemoryRoot = resolveConversationMemoryRoot(projectId);
+
+    const conversations = await listConversations(userId, limit, projectMemoryRoot);
+    const archivedIds = await getArchivedConversationIds(projectMemoryRoot, userId);
+    const conversationSummaries = (await loadConversationSummariesFromRoot(projectMemoryRoot, userId))
+      .filter(item => !archivedIds.has(item.id));
     
     res.json({
       success: true,
       userId,
-      conversations: memory.conversations,
+      projectId: projectId || undefined,
+      conversations: conversationSummaries,
       recentConversations: conversations,
     });
   } catch (error) {
@@ -4005,11 +4348,14 @@ router.get('/conversations/:userId', async (req: Request, res: Response) => {
 router.get('/conversation/:userId/:conversationId', async (req: Request, res: Response) => {
   try {
     const { userId, conversationId } = req.params;
-    const messages = await loadConversationMessages(userId, conversationId);
+    const projectId = String(req.query.projectId || '').trim();
+    const projectMemoryRoot = resolveConversationMemoryRoot(projectId);
+    const messages = await loadConversationMessages(userId, conversationId, projectMemoryRoot);
     
     res.json({
       success: true,
-      userId,
+      userId: sanitizeUserId(userId),
+      projectId: projectId || undefined,
       conversationId,
       messages,
       messageCount: messages.length,

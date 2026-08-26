@@ -12,6 +12,7 @@ import type {
   WriteResponse,
   UnifiedLiterature,
 } from '../../types/literature';
+import { getProjectRuntimeContext } from '../../utils/project-runtime-context';
 
 const router = Router();
 
@@ -47,18 +48,25 @@ const literatureIndex = new Map<string, UnifiedLiterature>();
 
 // 全局检索引擎实例 - 由 local-server.ts 通过 setRetrievalEngine 设置
 let globalRetrievalEngine: HybridRetrievalEngine | null = null;
+const projectRetrievalEngines = new Map<string, HybridRetrievalEngine>();
 
 // 本地检索引擎 - 作为后备
 const localRetrievalEngine = new HybridRetrievalEngine();
 
 // 设置全局检索引擎（由 local-server.ts 调用）
-export function setRetrievalEngine(engine: HybridRetrievalEngine): void {
+export function setRetrievalEngine(engine: HybridRetrievalEngine, projectId = ''): void {
+  const scopedProjectId = projectId || getProjectRuntimeContext()?.projectId || '';
+  if (scopedProjectId) projectRetrievalEngines.set(scopedProjectId, engine);
   globalRetrievalEngine = engine;
   console.log('[Literature] Global retrieval engine set');
 }
 
 // 获取当前使用的检索引擎
 export function getRetrievalEngine(): HybridRetrievalEngine {
+  const projectId = getProjectRuntimeContext()?.projectId || '';
+  if (projectId && projectRetrievalEngines.has(projectId)) {
+    return projectRetrievalEngines.get(projectId)!;
+  }
   return globalRetrievalEngine || localRetrievalEngine;
 }
 

@@ -668,89 +668,31 @@ ${session.researchContent ? `研究内容：${session.researchContent}` : ''}
 
     // 准备写作任务
     const chapters = Array.from(session.chapterPlans.entries());
-    let output = '好的！开始大牛马-小牛马协作写作。\n\n';
-    
-    for (const [chapterName, chapterPlan] of chapters) {
-      output += `\n📝 正在写作：${chapterName}\n`;
-      output += `   写作重点：${chapterPlan.writingFocus}\n`;
-      output += `   关键要点：${chapterPlan.keyPoints?.length || 0} 个\n\n`;
+    const header = '好的！开始大牛马-小牛马协作写作。\n\n';
 
-      try {
-        // 调用 AgentCollaborationWorkflow（大牛马生成检索词 → 小牛马检索 → 大牛马生成 Skill → 小牛马写作）
-        const result = await this.collaborationWorkflow.execute({
-          userId: session.id,
-          chapterName,
-          chapterPlan,
-          researchContext: session.researchContent || '',
-          longTermMemory,
-          userSkillContent: undefined,  // 可从文件加载
-          targetJournal: session.targetJournal,
-          journalStyleConfig: journalStyleConfig || undefined,
-          apiUrl: this.apiUrl,
-          apiKey: this.apiKey,
-          embeddingModel: this.embeddingModel,
-        });
+    // P1-5：章节级并行编排。每章独立执行「检索词生成 → 检索 → Skill → 写作 → ARS 校验」，
+    // 互不阻塞；任一章节失败只影响该章（writeChapter 内部已隔离），其余章节照常完成，
+    // 输出按原章节顺序汇总。AgentCollaborationWorkflow.execute 无实例级可变状态，可安全并发。
+    const chapterTasks = chapters.map(([chapterName, chapterPlan]) => (
+      this.writeChapter(session, chapterName, chapterPlan, {
+        longTermMemory,
+        journalStyleConfig: journalStyleConfig || undefined,
+      })
+    ));
+    const settled = await Promise.allSettled(chapterTasks);
 
-        // 检查是否有写作输出
-        if (result.writtenContent) {
-          const content = result.writtenContent;
-          
-          output += `✅ ${chapterName} 写作完成！\n`;
-          output += `   内容长度：${content.length} 字符\n`;
-          output += `   检索文献：${result.searchResults.reduce((s, r) => s + r.selectedCount, 0)} 篇\n\n`;
-          if (result.arsReports) {
-            const arsCompleted = [
-              result.arsReports.pipelineGate ? `pipeline-gate(${result.arsReports.pipelineGate.provider})` : '',
-              result.arsReports.researchPlan ? `research-plan(${result.arsReports.researchPlan.provider})` : '',
-              result.arsReports.citationIntegrity ? `citation-integrity(${result.arsReports.citationIntegrity.provider})` : '',
-            ].filter(Boolean);
-            if (arsCompleted.length > 0) {
-              output += `   ARS 默认检查：${arsCompleted.join(', ')}\n\n`;
-            }
-          }
-          
-          // 显示内容摘要
-          const previewLines = content.split('\n').slice(0, 5).join('\n');
-          output += `---\n${previewLines}\n...\n---\n\n`;
-          
-          // 保存到 session
-          if (!session.writingProgress) {
-            session.writingProgress = new Map();
-          }
-          session.writingProgress.set(chapterName, {
-            status: 'completed',
-            skillGenerated: true,
-            content,
-            wordCount: content.length,
-          });
-        } else {
-          // 没有写作输出（可能是文献不足或 API 配置缺失）
-          output += `⚠️ ${chapterName} 未生成内容：${result.finalPrompt ? '请检查 API 配置' : '未找到相关文献'}\n\n`;
-          
-          if (!session.writingProgress) {
-            session.writingProgress = new Map();
-          }
-          session.writingProgress.set(chapterName, {
-            status: 'failed',
-            skillGenerated: true,
-            error: result.writtenContent || '写作失败',
-          });
-        }
-
-      } catch (error) {
-        logger.error(`[Flow] Writing failed for ${chapterName}:`, error);
-        output += `❌ ${chapterName} 写作失败：${(error as Error).message}\n\n`;
-        
-        if (!session.writingProgress) {
-          session.writingProgress = new Map();
-        }
-        session.writingProgress.set(chapterName, {
-          status: 'failed',
-          skillGenerated: false,
-          error: (error as Error).message,
-        });
+    let output = header;
+    settled.forEach((outcome, index) => {
+      const [chapterName] = chapters[index] || ['unknown', undefined];
+      if (outcome.status === 'fulfilled') {
+        output += outcome.value;
+      } else {
+        // 安全网：writeChapter 内部已捕获异常，走到这里说明任务级意外失败。
+        logger.error(`[Flow] Unexpected failure for chapter ${chapterName}:`, outcome.reason);
+        output += `\n📝 正在写作：${chapterName}\n`;
+        output += `❌ ${chapterName} 写作失败：${(outcome.reason as Error)?.message || String(outcome.reason)}\n\n`;
       }
-    }
+    });
 
     output += '\n🎉 写作完成！\n';
     output += `共处理 ${chapters.length} 个章节\n`;
@@ -758,6 +700,101 @@ ${session.researchContent ? `研究内容：${session.researchContent}` : ''}
 
     session.phase = 'complete';
     await this.saveProgress(session.id);
+
+    return output;
+  }
+
+  /**
+   * P1-5：单个章节的完整写作流水线（大牛马生成检索词 → 小牛马检索 → 大牛马生成 Skill →
+   * 小牛马写作）。失败只影响本章节，返回给调用方按章节顺序汇总。
+   */
+  private async writeChapter(
+    session: UserState,
+    chapterName: string,
+    chapterPlan: ChapterPlan,
+    context: { longTermMemory: string; journalStyleConfig: JournalStyleConfig | undefined },
+  ): Promise<string> {
+    let output = `\n📝 正在写作：${chapterName}\n`;
+    output += `   写作重点：${chapterPlan.writingFocus}\n`;
+    output += `   关键要点：${chapterPlan.keyPoints?.length || 0} 个\n\n`;
+
+    try {
+      if (!this.collaborationWorkflow) {
+        throw new Error('Agent 系统未初始化，无法写作');
+      }
+      // 调用 AgentCollaborationWorkflow（大牛马生成检索词 → 小牛马检索 → 大牛马生成 Skill → 小牛马写作）
+      const result = await this.collaborationWorkflow.execute({
+        userId: session.id,
+        chapterName,
+        chapterPlan,
+        researchContext: session.researchContent || '',
+        longTermMemory: context.longTermMemory,
+        userSkillContent: undefined,  // 可从文件加载
+        targetJournal: session.targetJournal,
+        journalStyleConfig: context.journalStyleConfig,
+        apiUrl: this.apiUrl,
+        apiKey: this.apiKey,
+        embeddingModel: this.embeddingModel,
+      });
+
+      // 检查是否有写作输出
+      if (result.writtenContent) {
+        const content = result.writtenContent;
+
+        output += `✅ ${chapterName} 写作完成！\n`;
+        output += `   内容长度：${content.length} 字符\n`;
+        output += `   检索文献：${result.searchResults.reduce((s, r) => s + r.selectedCount, 0)} 篇\n\n`;
+        if (result.arsReports) {
+          const arsCompleted = [
+            result.arsReports.pipelineGate ? `pipeline-gate(${result.arsReports.pipelineGate.provider})` : '',
+            result.arsReports.researchPlan ? `research-plan(${result.arsReports.researchPlan.provider})` : '',
+            result.arsReports.citationIntegrity ? `citation-integrity(${result.arsReports.citationIntegrity.provider})` : '',
+          ].filter(Boolean);
+          if (arsCompleted.length > 0) {
+            output += `   ARS 默认检查：${arsCompleted.join(', ')}\n\n`;
+          }
+        }
+
+        // 显示内容摘要
+        const previewLines = content.split('\n').slice(0, 5).join('\n');
+        output += `---\n${previewLines}\n...\n---\n\n`;
+
+        // 保存到 session
+        if (!session.writingProgress) {
+          session.writingProgress = new Map();
+        }
+        session.writingProgress.set(chapterName, {
+          status: 'completed',
+          skillGenerated: true,
+          content,
+          wordCount: content.length,
+        });
+      } else {
+        // 没有写作输出（可能是文献不足或 API 配置缺失）
+        output += `⚠️ ${chapterName} 未生成内容：${result.finalPrompt ? '请检查 API 配置' : '未找到相关文献'}\n\n`;
+
+        if (!session.writingProgress) {
+          session.writingProgress = new Map();
+        }
+        session.writingProgress.set(chapterName, {
+          status: 'failed',
+          skillGenerated: true,
+          error: result.writtenContent || '写作失败',
+        });
+      }
+    } catch (error) {
+      logger.error(`[Flow] Writing failed for ${chapterName}:`, error);
+      output += `❌ ${chapterName} 写作失败：${(error as Error).message}\n\n`;
+
+      if (!session.writingProgress) {
+        session.writingProgress = new Map();
+      }
+      session.writingProgress.set(chapterName, {
+        status: 'failed',
+        skillGenerated: false,
+        error: (error as Error).message,
+      });
+    }
 
     return output;
   }

@@ -4,6 +4,7 @@ import {
   buildQueryIntentClassifierPrompt,
   buildQueryIntentPromptBlock,
   classifyQueryIntentFallback,
+  isExplainOnlyQuery,
   parseQueryIntentResponse,
   shouldUseAiQueryIntentClassifier,
 } from '../../../src/orchestrator/query-intent';
@@ -417,6 +418,19 @@ describe('unified query intent classifier', () => {
     expect(intent.needsLiteratureRetrieval).toBe(false);
   });
 
+  it('treats extracting an existing Figure script and its data as a workspace refactor, not a new R plot', () => {
+    const intent = classifyQueryIntentFallback({
+      message: '把对应位置的代码提出来单独生成一个R文件，figure1里面只放这个图片、R语言代码和需要使用的数据文件。',
+      workspaceRoot: 'D:\\research\\R123',
+    });
+
+    expect(intent.primaryIntent).toBe('workspace_file');
+    expect(intent.action).toBe('edit');
+    expect(intent.needsWorkspaceSearch).toBe(true);
+    expect(intent.needsToolExecution).toBe(true);
+    expect(intent.secondaryIntents).toContain('r_plot');
+  });
+
   it.each([
     'Search papers about N2O emissions.',
     'Give me references for this claim.',
@@ -520,13 +534,53 @@ describe('unified query intent classifier', () => {
     expect(prompt).toContain('不能因为文件名包含英文或论文术语就改判成文献检索');
   });
 
-  it('builds an execution block that preserves exclusions and retrieval gating', () => {
+  it('marks deterministic fallback intent as compatibility-only so the formal Agent owns tool routing', () => {
     const block = buildQueryIntentPromptBlock(classifyQueryIntentFallback(fileFollowUpInput));
 
-    expect(block).toContain('"primaryIntent": "workspace_file"');
-    expect(block).toContain('"needsWebSearch": false');
-    expect(block).toContain('"needsLiteratureRetrieval": false');
-    expect(block).toContain('只有正式 Agent 判断当前任务确实需要核对文件时才调用目录工具');
-    expect(block).toContain('不得仅因英文术语、论文文件名或历史学术内容而擅自触发文献检索');
+    expect(block).toContain('Query 路由兼容提示（非语义判决）');
+    expect(block).toContain('不得据此禁止或强制任何工具调用');
+    expect(block).toContain('正式 Agent 自主判断工具与资源调用');
+    expect(block).not.toContain('"primaryIntent": "workspace_file"');
+    expect(block).not.toContain('当前请求：');
+  });
+
+  describe('explain-only fast path (cost guard)', () => {
+    it.each([
+      '什么是 Meta 分析？',
+      '介绍一下这个软件',
+      '解释一下回归分析',
+      '科普一下什么是效应量',
+      '请问什么是文献计量分析？',
+    ])('direct-connects pure explain questions without tool execution: %s', (message) => {
+      const intent = classifyQueryIntentFallback({ message });
+      expect(intent.action).toBe('explain');
+      expect(intent.needsToolExecution).toBe(false);
+      expect(intent.needsWorkspaceSearch).toBe(false);
+      expect(intent.needsLiteratureRetrieval).toBe(false);
+    });
+
+    it.each([
+      '帮我做PCA图',
+      '检索 N2O 排放与降水关系的论文，并给我可核验的参考文献。',
+      '介绍一下并保存到文件',
+      '解释一下 report.csv 里面的结果',
+    ])('keeps execute signals out of the explain fast path: %s', (message) => {
+      expect(isExplainOnlyQuery(message)).toBe(false);
+    });
+
+    it('does not downgrade an explicit workspace file request', () => {
+      const intent = classifyQueryIntentFallback({
+        message: '解释一下 report.csv 里面的结果',
+        workspaceRoot: 'E:\\research\\configured',
+      });
+      expect(intent.needsToolExecution).toBe(true);
+      expect(intent.needsWorkspaceSearch).toBe(true);
+    });
+
+    it('keeps explicit web search authoritative', () => {
+      const intent = classifyQueryIntentFallback({ message: '什么是Meta分析，联网搜索最新进展' });
+      expect(intent.needsWebSearch).toBe(true);
+      expect(intent.needsToolExecution).toBe(true);
+    });
   });
 });

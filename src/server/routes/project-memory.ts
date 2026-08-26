@@ -943,7 +943,7 @@ async function runProjectImportAi(
   const providers: Array<{ forceProvider: ChatOptions['forceProvider']; label: ProjectImportProvider; display: string; disableFallback?: boolean }> = [
     { forceProvider: 'codex', label: 'codex-cli', display: 'Codex CLI', disableFallback: true },
     { forceProvider: 'secondary', label: 'secondary-api', display: '小牛马 API' },
-    { forceProvider: 'primary', label: 'primary-api', display: '大牛马 API' },
+    { forceProvider: 'primary', label: 'primary-api', display: '草原 OpenRouter API' },
   ];
 
   for (const provider of providers) {
@@ -983,7 +983,7 @@ function buildLocalProjectMemory(input: ProjectCollectResult): string {
 ${fileLines || '无可读取文件。'}
 
 ## 待确认
-AI 引擎不可用，本次只保存了本地文件索引和已抽取内容摘要；建议配置 Codex CLI、小牛马或大牛马后重新导入以生成更完整的语义记忆。`;
+AI 引擎不可用，本次只保存了本地文件索引和已抽取内容摘要；建议配置 Codex CLI、小牛马或草原后重新导入以生成更完整的语义记忆。`;
 }
 
 function truncateMemoryValue(value: string, maxLength: number): string {

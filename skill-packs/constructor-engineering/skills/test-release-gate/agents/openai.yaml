@@ -1,0 +1,3 @@
+interface:
+  display_name: "Test Release Gate"
+  short_description: "Help with Test Release Gate tasks"

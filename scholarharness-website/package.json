@@ -2,6 +2,7 @@
   "name": "scholarharness-website",
   "version": "0.1.0",
   "private": true,
+  "license": "UNLICENSED",
   "scripts": {
     "dev": "npx next dev --webpack",
     "build": "npx next build",

@@ -13,17 +13,16 @@ describe('secondary Aliyun Bailian Token Plan API preset', () => {
   });
 
   it('exposes Token Plan in the small-cow text and vision URL preset picker', () => {
-    expect(appSource).toContain('var SECONDARY_AI_API_PROVIDERS = CHINA_AI_API_PROVIDERS.reduce');
-    expect(appSource).toContain('var rows = SECONDARY_AI_API_PROVIDERS.map');
-    expect(appSource).toContain('含阿里云百炼 Token Plan');
-    expect(appSource).toContain("buildSecondaryProviderGuideHtml('text')");
-    expect(appSource).toContain("buildSecondaryProviderGuideHtml('vision')");
+    expect(appSource).toContain("{ id: 'tokenplan', name: '阿里云 Token Plan'");
+    expect(appSource).toContain("secondary: { title: '🐄 Little corse 文本' }");
+    expect(appSource).toContain("secondary_vision: { title: '🐄 Little corse 视觉' }");
+    expect(appSource).toContain("providerOptions += '<option value=\"' + escapeAttr(p.id)");
   });
 
-  it('fills and saves the selected compatible base URL through the existing secondary config path', () => {
-    expect(appSource).toContain('urlInput.value = provider.apiUrl');
-    expect(appSource).toContain('var url = normalizeApiBaseUrl(document.getElementById(\'apiUrl\').value)');
-    expect(appSource).toContain('apiConfig.url = url');
-    expect(appSource).toContain('apiUrl: url');
+  it('resolves and saves the selected preset URL through the model-pool config path', () => {
+    expect(appSource).toContain("var preset = presetById(m.provider)");
+    expect(appSource).toContain("api_url: m.api_url || (preset ? preset.url : '')");
+    expect(appSource).toContain("body[provider] = { pool: collectProviderSection(provider) }");
+    expect(appSource).toContain("fetch('/api/chat-bridge/config'");
   });
 });

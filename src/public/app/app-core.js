@@ -9,6 +9,7 @@ var UI_ICON_PATHS = {
       newspaper: '<path d="M4 19a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v12a2 2 0 0 0 2 2H4z"></path><path d="M6 7h8"></path><path d="M6 11h8"></path><path d="M6 15h5"></path>',
       lineChart: '<path d="M3 3v18h18"></path><path d="m7 15 4-4 3 3 5-7"></path>',
       trash: '<polyline points="3 6 5 6 21 6"></polyline><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"></path><path d="M10 11v6"></path><path d="M14 11v6"></path>',
+      archive: '<rect x="3" y="4" width="18" height="5" rx="1"></rect><path d="M5 9v10a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V9"></path><path d="M9 13h6"></path>',
       bookOpen: '<path d="M2 4.5A2.5 2.5 0 0 1 4.5 2H11v18H4.5A2.5 2.5 0 0 0 2 22z"></path><path d="M22 4.5A2.5 2.5 0 0 0 19.5 2H13v18h6.5A2.5 2.5 0 0 1 22 22z"></path>',
       globe: '<circle cx="12" cy="12" r="10"></circle><path d="M2 12h20"></path><path d="M12 2a15.3 15.3 0 0 1 0 20"></path><path d="M12 2a15.3 15.3 0 0 0 0 20"></path>',
       settings: '<circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06A2 2 0 0 1 7.1 4.3l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09A1.65 1.65 0 0 0 15 4.6a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9c.14.32.23.66.26 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>',
@@ -44,6 +45,16 @@ var UI_ICON_PATHS = {
     var PDF_WIKI_TASK_OPTIONS_KEY = 'scholarclaw_pdf_wiki_task_options';
     var PDF_WIKI_TASK_OPTIONS_VERSION = 4;
     var THEME_KEY = 'scholarclaw_theme';
+    var HOME_WORKFLOW_SHORTCUTS_HTML = [
+      '<section class="home-workflow-shortcuts" aria-label="常用科研工具">',
+      '<button type="button" class="home-workflow-shortcut" onclick="showAutoResearchMode()" aria-label="打开 Auto Research"><span class="app-academic-workflow-icon auto-research" aria-hidden="true"></span><span class="home-workflow-shortcut-label">Auto Research</span></button>',
+      '<button type="button" class="home-workflow-shortcut" onclick="showReviewWriterDialog()" aria-label="打开一键写论文"><span class="app-academic-workflow-icon paper-writing" aria-hidden="true"></span><span class="home-workflow-shortcut-label">一键写论文</span></button>',
+      '<button type="button" class="home-workflow-shortcut" onclick="showBibliometricsDialog()" aria-label="打开文献计量分析"><span class="app-academic-workflow-icon bibliometrics" aria-hidden="true"></span><span class="home-workflow-shortcut-label">文献计量分析</span></button>',
+      '<button type="button" class="home-workflow-shortcut" onclick="showPdfWikiPdfManager()" aria-label="打开 PDF 管理"><span class="app-academic-workflow-icon pdf-manager" aria-hidden="true"></span><span class="home-workflow-shortcut-label">PDF 管理</span></button>',
+      '<button type="button" class="home-workflow-shortcut" onclick="showPdfWikiMetaDatabase()" aria-label="打开 Meta 分析"><span class="app-academic-workflow-icon meta-analysis" aria-hidden="true"></span><span class="home-workflow-shortcut-label">Meta 分析</span></button>',
+      '<button type="button" class="home-workflow-shortcut" onclick="showConstructorAgentWorkspace()" aria-label="打开构造 Agent"><span class="app-academic-workflow-icon constructor-agent" aria-hidden="true"></span><span class="home-workflow-shortcut-label">构造 Agent</span></button>',
+      '</section>'
+    ].join('');
     var BRAND_TITLE_HTML = '<h1 class="brand-title">Scholar Harness</h1>';
     var GREETING_HTML = '<p class="typing-greeting"><span>你好！我是学术论文写作助手！</span></p>';
 var CHAT_BRIDGE_KEY = 'scholarclaw_chat_bridge';
@@ -164,25 +175,25 @@ function normalizeEmbeddingConfig(config) {
 var chatBridgeConfig = { 
   enabled: false, 
   mode: 'api',
-  // 大牛马配置（规划、Skill生成、质量检查）
+  // 草原配置（内部仍使用 primary 字段以保持兼容）
   primary: {
-    apiUrl: '',
+    apiUrl: OPENROUTER_API_URL,
     hasApiKey: false,
-    model: 'claude-sonnet-4-5',
-    description: '大牛马 - 规划、Skill生成、质量检查'
+    model: 'openrouter/free',
+    description: 'Grass - OpenRouter 免费模型'
   },
   // 小牛马配置（执行写作、引用验证）
   secondary: {
     apiUrl: '',
     hasApiKey: false,
     model: 'gpt-4o',
-    description: '小牛马 - 执行写作、引用验证'
+    description: 'Little corse - 执行写作、引用验证'
   },
   secondaryVision: {
     apiUrl: '',
     hasApiKey: false,
     model: 'gpt-4o',
-    description: '小牛马视觉 - 图片、图表截图、多模态输入'
+    description: 'Little corse 视觉 - 图片、图表截图、多模态输入'
   },
   codex: {
     enabled: false,
@@ -194,6 +205,12 @@ var chatBridgeConfig = {
     pdf_wiki_sandbox: 'danger-full-access',
     timeout_ms: 300000,
     pdf_wiki_concurrency: 1
+  },
+  agentRuntimes: {
+    default: '',
+    codex: { enabled: false, command: '', model: 'gpt-5.5', reasoning_effort: 'xhigh', sandbox: 'workspace-write', timeout_ms: 300000, fallback_to_secondary: true },
+    pi: { enabled: false, command: '', model: '', reasoning_effort: 'medium', sandbox: 'workspace-write', timeout_ms: 1800000, fallback_to_secondary: true },
+    opencode: { enabled: false, command: '', model: '', reasoning_effort: 'medium', sandbox: 'workspace-write', timeout_ms: 1800000, auto_approve: true, fallback_to_secondary: true }
   },
   // 旧字段（向后兼容）
   chatUrl: '',

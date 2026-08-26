@@ -21,6 +21,16 @@ describe('multimodal intent request flow', () => {
     ).toBeLessThan(html.indexOf("var chatBridgeResponse = await fetch('/api/chat-bridge/chat'"));
   });
 
+  it('lets native coding Agents inspect images without a duplicate classifier request', () => {
+    expect(html).toContain("nativeAgentRuntime === 'codex'");
+    expect(html).toContain("nativeAgentRuntime === 'pi'");
+    expect(html).toContain("nativeAgentRuntime === 'opencode'");
+    expect(html).toContain('Native Agent will inspect the image directly; skipping the duplicate vision classifier');
+    expect(
+      html.indexOf("nativeAgentRuntime === 'codex'")
+    ).toBeLessThan(html.indexOf("fetch('/api/chat-bridge/multimodal-intent'"));
+  });
+
   it('uses direct multimodal chat only as a non-blocking classifier fallback', () => {
     expect(html).toContain('Stage 1 unavailable; falling back to direct multimodal chat');
     expect(html).toContain("if (error && error.name === 'AbortError') throw error;");

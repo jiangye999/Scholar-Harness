@@ -176,7 +176,6 @@
               '<div id="embeddingLibraryHeaderTools" class="embedding-library-header-tools"></div>' +
             '</div>' +
             '<div style="display:flex;gap:8px;align-items:center;">' +
-              '<button id="embeddingLibraryFullscreenBtn" class="modal-icon-btn" type="button" onclick="toggleCustomModalFullscreen(\'embeddingLibraryModal\',\'embeddingLibraryPanel\',\'embeddingLibraryFullscreenBtn\')" title="全屏" aria-label="全屏"><svg class="ui-icon sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3H3v5"></path><path d="M16 3h5v5"></path><path d="M21 16v5h-5"></path><path d="M3 16v5h5"></path></svg></button>' +
               '<button type="button" onclick="closeEmbeddingLibrary()" style="width:32px;height:32px;border:1px solid var(--border-color);border-radius:6px;background:transparent;color:var(--text-secondary);cursor:pointer;">×</button>' +
             '</div>' +
           '</div>' +
@@ -3684,7 +3683,6 @@
           '<div style="padding:14px 16px;border-bottom:1px solid var(--border-color);display:flex;justify-content:space-between;gap:12px;align-items:center;">' +
             '<div style="font-size:16px;font-weight:700;color:var(--text-primary);">批量下载选中' + escapeHtml(getEmbeddingEvidenceName()) + ' PDF</div>' +
             '<div style="display:flex;gap:8px;align-items:center;">' +
-              '<button id="embeddingDownloadFullscreenBtn" class="modal-icon-btn" type="button" onclick="toggleCustomModalFullscreen(\'embeddingDownloadDialog\',\'embeddingDownloadPanel\',\'embeddingDownloadFullscreenBtn\')" title="全屏" aria-label="全屏"><svg class="ui-icon sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3H3v5"></path><path d="M16 3h5v5"></path><path d="M21 16v5h-5"></path><path d="M3 16v5h5"></path></svg></button>' +
               '<button type="button" onclick="closeEmbeddingDownloadDialog()" style="width:30px;height:30px;border:1px solid var(--border-color);border-radius:6px;background:transparent;color:var(--text-secondary);cursor:pointer;">×</button>' +
             '</div>' +
           '</div>' +

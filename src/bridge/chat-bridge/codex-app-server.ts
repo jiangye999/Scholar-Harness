@@ -64,6 +64,39 @@ export class CodexTurnCancelledError extends Error {
   }
 }
 
+export interface CodexModelCapacityActivity {
+  assistantOutputObserved: boolean;
+  sideEffectObserved: boolean;
+  toolReceiptCount: number;
+  turnStarted: boolean;
+}
+
+export class CodexModelCapacityError extends Error {
+  readonly code = 'CODEX_MODEL_CAPACITY';
+  readonly retrySafe: boolean;
+  readonly activity: CodexModelCapacityActivity;
+
+  constructor(message: string, activity: CodexModelCapacityActivity, cause?: unknown) {
+    super(message);
+    this.name = 'CodexModelCapacityError';
+    this.activity = activity;
+    this.retrySafe = !activity.assistantOutputObserved
+      && !activity.sideEffectObserved
+      && activity.toolReceiptCount === 0;
+    if (cause !== undefined) {
+      (this as Error & { cause?: unknown }).cause = cause;
+    }
+  }
+}
+
+export function isCodexModelCapacityError(error: unknown): boolean {
+  if (error instanceof CodexModelCapacityError) return true;
+  const candidate = error as { code?: unknown; message?: unknown } | null;
+  if (candidate?.code === 'CODEX_MODEL_CAPACITY') return true;
+  const message = String(candidate?.message || error || '');
+  return /selected model is at capacity|model[^\n]{0,80}\bat capacity\b|model[^\n]{0,80}\bcapacity (?:is )?(?:full|exhausted)|temporarily unavailable due to (?:high )?(?:load|demand)|model[^\n]{0,80}\boverloaded\b/i.test(message);
+}
+
 export function isCodexTurnCancelledError(error: unknown): boolean {
   return error instanceof CodexTurnCancelledError
     || (error instanceof Error && (
@@ -122,6 +155,7 @@ interface CodexAppServerSession {
   onProgress?: (chunk: string) => void;
   stderrWarnings: Set<string>;
   interruptionPromise?: Promise<boolean>;
+  turnActivity?: Omit<CodexModelCapacityActivity, 'toolReceiptCount'>;
 }
 
 function readRequestBody(request: http.IncomingMessage, maxBytes = 8 * 1024 * 1024): Promise<string> {
@@ -394,6 +428,20 @@ class CodexAppServerManager {
     await previous;
     try {
       return await this.runTurnUnlocked(options);
+    } catch (error) {
+      if (!isCodexModelCapacityError(error)) throw error;
+      const receipts = this.gateway.takeReceipts(options.conversationKey);
+      const activity = this.sessions.get(options.conversationKey)?.turnActivity;
+      throw new CodexModelCapacityError(
+        (error as Error).message || 'Selected model is at capacity. Please try a different model.',
+        {
+          assistantOutputObserved: activity?.assistantOutputObserved === true,
+          sideEffectObserved: activity?.sideEffectObserved === true,
+          turnStarted: activity?.turnStarted === true,
+          toolReceiptCount: receipts.length,
+        },
+        error,
+      );
     } finally {
       release();
       if (this.queues.get(options.conversationKey) === queued) {
@@ -441,6 +489,11 @@ class CodexAppServerManager {
     if (!session || session.closed) {
       session = await this.startSession(options, connection);
     }
+    session.turnActivity = {
+      assistantOutputObserved: false,
+      sideEffectObserved: false,
+      turnStarted: false,
+    };
     if (options.isCancelled?.()) {
       await this.interruptSession(session);
       throw new CodexTurnCancelledError();
@@ -546,6 +599,7 @@ class CodexAppServerManager {
         model: options.model || null,
         effort: options.reasoningEffort || null,
       }, 60_000);
+      session.turnActivity.turnStarted = true;
       collector.turnId = collector.turnId || String(turnResponse?.turn?.id || '');
       if (!collector.turnId) throw new Error('Codex App Server did not return a turn id');
       let completion: { status: string; error?: string };
@@ -645,7 +699,7 @@ class CodexAppServerManager {
     }
     try {
       await this.request(session, 'initialize', {
-        clientInfo: { name: 'scholar-harness', title: 'Scholar Harness', version: '1.0.8' },
+        clientInfo: { name: 'scholar-harness', title: 'Scholar Harness', version: '1.0.9' },
         capabilities: {
           experimentalApi: true,
           requestAttestation: false,
@@ -737,10 +791,12 @@ class CodexAppServerManager {
     if (notificationTurnId && collector.turnId && notificationTurnId !== collector.turnId) return;
     if (method === 'turn/started') {
       collector.turnId = collector.turnId || notificationTurnId;
+      if (session.turnActivity) session.turnActivity.turnStarted = true;
       return;
     }
     if (method === 'item/started') {
       const item = params?.item;
+      this.observeTurnItemActivity(session, item);
       if (item?.id) collector.itemPhases.set(String(item.id), item.phase ?? null);
       const label = getItemLabel(item);
       if (label) session.onProgress?.(`\n→ ${label}\n`);
@@ -751,6 +807,7 @@ class CodexAppServerManager {
       const phase = collector.itemPhases.get(itemId);
       const delta = String(params?.delta || '');
       if (phase === 'commentary' && delta) {
+        if (session.turnActivity) session.turnActivity.assistantOutputObserved = true;
         collector.emittedCommentary.add(itemId);
         session.onProgress?.(delta);
       }
@@ -763,11 +820,13 @@ class CodexAppServerManager {
     }
     if (method === 'item/commandExecution/outputDelta') {
       const delta = String(params?.delta || '');
+      if (session.turnActivity) session.turnActivity.sideEffectObserved = true;
       if (delta) session.onProgress?.(truncate(delta, 3000));
       return;
     }
     if (method === 'item/mcpToolCall/progress') {
       const progress = String(params?.message || '').trim();
+      if (session.turnActivity) session.turnActivity.sideEffectObserved = true;
       if (progress) session.onProgress?.(`  ${progress}\n`);
       return;
     }
@@ -796,9 +855,11 @@ class CodexAppServerManager {
     emit = true,
   ): void {
     if (!item || typeof item !== 'object') return;
+    this.observeTurnItemActivity(session, item);
     if (item.type === 'agentMessage') {
       const text = String(item.text || '').trim();
       if (!text) return;
+      if (session.turnActivity) session.turnActivity.assistantOutputObserved = true;
       collector.lastAgentAnswer = text;
       if (item.phase === 'final_answer') {
         collector.finalAnswer = text;
@@ -822,6 +883,24 @@ class CodexAppServerManager {
     }
     if (item.type === 'fileChange') {
       session.onProgress?.(`${item.status === 'completed' ? '✓' : '!'} file_change ${item.status || ''}\n`);
+    }
+  }
+
+  private observeTurnItemActivity(session: CodexAppServerSession, item: any): void {
+    if (!session.turnActivity || !item || typeof item !== 'object') return;
+    const type = String(item.type || '').toLowerCase();
+    if (type === 'agentmessage') {
+      if (String(item.text || '').trim()) session.turnActivity.assistantOutputObserved = true;
+      return;
+    }
+    if (
+      type === 'commandexecution'
+      || type === 'filechange'
+      || type === 'mcptoolcall'
+      || type === 'dynamictoolcall'
+      || type === 'websearch'
+    ) {
+      session.turnActivity.sideEffectObserved = true;
     }
   }
 

@@ -55,6 +55,33 @@ describe('Pi agent session queue', () => {
     expect(next?.message).toContain('总结');
   });
 
+  it('runs the same conversation id independently in two projects', () => {
+    const manager = new PiAgentSessionManager();
+    const projectA = 'project-20260819000100-aaaaaa';
+    const projectB = 'project-20260819000200-bbbbbb';
+
+    const runA = manager.beginRun('user-project', 'shared-conversation', 'codex', projectA);
+    const runB = manager.beginRun('user-project', 'shared-conversation', 'pi', projectB);
+    expect(runA.accepted).toBe(true);
+    expect(runB.accepted).toBe(true);
+    expect(runA.runId).not.toBe(runB.runId);
+
+    manager.enqueue({
+      userId: 'user-project',
+      projectId: projectA,
+      conversationId: 'shared-conversation',
+      message: '只属于项目 A',
+      behavior: 'follow_up',
+    });
+    expect(manager.getState('user-project', 'shared-conversation', projectA).pendingMessageCount).toBe(1);
+    expect(manager.getState('user-project', 'shared-conversation', projectB).pendingMessageCount).toBe(0);
+
+    manager.settleRun('user-project', 'shared-conversation', runA.runId, projectA);
+    expect(manager.getState('user-project', 'shared-conversation', projectA).running).toBe(false);
+    expect(manager.getState('user-project', 'shared-conversation', projectB).running).toBe(true);
+    manager.settleRun('user-project', 'shared-conversation', runB.runId, projectB);
+  });
+
   it('keeps image steering queued for a text tool loop but allows Codex to claim it', () => {
     const manager = new PiAgentSessionManager();
     const item = manager.enqueue({

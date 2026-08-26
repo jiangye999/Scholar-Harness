@@ -15,9 +15,9 @@ const navItems = [
   { label: "帮助中心", href: "/help" },
 ];
 
-const windowsDownloadHref = "/downloads/scholar-harness-setup-1.0.8.exe";
-const macArm64DownloadHref = "https://github.com/jiangye999/Scholar-Harness/releases/download/v1.0.8/scholar-harness-1.0.8-arm64.dmg";
-const macX64DownloadHref = "https://github.com/jiangye999/Scholar-Harness/releases/download/v1.0.8/scholar-harness-1.0.8-x64.dmg";
+const windowsDownloadHref = "/downloads/scholar-harness-setup-1.0.9.exe";
+const macArm64DownloadHref = "https://github.com/jiangye999/Scholar-Harness/releases/download/v1.0.9/scholar-harness-1.0.9-arm64.dmg";
+const macX64DownloadHref = "https://github.com/jiangye999/Scholar-Harness/releases/download/v1.0.9/scholar-harness-1.0.9-x64.dmg";
 const manualDownloadHref = "/downloads/scholarharness-user-manual.pdf";
 const apiBaseUrl = (process.env.NEXT_PUBLIC_API_BASE_URL || "/api/v1").replace(/\/$/, "");
 
@@ -232,7 +232,7 @@ export default function Home() {
 
     const manualLink = document.createElement("a");
     manualLink.href = manualDownloadHref;
-    manualLink.download = "Scholar-Harness-使用指导手册-1.0.8.pdf";
+    manualLink.download = "Scholar-Harness-使用指导手册-1.0.9.pdf";
     manualLink.style.display = "none";
     document.body.appendChild(manualLink);
     manualLink.click();

@@ -88,12 +88,8 @@ export interface LoginResult {
 export interface SubscriptionInfo {
   plan_type: string;
   status: string;
-  quota_total: number;
-  quota_used: number;
-  quota_remaining: number;
   end_date?: string;
   features?: {
-    max_file_upload: number;
     ai_model_access: string[];
   };
 }
@@ -212,8 +208,6 @@ export class AuthClient {
         await this.sessionManager.updateSubscriptionCache({
           plan_type: subscription.plan_type,
           status: subscription.status,
-          quota_remaining: subscription.quota_remaining,
-          quota_total: subscription.quota_total,
           end_date: subscription.end_date,
         });
       }
@@ -324,7 +318,7 @@ export class AuthClient {
    * 2. 检查accessToken是否过期
    * 3. 验证云端订阅状态
    * 4. 验证设备激活状态（如果有）
-   * 5. 检查额度是否耗尽
+   * 5. 校验订阅是否仍在有效期内
    */
   async validateSession(): Promise<ValidationResult> {
     try {
@@ -372,14 +366,9 @@ export class AuthClient {
         };
       }
       
-      // 5. 检查订阅状态
+      // 5. 检查订阅状态；旧 exhausted 状态来自历史字符额度逻辑，按有效订阅恢复。
       if (subscription.status === 'exhausted') {
-        return {
-          valid: false,
-          subscription,
-          reason: '额度已耗尽，请续费或升级套餐',
-          error: 'QUOTA_EXHAUSTED',
-        };
+        subscription.status = subscription.plan_type === 'trial' ? 'trial' : 'active';
       }
       
       if (subscription.status === 'expired') {
@@ -405,8 +394,6 @@ export class AuthClient {
       await this.sessionManager.updateSubscriptionCache({
         plan_type: subscription.plan_type,
         status: subscription.status,
-        quota_remaining: subscription.quota_remaining,
-        quota_total: subscription.quota_total,
         end_date: subscription.end_date,
       });
       
@@ -568,15 +555,6 @@ export class AuthClient {
         return false;
       }
       
-      // 更新本地缓存的剩余额度
-      const subscription = await this.getSubscription();
-      if (subscription) {
-        await this.sessionManager.updateSubscriptionCache({
-          quota_used: subscription.quota_used,
-          quota_remaining: subscription.quota_remaining,
-        });
-      }
-      
       return true;
     } catch (error) {
       console.error('[AuthClient] Report usage failed:', error);
@@ -669,8 +647,6 @@ export class AuthClient {
     daily_stats?: Array<{ date: string; word_count: number; file_count: number }>;
     subscription?: {
       plan_type: string;
-      quota_remaining: number;
-      quota_total: number;
     };
     error?: string;
   }> {
@@ -704,8 +680,6 @@ export class AuthClient {
         daily_stats: Array<{ date: string; word_count: number; file_count: number }>;
         subscription: {
           plan_type: string;
-          quota_remaining: number;
-          quota_total: number;
         };
       };
       

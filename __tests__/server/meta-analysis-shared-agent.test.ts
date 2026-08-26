@@ -13,9 +13,12 @@ describe('Meta analysis shared homepage Agent route', () => {
     expect(bridgeSource).toContain('const skillTools = skillRuntime.getToolDefinitions();');
     expect(bridgeSource).toContain('const userMcpTools = await getEnabledMcpToolDefinitions();');
     expect(bridgeSource).toContain('const metaAnalysisTools = getMetaAnalysisAgentToolDefinitions(options.draftContext);');
-    expect(bridgeSource).toContain(
-      '...skillTools, ...draftTools, ...researchEnhancementTools, ...metaAnalysisTools, ...literatureCollectionTools, ...workspaceTools, ...userMcpTools',
+    expect(bridgeSource).toContain('const agentResourceTools = getAgentResourceToolDefinitions(options.draftContext);');
+    // 领域能力不直接进 schema：只暴露清单、读取和调用三个稳定入口。
+    expect(bridgeSource).toMatch(
+      /const capabilityTools = \[\s*getListHarnessCapabilitiesToolDefinition\(\),\s*getReadCapabilitiesToolDefinition\(\),\s*getInvokeCapabilityToolDefinition\(\),\s*\];/,
     );
+    expect(bridgeSource).toMatch(/const tools = \[[\s\S]*\.\.\.agentResourceTools,[\s\S]*\.\.\.capabilityTools,[\s\S]*\.\.\.imageAnalysisTools,[\s\S]*\];/);
     expect(bridgeSource).toContain('await executeMetaAnalysisAgentToolCall(');
   });
 
@@ -23,6 +26,7 @@ describe('Meta analysis shared homepage Agent route', () => {
     expect(bridgeSource).toContain("name: 'meta_inspect_selected_dataset'");
     expect(bridgeSource).toContain("name: 'meta_run_selected_analysis'");
     expect(bridgeSource).toContain('必须先理解 CURRENT_USER_REQUEST，再决定是否调用 Meta、Skill、MCP');
+    expect(bridgeSource).toContain('再通过 invoke_capability 调用 meta_inspect_selected_dataset 或 meta_run_selected_analysis');
     expect(metaSource).toContain('export async function executeMetaAnalysisAgentTool(');
     expect(metaSource).toContain('dataset read happens only after the model explicitly selects one of these');
   });

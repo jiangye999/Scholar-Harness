@@ -548,6 +548,13 @@
         ? chatRequestBody.chatAttachments
         : [];
       if (!hasChatAttachmentVision(attachments)) return null;
+      var nativeAgentRuntime = String(
+        chatRequestBody.agentRuntime || chatRequestBody.forceProvider || ''
+      ).trim().toLowerCase();
+      if (nativeAgentRuntime === 'codex' || nativeAgentRuntime === 'pi' || nativeAgentRuntime === 'opencode') {
+        console.log('[MultimodalIntent] Native Agent will inspect the image directly; skipping the duplicate vision classifier');
+        return null;
+      }
       var payload = {
         message: String(chatRequestBody.message || '').trim(),
         userId: chatRequestBody.userId || currentUserId || 'web-user',

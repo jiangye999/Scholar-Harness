@@ -1230,3 +1230,446 @@ export function sendWordDraftDocx(res: Response, content: string): void {
   appendWordDraftArchiveEntries(archive, content);
   void archive.finalize();
 }
+
+/* ---------------------------------------------------------------------------
+ * Figure/table integrated Word document (图片整合文件).
+ *
+ * Layout rules enforced here match the workspace artifact layout spec
+ * (docs/workspace-artifact-layout.md):
+ *   - figure: image first, caption BELOW the image, optional note below caption
+ *   - table : title ABOVE the table, header row bold on top, note BELOW the table
+ * ------------------------------------------------------------------------- */
+
+export interface WordFigureEntry {
+  type: 'figure';
+  /** Stable key, e.g. "figure1". */
+  key: string;
+  /** Absolute path of the bitmap to embed (.png/.jpg/.jpeg supported). */
+  imagePath: string;
+  /** Media name inside the package, e.g. "figure1.png". */
+  imageName: string;
+  /** Caption rendered below the image. */
+  caption: string;
+  /** Optional note rendered below the caption. */
+  note?: string;
+  /** Source file location rendered below the caption/note for traceability. */
+  sourcePath?: string;
+  /** Filled by the docx builder after measuring the bitmap. */
+  widthEmu?: number;
+  heightEmu?: number;
+  relId?: string;
+}
+
+export interface WordTableEntry {
+  type: 'table';
+  /** Stable key, e.g. "table1". */
+  key: string;
+  /** Table title rendered ABOVE the table. */
+  title: string;
+  headers: string[];
+  rows: string[][];
+  /** Optional note rendered BELOW the table. */
+  note?: string;
+  /** Source data file location rendered below the table/note for traceability. */
+  sourcePath?: string;
+}
+
+export type WordFigureTableEntry = WordFigureEntry | WordTableEntry;
+
+const DOCX_EMU_PER_INCH = 914400;
+const FIGURE_TARGET_WIDTH_EMU = Math.round(5.6 * DOCX_EMU_PER_INCH);
+const FIGURE_MAX_WIDTH_EMU = Math.round(6.2 * DOCX_EMU_PER_INCH);
+
+const DOCX_IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg']);
+
+function readPngSizeForWord(buffer: Buffer): { width: number; height: number } | null {
+  if (buffer.length < 24) return null;
+  const signature = buffer.readUInt32BE(0);
+  if (signature !== 0x89504e47) return null;
+  const chunkLength = buffer.readUInt32BE(8);
+  const chunkType = buffer.toString('ascii', 12, 16);
+  if (chunkType !== 'IHDR' || chunkLength < 13) return null;
+  return {
+    width: buffer.readUInt32BE(16),
+    height: buffer.readUInt32BE(20),
+  };
+}
+
+function readJpegSizeForWord(buffer: Buffer): { width: number; height: number } | null {
+  if (buffer.length < 4 || buffer[0] !== 0xff || buffer[1] !== 0xd8) return null;
+  let offset = 2;
+  while (offset + 4 <= buffer.length) {
+    if (buffer[offset] !== 0xff) {
+      offset += 1;
+      continue;
+    }
+    const marker = buffer[offset + 1];
+    if (marker === 0xd8 || (marker >= 0xd0 && marker <= 0xd9) || marker === 0x01) {
+      offset += 2;
+      continue;
+    }
+    const segmentLength = buffer.readUInt16BE(offset + 2);
+    if (
+      (marker >= 0xc0 && marker <= 0xc3)
+      || (marker >= 0xc5 && marker <= 0xc7)
+      || (marker >= 0xc9 && marker <= 0xcb)
+      || (marker >= 0xcd && marker <= 0xcf)
+    ) {
+      return {
+        height: buffer.readUInt16BE(offset + 5),
+        width: buffer.readUInt16BE(offset + 7),
+      };
+    }
+    offset += 2 + segmentLength;
+  }
+  return null;
+}
+
+function readImagePixelSizeForWord(buffer: Buffer): { width: number; height: number } | null {
+  const png = readPngSizeForWord(buffer);
+  if (png) return png;
+  return readJpegSizeForWord(buffer);
+}
+
+function wordFigureDrawingXml(relId: string, imageName: string, widthEmu: number, heightEmu: number): string {
+  const safeName = String(imageName || 'figure').replace(/[<>&"]/g, '_');
+  return '<w:p><w:pPr><w:jc w:val="center"/><w:spacing w:before="120" w:after="60"/></w:pPr><w:r>' +
+    '<w:drawing>' +
+    `<wp:inline distT="0" distB="0" distL="0" distR="0">` +
+    `<wp:extent cx="${widthEmu}" cy="${heightEmu}"/>` +
+    '<wp:effectExtent l="0" t="0" r="0" b="0"/>' +
+    `<wp:docPr id="1" name="${safeName}"/>` +
+    '<wp:cNvGraphicFramePr><a:graphicFrameLocks noChangeAspect="1"/></wp:cNvGraphicFramePr>' +
+    '<a:graphic>' +
+    '<a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture">' +
+    '<pic:pic>' +
+    `<pic:nvPicPr><pic:cNvPr id="1" name="${safeName}"/><pic:cNvPicPr/></pic:nvPicPr>` +
+    '<pic:blipFill>' +
+    `<a:blip r:embed="${relId}"/>` +
+    '<a:stretch><a:fillRect/></a:stretch>' +
+    '</pic:blipFill>' +
+    '<pic:spPr>' +
+    `<a:xfrm><a:off x="0" y="0"/><a:ext cx="${widthEmu}" cy="${heightEmu}"/></a:xfrm>` +
+    '<a:prstGeom prst="rect"><a:avLst/></a:prstGeom>' +
+    '</pic:spPr>' +
+    '</pic:pic>' +
+    '</a:graphicData>' +
+    '</a:graphic>' +
+    '</wp:inline>' +
+    '</w:drawing></w:r></w:p>';
+}
+
+function wordCaptionParagraphXml(text: string, options: { bold?: boolean; center?: boolean; sizeHalfPoints?: number } = {}): string {
+  const clean = String(text || '')
+    .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+  if (!clean) return '';
+  const alignment = options.center === false ? 'left' : 'center';
+  const size = Number(options.sizeHalfPoints) || 21;
+  const bold = options.bold ? '<w:b/><w:bCs/>' : '';
+  return '<w:p><w:pPr>' +
+    `<w:jc w:val="${alignment}"/>` +
+    '<w:spacing w:before="60" w:after="120" w:line="300" w:lineRule="auto"/>' +
+    '</w:pPr><w:r>' +
+    `<w:rPr><w:rFonts w:ascii="Times New Roman" w:hAnsi="Times New Roman" w:eastAsia="Times New Roman"/><w:sz w:val="${size}"/><w:szCs w:val="${size}"/>${bold}</w:rPr>` +
+    `<w:t xml:space="preserve">${clean}</w:t>` +
+    '</w:r></w:p>';
+}
+
+function wordTableXml(entry: WordTableEntry): string {
+  const headers = Array.isArray(entry.headers) ? entry.headers.map(String) : [];
+  const rows = Array.isArray(entry.rows)
+    ? entry.rows.map(row => Array.isArray(row) ? row.map(String) : [])
+    : [];
+  const columnCount = Math.max(headers.length, ...rows.map(row => row.length), 1);
+
+  const cellXml = (text: string, header: boolean): string => {
+    const clean = String(text || '')
+      .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+    const headerPr = header
+      ? '<w:tcPr><w:tcW w:w="0" w:type="auto"/><w:shd w:val="clear" w:color="auto" w:fill="F2F2F2"/></w:tcPr>'
+      : '<w:tcPr><w:tcW w:w="0" w:type="auto"/></w:tcPr>';
+    const runPr = header
+      ? '<w:rPr><w:b/><w:bCs/><w:sz w:val="20"/><w:szCs w:val="20"/></w:rPr>'
+      : '<w:rPr><w:sz w:val="20"/><w:szCs w:val="20"/></w:rPr>';
+    return '<w:tc>' + headerPr +
+      '<w:p><w:pPr><w:jc w:val="left"/><w:spacing w:before="40" w:after="40" w:line="276" w:lineRule="auto"/></w:pPr>' +
+      '<w:r>' + runPr + `<w:t xml:space="preserve">${clean || ' '}</w:t></w:r></w:p></w:tc>`;
+  };
+
+  const rowXml = (cells: string[], header: boolean): string => {
+    const filled = Array.from({ length: columnCount }, (_, index) => String(cells[index] ?? ''));
+    return '<w:tr>' + filled.map(text => cellXml(text, header)).join('') + '</w:tr>';
+  };
+
+  const gridColumns = Array.from({ length: columnCount }, () => '<w:gridCol w:w="0"/>').join('');
+
+  return '<w:tbl><w:tblPr>' +
+    '<w:tblW w:w="0" w:type="auto"/>' +
+    '<w:tblBorders>' +
+    '<w:top w:val="single" w:sz="4" w:space="0" w:color="808080"/>' +
+    '<w:left w:val="single" w:sz="4" w:space="0" w:color="808080"/>' +
+    '<w:bottom w:val="single" w:sz="4" w:space="0" w:color="808080"/>' +
+    '<w:right w:val="single" w:sz="4" w:space="0" w:color="808080"/>' +
+    '<w:insideH w:val="single" w:sz="4" w:space="0" w:color="808080"/>' +
+    '<w:insideV w:val="single" w:sz="4" w:space="0" w:color="808080"/>' +
+    '</w:tblBorders>' +
+    '</w:tblPr>' +
+    `<w:tblGrid>${gridColumns}</w:tblGrid>` +
+    rowXml(headers, headers.length > 0) +
+    rows.map(row => rowXml(row, false)).join('') +
+    '</w:tbl>';
+}
+
+function wordTableTitleParagraphXml(text: string): string {
+  return wordCaptionParagraphXml(text, { bold: true, center: false, sizeHalfPoints: 22 });
+}
+
+export interface BuildFigureTableDocxOptions {
+  /** Document title rendered at the top (optional). */
+  title?: string;
+}
+
+export function buildFigureTableDocumentXml(
+  entries: WordFigureTableEntry[],
+  options: BuildFigureTableDocxOptions = {}
+): string {
+  const body: string[] = [];
+
+  if (options.title) {
+    body.push(wordParagraphXml(options.title, {
+      style: 'Title',
+      alignment: 'center',
+      before: 0,
+      after: 360,
+      line: 360,
+      keepNext: true,
+      bold: true,
+      sizeHalfPoints: 36,
+    }));
+  }
+
+  entries.forEach((entry, index) => {
+    if (index > 0) {
+      body.push(wordBlankLineXml());
+    }
+
+    if (entry.type === 'figure') {
+      const relId = entry.relId || 'rIdImg1';
+      const widthEmu = entry.widthEmu || FIGURE_TARGET_WIDTH_EMU;
+      const heightEmu = entry.heightEmu || Math.round(FIGURE_TARGET_WIDTH_EMU * 0.72);
+      body.push(wordFigureDrawingXml(relId, entry.imageName, widthEmu, heightEmu));
+      const caption = wordCaptionParagraphXml(entry.caption, { bold: false, center: true });
+      if (caption) body.push(caption);
+      if (entry.note) {
+        const note = wordCaptionParagraphXml(entry.note, { bold: false, center: true, sizeHalfPoints: 19 });
+        if (note) body.push(note);
+      }
+      if (entry.sourcePath) {
+        const source = wordCaptionParagraphXml(`文件位置：${entry.sourcePath}`, {
+          bold: false,
+          center: false,
+          sizeHalfPoints: 18,
+        });
+        if (source) body.push(source);
+      }
+      return;
+    }
+
+    // Table: title above, header row on top, note below.
+    const title = wordTableTitleParagraphXml(entry.title);
+    if (title) body.push(title);
+    body.push(wordTableXml(entry));
+    if (entry.note) {
+      const note = wordCaptionParagraphXml(entry.note, { bold: false, center: false, sizeHalfPoints: 19 });
+      if (note) body.push(note);
+    }
+    if (entry.sourcePath) {
+      const source = wordCaptionParagraphXml(`文件位置：${entry.sourcePath}`, {
+        bold: false,
+        center: false,
+        sizeHalfPoints: 18,
+      });
+      if (source) body.push(source);
+    }
+  });
+
+  if (body.length === 0) body.push(wordParagraphXml(''));
+
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document
+  xmlns:wpc="http://schemas.microsoft.com/office/word/2010/wordprocessingCanvas"
+  xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+  xmlns:o="urn:schemas-microsoft-com:office:office"
+  xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+  xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math"
+  xmlns:v="urn:schemas-microsoft-com:vml"
+  xmlns:wp14="http://schemas.microsoft.com/office/word/2010/wordprocessingDrawing"
+  xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"
+  xmlns:w10="urn:schemas-microsoft-com:office:word"
+  xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+  xmlns:w14="http://schemas.microsoft.com/office/word/2010/wordml"
+  xmlns:wpg="http://schemas.microsoft.com/office/word/2010/wordprocessingGroup"
+  xmlns:wpi="http://schemas.microsoft.com/office/word/2010/wordprocessingInk"
+  xmlns:wne="http://schemas.microsoft.com/office/word/2006/wordml"
+  xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape"
+  xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
+  xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture"
+  mc:Ignorable="w14 wp14">
+<w:body>
+${body.join('\n')}
+<w:sectPr>
+<w:pgSz w:w="11906" w:h="16838"/>
+<w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="720" w:footer="720" w:gutter="0"/>
+<w:cols w:space="720"/>
+<w:docGrid w:linePitch="360"/>
+</w:sectPr>
+</w:body>
+</w:document>`;
+}
+
+function figureTableContentTypesXml(imageExtensions: Set<string>): string {
+  const defaults = Array.from(imageExtensions)
+    .map(ext => {
+      const cleanExt = ext.replace(/^\./, '');
+      const contentType = cleanExt === 'jpg' ? 'image/jpeg' : `image/${cleanExt}`;
+      return `<Default Extension="${cleanExt}" ContentType="${contentType}"/>`;
+    })
+    .join('');
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+<Default Extension="xml" ContentType="application/xml"/>
+${defaults}
+<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+<Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>
+<Override PartName="/word/settings.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.settings+xml"/>
+</Types>`;
+}
+
+function figureTableDocumentRelsXml(images: Array<{ imageName: string }>): string {
+  const relationships = images
+    .map((image, index) =>
+      `<Relationship Id="rIdImg${index + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/${image.imageName}"/>`
+    )
+    .join('');
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${relationships}</Relationships>`;
+}
+
+/**
+ * Build a docx that integrates figures and tables with captions/titles/notes.
+ * Images are embedded as PNG/JPEG; non-embeddable image formats are skipped
+ * with a placeholder note in the caption.
+ */
+export async function buildFigureTableDocxBuffer(
+  entries: WordFigureTableEntry[],
+  options: BuildFigureTableDocxOptions = {}
+): Promise<Buffer> {
+  const { readFile } = await import('fs/promises');
+
+  const images: Array<{ relId: string; imageName: string; imagePath: string; buffer: Buffer }> = [];
+  const renderedEntries: WordFigureTableEntry[] = [];
+
+  for (const entry of entries) {
+    if (entry.type !== 'figure') {
+      renderedEntries.push(entry);
+      continue;
+    }
+
+    const extension = path.extname(entry.imagePath).toLowerCase();
+    if (!DOCX_IMAGE_EXTENSIONS.has(extension)) {
+      renderedEntries.push({
+        type: 'figure',
+        key: entry.key,
+        imagePath: entry.imagePath,
+        imageName: entry.imageName,
+        caption: entry.caption,
+        sourcePath: entry.sourcePath,
+        note: entry.note
+          ? `${entry.note}（源文件 ${path.basename(entry.imagePath)} 无法嵌入 Word，仅保留子文件夹原文件）`
+          : `源文件 ${path.basename(entry.imagePath)} 无法嵌入 Word，仅保留子文件夹原文件。`,
+      });
+      continue;
+    }
+
+    let buffer: Buffer;
+    try {
+      buffer = await readFile(entry.imagePath);
+    } catch {
+      renderedEntries.push({
+        type: 'figure',
+        key: entry.key,
+        imagePath: entry.imagePath,
+        imageName: entry.imageName,
+        caption: entry.caption,
+        sourcePath: entry.sourcePath,
+        note: entry.note ? `${entry.note}（图片文件缺失：${entry.imagePath}）` : `图片文件缺失：${entry.imagePath}`,
+      });
+      continue;
+    }
+
+    const size = readImagePixelSizeForWord(buffer);
+    const widthEmu = size ? Math.min(FIGURE_MAX_WIDTH_EMU, FIGURE_TARGET_WIDTH_EMU) : FIGURE_TARGET_WIDTH_EMU;
+    const heightEmu = size
+      ? Math.round(widthEmu * (size.height / Math.max(1, size.width)))
+      : Math.round(widthEmu * 0.72);
+
+    const imageName = String(entry.imageName || '').replace(/[\\/]/g, '_') || `image${images.length + 1}${extension}`;
+    const relId = `rIdImg${images.length + 1}`;
+    images.push({ relId, imageName, imagePath: entry.imagePath, buffer });
+
+    renderedEntries.push({
+      ...entry,
+      imageName,
+      relId,
+      widthEmu,
+      heightEmu,
+    });
+  }
+
+  const imageExtensions = new Set(images.map(image => path.extname(image.imagePath).toLowerCase()));
+
+  return new Promise((resolve, reject) => {
+    const archive = archiver('zip', { zlib: { level: 9 } });
+    const chunks: Buffer[] = [];
+    archive.on('data', (chunk: Buffer | Uint8Array) => chunks.push(Buffer.from(chunk)));
+    archive.on('end', () => resolve(Buffer.concat(chunks)));
+    archive.on('error', reject);
+
+    archive.append(figureTableContentTypesXml(imageExtensions), { name: '[Content_Types].xml' });
+    archive.append(wordDraftRootRelsXml(), { name: '_rels/.rels' });
+    archive.append(buildFigureTableDocumentXml(renderedEntries, options), { name: 'word/document.xml' });
+    archive.append(buildWordDraftStylesXml(), { name: 'word/styles.xml' });
+    archive.append(wordDraftSettingsXml(), { name: 'word/settings.xml' });
+    archive.append(figureTableDocumentRelsXml(images), { name: 'word/_rels/document.xml.rels' });
+    for (const image of images) {
+      archive.append(image.buffer, { name: `word/media/${image.imageName}` });
+    }
+
+    void archive.finalize().catch(reject);
+  });
+}
+
+export async function writeFigureTableDocx(
+  filePath: string,
+  entries: WordFigureTableEntry[],
+  options: BuildFigureTableDocxOptions = {}
+): Promise<void> {
+  const resolvedPath = path.resolve(String(filePath || '').trim());
+  if (!resolvedPath || path.extname(resolvedPath).toLowerCase() !== '.docx') {
+    throw new Error('图表整合文件输出路径必须是 .docx 文件');
+  }
+  if (!Array.isArray(entries) || entries.length === 0) {
+    throw new Error('没有可整合的图表条目');
+  }
+  await mkdir(path.dirname(resolvedPath), { recursive: true });
+  const buffer = await buildFigureTableDocxBuffer(entries, options);
+  await writeFile(resolvedPath, buffer);
+}

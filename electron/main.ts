@@ -31,6 +31,25 @@ const RENDERER_RECOVERY_RETRY_DELAY_MS = 1_500;
 const RENDERER_RECOVERY_STABLE_MS = 30_000;
 const rendererRecoveryPolicy = new RendererRecoveryPolicy(3, 120_000);
 
+function resolveLocalServerHeapMb(): number {
+  const configured = Number(process.env.SCHOLAR_HARNESS_SERVER_HEAP_MB);
+  if (Number.isFinite(configured) && configured > 0) {
+    return Math.max(1536, Math.min(8192, Math.floor(configured)));
+  }
+  const totalMemoryGb = os.totalmem() / (1024 ** 3);
+  if (totalMemoryGb >= 24) return 6144;
+  if (totalMemoryGb >= 12) return 4096;
+  return 3072;
+}
+
+function withNodeHeapOption(existing: string | undefined, heapMb: number): string {
+  const withoutHeapOption = String(existing || '')
+    .replace(/(?:^|\s)--max-old-space-size(?:=|\s+)\d+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return [withoutHeapOption, `--max-old-space-size=${heapMb}`].filter(Boolean).join(' ');
+}
+
 const VENDOR_CONFIG_SITES = {
   openrouter: {
     id: 'openrouter',
@@ -675,7 +694,12 @@ async function checkServerHealth(expectedDataDir?: string): Promise<boolean> {
         try {
           const parsed = JSON.parse(body) as {
             dataDir?: unknown;
-            capabilities?: { mcpPluginMarketplace?: unknown; mcpPluginMarketplaceVersion?: unknown };
+            capabilities?: {
+              mcpPluginMarketplace?: unknown;
+              mcpPluginMarketplaceVersion?: unknown;
+              localServerApiVersion?: unknown;
+              conversationArchive?: unknown;
+            };
           };
           const actualDataDir = path.resolve(String(parsed.dataDir || ''));
           const expected = path.resolve(expectedDataDir);
@@ -683,6 +707,8 @@ async function checkServerHealth(expectedDataDir?: string): Promise<boolean> {
             actualDataDir.toLowerCase() === expected.toLowerCase()
             && parsed.capabilities?.mcpPluginMarketplace === true
             && parsed.capabilities?.mcpPluginMarketplaceVersion === 3
+            && Number(parsed.capabilities?.localServerApiVersion || 0) >= 4
+            && parsed.capabilities?.conversationArchive === true
           );
         } catch {
           resolve(false);
@@ -749,7 +775,7 @@ function startServer(): Promise<void> {
     if (portInUse) {
       const healthyExistingServer = await checkServerHealth(dataDir);
       if (healthyExistingServer && app.isPackaged) {
-        startupLog(`Port ${PORT} already has a healthy local server with matching DATA_DIR; reusing it`);
+        startupLog(`Port ${PORT} already has a compatible local server with matching DATA_DIR; reusing it`);
         resolve();
         return;
       }
@@ -757,7 +783,7 @@ function startServer(): Promise<void> {
       startupLog(
         healthyExistingServer
           ? `Port ${PORT} has a healthy dev server, replacing it to avoid stale routes after rebuild...`
-          : `Port ${PORT} is in use but health check failed or DATA_DIR mismatched, attempting to free it...`
+          : `Port ${PORT} is in use but health/capability check failed or DATA_DIR mismatched, attempting to free it...`
       );
       const killed = await killProcessOnPort(PORT);
       if (!killed) {
@@ -779,6 +805,7 @@ function startServer(): Promise<void> {
       : path.join(process.cwd(), 'dist', 'src', 'public');
     const serverPath = getServerPath();
     const openclawDir = getOpenclawDir();
+    const serverHeapMb = resolveLocalServerHeapMb();
     
     startupLog(`App path: ${app.isPackaged ? app.getAppPath() : 'dev mode'}`);
     startupLog(`Server path: ${serverPath}`);
@@ -809,6 +836,7 @@ function startServer(): Promise<void> {
       OPENCLAW_DIR: openclawDir,
       CHAT_BRIDGE_CONFIG_PATH: getChatBridgeUserConfigPath(),
       ELECTRON_RUN_AS_NODE: '1',
+      NODE_OPTIONS: withNodeHeapOption(process.env.NODE_OPTIONS, serverHeapMb),
     };
     
     // 如果存在打包的浏览器，设置环境变量
@@ -818,7 +846,7 @@ function startServer(): Promise<void> {
       console.log('[Electron] Packaged browsers available:', packagedBrowsersPath);
     }
     
-    startupLog(`Environment: PORT=${PORT}, DATA_DIR=${dataDir}, OPENCLAW_DIR=${openclawDir}`);
+    startupLog(`Environment: PORT=${PORT}, DATA_DIR=${dataDir}, OPENCLAW_DIR=${openclawDir}, SERVER_HEAP_MB=${serverHeapMb}`);
     
     // 检查服务器是否在运行（通过 stdout 日志或健康检查）
     let resolved = false;
@@ -2404,10 +2432,29 @@ ipcMain.handle('clipboard-write-text', async (event, rawText: unknown) => {
 /**
  * 自定义无边框窗口控制
  */
-ipcMain.handle('window-control', async (event, action: string) => {
+function resolveWindowControlTarget(sender: Electron.WebContents): BrowserWindow | null {
+  const ownedWindow = BrowserWindow.fromWebContents(sender);
+  if (ownedWindow && !ownedWindow.isDestroyed()) {
+    return ownedWindow;
+  }
+
+  // 某些 Electron 生命周期阶段 fromWebContents 可能暂时取不到窗口。
+  // 只允许发送者确实属于主窗口时兜底，避免其他 WebContents 控制主窗口。
+  if (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents === sender) {
+    return mainWindow;
+  }
+
+  return null;
+}
+
+function applyWindowControl(sender: Electron.WebContents, action: string): {
+  success: boolean;
+  maximized?: boolean;
+  error?: string;
+} {
   try {
-    const targetWindow = BrowserWindow.fromWebContents(event.sender) || mainWindow;
-    if (!targetWindow || targetWindow.isDestroyed()) {
+    const targetWindow = resolveWindowControlTarget(sender);
+    if (!targetWindow) {
       return { success: false, error: 'Window is not available' };
     }
 
@@ -2437,6 +2484,19 @@ ipcMain.handle('window-control', async (event, action: string) => {
       error: error instanceof Error ? error.message : 'Window control failed',
     };
   }
+}
+
+// 保留单向事件，兼容已经加载旧 preload 的窗口。
+ipcMain.on('window-control-action', (event, action: string) => {
+  const result = applyWindowControl(event.sender, action);
+  if (!result.success) {
+    console.error('[Electron] Window control action failed:', action, result.error);
+  }
+});
+
+// 当前 preload 使用 invoke，让渲染进程能收到实际执行结果。
+ipcMain.handle('window-control', async (event, action: string) => {
+  return applyWindowControl(event.sender, action);
 });
 
 /**

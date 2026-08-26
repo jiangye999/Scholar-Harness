@@ -265,8 +265,9 @@ router.post('/register', rateLimitMiddleware(5, 60000), async (req: Request, res
         const endDate = isLifetimeBetaCode
           ? new Date(new Date(startDate).setFullYear(startDate.getFullYear() + LIFETIME_YEARS))
           : new Date(Date.now() + trialDays * DAY_MS);
-        const quotaTotal = isLifetimeBetaCode ? -1 : 5000000;
-        const maxFileUpload = isLifetimeBetaCode ? -1 : 10;
+        // 套餐只按有效期授权。旧字段统一写入 -1，避免旧客户端把它们误解为字符/文件额度。
+        const quotaTotal = -1;
+        const maxFileUpload = -1;
 
         const subscriptionResult = await client.query<Subscription>(
           `INSERT INTO subscriptions (

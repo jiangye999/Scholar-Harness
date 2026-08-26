@@ -60,6 +60,12 @@ describe('main chat input responsiveness', () => {
     expect(html).not.toContain('targetText.slice(0, renderedText.length + step)');
   });
 
+  it('cannot leave the final assistant bubble blocked by a stale IME composition flag', () => {
+    expect(html).toContain('mainChatInputComposing = false;\n      mainChatLastInputAt = 0;');
+    expect(html).toContain('if (mainChatInputComposing && !finalizing)');
+    expect(html).not.toContain('if (mainChatInputComposing) {\n          schedule(80);');
+  });
+
   it('uses stable text nodes while streaming and performs rich Markdown rendering only once at completion', () => {
     expect(html).toContain('function renderLightweightPlainText()');
     expect(html).toContain('function renderLightweightAgentTranscript()');

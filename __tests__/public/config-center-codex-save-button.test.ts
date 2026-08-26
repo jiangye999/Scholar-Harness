@@ -7,21 +7,23 @@ import { readPublicAppSource } from '../helpers/public-app-source';
 
 const html = readPublicAppSource();
 
-describe('Codex CLI configuration save button', () => {
-  it('auto-detects and saves a pasted Codex command without a separate path save button', () => {
+describe('programming Agent container save behavior', () => {
+  it('auto-detects and saves a pasted Codex command through the unified container', () => {
     expect(html).not.toContain('id="configCenterCodexSaveButton"');
     expect(html).toContain('oninput="scheduleConfigCenterCodexCommandAutoSave()"');
     expect(html).toContain('onchange="flushConfigCenterCodexCommandAutoSave()"');
     expect(html).toContain('configCenterCodexCommandAutoSaveTimer = setTimeout(flushConfigCenterCodexCommandAutoSave, 500)');
-    expect(html).toContain('await saveConfigCenterCodexPreference(prefer)');
+    expect(html).toContain('await saveConfigCenterAgentRuntimes()');
   });
 
-  it('adds a black and gold save action below the PDF Wiki concurrency explanation', () => {
-    expect(html).toMatch(/PDF Wiki Codex 多开数[\s\S]*?上传多个 PDF 生成 Wiki论点库[\s\S]*?id="configCenterCodexEffortSaveButton"/);
-    expect(html).toMatch(/#configCenterCodexEffortSaveButton\s*\{[\s\S]*?background:\s*#111111\s*!important;/);
-    expect(html).toMatch(/#configCenterCodexEffortSaveButton\s*\{[\s\S]*?color:\s*#d6a928\s*!important;/);
-    expect(html).toMatch(/#configCenterCodexEffortSaveButton\s*\{[\s\S]*?font-weight:\s*700\s*!important;/);
-    expect(html).toContain("id=\"configCenterCodexEffortSaveButton\" onclick=\"saveConfigCenterCodexPreference(");
+  it('uses one black and gold save action for Codex, Pi, and OpenCode', () => {
+    expect(html).toContain('<strong>Agent 容器</strong>');
+    expect(html).toContain("configCenterCodexRuntimeHtml(currentCodexModel, currentCodexEffort, currentCodexConcurrency)");
+    expect(html).toContain("configCenterRuntimeCard('pi', 'Pi'");
+    expect(html).toContain("configCenterRuntimeCard('opencode', 'OpenCode'");
+    expect(html).toContain('onclick="saveConfigCenterAgentRuntimes()"');
+    expect(html).toContain('background:#111;color:#d6a928');
+    expect(html).not.toContain('id="configCenterCodexEffortSaveButton"');
   });
 
   it('does not expose the manual Codex model slug entry', () => {

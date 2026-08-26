@@ -134,6 +134,15 @@ export function parseDraftSaveBlocks(response: string): DraftSaveBlockParseResul
 
 export function isDraftSaveRequest(value: string): boolean {
   const text = String(value || '');
+
+  // The paper-framework planner stores chapter goals and structure, not
+  // chapter prose. Do not route framework/proposal confirmations into the
+  // legacy draft synchronizer merely because they contain words such as
+  // "更新" and "章节". An explicit prose/draft/file request still wins.
+  const frameworkPlanningIntent = /(?:论文|文章|章节|写作)?(?:框架|提纲|结构规划|写作规划)|(?:框架|提纲)[\s\S]{0,20}(?:章节|小节|规划|建议|确认)/i.test(text);
+  const explicitDraftBodyIntent = /草稿|章节正文|论文正文|文章正文|save[ _-]*draft|draft[_-]|(?:保存|写入|写回|同步|覆盖|追加)[\s\S]{0,40}(?:txt|文本文件)/i.test(text);
+  if (frameworkPlanningIntent && !explicitDraftBodyIntent) return false;
+
   if (/(?:保存|写入|写回|同步|更新|覆盖|追加)[\s\S]{0,30}(?:草稿|章节)|(?:草稿|章节)[\s\S]{0,30}(?:保存|写入|写回|同步|更新|覆盖|追加)|save[ _-]*draft/i.test(text)) {
     return true;
   }

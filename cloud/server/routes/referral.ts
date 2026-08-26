@@ -12,8 +12,6 @@ let db: DatabaseConnection;
 
 const INVITE_TRIAL_REQUIRED_REFERRALS = 3;
 const INVITE_TRIAL_BONUS_DAYS = 30;
-const INVITE_TRIAL_QUOTA_TOTAL = 5000000;
-const INVITE_TRIAL_MAX_FILE_UPLOAD = 10;
 
 export function initializeReferralRoutes(database: DatabaseConnection): void {
   db = database;
@@ -193,15 +191,13 @@ router.post('/invite-trial/claim', authMiddleware, async (req: AuthenticatedRequ
             $1, 'trial', 'trial', CURRENT_TIMESTAMP,
             CURRENT_TIMESTAMP + INTERVAL '${INVITE_TRIAL_BONUS_DAYS} days',
             0, 'CNY', 'invite_trial', false,
-            $2, 0, $2, $3, 0,
+            -1, 0, -1, -1, 0,
             CURRENT_TIMESTAMP, CURRENT_TIMESTAMP + INTERVAL '${INVITE_TRIAL_BONUS_DAYS} days',
-            $4
+            $2
           )
           RETURNING *`,
           [
             req.user!.userId,
-            INVITE_TRIAL_QUOTA_TOTAL,
-            INVITE_TRIAL_MAX_FILE_UPLOAD,
             JSON.stringify({ source: 'invite_trial', required_referrals: INVITE_TRIAL_REQUIRED_REFERRALS }),
           ]
         ) as { rows: Subscription[] };
@@ -216,21 +212,16 @@ router.post('/invite-trial/claim', authMiddleware, async (req: AuthenticatedRequ
                  WHEN plan_type = 'trial' THEN GREATEST(COALESCE(trial_end, end_date), CURRENT_TIMESTAMP) + INTERVAL '${INVITE_TRIAL_BONUS_DAYS} days'
                  ELSE trial_end
                END,
-               quota_total = CASE WHEN quota_total = -1 THEN -1 ELSE COALESCE(quota_total, 0) + $2 END,
-               quota_remaining = CASE WHEN quota_remaining = -1 THEN -1 ELSE COALESCE(quota_remaining, 0) + $2 END,
-               max_file_upload = CASE
-                 WHEN max_file_upload = -1 THEN -1
-                 ELSE GREATEST(COALESCE(max_file_upload, 0), $3)
-               END,
+               quota_total = -1,
+               quota_remaining = -1,
+               max_file_upload = -1,
                payment_method = COALESCE(payment_method, 'invite_trial'),
-               metadata = COALESCE(metadata, '{}'::jsonb) || $4::jsonb,
+               metadata = COALESCE(metadata, '{}'::jsonb) || $2::jsonb,
                updated_at = CURRENT_TIMESTAMP
-           WHERE id = $5
+           WHERE id = $3
            RETURNING *`,
           [
             nextStatus,
-            INVITE_TRIAL_QUOTA_TOTAL,
-            INVITE_TRIAL_MAX_FILE_UPLOAD,
             JSON.stringify({ invite_trial_bonus_days: INVITE_TRIAL_BONUS_DAYS }),
             latestSubscription.id,
           ]

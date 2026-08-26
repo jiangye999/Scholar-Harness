@@ -30,6 +30,97 @@ export interface LLMToolMessage {
   tool_calls?: LLMToolCall[];
 }
 
+function stringifyToolMessageContent(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content
+      .map(part => {
+        if (part && typeof part === "object" && "text" in part) {
+          return String((part as { text?: unknown }).text || "");
+        }
+        return "";
+      })
+      .filter(Boolean)
+      .join("\n");
+  }
+  return String(content ?? "");
+}
+
+/**
+ * Final protocol guard for OpenAI-compatible tool loops. A request is rejected
+ * with a 400 when an assistant message declares `tool_calls` but the tool
+ * responses are incomplete ("insufficient tool messages following tool_calls
+ * message"). Strict providers (DashScope 小牛马, OpenAI, etc) enforce this
+ * exactly. This function repairs ANY message list before it hits the wire:
+ *  - missing tool responses are backfilled with placeholder tool messages;
+ *  - orphan tool messages (no matching assistant tool_calls) are demoted to
+ *    user text so their information is not lost;
+ *  - the assistant→tool responses run stays contiguous.
+ */
+export function repairToolMessagePairing(
+  inputMessages: Array<Message | LLMToolMessage>
+): { messages: Array<Message | LLMToolMessage>; repaired: boolean } {
+  const messages: Array<Message | LLMToolMessage> = [];
+  const pendingCallIds: string[] = [];
+  let repaired = false;
+
+  const flushPending = (): void => {
+    if (pendingCallIds.length === 0) return;
+    for (const id of pendingCallIds) {
+      messages.push({
+        role: "tool",
+        tool_call_id: id,
+        name: "unknown",
+        content: "<missing tool result: 该工具调用结果缺失，已自动补齐占位；请基于已有信息继续>",
+      });
+    }
+    pendingCallIds.length = 0;
+    repaired = true;
+  };
+
+  for (const message of inputMessages) {
+    if (message.role === "assistant") {
+      const toolCalls = (message as LLMToolMessage).tool_calls;
+      if (Array.isArray(toolCalls) && toolCalls.length > 0) {
+        flushPending();
+        for (const call of toolCalls) {
+          if (call?.id) pendingCallIds.push(call.id);
+        }
+        messages.push(message);
+        continue;
+      }
+      if (pendingCallIds.length > 0) flushPending();
+      messages.push(message);
+      continue;
+    }
+
+    if (message.role === "tool") {
+      const toolMessage = message as LLMToolMessage;
+      const id = String(toolMessage.tool_call_id || "");
+      const index = pendingCallIds.indexOf(id);
+      if (index >= 0) {
+        pendingCallIds.splice(index, 1);
+        messages.push(message);
+      } else {
+        // Orphan tool message: no assistant tool_calls referenced it. Demote to
+        // user text instead of sending an invalid tool message.
+        messages.push({
+          role: "user",
+          content: `[tool result] ${toolMessage.name || "tool"}: ${stringifyToolMessageContent(toolMessage.content)}`,
+        });
+        repaired = true;
+      }
+      continue;
+    }
+
+    if (pendingCallIds.length > 0) flushPending();
+    messages.push(message);
+  }
+  flushPending();
+
+  return { messages, repaired };
+}
+
 export interface LLMToolChatResult {
   content: string;
   toolCalls: LLMToolCall[];
@@ -50,12 +141,29 @@ export interface LLMChatRequest {
   messages: Array<Message | LLMToolMessage>;
   temperature?: number;
   maxTokens?: number;
+  reasoningEffort?: string;
   stream?: boolean;
   onProgress?: (chunk: string) => void;
+  onThinking?: (chunk: string) => void;
+  onUsage?: (usage: LLMTokenUsage) => void;
   tools?: LLMToolDefinition[];
   toolChoice?: "auto" | "none" | "required" | Record<string, unknown>;
   parallelToolCalls?: boolean;
   signal?: AbortSignal;
+}
+
+export interface LLMTokenUsage {
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  reasoningTokens?: number;
+  /**
+   * Tokens served from the provider KV/prefix cache (DeepSeek
+   * `prompt_tokens_details.cached_tokens` / `prompt_cache_hit_tokens`).
+   * Undefined when the provider reported no cache information.
+   */
+  cacheReadTokens?: number;
+  estimated?: boolean;
 }
 
 interface ChatCompletionResponse {
@@ -72,10 +180,74 @@ interface ChatCompletionResponse {
     text?: string;
     delta?: {
       content?: string;
+      reasoning_content?: string;
       tool_calls?: LLMToolCall[];
     };
     finish_reason?: string;
   }>;
+  usage?: {
+    prompt_tokens?: number;
+    completion_tokens?: number;
+    total_tokens?: number;
+    input_tokens?: number;
+    output_tokens?: number;
+    promptTokens?: number;
+    completionTokens?: number;
+    totalTokens?: number;
+    inputTokens?: number;
+    outputTokens?: number;
+    reasoning_tokens?: number;
+    reasoningTokens?: number;
+    completion_tokens_details?: { reasoning_tokens?: number };
+    /** DeepSeek / OpenAI-compat cache accounting. */
+    prompt_tokens_details?: { cached_tokens?: number };
+    /** DeepSeek native spelling of cache hits. */
+    prompt_cache_hit_tokens?: number;
+  };
+}
+
+function extractChatCompletionUsage(data: ChatCompletionResponse): LLMTokenUsage | null {
+  const usage = data.usage;
+  if (!usage || typeof usage !== "object") return null;
+  const rawPromptTokens = Number(
+    usage.prompt_tokens ?? usage.input_tokens ?? usage.promptTokens ?? usage.inputTokens ?? 0
+  );
+  const outputTokens = Number(
+    usage.completion_tokens ?? usage.output_tokens ?? usage.completionTokens ?? usage.outputTokens ?? 0
+  );
+  const reportedTotal = Number(usage.total_tokens ?? usage.totalTokens ?? 0);
+  const reasoningTokens = Number(
+    usage.reasoning_tokens ?? usage.reasoningTokens ?? usage.completion_tokens_details?.reasoning_tokens ?? 0
+  );
+  // Cache reads: DeepSeek reports them via `prompt_tokens_details.cached_tokens`
+  // (OpenAI-compat spelling) or `prompt_cache_hit_tokens`. Per DeepSeek's wire
+  // accounting `prompt_tokens` INCLUDES cache hits, so paid input is
+  // `prompt_tokens - cache_read`; when the provider reports no cache field we
+  // keep cacheReadTokens undefined rather than guessing zero.
+  const cacheRead = Number(
+    usage.prompt_tokens_details?.cached_tokens ?? usage.prompt_cache_hit_tokens ?? 0
+  );
+  const hasCacheRead = (
+    usage.prompt_tokens_details?.cached_tokens !== undefined
+    || usage.prompt_cache_hit_tokens !== undefined
+  ) && Number.isFinite(cacheRead) && cacheRead >= 0;
+  const inputTokens = hasCacheRead && rawPromptTokens > 0
+    ? Math.max(0, rawPromptTokens - cacheRead)
+    : rawPromptTokens;
+  if (![inputTokens, outputTokens, reportedTotal, reasoningTokens].some(value => Number.isFinite(value) && value > 0)) {
+    return null;
+  }
+  return {
+    inputTokens: Number.isFinite(inputTokens) && inputTokens > 0 ? Math.floor(inputTokens) : 0,
+    outputTokens: Number.isFinite(outputTokens) && outputTokens > 0 ? Math.floor(outputTokens) : 0,
+    totalTokens: Number.isFinite(reportedTotal) && reportedTotal > 0
+      ? Math.floor(reportedTotal)
+      : Math.max(0, Math.floor(inputTokens || 0) + Math.floor(outputTokens || 0)),
+    ...(Number.isFinite(reasoningTokens) && reasoningTokens > 0
+      ? { reasoningTokens: Math.floor(reasoningTokens) }
+      : {}),
+    ...(hasCacheRead ? { cacheReadTokens: Math.floor(cacheRead) } : {}),
+  };
 }
 
 interface RawChatCompletionHttpResponse {
@@ -361,6 +533,7 @@ async function readStreamingChatCompletion(
   stream: NodeJS.ReadableStream,
   label?: string,
   onProgress?: (chunk: string) => void,
+  onUsage?: (usage: LLMTokenUsage) => void,
   signal?: AbortSignal
 ): Promise<string> {
   let buffer = "";
@@ -377,6 +550,8 @@ async function readStreamingChatCompletion(
     if (!payload || payload === "[DONE]") return;
 
     const data = JSON.parse(payload) as ChatCompletionResponse;
+    const usage = extractChatCompletionUsage(data);
+    if (usage) onUsage?.(usage);
     const chunk = extractChatCompletionContent(data);
     if (!chunk) return;
     fullContent += chunk;
@@ -398,6 +573,133 @@ async function readStreamingChatCompletion(
           return;
         }
         resolve(fullContent);
+      } catch (error) {
+        reject(error);
+      }
+    };
+
+    const fail = (error: unknown) => {
+      if (settled) return;
+      settled = true;
+      removeAbortListener();
+      reject(error);
+    };
+
+    const onAbort = () => {
+      const error = createAbortError();
+      const destroy = (stream as { destroy?: (err?: Error) => void }).destroy;
+      if (typeof destroy === "function") destroy.call(stream, error);
+      fail(error);
+    };
+    if (signal) {
+      signal.addEventListener("abort", onAbort, { once: true });
+      removeAbortListener = () => signal.removeEventListener("abort", onAbort);
+      if (signal.aborted) {
+        onAbort();
+        return;
+      }
+    }
+
+    stream.on("data", (chunk) => {
+      try {
+        buffer += Buffer.isBuffer(chunk) ? chunk.toString("utf-8") : Buffer.from(chunk).toString("utf-8");
+        const events = buffer.split(/\r?\n\r?\n/);
+        buffer = events.pop() || "";
+        for (const eventText of events) {
+          consumeEvent(eventText);
+        }
+      } catch (error) {
+        const destroy = (stream as { destroy?: (err?: Error) => void }).destroy;
+        if (typeof destroy === "function") {
+          destroy.call(stream, error instanceof Error ? error : new Error(String(error)));
+        }
+        fail(error);
+      }
+    });
+    stream.on("end", finish);
+    stream.on("error", fail);
+  });
+}
+
+type StreamingToolCallDelta = {
+  index?: number;
+  id?: string;
+  type?: string;
+  function?: { name?: string; arguments?: string };
+};
+
+async function readStreamingToolChatCompletion(
+  stream: NodeJS.ReadableStream,
+  label?: string,
+  onProgress?: (chunk: string) => void,
+  onThinking?: (chunk: string) => void,
+  onUsage?: (usage: LLMTokenUsage) => void,
+  signal?: AbortSignal
+): Promise<LLMToolChatResult> {
+  let buffer = "";
+  let fullContent = "";
+  let finishReason: string | undefined;
+  const toolCallParts = new Map<number, { id: string; name: string; arguments: string }>();
+  let settled = false;
+
+  const consumeEvent = (eventText: string) => {
+    const payload = eventText
+      .split(/\r?\n/)
+      .filter((line) => line.startsWith("data:"))
+      .map((line) => line.replace(/^data:\s?/, ""))
+      .join("\n")
+      .trim();
+    if (!payload || payload === "[DONE]") return;
+
+    const data = JSON.parse(payload) as ChatCompletionResponse;
+    const usage = extractChatCompletionUsage(data);
+    if (usage) onUsage?.(usage);
+    const choice = data.choices?.[0];
+    if (!choice) return;
+    if (choice.finish_reason) finishReason = choice.finish_reason;
+
+    const delta = choice.delta;
+    if (!delta) return;
+    const reasoning = typeof delta.reasoning_content === "string" ? delta.reasoning_content : "";
+    if (reasoning) onThinking?.(reasoning);
+    const content = typeof delta.content === "string" ? delta.content : "";
+    if (content) {
+      fullContent += content;
+      onProgress?.(content);
+    }
+    if (Array.isArray(delta.tool_calls)) {
+      for (const raw of delta.tool_calls as unknown as StreamingToolCallDelta[]) {
+        const index = typeof raw.index === "number" ? raw.index : 0;
+        const existing = toolCallParts.get(index) || { id: "", name: "", arguments: "" };
+        if (raw.id) existing.id = raw.id;
+        if (raw.function?.name) existing.name += raw.function.name;
+        if (raw.function?.arguments) existing.arguments += raw.function.arguments;
+        toolCallParts.set(index, existing);
+      }
+    }
+  };
+
+  return new Promise((resolve, reject) => {
+    let removeAbortListener = () => {};
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      removeAbortListener();
+      try {
+        if (buffer.trim()) consumeEvent(buffer);
+        const toolCalls: LLMToolCall[] = Array.from(toolCallParts.entries())
+          .sort((left, right) => left[0] - right[0])
+          .map(([, part]) => ({
+            id: part.id || `tool_call_${Date.now()}_${part.name || "call"}`,
+            type: "function" as const,
+            function: { name: part.name, arguments: part.arguments },
+          }))
+          .filter((call) => call.function.name);
+        if (!fullContent && toolCalls.length === 0) {
+          reject(new Error(`${label || "LLM"} API returned empty streaming response`));
+          return;
+        }
+        resolve({ content: fullContent, toolCalls, finishReason });
       } catch (error) {
         reject(error);
       }
@@ -487,6 +789,8 @@ export function buildChatCompletionRequestBody(
   tools?: LLMToolDefinition[];
   tool_choice?: "auto" | "none" | "required" | Record<string, unknown>;
   parallel_tool_calls?: boolean;
+  reasoning_effort?: string;
+  stream_options?: { include_usage?: boolean };
 } {
   const model = options.model || defaults.defaultModel || "gpt-4o";
   const temperature = options.temperature ?? defaults.defaultTemperature ?? 0.7;
@@ -499,6 +803,8 @@ export function buildChatCompletionRequestBody(
     tools?: LLMToolDefinition[];
     tool_choice?: "auto" | "none" | "required" | Record<string, unknown>;
     parallel_tool_calls?: boolean;
+    reasoning_effort?: string;
+    stream_options?: { include_usage?: boolean };
   } = {
     model,
     messages: options.messages,
@@ -507,6 +813,10 @@ export function buildChatCompletionRequestBody(
 
   if (typeof options.stream === "boolean") {
     body.stream = options.stream;
+    if (options.stream) {
+      // Preserve usage/cost accounting for streaming responses.
+      body.stream_options = { include_usage: true };
+    }
   }
   if (Number.isFinite(options.maxTokens) && options.maxTokens && options.maxTokens > 0) {
     body.max_tokens = Math.floor(options.maxTokens);
@@ -517,6 +827,9 @@ export function buildChatCompletionRequestBody(
   }
   if (typeof options.parallelToolCalls === "boolean") {
     body.parallel_tool_calls = options.parallelToolCalls;
+  }
+  if (typeof options.reasoningEffort === "string" && options.reasoningEffort.trim()) {
+    body.reasoning_effort = options.reasoningEffort.trim();
   }
 
   return body;
@@ -556,7 +869,7 @@ export async function callChatCompletion(
         throw new Error(`${config.label || "LLM"} API returned a streaming response without a readable body`);
       }
       try {
-        return await readStreamingChatCompletion(response.stream, config.label, options.onProgress, options.signal);
+        return await readStreamingChatCompletion(response.stream, config.label, options.onProgress, options.onUsage, options.signal);
       } catch (error) {
         if (!/returned empty streaming response/i.test((error as Error)?.message || '') || attempt === EMPTY_RESPONSE_MAX_ATTEMPTS) {
           throw error;
@@ -567,6 +880,8 @@ export async function callChatCompletion(
     }
 
     const data = JSON.parse(response.text || "{}") as ChatCompletionResponse;
+    const usage = extractChatCompletionUsage(data);
+    if (usage) options.onUsage?.(usage);
     const content = extractChatCompletionContent(data);
     if (content) return content;
 
@@ -599,9 +914,16 @@ export async function callChatCompletionWithTools(
   }
 
   const endpoint = normalizeChatCompletionUrl(config.apiUrl);
+  const paired = repairToolMessagePairing(options.messages);
+  if (paired.repaired) {
+    logger.warn(
+      `[${config.label || "LLM"}] Repaired incomplete tool message pairing before request; roles=${paired.messages.map(m => m.role).join(",")}`
+    );
+  }
   const requestBody = buildChatCompletionRequestBody({
     ...options,
-    stream: false,
+    stream: true,
+    messages: paired.messages,
   }, config);
 
   for (let attempt = 1; attempt <= EMPTY_RESPONSE_MAX_ATTEMPTS; attempt += 1) {
@@ -609,7 +931,7 @@ export async function callChatCompletionWithTools(
       endpoint,
       config.apiKey,
       requestBody,
-      false,
+      true,
       config.label,
       options.signal
     );
@@ -622,33 +944,25 @@ export async function callChatCompletionWithTools(
       throw new Error(`${config.label || "LLM"} API error: ${response.status} - ${errorText}`);
     }
 
-    const data = JSON.parse(response.text || "{}") as ChatCompletionResponse;
-    const content = extractChatCompletionContent(data);
-    const toolCalls = extractToolCalls(data);
-    const finishReason = data.choices?.[0]?.finish_reason;
-    if (content || toolCalls.length > 0) {
-      return {
-        content,
-        toolCalls,
-        finishReason,
-        raw: data,
-      };
+    if (!response.stream) {
+      throw new Error(`${config.label || "LLM"} API returned a streaming response without a readable body`);
     }
-
-    if (attempt < EMPTY_RESPONSE_MAX_ATTEMPTS) {
-      logger.warn(
-        `[${config.label || "LLM"}] Empty tool response` +
-        (finishReason ? ` (finish_reason=${finishReason})` : '') +
-        `; retrying the same request (${attempt + 1}/${EMPTY_RESPONSE_MAX_ATTEMPTS})`
+    try {
+      return await readStreamingToolChatCompletion(
+        response.stream,
+        config.label,
+        options.onProgress,
+        options.onThinking,
+        options.onUsage,
+        options.signal
       );
+    } catch (error) {
+      const isEmpty = /returned empty streaming response/i.test((error as Error)?.message || '');
+      if (!isEmpty) throw error;
+      if (attempt === EMPTY_RESPONSE_MAX_ATTEMPTS) break;
+      logger.warn(`[${config.label || "LLM"}] Empty streaming tool response; retrying the same request (${attempt + 1}/${EMPTY_RESPONSE_MAX_ATTEMPTS})`);
       continue;
     }
-    const preview = JSON.stringify(data).slice(0, 600);
-    throw new Error(
-      `${config.label || "LLM"} API returned empty response after retry` +
-      (finishReason ? ` (finish_reason=${finishReason})` : "") +
-      (preview ? `; response=${preview}` : "")
-    );
   }
 
   throw new Error(`${config.label || "LLM"} API returned empty response after retry`);
@@ -667,6 +981,7 @@ export function createLLMApiClient(config: LLMClientConfig): APIClient {
           messages: options.messages,
           temperature: options.temperature,
           maxTokens: options.maxTokens,
+          onUsage: options.onUsage,
           signal: options.abortSignal,
         }
       );

@@ -11,6 +11,16 @@
     var discussionFrameworkFloatingInitialized = false;
     var discussionFrameworkLastPointerMoved = false;
     var discussionFrameworkSuppressNextClick = false;
+    var discussionFrameworkServerRevision = 0;
+    var discussionFrameworkServerProjectId = '';
+    var discussionFrameworkPersistTimer = null;
+    var discussionFrameworkPersistInFlight = null;
+    var discussionFrameworkHydrating = false;
+    var discussionFrameworkPendingProposal = null;
+    var discussionFrameworkProposalStatus = '';
+    var discussionFrameworkWorkspaceScanning = false;
+    var discussionFrameworkAutoScanTimer = null;
+    var discussionFrameworkLastAutoScanAt = 0;
 
     function createDiscussionFrameworkId(prefix) {
       return (prefix || 'item') + '_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8);
@@ -61,6 +71,7 @@
           id: createDiscussionFrameworkId('chapter'),
           title: section.title,
           idea: '',
+          evidencePlan: '',
           analysis: '',
           analysisUpdatedAt: '',
           analysisProgress: '',
@@ -82,8 +93,12 @@
     function createDefaultDiscussionFrameworkState(profileId) {
       var resolvedProfileId = (typeof getProjectWritingProfile === 'function') ? getProjectWritingProfile(profileId).id : (profileId || 'paper-writing');
       return {
-        version: 2,
+        version: 3,
         profileId: resolvedProfileId,
+        planningStatus: 'draft',
+        planningUpdatedAt: '',
+        planningConfirmedAt: '',
+        planningDiscussionStartedAt: '',
         expanded: false,
         activeChapterId: '',
         activeChapterKey: '',
@@ -139,7 +154,11 @@
       if (!raw || typeof raw !== 'object' || raw.profileId !== profileId || !Array.isArray(raw.chapters)) {
         return createDefaultDiscussionFrameworkState(profileId);
       }
-      raw.version = 2;
+      raw.version = 3;
+      raw.planningStatus = raw.planningStatus === 'confirmed' ? 'confirmed' : 'draft';
+      raw.planningUpdatedAt = String(raw.planningUpdatedAt || '');
+      raw.planningConfirmedAt = raw.planningStatus === 'confirmed' ? String(raw.planningConfirmedAt || '') : '';
+      raw.planningDiscussionStartedAt = String(raw.planningDiscussionStartedAt || '');
       raw.expanded = raw.expanded === true;
       raw.activeChapterId = String(raw.activeChapterId || '');
       raw.activeChapterKey = String(raw.activeChapterKey || '');
@@ -154,6 +173,7 @@
           id: chapter.id || createDiscussionFrameworkId('chapter'),
           title: String(chapter.title || ''),
           idea: String(chapter.idea || ''),
+          evidencePlan: String(chapter.evidencePlan || ''),
           analysis: String(chapter.analysis || ''),
           analysisUpdatedAt: String(chapter.analysisUpdatedAt || ''),
           analysisProgress: String(chapter.analysisProgress || ''),
@@ -181,6 +201,14 @@
       return raw;
     }
 
+    function markDiscussionFrameworkPlanningChanged(state) {
+      if (!state) return state;
+      state.planningStatus = 'draft';
+      state.planningConfirmedAt = '';
+      state.planningUpdatedAt = new Date().toISOString();
+      return state;
+    }
+
     function loadDiscussionFrameworkState() {
       try {
         return normalizeDiscussionFrameworkState(JSON.parse(localStorage.getItem(getDiscussionFrameworkStorageKey()) || 'null'));
@@ -189,11 +217,104 @@
       }
     }
 
-    function saveDiscussionFrameworkState(state) {
+    function getDiscussionFrameworkCurrentProjectId() {
+      return String(
+        (typeof projectManagerCurrentProject !== 'undefined' && projectManagerCurrentProject && projectManagerCurrentProject.projectId)
+        || ''
+      ).trim();
+    }
+
+    function setDiscussionFrameworkStateCache(state) {
       try {
         localStorage.setItem(getDiscussionFrameworkStorageKey(), JSON.stringify(normalizeDiscussionFrameworkState(state)));
       } catch (e) {}
     }
+
+    async function persistDiscussionFrameworkStateNow(state) {
+      if (discussionFrameworkHydrating) return null;
+      var normalized = normalizeDiscussionFrameworkState(state || loadDiscussionFrameworkState());
+      var projectId = getDiscussionFrameworkCurrentProjectId();
+      if (!projectId) return null;
+      var body = {
+        state: normalized,
+        userId: currentUserId || 'web-user'
+      };
+      if (discussionFrameworkServerProjectId === projectId && discussionFrameworkServerRevision > 0) {
+        body.expectedRevision = discussionFrameworkServerRevision;
+      }
+      var response = await fetch('/api/discussion-framework/state', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      });
+      var result = await response.json();
+      if (response.status === 409 && result && result.current && result.current.state) {
+        discussionFrameworkServerRevision = Number(result.current.revision || 0);
+        discussionFrameworkServerProjectId = String(result.current.projectId || projectId);
+        discussionFrameworkProposalStatus = '框架已在另一个会话中更新，已保留服务器版本；请重新检查本次调整。';
+        setDiscussionFrameworkStateCache(result.current.state);
+        renderArticleWritingProgressPanel();
+        return result.current;
+      }
+      if (!response.ok || !result.success || !result.record) {
+        throw new Error(result.message || result.error || '项目框架保存失败');
+      }
+      discussionFrameworkServerRevision = Number(result.record.revision || 0);
+      discussionFrameworkServerProjectId = String(result.record.projectId || result.projectId || projectId);
+      return result.record;
+    }
+
+    function scheduleDiscussionFrameworkStatePersist(state) {
+      if (discussionFrameworkHydrating) return;
+      if (discussionFrameworkPersistTimer) clearTimeout(discussionFrameworkPersistTimer);
+      discussionFrameworkPersistTimer = setTimeout(function() {
+        discussionFrameworkPersistTimer = null;
+        discussionFrameworkPersistInFlight = persistDiscussionFrameworkStateNow(state)
+          .catch(function(error) {
+            console.warn('[DiscussionFramework] Failed to persist project framework:', error);
+            discussionFrameworkProposalStatus = '项目框架暂未写入项目目录：' + (error.message || error);
+            renderArticleWritingProgressPanel();
+            return null;
+          })
+          .finally(function() { discussionFrameworkPersistInFlight = null; });
+      }, 280);
+    }
+
+    function saveDiscussionFrameworkState(state) {
+      setDiscussionFrameworkStateCache(state);
+      scheduleDiscussionFrameworkStatePersist(state);
+      scheduleWritingStateFilesSync();
+    }
+
+    async function hydrateDiscussionFrameworkStateFromProject(options) {
+      if (discussionFrameworkHydrating) return loadDiscussionFrameworkState();
+      discussionFrameworkHydrating = true;
+      try {
+        var response = await fetch('/api/discussion-framework/state?_=' + Date.now(), { cache: 'no-store' });
+        var result = await response.json();
+        if (!response.ok || !result.success) throw new Error(result.message || result.error || '项目框架读取失败');
+        discussionFrameworkServerProjectId = String(result.projectId || getDiscussionFrameworkCurrentProjectId());
+        if (result.record && result.record.state) {
+          discussionFrameworkServerRevision = Number(result.record.revision || 0);
+          setDiscussionFrameworkStateCache(result.record.state);
+        } else {
+          discussionFrameworkServerRevision = 0;
+          var initialState = loadDiscussionFrameworkState();
+          discussionFrameworkHydrating = false;
+          await persistDiscussionFrameworkStateNow(initialState);
+          discussionFrameworkHydrating = true;
+        }
+      } catch (error) {
+        console.warn('[DiscussionFramework] Failed to hydrate project framework:', error);
+        discussionFrameworkProposalStatus = '项目框架读取失败，当前显示本机缓存：' + (error.message || error);
+      } finally {
+        discussionFrameworkHydrating = false;
+      }
+      renderArticleWritingProgressPanel();
+      if (!options || options.scanWorkspace !== false) scheduleDiscussionFrameworkWorkspaceAutoScan(800);
+      return loadDiscussionFrameworkState();
+    }
+    window.reloadDiscussionFrameworkForCurrentProject = hydrateDiscussionFrameworkStateFromProject;
 
     function getDiscussionFrameworkChapterFiles(chapter) {
       if (!chapter) return [];
@@ -214,7 +335,7 @@
       var fileCount = 0;
       (state.chapters || []).forEach(function(chapter) {
         var files = getDiscussionFrameworkChapterFiles(chapter);
-        var hasChapterContent = String(chapter.idea || '').trim() || files.length > 0 || (chapter.figureReferences || []).length > 0;
+        var hasChapterContent = String(chapter.idea || '').trim() || String(chapter.evidencePlan || '').trim() || files.length > 0 || (chapter.figureReferences || []).length > 0;
         var activeSubsections = (chapter.subsections || []).filter(function(sub) {
           return String(sub.idea || '').trim();
         }).length;
@@ -239,6 +360,8 @@
     };
     var articleDraftSaveTimers = {};
     var articleDraftEditOriginalByKey = {};
+    var writingStateFilesSyncTimer = null;
+    var writingStateFilesSyncInFlight = null;
     var paperFigureLibraryCache = {
       userId: '',
       loading: false,
@@ -267,7 +390,7 @@
       rightSidebarWordImportBusy = !!busy;
       if (region) region.classList.toggle('busy', rightSidebarWordImportBusy);
       if (trigger) trigger.disabled = rightSidebarWordImportBusy;
-      if (status) status.textContent = String(message || '自动填入章节草稿，并把嵌入图片归档到论文图片');
+      if (status) status.textContent = String(message || '识别文章章节结构，并把嵌入图片归档到论文图片');
     }
 
     function requestRightSidebarWordImport(file, mode) {
@@ -348,6 +471,8 @@
             loadArticleDraftProgress(true),
             loadPaperFigureLibrary(true)
           ]).then(function() {
+            return updateDiscussionFrameworkFromArticleProgress();
+          }).then(function() {
             if (getRightSidebarActiveTab() === 'article') renderArticleWritingProgressPanel();
             if (getRightSidebarActiveTab() === 'figures') renderPaperFigureLibraryPanel();
             setRightSidebarWordImportStatus('已导入 ' + sectionCount + ' 个章节、' + figureCount + ' 张图片', false);
@@ -695,63 +820,177 @@
     }
 
     function getArticleWritingProgressItemsForContext() {
-      var order = ['title', 'abstract', 'introduction', 'methods', 'results', 'discussion', 'conclusion'];
-      return (articleDraftProgressCache.drafts || [])
-        .filter(function(draft) {
-          return !!(draft && String(draft.key || '').trim() && String(draft.content || '').trim());
-        })
-        .slice()
-        .sort(function(a, b) {
-          var aIndex = order.indexOf(String(a.key || '').toLowerCase());
-          var bIndex = order.indexOf(String(b.key || '').toLowerCase());
-          if (aIndex < 0) aIndex = order.length;
-          if (bIndex < 0) bIndex = order.length;
-          return aIndex - bIndex || String(a.chapterName || a.key || '').localeCompare(String(b.chapterName || b.key || ''), 'zh-CN', { numeric: true });
-        })
-        .map(function(draft, draftIndex) {
-          return {
-            type: 'draft',
-            chapter: null,
-            chapterIndex: draftIndex,
-            title: draft.chapterName || draft.key || '未命名章节',
-            key: draft.key || inferArticleChapterKey(draft.chapterName),
-            draft: draft
-          };
+      var state = loadDiscussionFrameworkState();
+      var drafts = articleDraftProgressCache.drafts || [];
+      var draftByKey = {};
+      drafts.forEach(function(draft) {
+        var key = String(draft && (draft.key || inferArticleChapterKey(draft.chapterName)) || '').trim();
+        if (key && !draftByKey[key]) draftByKey[key] = draft;
+      });
+      var items = (state.chapters || []).map(function(chapter, chapterIndex) {
+        var key = inferArticleChapterKey(chapter.title) || ('chapter_' + (chapterIndex + 1));
+        return {
+          type: 'framework',
+          chapter: chapter,
+          chapterIndex: chapterIndex,
+          title: chapter.title || '未命名章节',
+          key: key,
+          draft: draftByKey[key] || null
+        };
+      });
+      var seenKeys = {};
+      items.forEach(function(item) { seenKeys[String(item.key || '').toLowerCase()] = true; });
+      drafts.forEach(function(draft) {
+        var key = String(draft && (draft.key || inferArticleChapterKey(draft.chapterName)) || '').trim();
+        if (!key || seenKeys[key.toLowerCase()]) return;
+        items.push({
+          type: 'unplanned-draft',
+          chapter: {
+            id: '',
+            title: draft.chapterName || key,
+            idea: '',
+            analysis: '',
+            figureReferences: [],
+            writingStatus: 'not_started',
+            subsections: []
+          },
+          chapterIndex: -1,
+          title: draft.chapterName || key,
+          key: key,
+          draft: draft
         });
+      });
+      return items;
     }
 
     function getArticleWritingProgressSnapshot() {
+      var state = loadDiscussionFrameworkState();
       var items = getArticleWritingProgressItemsForContext();
       var chapters = items.map(function(item, itemIndex) {
         var key = normalizeArticleQuestionChapterKey(item.key, item.title);
-        var status = item.draft ? 'drafted' : 'not_started';
+        var chapter = item.chapter || {};
+        var subsections = Array.isArray(chapter.subsections) ? chapter.subsections : [];
+        var status = chapter.writingStatus === 'completed'
+          ? 'completed'
+          : (chapter.writingStatus === 'in_progress' ? 'in_progress' : 'not_started');
         return {
           key: key,
           title: String(item.title || key),
-          chapterId: '',
+          chapterId: String(chapter.id || ''),
           status: status,
-          completed: false,
-          current: false,
-          subsectionCount: 0,
+          completed: status === 'completed',
+          current: status === 'in_progress' || String(state.activeChapterKey || '') === key,
+          subsectionCount: subsections.length,
           drafted: !!item.draft,
           draftChars: item.draft ? Number(item.draft.chars || 0) : 0,
           fileName: item.draft && item.draft.fileName ? item.draft.fileName : key + '.txt',
           storagePath: item.draft && item.draft.storagePath ? item.draft.storagePath : 'drafts/' + key + '.txt',
-          subsections: [],
+          objective: String(chapter.idea || ''),
+          subsections: subsections.map(function(subsection, subsectionIndex) {
+            return {
+              id: String(subsection.id || ''),
+              title: String(subsection.title || ('小节 ' + (subsectionIndex + 1))),
+              idea: String(subsection.idea || ''),
+              current: String(state.activeSubsectionId || '') === String(subsection.id || ''),
+              order: subsectionIndex + 1
+            };
+          }),
           order: itemIndex + 1
         };
       });
+      var activeChapter = chapters.find(function(chapter) { return chapter.current; }) || null;
+      var activeSubsection = activeChapter
+        ? (activeChapter.subsections || []).find(function(subsection) { return subsection.current; }) || null
+        : null;
+      var completedChapterCount = chapters.filter(function(chapter) { return chapter.completed; }).length;
+      var draftedChapterCount = chapters.filter(function(chapter) { return chapter.drafted; }).length;
+      var activeChapterCount = chapters.filter(function(chapter) { return chapter.current; }).length;
+      var effectiveStage = draftedChapterCount > 0 || completedChapterCount > 0 || activeChapterCount > 0
+        ? 'drafting'
+        : (state.planningStatus === 'confirmed' ? 'ready_to_write' : 'planning');
       return {
         available: chapters.length > 0,
-        updatedAt: String(articleDraftProgressCache.lastRefreshedAt || ''),
-        activeTarget: null,
-        completedChapterKeys: [],
-        completedChapterCount: 0,
+        updatedAt: String(state.planningUpdatedAt || articleDraftProgressCache.lastRefreshedAt || ''),
+        planningStatus: state.planningStatus,
+        planningConfirmedAt: state.planningConfirmedAt,
+        activeTarget: activeChapter ? {
+          chapterKey: activeChapter.key,
+          chapterTitle: activeChapter.title,
+          chapterId: activeChapter.chapterId,
+          subsectionId: activeSubsection ? activeSubsection.id : '',
+          subsectionTitle: activeSubsection ? activeSubsection.title : '',
+          subsectionIndex: activeSubsection ? activeSubsection.order : 0,
+          path: activeChapter.storagePath,
+          storagePath: activeChapter.storagePath
+        } : null,
+        completedChapterKeys: chapters.filter(function(chapter) { return chapter.completed; }).map(function(chapter) { return chapter.key; }),
+        completedChapterCount: completedChapterCount,
+        draftedChapterCount: draftedChapterCount,
+        activeChapterCount: activeChapterCount,
+        effectiveStage: effectiveStage,
+        effectiveStageLabel: effectiveStage === 'drafting'
+          ? '章节写作与修改阶段'
+          : (effectiveStage === 'ready_to_write' ? '框架已确认，待开始章节写作' : '论文框架规划阶段'),
         totalChapterCount: chapters.length,
-        totalSubsectionCount: 0,
+        totalSubsectionCount: chapters.reduce(function(total, chapter) { return total + Number(chapter.subsectionCount || 0); }, 0),
         chapters: chapters
       };
     }
+
+    function scheduleWritingStateFilesSync(delay) {
+      if (writingStateFilesSyncTimer) clearTimeout(writingStateFilesSyncTimer);
+      writingStateFilesSyncTimer = setTimeout(function() {
+        writingStateFilesSyncTimer = null;
+        syncWritingStateFilesNow();
+      }, Math.max(300, Number(delay || 900)));
+    }
+
+    async function syncWritingStateFilesNow() {
+      if (writingStateFilesSyncInFlight) return writingStateFilesSyncInFlight;
+      if (typeof getWorkspaceDirectoryPayload !== 'function') return null;
+      var workspaceDirectory = getWorkspaceDirectoryPayload(currentConversationId);
+      if (!workspaceDirectory || !workspaceDirectory.enabled || !workspaceDirectory.path) return null;
+      var state = loadDiscussionFrameworkState();
+      var context = {
+        discussionFramework: {
+          available: true,
+          projectId: getDiscussionFrameworkCurrentProjectId(),
+          planningStatus: state.planningStatus,
+          planningUpdatedAt: state.planningUpdatedAt,
+          planningConfirmedAt: state.planningConfirmedAt,
+          progressSummary: buildDiscussionFrameworkProgressSummary(state),
+          chapters: state.chapters || []
+        },
+        articleWritingProgress: getArticleWritingProgressSnapshot(),
+        articleDraftChapterRegistry: {
+          available: true,
+          refreshedAt: new Date().toISOString(),
+          chapters: getArticleDraftChapterTargets({ includeAllVisible: true })
+        }
+      };
+      writingStateFilesSyncInFlight = fetch('/api/chat-bridge/writing-state/sync', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          userId: currentUserId || 'web-user',
+          projectId: getDiscussionFrameworkCurrentProjectId(),
+          workspaceDirectory: workspaceDirectory,
+          context: context
+        })
+      }).then(function(response) {
+        return response.json().then(function(result) {
+          if (!response.ok || !result.success) throw new Error(result.error || '写作状态 JSON 同步失败');
+          return result;
+        });
+      }).catch(function(error) {
+        console.warn('[WritingStateFiles] Failed to synchronize workspace JSON files:', error);
+        return null;
+      }).finally(function() {
+        writingStateFilesSyncInFlight = null;
+      });
+      return writingStateFilesSyncInFlight;
+    }
+    window.syncWritingStateFilesNow = syncWritingStateFilesNow;
 
     function setArticleWritingTarget(chapterKey, chapterId, subsectionId) {
       var state = loadDiscussionFrameworkState();
@@ -893,8 +1132,6 @@
         if (!key || selectedArticleQuestionChapters[key] !== true) return;
         var chapter = item.chapter || {};
         var draft = item.draft || null;
-        var textarea = findArticleChapterTextareaByKey(key);
-        var content = textarea ? textarea.value : (draft ? String(draft.content || '') : '');
         var subsections = Array.isArray(chapter.subsections) ? chapter.subsections.map(function(sub, subIndex) {
           return {
             index: subIndex + 1,
@@ -911,9 +1148,8 @@
           fileName: draft && draft.fileName ? draft.fileName : key + '.txt',
           savedAt: draft && draft.savedAt ? draft.savedAt : '',
           source: draft ? (draft.source || 'draft') : 'framework',
-          content: content,
-          chars: stripLatexForProgress(content).length,
           chapterIdea: chapter.idea || '',
+          evidencePlan: chapter.evidencePlan || '',
           chapterAnalysis: chapter.analysis || '',
           subsections: subsections
         });
@@ -924,22 +1160,23 @@
     function buildSelectedArticleChapterQuestionMarkdown(chapters) {
       if (!Array.isArray(chapters) || chapters.length === 0) return '';
       var lines = [
-        '## 右侧文章写作进度：用户勾选章节',
-        '用户在右侧“文章写作进度”中勾选了以下章节用于本轮提问。回答时必须把这些内容视为当前章节版本；如果用户要求修改、续写、评价或提问，优先针对这些章节内容作答，不要用旧长期记忆覆盖。',
+        '## 右侧论文框架规划：用户勾选章节',
+        '用户在右侧“论文框架规划”中勾选了以下章节用于本轮提问。回答时必须围绕这些章节的目标、小节和证据安排展开，不要读取或复述章节草稿正文。',
         ''
       ];
       chapters.forEach(function(chapter, idx) {
         lines.push('### ' + (idx + 1) + '. ' + (chapter.title || chapter.key || '未命名章节'));
         lines.push('- 章节路径：' + (chapter.path || ''));
-        lines.push('- 草稿存储：' + (chapter.storagePath || ''));
-        if (chapter.savedAt) lines.push('- TXT 最近保存时间：' + chapter.savedAt);
         lines.push('- 章节 key：' + (chapter.key || ''));
-        lines.push('- 来源：' + (chapter.source || ''));
-        lines.push('- 当前草稿字符数：' + (chapter.chars || 0));
         if (chapter.chapterIdea) {
           lines.push('');
           lines.push('#### 章节框架 / 写作要求');
           lines.push(String(chapter.chapterIdea));
+        }
+        if (chapter.evidencePlan) {
+          lines.push('');
+          lines.push('#### 证据、图表与材料安排');
+          lines.push(String(chapter.evidencePlan));
         }
         if (Array.isArray(chapter.subsections) && chapter.subsections.length > 0) {
           lines.push('');
@@ -953,11 +1190,6 @@
           lines.push('#### 章节图表/数据分析结果');
           lines.push(String(chapter.chapterAnalysis));
         }
-        lines.push('');
-        lines.push('#### 当前章节草稿');
-        lines.push('```text');
-        lines.push(String(chapter.content || '').trim() || '（当前章节还没有草稿正文）');
-        lines.push('```');
         lines.push('');
       });
       return lines.join('\n');
@@ -983,6 +1215,16 @@
 
     async function attachSelectedArticleChaptersToChatContext(context) {
       await refreshArticleDraftRegistryCacheForChat();
+      var discussionFramework = await buildDiscussionFrameworkContextForChat();
+      if (discussionFramework && discussionFramework.available) {
+        context.discussionFramework = discussionFramework;
+        markMainContextAttached(
+          context,
+          'discussionFramework',
+          '论文框架规划',
+          discussionFramework.planningStatus === 'confirmed' ? '已确认' : '待与用户讨论确认'
+        );
+      }
       var availableChapters = getArticleDraftChapterTargets({ includeAllVisible: true });
       if (availableChapters.length) {
         context.articleDraftChapterRegistry = {
@@ -1041,6 +1283,7 @@
       if (!updated) articleDraftProgressCache.drafts.push(nextDraft);
       articleDraftProgressCache.loaded = true;
       articleDraftProgressCache.userId = currentUserId || 'web-user';
+      scheduleWritingStateFilesSync();
     }
 
     function invalidateArticleDraftProgressCache(refreshNow) {
@@ -1680,6 +1923,344 @@
       html += '</div>';
       panel.innerHTML = html;
     }
+    function updateArticleFrameworkChapterField(chapterIndex, field, value) {
+      var state = loadDiscussionFrameworkState();
+      if (!state.chapters[chapterIndex] || !['title', 'idea', 'evidencePlan'].includes(field)) return;
+      state.chapters[chapterIndex][field] = String(value || '');
+      markDiscussionFrameworkPlanningChanged(state);
+      saveDiscussionFrameworkState(state);
+      renderArticleWritingProgressPanel();
+    }
+    window.updateArticleFrameworkChapterField = updateArticleFrameworkChapterField;
+
+    function updateArticleFrameworkSubsectionField(chapterIndex, subsectionIndex, field, value) {
+      var state = loadDiscussionFrameworkState();
+      var chapter = state.chapters[chapterIndex];
+      if (!chapter || !chapter.subsections || !chapter.subsections[subsectionIndex] || !['title', 'idea'].includes(field)) return;
+      chapter.subsections[subsectionIndex][field] = String(value || '');
+      markDiscussionFrameworkPlanningChanged(state);
+      saveDiscussionFrameworkState(state);
+      renderArticleWritingProgressPanel();
+    }
+    window.updateArticleFrameworkSubsectionField = updateArticleFrameworkSubsectionField;
+
+    function addArticleFrameworkSubsection(chapterIndex) {
+      var state = loadDiscussionFrameworkState();
+      var chapter = state.chapters[chapterIndex];
+      if (!chapter) return;
+      chapter.subsections = chapter.subsections || [];
+      chapter.subsections.push({ id: createDiscussionFrameworkId('sub'), title: '新小节', idea: '' });
+      markDiscussionFrameworkPlanningChanged(state);
+      saveDiscussionFrameworkState(state);
+      renderArticleWritingProgressPanel();
+    }
+    window.addArticleFrameworkSubsection = addArticleFrameworkSubsection;
+
+    function addArticleFrameworkChapter() {
+      var state = loadDiscussionFrameworkState();
+      state.chapters.push({
+        id: createDiscussionFrameworkId('chapter'),
+        title: '新章节',
+        idea: '',
+        evidencePlan: '',
+        analysis: '',
+        analysisUpdatedAt: '',
+        analysisProgress: '',
+        analysisProgressStatus: '',
+        syncedFigures: [],
+        figureReferences: [],
+        syncedDraftKey: '',
+        syncedDraftFile: '',
+        syncedAt: '',
+        writingStatus: 'not_started',
+        collapsed: false,
+        subsections: [{ id: createDiscussionFrameworkId('sub'), title: '新小节', idea: '' }]
+      });
+      markDiscussionFrameworkPlanningChanged(state);
+      saveDiscussionFrameworkState(state);
+      renderArticleWritingProgressPanel();
+    }
+    window.addArticleFrameworkChapter = addArticleFrameworkChapter;
+
+    function removeArticleFrameworkChapter(chapterIndex) {
+      var state = loadDiscussionFrameworkState();
+      var chapter = state.chapters[chapterIndex];
+      if (!chapter || !window.confirm('从论文框架中删除“' + (chapter.title || '未命名章节') + '”吗？\n\n这里只调整框架规划，不会删除已经保存的章节文件。')) return;
+      state.chapters.splice(chapterIndex, 1);
+      markDiscussionFrameworkPlanningChanged(state);
+      saveDiscussionFrameworkState(state);
+      renderArticleWritingProgressPanel();
+    }
+    window.removeArticleFrameworkChapter = removeArticleFrameworkChapter;
+
+    function removeArticleFrameworkSubsection(chapterIndex, subsectionIndex) {
+      var state = loadDiscussionFrameworkState();
+      var chapter = state.chapters[chapterIndex];
+      if (!chapter || !chapter.subsections || !chapter.subsections[subsectionIndex]) return;
+      chapter.subsections.splice(subsectionIndex, 1);
+      markDiscussionFrameworkPlanningChanged(state);
+      saveDiscussionFrameworkState(state);
+      renderArticleWritingProgressPanel();
+    }
+    window.removeArticleFrameworkSubsection = removeArticleFrameworkSubsection;
+
+    function startArticleFrameworkPlanning() {
+      var state = loadDiscussionFrameworkState();
+      state.planningStatus = 'draft';
+      state.planningConfirmedAt = '';
+      state.planningDiscussionStartedAt = new Date().toISOString();
+      state.planningUpdatedAt = state.planningDiscussionStartedAt;
+      saveDiscussionFrameworkState(state);
+      var planningPrompt = '开始论文写作前，请先不要写正文。请结合当前项目的研究主题、资料、当前工作目录和目标期刊，和我逐章讨论论文框架：每章的写作目标、核心问题、论证顺序、小节安排、所需证据/图表以及与前后章节的衔接。先指出当前框架中需要我确认的问题，再给出可修改的逐章规划。讨论形成完整方案后，请调用 propose_discussion_framework_update 提交到右侧差异预览；必须等我在右侧确认框架后再开始正文写作。';
+      if (typeof userInput !== 'undefined' && userInput) {
+        userInput.value = planningPrompt;
+        userInput.dispatchEvent(new Event('input', { bubbles: true }));
+        userInput.focus();
+        if (typeof sendMessage === 'function') setTimeout(function() { sendMessage(); }, 0);
+      }
+      renderArticleWritingProgressPanel();
+    }
+    window.startArticleFrameworkPlanning = startArticleFrameworkPlanning;
+
+    function confirmArticleFrameworkPlanning() {
+      var state = loadDiscussionFrameworkState();
+      if (!window.confirm('确认以当前论文框架作为后续写作依据吗？\n\n确认后，AI 将按该框架逐章写作；修改章节目标或小节结构后需要重新确认。')) return;
+      state.planningStatus = 'confirmed';
+      state.planningConfirmedAt = new Date().toISOString();
+      state.planningUpdatedAt = state.planningConfirmedAt;
+      saveDiscussionFrameworkState(state);
+      renderArticleWritingProgressPanel();
+    }
+    window.confirmArticleFrameworkPlanning = confirmArticleFrameworkPlanning;
+
+    function getDiscussionFrameworkProposalDiffCount(proposal) {
+      var diff = proposal && proposal.diff ? proposal.diff : {};
+      return ['addedChapters', 'removedChapters', 'renamedChapters', 'addedSubsections', 'removedSubsections', 'updatedChapterPlans', 'updatedSubsectionPlans']
+        .reduce(function(total, key) { return total + (Array.isArray(diff[key]) ? diff[key].length : 0); }, 0);
+    }
+
+    function renderDiscussionFrameworkProposalDiff(proposal) {
+      var diff = proposal && proposal.diff ? proposal.diff : {};
+      var groups = [
+        { key: 'addedChapters', label: '新增章节', format: function(item) { return item; } },
+        { key: 'removedChapters', label: '来源中缺少', format: function(item) { return item + '（有人工规划时仍会保留）'; } },
+        { key: 'renamedChapters', label: '章节改名', format: function(item) { return item.from + ' → ' + item.to; } },
+        { key: 'addedSubsections', label: '新增小节', format: function(item) { return item.chapter + ' / ' + item.subsection; } },
+        { key: 'removedSubsections', label: '来源中缺少的小节', format: function(item) { return item.chapter + ' / ' + item.subsection + '（已有写作目标时仍会保留）'; } },
+        { key: 'updatedChapterPlans', label: '更新章节目标', format: function(item) { return item; } },
+        { key: 'updatedSubsectionPlans', label: '更新小节目标', format: function(item) { return item.chapter + ' / ' + item.subsection; } }
+      ];
+      return groups.map(function(group) {
+        var items = Array.isArray(diff[group.key]) ? diff[group.key] : [];
+        if (!items.length) return '';
+        return '<div class="discussion-framework-proposal-diff-group"><strong>' + escapeHtml(group.label) + ' · ' + items.length + '</strong>' +
+          '<ul>' + items.slice(0, 20).map(function(item) { return '<li>' + escapeHtml(group.format(item)) + '</li>'; }).join('') + '</ul></div>';
+      }).join('');
+    }
+
+    function closeDiscussionFrameworkProposalPreview() {
+      var modal = document.getElementById('discussionFrameworkProposalPreview');
+      if (modal) modal.remove();
+    }
+    window.closeDiscussionFrameworkProposalPreview = closeDiscussionFrameworkProposalPreview;
+
+    function showDiscussionFrameworkProposalPreview(proposal, candidates) {
+      if (!proposal) return;
+      closeDiscussionFrameworkProposalPreview();
+      var source = proposal.source || {};
+      var candidateOptions = Array.isArray(candidates) && candidates.length > 1
+        ? '<label class="discussion-framework-proposal-source-select">识别来源<select onchange="rescanDiscussionFrameworkCandidate(this.value)">' + candidates.map(function(candidate) {
+            var selected = String(candidate.path || '') === String(source.path || '') ? ' selected' : '';
+            return '<option value="' + escapeHtml(candidate.path || '') + '"' + selected + '>' + escapeHtml(candidate.path || '') + ' · ' + Number(candidate.chapterCount || 0) + ' 章</option>';
+          }).join('') + '</select></label>'
+        : '';
+      var chapterHtml = (proposal.chapters || []).map(function(chapter, chapterIndex) {
+        var subsections = Array.isArray(chapter.subsections) ? chapter.subsections : [];
+        return '<section class="discussion-framework-proposal-chapter"><strong>' + (chapterIndex + 1) + '. ' + escapeHtml(chapter.title || '未命名章节') + '</strong>' +
+          (chapter.idea ? '<p>' + escapeHtml(chapter.idea) + '</p>' : '') +
+          (chapter.evidencePlan ? '<p><strong>证据安排：</strong>' + escapeHtml(chapter.evidencePlan) + '</p>' : '') +
+          (subsections.length ? '<ol>' + subsections.map(function(subsection) {
+            return '<li><span>' + escapeHtml(subsection.title || '') + '</span>' + (subsection.idea ? '<small>' + escapeHtml(subsection.idea) + '</small>' : '') + '</li>';
+          }).join('') + '</ol>' : '<small>没有识别到二级小节</small>') + '</section>';
+      }).join('');
+      var modal = document.createElement('div');
+      modal.id = 'discussionFrameworkProposalPreview';
+      modal.className = 'discussion-framework-proposal-overlay';
+      modal.innerHTML = '<div class="discussion-framework-proposal-modal" role="dialog" aria-modal="true" aria-labelledby="discussionFrameworkProposalTitle">' +
+        '<header><div><h3 id="discussionFrameworkProposalTitle">论文框架更新预览</h3><p>' + escapeHtml(proposal.summary || '检测到框架变化') + '</p></div><button type="button" class="lit-btn" onclick="closeDiscussionFrameworkProposalPreview()">关闭</button></header>' +
+        '<div class="discussion-framework-proposal-body">' +
+          (source.path ? '<div class="discussion-framework-proposal-source"><strong>来源：</strong>' + escapeHtml(source.path) + (source.modifiedAt ? ' · ' + escapeHtml(new Date(source.modifiedAt).toLocaleString('zh-CN')) : '') + '</div>' : '') +
+          (proposal.reason ? '<div class="discussion-framework-proposal-reason"><strong>调整依据：</strong>' + escapeHtml(proposal.reason) + '</div>' : '') +
+          candidateOptions +
+          '<div class="discussion-framework-proposal-diff">' + (renderDiscussionFrameworkProposalDiff(proposal) || '<div>章节结构一致，仅来源版本发生变化。</div>') + '</div>' +
+          '<div class="discussion-framework-proposal-chapters">' + chapterHtml + '</div>' +
+        '</div>' +
+        '<footer><button type="button" class="lit-btn" onclick="dismissDiscussionFrameworkProposal()">忽略本次建议</button><button type="button" class="lit-btn primary" onclick="applyDiscussionFrameworkProposal()">确认并更新框架</button></footer>' +
+      '</div>';
+      modal.addEventListener('click', function(event) { if (event.target === modal) closeDiscussionFrameworkProposalPreview(); });
+      document.body.appendChild(modal);
+    }
+    window.showDiscussionFrameworkProposalPreview = showDiscussionFrameworkProposalPreview;
+
+    async function applyDiscussionFrameworkProposal() {
+      var proposal = discussionFrameworkPendingProposal;
+      if (!proposal || !proposal.id) return;
+      try {
+        var response = await fetch('/api/discussion-framework/proposal/' + encodeURIComponent(proposal.id) + '/apply', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ userId: currentUserId || 'web-user' })
+        });
+        var result = await response.json();
+        if (!response.ok || !result.success || !result.record || !result.record.state) throw new Error(result.message || result.error || '框架建议应用失败');
+        discussionFrameworkServerRevision = Number(result.record.revision || 0);
+        discussionFrameworkServerProjectId = String(result.record.projectId || result.projectId || getDiscussionFrameworkCurrentProjectId());
+        setDiscussionFrameworkStateCache(result.record.state);
+        discussionFrameworkPendingProposal = null;
+        discussionFrameworkProposalStatus = '已更新论文框架。结构变更后已自动回到“待讨论确认”，请检查后重新确认。';
+        closeDiscussionFrameworkProposalPreview();
+        renderArticleWritingProgressPanel();
+        setTimeout(function() { loadPendingDiscussionFrameworkProposal(false); }, 250);
+      } catch (error) {
+        discussionFrameworkProposalStatus = '框架建议应用失败：' + (error.message || error);
+        renderArticleWritingProgressPanel();
+      }
+    }
+    window.applyDiscussionFrameworkProposal = applyDiscussionFrameworkProposal;
+
+    async function dismissDiscussionFrameworkProposal() {
+      var proposal = discussionFrameworkPendingProposal;
+      if (!proposal || !proposal.id) return;
+      try {
+        await fetch('/api/discussion-framework/proposal/' + encodeURIComponent(proposal.id) + '/dismiss', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ userId: currentUserId || 'web-user' })
+        });
+      } catch (error) {
+        console.warn('[DiscussionFramework] Failed to dismiss proposal:', error);
+      }
+      discussionFrameworkPendingProposal = null;
+      discussionFrameworkProposalStatus = '已忽略本次框架建议，当前框架未改变。';
+      closeDiscussionFrameworkProposalPreview();
+      renderArticleWritingProgressPanel();
+      setTimeout(function() { loadPendingDiscussionFrameworkProposal(false); }, 250);
+    }
+    window.dismissDiscussionFrameworkProposal = dismissDiscussionFrameworkProposal;
+
+    async function loadPendingDiscussionFrameworkProposal(showPreview) {
+      try {
+        var response = await fetch('/api/discussion-framework/proposal?_=' + Date.now(), { cache: 'no-store' });
+        var result = await response.json();
+        if (!response.ok || !result.success) return null;
+        if (!result.proposal) return null;
+        var isNew = !discussionFrameworkPendingProposal || discussionFrameworkPendingProposal.id !== result.proposal.id;
+        discussionFrameworkPendingProposal = result.proposal;
+        discussionFrameworkProposalStatus = 'AI 或工作目录提交了 ' + getDiscussionFrameworkProposalDiffCount(result.proposal) + ' 项框架变化，等待你确认。';
+        renderArticleWritingProgressPanel();
+        if (showPreview || isNew) showDiscussionFrameworkProposalPreview(result.proposal);
+        return result.proposal;
+      } catch (error) {
+        console.warn('[DiscussionFramework] Failed to load pending proposal:', error);
+        return null;
+      }
+    }
+    window.loadPendingDiscussionFrameworkProposal = loadPendingDiscussionFrameworkProposal;
+
+    async function scanDiscussionFrameworkWorkspace(options) {
+      var scanOptions = options && typeof options === 'object' ? options : {};
+      if (discussionFrameworkWorkspaceScanning) return null;
+      var workspaceDirectory = typeof getWorkspaceDirectoryPayload === 'function'
+        ? getWorkspaceDirectoryPayload(currentConversationId)
+        : null;
+      if (!workspaceDirectory) {
+        if (!scanOptions.silent) {
+          discussionFrameworkProposalStatus = '请先点击输入框左侧的文件夹按钮配置工作目录，再提取论文框架。';
+          renderArticleWritingProgressPanel();
+        }
+        return null;
+      }
+      discussionFrameworkWorkspaceScanning = true;
+      if (!scanOptions.silent) {
+        discussionFrameworkProposalStatus = '正在从用户源工作目录识别最新论文结构…';
+        renderArticleWritingProgressPanel();
+      }
+      try {
+        if (discussionFrameworkPersistTimer) {
+          clearTimeout(discussionFrameworkPersistTimer);
+          discussionFrameworkPersistTimer = null;
+        }
+        if (discussionFrameworkPersistInFlight) await discussionFrameworkPersistInFlight;
+        await persistDiscussionFrameworkStateNow(loadDiscussionFrameworkState());
+        var response = await fetch('/api/discussion-framework/scan', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            userId: currentUserId || 'web-user',
+            workspaceDirectory: workspaceDirectory,
+            selectedFile: scanOptions.selectedFile || undefined,
+            replaceProposalId: scanOptions.selectedFile && discussionFrameworkPendingProposal ? discussionFrameworkPendingProposal.id : undefined,
+            state: loadDiscussionFrameworkState()
+          })
+        });
+        var result = await response.json();
+        if (!response.ok || !result.success) throw new Error(result.message || result.error || '工作目录框架识别失败');
+        discussionFrameworkLastAutoScanAt = Date.now();
+        if (result.changed && result.proposal) {
+          discussionFrameworkPendingProposal = result.proposal;
+          var proposalSourceLabel = result.proposal.source && result.proposal.source.type === 'agent'
+            ? 'AI 规划建议'
+            : String(result.selected && result.selected.path || (result.proposal.source && result.proposal.source.path) || '工作目录论文');
+          discussionFrameworkProposalStatus = '从“' + proposalSourceLabel + '”检测到 ' + getDiscussionFrameworkProposalDiffCount(result.proposal) + ' 项框架变化。';
+          renderArticleWritingProgressPanel();
+          if (!scanOptions.silent || scanOptions.showPreview) showDiscussionFrameworkProposalPreview(result.proposal, result.candidates || []);
+          return result.proposal;
+        }
+        var state = loadDiscussionFrameworkState();
+        if (result.selected) {
+          state.structureSource = {
+            type: 'workspace',
+            path: result.selected.path || '',
+            modifiedAt: result.selected.modifiedAt || '',
+            fingerprint: result.selected.fingerprint || '',
+            detectedAt: new Date().toISOString()
+          };
+          saveDiscussionFrameworkState(state);
+        }
+        discussionFrameworkProposalStatus = scanOptions.silent ? '' : '工作目录中的论文结构与当前框架一致。';
+        renderArticleWritingProgressPanel();
+        return null;
+      } catch (error) {
+        if (!scanOptions.silent) {
+          discussionFrameworkProposalStatus = '工作目录框架识别失败：' + (error.message || error);
+          renderArticleWritingProgressPanel();
+        }
+        return null;
+      } finally {
+        discussionFrameworkWorkspaceScanning = false;
+        scheduleDiscussionFrameworkWorkspaceAutoScan(120000);
+      }
+    }
+    window.scanDiscussionFrameworkWorkspace = scanDiscussionFrameworkWorkspace;
+
+    function rescanDiscussionFrameworkCandidate(selectedFile) {
+      closeDiscussionFrameworkProposalPreview();
+      scanDiscussionFrameworkWorkspace({ selectedFile: selectedFile, showPreview: true, silent: false });
+    }
+    window.rescanDiscussionFrameworkCandidate = rescanDiscussionFrameworkCandidate;
+
+    function scheduleDiscussionFrameworkWorkspaceAutoScan(delay) {
+      if (discussionFrameworkAutoScanTimer) clearTimeout(discussionFrameworkAutoScanTimer);
+      discussionFrameworkAutoScanTimer = setTimeout(function() {
+        discussionFrameworkAutoScanTimer = null;
+        if (document.visibilityState === 'visible' && Date.now() - discussionFrameworkLastAutoScanAt >= 60000) {
+          scanDiscussionFrameworkWorkspace({ silent: true });
+        } else {
+          scheduleDiscussionFrameworkWorkspaceAutoScan(60000);
+        }
+      }, Math.max(500, Number(delay || 120000)));
+    }
+
     function renderArticleWritingProgressPanel(forceDraftReload) {
       var panel = document.getElementById('articleWritingProgressPanel');
       var meta = document.getElementById('articleWritingProgressMeta');
@@ -1687,57 +2268,125 @@
       if (forceDraftReload === true) articleDraftProgressCache.loaded = false;
       loadArticleDraftProgress(forceDraftReload === true);
 
+      var state = loadDiscussionFrameworkState();
       var items = getArticleWritingProgressItemsForContext();
-      var totalChars = items.reduce(function(sum, item) {
-        return sum + Number(item && item.draft ? item.draft.chars || 0 : 0);
+      var frameworkItems = items.filter(function(item) { return item.chapterIndex >= 0; });
+      var plannedChapters = frameworkItems.filter(function(item) {
+        var chapter = item.chapter || {};
+        return !!String(chapter.idea || '').trim() || !!String(chapter.evidencePlan || '').trim() || (chapter.subsections || []).some(function(subsection) {
+          return !!String(subsection.idea || '').trim();
+        });
+      }).length;
+      var draftedChapters = items.filter(function(item) { return !!item.draft; }).length;
+      var totalSubsections = frameworkItems.reduce(function(total, item) {
+        return total + ((item.chapter && item.chapter.subsections) || []).length;
       }, 0);
+      var confirmed = state.planningStatus === 'confirmed';
+      var writingStarted = draftedChapters > 0 || frameworkItems.some(function(item) {
+        return item.chapter && (item.chapter.writingStatus === 'completed' || item.chapter.writingStatus === 'in_progress');
+      });
       if (meta && getRightSidebarActiveTab() === 'article') {
-        meta.textContent = items.length + ' 个章节 TXT / ' + totalChars + ' 字符';
+        meta.textContent = frameworkItems.length + ' 章 / ' + totalSubsections + ' 小节 / 草稿 ' + draftedChapters + ' / ' + (writingStarted ? '写作进行中' : (confirmed ? '框架已确认' : '待讨论确认'));
       }
 
-      var html = '<div class="article-structure-toolbar">' +
-          '<div><strong>章节 TXT</strong></div>' +
+      var html = '<div class="article-structure-toolbar article-framework-toolbar">' +
+          '<div><strong>当前项目论文框架</strong><br><span>' + (writingStarted
+            ? '已根据真实章节草稿进入写作阶段；框架继续用于约束章节目标、论证顺序和证据需求。'
+            : '先规划章节目标、论证顺序和证据需求，再按确认后的框架写作。') + '</span></div>' +
           '<div class="article-structure-actions">' +
+            '<button type="button" class="article-structure-btn" onclick="startArticleFrameworkPlanning()">与 AI 规划</button>' +
+            '<button type="button" class="article-structure-btn" onclick="scanDiscussionFrameworkWorkspace({silent:false,showPreview:true})"' + (discussionFrameworkWorkspaceScanning ? ' disabled' : '') + '>' + (discussionFrameworkWorkspaceScanning ? '识别中...' : '从工作目录更新') + '</button>' +
+            '<button type="button" class="article-structure-btn" onclick="addArticleFrameworkChapter()">添加章节</button>' +
+            '<button type="button" class="article-structure-btn' + (confirmed ? ' primary' : '') + '" onclick="confirmArticleFrameworkPlanning()">' + (confirmed ? '框架已确认' : '确认框架') + '</button>' +
             '<button type="button" class="article-structure-btn" id="articleWritingProgressRefreshBtn" onclick="refreshArticleWritingProgress()"' + (articleDraftProgressCache.refreshing ? ' disabled' : '') + '>' + (articleDraftProgressCache.refreshing ? '刷新中...' : '刷新') + '</button>' +
           '</div>' +
         '</div>' +
-        '<div class="article-writing-target-summary"><strong>写作进度：</strong>已保存 ' + items.length + ' 个章节 TXT，共 ' + totalChars + ' 字符</div>' +
-        (articleDraftProgressCache.lastError
-          ? '<div class="article-structure-save-state">刷新失败：' + escapeHtml(articleDraftProgressCache.lastError) + '</div>'
-          : (articleDraftProgressCache.lastRefreshedAt
-            ? '<div class="article-structure-save-state">已读取章节 TXT · ' + escapeHtml(new Date(articleDraftProgressCache.lastRefreshedAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })) + '</div>'
-            : '')) +
-        '<div class="article-structure-list">';
+        (discussionFrameworkProposalStatus || discussionFrameworkPendingProposal
+          ? '<div class="article-writing-target-summary discussion-framework-proposal-notice">' +
+              '<span>' + escapeHtml(discussionFrameworkProposalStatus || '检测到待确认的论文框架更新。') + '</span>' +
+              (discussionFrameworkPendingProposal ? '<button type="button" class="article-structure-btn primary" onclick="showDiscussionFrameworkProposalPreview(discussionFrameworkPendingProposal)">查看差异</button>' : '') +
+            '</div>'
+          : '') +
+        '<div class="article-writing-target-summary article-framework-status ' + (confirmed || writingStarted ? 'is-confirmed' : 'is-pending') + '">' +
+          '<strong>框架状态：</strong>' + (confirmed
+            ? '已由用户确认。后续写作必须遵循当前章节规划；框架发生修改后会自动回到待确认状态。'
+            : (writingStarted
+              ? '尚未显式确认，但已检测到 ' + draftedChapters + ' 个真实章节草稿，当前项目处于章节写作与修改阶段；AI 会延续现有工作，不会退回初始规划。'
+              : '待与用户讨论确认。开始首个章节正文前应先确认框架。')) +
+          '　<strong>已规划：</strong>' + plannedChapters + '/' + frameworkItems.length + ' 章' +
+        '</div>' +
+        '<div class="article-structure-list article-framework-plan-list">';
 
-      if (!items.length) {
-        html += '<div class="article-progress-empty">暂无章节 TXT。</div>';
+      if (!frameworkItems.length) {
+        html += '<div class="article-progress-empty">当前项目还没有论文框架。点击“与 AI 规划”先讨论研究问题和文章结构。</div>';
       }
 
-      items.forEach(function(item, itemIndex) {
-        var draft = item.draft || {};
+      frameworkItems.forEach(function(item, itemIndex) {
+        var chapter = item.chapter || {};
+        var chapterIndex = item.chapterIndex;
         var saveKey = item.key || inferArticleChapterKey(item.title) || ('chapter_' + (itemIndex + 1));
         var title = item.title || saveKey || '未命名章节';
+        var subsections = Array.isArray(chapter.subsections) ? chapter.subsections : [];
         var questionSelected = isArticleChapterSelectedForQuestion(saveKey, title);
-        var status = 'TXT 已保存';
-        var savedAt = draft.savedAt ? String(draft.savedAt) : '';
-        var savedLabel = '';
-        if (savedAt) {
-          var savedDate = new Date(savedAt);
-          savedLabel = Number.isNaN(savedDate.getTime()) ? savedAt : savedDate.toLocaleString('zh-CN');
-        }
-        html += '<section class="article-structure-chapter">' +
+        var status = chapter.writingStatus === 'completed'
+          ? '已完成'
+          : (chapter.writingStatus === 'in_progress'
+            ? '写作中'
+            : (item.draft ? '已有草稿' : (String(chapter.idea || '').trim() ? '已规划' : '待规划')));
+        var evidenceParts = [];
+        if (String(chapter.evidencePlan || '').trim()) evidenceParts.push(String(chapter.evidencePlan || '').trim());
+        if (String(chapter.analysis || '').trim()) evidenceParts.push(makeArticleProgressExcerpt(chapter.analysis, 260));
+        if (Array.isArray(chapter.figureReferences) && chapter.figureReferences.length) evidenceParts.push('计划使用图表：' + chapter.figureReferences.join('、'));
+        html += '<section class="article-structure-chapter article-framework-plan-card">' +
           '<div class="article-structure-chapter-head">' +
             '<div class="article-structure-title">' + (itemIndex + 1) + '. ' + escapeHtml(title) + '</div>' +
             '<div class="article-structure-head-actions">' +
-              '<label class="article-structure-question-toggle' + (questionSelected ? ' active' : '') + '" title="随下一次提问发送本章 TXT 内容">' +
+              '<label class="article-structure-question-toggle' + (questionSelected ? ' active' : '') + '" title="随下一次提问发送本章框架规划">' +
                 '<input type="checkbox" data-article-question-key="' + escapeHtml(saveKey) + '" data-article-question-title="' + escapeHtml(title) + '" onchange="toggleArticleChapterForQuestion(this)"' + (questionSelected ? ' checked' : '') + '>' +
                 '<span>随问</span>' +
               '</label>' +
               '<span class="article-structure-badge">' + escapeHtml(status) + '</span>' +
             '</div>' +
           '</div>' +
-          '<div class="article-progress-chapter-meta">' + escapeHtml(draft.fileName || (saveKey + '.txt')) + ' · ' + Number(draft.chars || 0) + ' 字符' + (savedLabel ? ' · ' + escapeHtml(savedLabel) : '') + '</div>' +
-          '<div class="article-draft-readonly-content" tabindex="0" aria-label="' + escapeHtml(title) + ' TXT 内容">' + escapeHtml(String(draft.content || '')) + '</div>' +
+          '<div class="article-structure-section">' +
+            '<div class="article-structure-label">本章定位与写作目标</div>' +
+            (String(chapter.idea || '').trim()
+              ? '<div class="article-structure-frame">' + escapeHtml(chapter.idea) + '</div>'
+              : '<div class="article-structure-empty">待与用户讨论：本章解决什么问题、承担什么论证任务、预期得出什么结论。</div>') +
+          '</div>' +
+          '<div class="article-structure-section">' +
+            '<div class="article-structure-label">小节与论证顺序</div>' +
+            '<div class="article-structure-subsections">';
+        if (!subsections.length) {
+          html += '<div class="article-structure-empty">尚未规划小节。</div>';
+        }
+        subsections.forEach(function(subsection, subsectionIndex) {
+          html += '<div class="article-structure-subsection">' +
+            '<div class="article-structure-subsection-title">' + (itemIndex + 1) + '.' + (subsectionIndex + 1) + ' ' + escapeHtml(subsection.title || '未命名小节') + '</div>' +
+            '<div class="article-progress-text">' + escapeHtml(String(subsection.idea || '').trim() || '待讨论：明确本小节的核心论点、证据和与下一小节的衔接。') + '</div>' +
+          '</div>';
+        });
+        html += '</div></div>' +
+          '<div class="article-structure-section">' +
+            '<div class="article-structure-label">证据、图表与材料安排</div>' +
+            '<div class="article-structure-frame">' + escapeHtml(evidenceParts.join('\n') || '待讨论：需要哪些数据、图表、文献证据和引用来支撑本章。') + '</div>' +
+          '</div>' +
+          '<details class="article-framework-editor">' +
+            '<summary>调整本章规划</summary>' +
+            '<label>章节名称<input type="text" value="' + escapeHtml(title) + '" onchange="updateArticleFrameworkChapterField(' + chapterIndex + ',\'title\',this.value)"></label>' +
+            '<label>本章定位与目标<textarea onchange="updateArticleFrameworkChapterField(' + chapterIndex + ',\'idea\',this.value)" placeholder="写清本章目标、核心问题和论证任务">' + escapeHtml(chapter.idea || '') + '</textarea></label>' +
+            '<label>证据、图表与材料安排<textarea onchange="updateArticleFrameworkChapterField(' + chapterIndex + ',\'evidencePlan\',this.value)" placeholder="写清需要的数据、图表、文献证据和引用">' + escapeHtml(chapter.evidencePlan || '') + '</textarea></label>' +
+            '<div class="article-framework-editor-subsections">';
+        subsections.forEach(function(subsection, subsectionIndex) {
+          html += '<div class="article-framework-editor-subsection">' +
+            '<input type="text" value="' + escapeHtml(subsection.title || '') + '" onchange="updateArticleFrameworkSubsectionField(' + chapterIndex + ',' + subsectionIndex + ',\'title\',this.value)">' +
+            '<textarea onchange="updateArticleFrameworkSubsectionField(' + chapterIndex + ',' + subsectionIndex + ',\'idea\',this.value)" placeholder="本小节核心论点、证据和衔接">' + escapeHtml(subsection.idea || '') + '</textarea>' +
+            '<button type="button" class="article-structure-mini-btn" onclick="removeArticleFrameworkSubsection(' + chapterIndex + ',' + subsectionIndex + ')">删除小节</button>' +
+          '</div>';
+        });
+        html += '</div><button type="button" class="article-structure-mini-btn" onclick="addArticleFrameworkSubsection(' + chapterIndex + ')">添加小节</button>' +
+          '<button type="button" class="article-structure-mini-btn" onclick="removeArticleFrameworkChapter(' + chapterIndex + ')">删除章节</button>' +
+          '</details>' +
         '</section>';
       });
 
@@ -1895,10 +2544,14 @@
       articleDraftProgressCache.lastError = '';
       renderArticleWritingProgressPanel();
       try {
-        await loadArticleDraftProgress(true);
+        await Promise.all([
+          loadArticleDraftProgress(true),
+          scanDiscussionFrameworkWorkspace({ silent: true })
+        ]);
       } finally {
         articleDraftProgressCache.refreshing = false;
         renderArticleWritingProgressPanel();
+        scheduleWritingStateFilesSync();
       }
     }
     window.refreshArticleWritingProgress = refreshArticleWritingProgress;
@@ -1910,6 +2563,7 @@
 
     function refreshArticleDraftProgressAfterAiResponse(text) {
       invalidateArticleDraftProgressCache();
+      loadPendingDiscussionFrameworkProposal(false);
       if (shouldRefreshArticleDraftProgressAfterAiResponse(text)) {
         refreshArticleWritingProgress();
       }
@@ -2068,6 +2722,7 @@
               id: createDiscussionFrameworkId('chapter'),
               title: draft.chapterName || draftKey,
               idea: '',
+              evidencePlan: '',
               analysis: '',
               analysisUpdatedAt: '',
               analysisProgress: '',
@@ -2108,6 +2763,7 @@
         });
         state.chapters = syncedChapters;
         state.expanded = true;
+        markDiscussionFrameworkPlanningChanged(state);
         saveDiscussionFrameworkState(state);
 
         articleDraftProgressCache.drafts = drafts;
@@ -2457,6 +3113,7 @@
       var state = loadDiscussionFrameworkState();
       if (!state.chapters[chapterIndex] || !['title', 'idea'].includes(field)) return;
       state.chapters[chapterIndex][field] = value || '';
+      markDiscussionFrameworkPlanningChanged(state);
       saveDiscussionFrameworkState(state);
       updateDiscussionFrameworkMetaOnly();
     }
@@ -2477,6 +3134,7 @@
         id: createDiscussionFrameworkId('chapter'),
         title: '新章节',
         idea: '',
+        evidencePlan: '',
         analysis: '',
         analysisUpdatedAt: '',
         analysisProgress: '',
@@ -2490,6 +3148,7 @@
         collapsed: false,
         subsections: [{ id: createDiscussionFrameworkId('sub'), title: '新小节', idea: '' }]
       });
+      markDiscussionFrameworkPlanningChanged(state);
       saveDiscussionFrameworkState(state);
       renderDiscussionFrameworkPanel();
     }
@@ -2508,6 +3167,7 @@
         state.writingTargetUpdatedAt = new Date().toISOString();
       }
       state.chapters.splice(chapterIndex, 1);
+      markDiscussionFrameworkPlanningChanged(state);
       saveDiscussionFrameworkState(state);
       renderDiscussionFrameworkPanel();
     }
@@ -2518,6 +3178,7 @@
       var chapter = state.chapters[chapterIndex];
       if (!chapter || !chapter.subsections || !chapter.subsections[subIndex] || !['title', 'idea'].includes(field)) return;
       chapter.subsections[subIndex][field] = value || '';
+      markDiscussionFrameworkPlanningChanged(state);
       saveDiscussionFrameworkState(state);
       updateDiscussionFrameworkMetaOnly();
     }
@@ -2530,6 +3191,7 @@
       chapter.subsections = chapter.subsections || [];
       chapter.subsections.push({ id: createDiscussionFrameworkId('sub'), title: '新小节', idea: '' });
       chapter.collapsed = false;
+      markDiscussionFrameworkPlanningChanged(state);
       saveDiscussionFrameworkState(state);
       renderDiscussionFrameworkPanel();
     }
@@ -2545,6 +3207,7 @@
         state.writingTargetUpdatedAt = new Date().toISOString();
       }
       chapter.subsections.splice(subIndex, 1);
+      markDiscussionFrameworkPlanningChanged(state);
       saveDiscussionFrameworkState(state);
       renderDiscussionFrameworkPanel();
     }
@@ -2715,6 +3378,7 @@
       discussionFrameworkFilesByChapter = {};
       var state = createDefaultDiscussionFrameworkState();
       state.expanded = true;
+      markDiscussionFrameworkPlanningChanged(state);
       saveDiscussionFrameworkState(state);
       renderDiscussionFrameworkPanel();
     }
@@ -2773,12 +3437,13 @@
       var chapterLines = [];
       chapters.forEach(function(chapter, index) {
         var hasIdea = !!String(chapter.idea || '').trim();
+        var hasEvidencePlan = !!String(chapter.evidencePlan || '').trim();
         var hasAnalysis = !!String(chapter.analysis || '').trim();
         var subs = chapter.subsections || [];
         var filledSubs = subs.filter(function(sub) { return !!String(sub.idea || '').trim(); }).length;
         totalSubsections += subs.length;
         activeSubsections += filledSubs;
-        if (hasIdea || filledSubs || hasAnalysis) activeChapters++;
+        if (hasIdea || hasEvidencePlan || filledSubs || hasAnalysis) activeChapters++;
         if (hasAnalysis) analyzedChapters++;
         chapterLines.push((index + 1) + '. ' + (chapter.title || '未命名章节') + '：' +
           (hasIdea ? '已有章节思路' : '未写章节思路') + '，' +
@@ -2837,6 +3502,7 @@
           key: inferArticleChapterKey(chapter.title),
           title: String(chapter.title || '').trim(),
           idea: String(chapter.idea || '').trim(),
+          evidencePlan: String(chapter.evidencePlan || '').trim(),
           analysis: String(chapter.analysis || '').trim(),
           analysisUpdatedAt: String(chapter.analysisUpdatedAt || '').trim(),
           subsections: subsections,
@@ -2848,12 +3514,18 @@
       var memoryEntries = await loadDiscussionFrameworkSelectedMemoryEntries(selectedMemoryKeys);
       if (!chapters.length && !memoryEntries.length) return null;
 
-      var markdown = '## 讨论式写作框架\n';
-      markdown += '请把下面内容作为用户当前讨论式写作的结构规划。回答章节写作、修改、续写、图表描述或写作进度问题时，优先按该框架组织，不要把未填写内容当作事实。\n\n';
-      markdown += '## 当前讨论式写作进度\n' + progressSummary.text + '\n\n';
+      var planningConfirmed = state.planningStatus === 'confirmed';
+      var markdown = '## 当前项目论文框架规划\n';
+      markdown += '- 框架状态：' + (planningConfirmed ? '用户已确认' : '尚未确认，必须先与用户讨论') + '\n';
+      if (state.planningConfirmedAt) markdown += '- 确认时间：' + state.planningConfirmedAt + '\n';
+      markdown += planningConfirmed
+        ? '后续章节写作、修改、续写、图表描述必须服从该框架；需要改变章节目标或结构时，先向用户说明并重新确认框架。\n\n'
+        : '当前只允许讨论研究问题、章节目标、论证顺序、小节安排和证据需求；在用户确认框架前，不得开始生成或保存论文正文。\n\n';
+      markdown += '## 当前框架规划进度\n' + progressSummary.text + '\n\n';
       chapters.forEach(function(chapter, index) {
         markdown += '### ' + (index + 1) + '. ' + (chapter.title || '未命名章节') + '\n';
         if (chapter.idea) markdown += '- 本章写作思路：' + chapter.idea + '\n';
+        if (chapter.evidencePlan) markdown += '- 本章证据、图表与材料安排：' + chapter.evidencePlan + '\n';
         if (chapter.analysis) {
           markdown += '- 本章图表/数据分析结果' + (chapter.analysisUpdatedAt ? '（' + chapter.analysisUpdatedAt + '）' : '') + '：\n' + chapter.analysis + '\n';
         }
@@ -2887,7 +3559,13 @@
       }
       return {
         available: true,
+        projectId: getDiscussionFrameworkCurrentProjectId(),
+        storageRevision: discussionFrameworkServerRevision,
         profileId: state.profileId,
+        planningStatus: state.planningStatus,
+        planningUpdatedAt: state.planningUpdatedAt,
+        planningConfirmedAt: state.planningConfirmedAt,
+        structureSource: state.structureSource || null,
         progressSummary: progressSummary,
         selectedMemoryKeys: selectedMemoryKeys,
         chapters: chapters,
@@ -3017,6 +3695,16 @@
     }
     initRightSidebarWordImport();
     initQueryNavRail();
+    document.addEventListener('visibilitychange', function() {
+      if (document.visibilityState === 'visible') {
+        loadPendingDiscussionFrameworkProposal(false);
+        scheduleDiscussionFrameworkWorkspaceAutoScan(1200);
+      }
+    });
+    setTimeout(function() {
+      hydrateDiscussionFrameworkStateFromProject({ scanWorkspace: true });
+      loadPendingDiscussionFrameworkProposal(false);
+    }, 650);
 
 if (window.ScholarHarnessModules) {
   window.ScholarHarnessModules.register('writing-workspace', { source: '/app/writing-workspace.js' });

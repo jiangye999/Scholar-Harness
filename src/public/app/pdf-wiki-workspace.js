@@ -1988,7 +1988,7 @@ function formatPdfWikiFileSize(size) {
 
     function getPdfWikiReaderChatProviderLabel(provider) {
       provider = normalizePdfWikiReaderChatProvider(provider);
-      if (provider === 'primary') return '大牛马';
+      if (provider === 'primary') return '草原';
       if (provider === 'codex') return 'Codex CLI';
       return '小牛马';
     }
@@ -1997,7 +1997,7 @@ function formatPdfWikiFileSize(size) {
       var current = normalizePdfWikiReaderChatProvider(pdfWikiReaderChatProvider);
       return '<select id="' + escapeHtml(id) + '" onchange="setPdfWikiReaderChatProvider(this.value)" title="选择阅读原文问答使用的模型" style="height:24px;border:1px solid var(--border-color);border-radius:6px;background:var(--bg-input);color:var(--text-primary);padding:0 6px;font-size:11px;">' +
         '<option value="secondary"' + (current === 'secondary' ? ' selected' : '') + '>小牛马</option>' +
-        '<option value="primary"' + (current === 'primary' ? ' selected' : '') + '>大牛马</option>' +
+        '<option value="primary"' + (current === 'primary' ? ' selected' : '') + '>草原</option>' +
         '<option value="codex"' + (current === 'codex' ? ' selected' : '') + '>Codex CLI</option>' +
       '</select>';
     }
@@ -3737,9 +3737,9 @@ function formatPdfWikiFileSize(size) {
           '<input id="pdfWikiPdfManagerSearchInput" value="' + escapeHtml(searchTerm) + '" oncompositionstart="pdfWikiPdfManagerSearchComposing=true;cancelPdfWikiPdfManagerSearchTimer()" oncompositionend="pdfWikiPdfManagerSearchComposing=false;setPdfWikiPdfManagerSearchTerm(this.value)" oninput="setPdfWikiPdfManagerSearchTerm(this.value)" placeholder="按标题/摘要关键词筛选，支持 AND/OR" style="min-width:0;flex:1;padding:8px 10px;border:1px solid var(--border-color);border-radius:6px;background:var(--bg-input);color:var(--text-primary);font-size:12px;">' +
         '</div>' +
         '<div class="pdf-wiki-manager-action-row" style="display:flex;gap:8px;align-items:center;flex-wrap:nowrap;">' +
-          '<button type="button" onclick="openPdfWikiViewerFromPdfManager()" style="padding:7px 10px;border:1px solid #111827;border-radius:6px;background:#111827;color:#ffffff;cursor:pointer;font-size:12px;font-weight:700;">Wiki论点库</button>' +
+          '<button type="button" class="pdf-wiki-theme-action-btn" onclick="openPdfWikiViewerFromPdfManager()" style="padding:7px 10px;border:1px solid;border-radius:6px;cursor:pointer;font-size:12px;font-weight:700;">Wiki论点库</button>' +
           '<button type="button" onclick="triggerPdfWikiUpload(\'manager-lite\')" style="padding:7px 10px;border:1px solid var(--border-color);border-radius:6px;background:var(--bg-secondary);color:var(--text-primary);cursor:pointer;font-size:12px;">批量上传PDF</button>' +
-          '<button id="pdfWikiRecognizePendingPdfBtn" type="button" onclick="recognizeUnrecognizedPdfWikiPdfs()" ' + (recognitionQueueCount === 0 || pdfWikiBatchReidentifyRunning ? 'disabled' : '') + ' title="将整批任务提交到后端持久化队列。未解析 PDF 执行完整本地识别；已识别但没有图片的 PDF 仅重新提取图片。离开页面或重启软件后会继续处理。" style="padding:7px 10px;border:1px solid #111827;border-radius:6px;background:#111827;color:#ffffff;cursor:' + (recognitionQueueCount === 0 || pdfWikiBatchReidentifyRunning ? 'not-allowed' : 'pointer') + ';opacity:' + (recognitionQueueCount === 0 || pdfWikiBatchReidentifyRunning ? '0.58' : '1') + ';font-size:12px;font-weight:700;">' + escapeHtml(recognitionButtonLabel) + '</button>' +
+          '<button id="pdfWikiRecognizePendingPdfBtn" class="pdf-wiki-theme-action-btn" type="button" onclick="recognizeUnrecognizedPdfWikiPdfs()" ' + (recognitionQueueCount === 0 || pdfWikiBatchReidentifyRunning ? 'disabled' : '') + ' title="将整批任务提交到后端持久化队列。未解析 PDF 执行完整本地识别；已识别但没有图片的 PDF 仅重新提取图片。离开页面或重启软件后会继续处理。" style="padding:7px 10px;border:1px solid;border-radius:6px;cursor:' + (recognitionQueueCount === 0 || pdfWikiBatchReidentifyRunning ? 'not-allowed' : 'pointer') + ';opacity:' + (recognitionQueueCount === 0 || pdfWikiBatchReidentifyRunning ? '0.58' : '1') + ';font-size:12px;font-weight:700;">' + escapeHtml(recognitionButtonLabel) + '</button>' +
           '<button id="pdfWikiToggleSelectVisibleBtn" type="button" onclick="toggleSelectVisiblePdfWikiPdfs()" ' + (visiblePdfCount === 0 ? 'disabled' : '') + ' style="padding:7px 10px;border:1px solid var(--border-color);border-radius:6px;background:var(--bg-secondary);color:var(--text-primary);cursor:' + (visiblePdfCount === 0 ? 'not-allowed' : 'pointer') + ';opacity:' + (visiblePdfCount === 0 ? '0.58' : '1') + ';font-size:12px;">' + (allVisibleSelected ? '取消全选' : '全选') + '</button>' +
           '<button type="button" onclick="clearPdfWikiPdfSelection()" style="padding:7px 10px;border:1px solid var(--border-color);border-radius:6px;background:var(--bg-secondary);color:var(--text-primary);cursor:pointer;font-size:12px;">清空</button>' +
           '<button id="pdfWikiDeleteSelectedPdfBtn" type="button" onclick="deleteSelectedPdfWikiPdfs()" ' + (selectedPdfCount === 0 ? 'disabled' : '') + ' style="padding:7px 10px;border:1px solid var(--danger-color);border-radius:6px;background:transparent;color:var(--danger-color);cursor:' + (selectedPdfCount === 0 ? 'not-allowed' : 'pointer') + ';opacity:' + (selectedPdfCount === 0 ? '0.58' : '1') + ';font-size:12px;">删除</button>' +
@@ -3888,7 +3888,7 @@ function formatPdfWikiFileSize(size) {
                   '<button type="button" data-pdf-id="' + escapeHtml(pdf.id) + '" onclick="openPdfWikiPaperAiChatFromButton(this)" title="在 PDF 管理页直接和小牛马讨论这篇文章；使用论文分析专家 soul、论文全文、长期记忆和近 10 轮上下文。" style="padding:8px 11px;border:1px solid rgba(37,99,235,0.32);border-radius:6px;background:rgba(37,99,235,0.10);color:#1d4ed8;cursor:pointer;font-size:12px;font-weight:700;white-space:nowrap;">跟AI聊</button>' +
                   '<button type="button" data-pdf-id="' + escapeHtml(pdf.id) + '" onclick="openPdfWikiOriginalPdfReaderFromButton(this)" title="在软件内打开该 PDF 原文。" style="padding:8px 11px;border:1px solid var(--border-color);border-radius:6px;background:var(--bg-secondary);color:var(--text-primary);cursor:pointer;font-size:12px;white-space:nowrap;">阅读原文</button>' +
                   (analysisAvailable
-                    ? '<button id="pdfDeepAnalysisViewBtn-' + getPdfWikiDomIdPart(pdf.id) + '" type="button" onclick="openPdfWikiDeepAnalysisDetails(\'' + escapeHtml(pdf.id) + '\')" title="读取已经保存的深入分析结果，不会重新运行分析。" style="padding:8px 11px;border:1px solid #111827;border-radius:6px;background:#111827;color:#d4a017;cursor:pointer;font-size:12px;font-weight:700;white-space:nowrap;">' + (analysis ? (analysisExpanded ? '折叠分析' : '展开分析') : '查看分析') + '</button>'
+                    ? '<button id="pdfDeepAnalysisViewBtn-' + getPdfWikiDomIdPart(pdf.id) + '" class="pdf-wiki-theme-action-btn" type="button" onclick="openPdfWikiDeepAnalysisDetails(\'' + escapeHtml(pdf.id) + '\')" title="读取已经保存的深入分析结果，不会重新运行分析。" style="padding:8px 11px;border:1px solid;border-radius:6px;cursor:pointer;font-size:12px;font-weight:700;white-space:nowrap;">' + (analysis ? (analysisExpanded ? '折叠分析' : '展开分析') : '查看分析') + '</button>'
                     : '') +
                   '<button id="pdfReidentifyBtn-' + getPdfWikiDomIdPart(pdf.id) + '" type="button" onclick="reidentifyPdfWikiPdf(\'' + escapeHtml(pdf.id) + '\')" title="' + (recognitionComplete ? '重新使用本地工具识别标题、作者、正文、参考文献和 PDF 内部图片，不重置已有论点库。' : '使用本地工具识别标题、作者、正文、参考文献和 PDF 内部图片。') + '" style="padding:8px 11px;border:1px solid var(--border-color);border-radius:6px;background:var(--bg-secondary);color:var(--text-primary);cursor:pointer;font-size:12px;white-space:nowrap;">' + (recognitionComplete ? '重新识别PDF' : '识别PDF') + '</button>' +
                   '<button id="pdfDeepAnalysisBtn-' + getPdfWikiDomIdPart(pdf.id) + '" type="button" onclick="runPdfWikiDeepAnalysis(\'' + escapeHtml(pdf.id) + '\',true)" style="padding:8px 11px;border:1px solid var(--accent-color);border-radius:6px;background:var(--accent-color);color:white;cursor:pointer;font-size:12px;white-space:nowrap;">' + (analysisAvailable ? '重新分析' : '深入分析') + '</button>' +
@@ -4538,9 +4538,11 @@ function formatPdfWikiFileSize(size) {
         appendMessage(formatPdfWikiReidentifyMessage(result, 'PDF 重新识别完成'), 'bot', false, true);
       } catch (e) {
         alert('重新识别PDF失败：' + e.message);
-        if (button) {
+      } finally {
+        if (button && button.isConnected) {
+          var currentPdf = getPdfWikiPdfById(pdfId);
           button.disabled = false;
-          button.textContent = '重新识别PDF';
+          button.textContent = isPdfWikiPdfRecognized(currentPdf) ? '重新识别PDF' : '识别PDF';
           button.style.cursor = 'pointer';
           button.style.opacity = '1';
         }
@@ -4637,9 +4639,13 @@ function formatPdfWikiFileSize(size) {
         }
       } catch (e) {
         alert('深入分析失败：' + e.message);
-        if (button) {
+      } finally {
+        if (button && button.isConnected) {
+          var currentPdf = getPdfWikiPdfById(pdfId);
           button.disabled = false;
-          button.textContent = '深入分析';
+          button.textContent = isPdfWikiPdfDeepAnalyzed(currentPdf) ? '重新分析' : '深入分析';
+          button.style.cursor = 'pointer';
+          button.style.opacity = '1';
         }
       }
     };
@@ -5306,7 +5312,7 @@ function formatPdfWikiFileSize(size) {
       return '<div style="display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin-bottom:14px;">' +
         renderOverviewMetric('当前项目', project.name || '当前工作区') +
         renderOverviewMetric('写作类型', project.writingProfileLabel || '-') +
-        renderOverviewMetric('大牛马', model.primaryConfigured ? (model.primaryModel || '已配置') : '未配置') +
+        renderOverviewMetric('草原', model.primaryConfigured ? (model.primaryModel || '已配置') : '未配置') +
         renderOverviewMetric('小牛马', model.secondaryConfigured ? (model.secondaryModel || '已配置') : '未配置') +
         renderOverviewMetric('Auto Research', autoResearch.latestReportTitle || autoResearch.status || '-') +
         renderOverviewMetric('Embedding', model.embeddingConfigured ? (model.embeddingModel || '已配置') : '未配置') +
