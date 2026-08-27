@@ -28,6 +28,7 @@ type ReasonixProviderConfig = {
 
 type RunCommandJobOptions = {
   env?: NodeJS.ProcessEnv;
+  timeoutMs?: number;
   onClose?: (code: number | null) => Promise<void>;
 };
 
@@ -229,8 +230,8 @@ export const constructorFeatureManifestSchema = z.object({
     commands: z.array(commandContributionSchema).max(20).default([]),
   }).default({ pages: [], navigation: [], commands: [] }),
   compatibility: z.object({
-    minAppVersion: z.string().trim().max(30).default('1.0.9'),
-  }).default({ minAppVersion: '1.0.9' }),
+    minAppVersion: z.string().trim().max(30).default('1.0.10'),
+  }).default({ minAppVersion: '1.0.10' }),
 });
 
 export type ConstructorFeatureManifest = z.infer<typeof constructorFeatureManifestSchema>;
@@ -1383,15 +1384,39 @@ async function runCommandJob(
     return;
   }
   runningJobs.set(job.id, child);
+  let timedOut = false;
+  const timeout = options.timeoutMs && options.timeoutMs > 0
+    ? setTimeout(() => {
+      timedOut = true;
+      void appendJobLog(job, `\n任务超过 ${Math.round(options.timeoutMs! / 60_000)} 分钟，已终止进程树。\n`);
+      if (process.platform === 'win32' && child.pid) {
+        try {
+          spawn('taskkill.exe', ['/PID', String(child.pid), '/T', '/F'], {
+            windowsHide: true,
+            shell: false,
+            stdio: 'ignore',
+          });
+        } catch {
+          child.kill();
+        }
+      } else {
+        child.kill();
+      }
+    }, options.timeoutMs)
+    : null;
+  timeout?.unref?.();
   child.stdout?.on('data', chunk => { void appendJobLog(job, chunk.toString()); });
   child.stderr?.on('data', chunk => { void appendJobLog(job, chunk.toString()); });
   child.on('error', error => { void appendJobLog(job, `\n${error.message}\n`); });
   child.on('close', code => {
     void (async () => {
+      if (timeout) clearTimeout(timeout);
       runningJobs.delete(job.id);
       job.exitCode = code;
-      job.status = code === 0 ? 'success' : 'error';
-      job.message = code === 0 ? '后台任务已完成' : `后台任务失败（exit=${code ?? 'unknown'}）`;
+      job.status = code === 0 && !timedOut ? 'success' : 'error';
+      job.message = timedOut
+        ? '后台任务超时，已安全终止'
+        : (code === 0 ? '后台任务已完成' : `后台任务失败（exit=${code ?? 'unknown'}）`);
       try {
         if (options.onClose) await options.onClose(code);
       } catch (error) {
@@ -1406,10 +1431,12 @@ async function runCommandJob(
 }
 
 export async function startReasonixInstall(userId: string): Promise<ConstructorJob> {
-  const invocation = await resolveNpmInvocation(['install', '-g', 'reasonix']);
+  const invocation = await resolveNpmInvocation(['install', '-g', 'reasonix@1.31.4']);
   const job = createJob(userId, 'reasonix-install');
   await persistJob(job);
-  void runCommandJob(job, invocation.command, invocation.args, getConstructorRoot(userId));
+  void runCommandJob(job, invocation.command, invocation.args, getConstructorRoot(userId), {
+    timeoutMs: 15 * 60_000,
+  });
   return job;
 }
 

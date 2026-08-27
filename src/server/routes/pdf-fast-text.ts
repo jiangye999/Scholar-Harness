@@ -59,6 +59,10 @@ function getPythonCandidates(): PythonCandidate[] {
   const candidates: PythonCandidate[] = [];
   if (explicit) candidates.push({ executable: explicit, argsPrefix: [], display: explicit });
   if (process.platform === 'win32') {
+    candidates.push({ executable: 'py.exe', argsPrefix: ['-3.12'], display: 'py -3.12' });
+    candidates.push({ executable: 'py.exe', argsPrefix: ['-3.13'], display: 'py -3.13' });
+    candidates.push({ executable: 'py.exe', argsPrefix: ['-3.11'], display: 'py -3.11' });
+    candidates.push({ executable: 'py.exe', argsPrefix: ['-3.10'], display: 'py -3.10' });
     candidates.push({ executable: 'py.exe', argsPrefix: ['-3'], display: 'py -3' });
     candidates.push({ executable: 'python.exe', argsPrefix: [], display: 'python' });
   } else {
@@ -72,12 +76,14 @@ async function findPythonForFastText(): Promise<PythonCandidate> {
   for (const candidate of getPythonCandidates()) {
     try {
       const result = await runProcess(candidate.executable, [...candidate.argsPrefix, '--version'], process.cwd(), 10_000);
-      if (result.exitCode === 0 && !result.timedOut) return candidate;
+      const match = /Python\s+(\d+)\.(\d+)/i.exec(result.stdout || result.stderr);
+      const supported = !!match && Number(match[1]) === 3 && Number(match[2]) >= 10;
+      if (result.exitCode === 0 && !result.timedOut && supported) return candidate;
     } catch {
       // Try next candidate.
     }
   }
-  throw new Error('未检测到 Python 3。请先安装 Python，或设置 PDF_FAST_TEXT_PYTHON/PYTHON_EXE 后重试。');
+  throw new Error('未检测到 Python 3.10+。请先安装兼容版本，或设置 PDF_FAST_TEXT_PYTHON/PYTHON_EXE 后重试。');
 }
 
 function getPdfFastTextPackages(): string[] {
@@ -138,7 +144,12 @@ async function runFastTextInstallJob(): Promise<void> {
       progress: 35,
       message: '正在升级 pip、setuptools、wheel...',
     });
-    const pipUpgrade = await runProcess(venvPython, ['-m', 'pip', 'install', '--upgrade', 'pip', 'setuptools', 'wheel'], installRoot, 10 * 60_000);
+    const pipUpgrade = await runProcess(
+      venvPython,
+      ['-m', 'pip', 'install', '--retries', '5', '--timeout', '60', '--upgrade', 'pip', 'setuptools', 'wheel'],
+      installRoot,
+      10 * 60_000,
+    );
     if (pipUpgrade.exitCode !== 0 || pipUpgrade.timedOut) {
       throw new Error(pipUpgrade.timedOut
         ? 'pip 基础工具升级超时'
@@ -151,7 +162,12 @@ async function runFastTextInstallJob(): Promise<void> {
       progress: 55,
       message: `正在安装 ${packages.join(' ')}，用于提供 pdftext.exe。`,
     });
-    const installResult = await runProcess(venvPython, ['-m', 'pip', 'install', ...packages], installRoot, 30 * 60_000);
+    const installResult = await runProcess(
+      venvPython,
+      ['-m', 'pip', 'install', '--retries', '5', '--timeout', '60', ...packages],
+      installRoot,
+      30 * 60_000,
+    );
     if (installResult.exitCode !== 0 || installResult.timedOut) {
       throw new Error(installResult.timedOut
         ? 'pdftext 安装超时'

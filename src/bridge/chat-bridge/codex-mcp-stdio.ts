@@ -107,7 +107,7 @@ async function handleRequest(request: JsonRpcRequest): Promise<void> {
     writeResult(request.id, {
       protocolVersion: requestedVersion || '2024-11-05',
       capabilities: { tools: { listChanged: false } },
-      serverInfo: { name: 'scholar-harness', version: '1.0.9' },
+      serverInfo: { name: 'scholar-harness', version: '1.0.10' },
     });
     return;
   }

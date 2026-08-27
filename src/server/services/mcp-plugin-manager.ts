@@ -67,6 +67,7 @@ interface McpCuratedMarketplacePlugin extends Omit<McpPluginInput, 'enabled'> {
 }
 
 export const BROWSER_ASSIST_PLUGIN_ID = 'browser-assist';
+export const PLAYWRIGHT_MCP_VERSION = '0.0.79';
 
 const BROWSER_ASSIST_USAGE_POLICY = [
   '仅在普通网页读取或官方 API 无法取得内容时使用，并优先访问官网、开放获取页面和用户有权访问的内容。',
@@ -83,13 +84,11 @@ export const MCP_PLUGIN_MARKETPLACE: McpCuratedMarketplacePlugin[] = [
     command: 'npx',
     args: [
       '-y',
-      '@playwright/mcp@latest',
+      `@playwright/mcp@${PLAYWRIGHT_MCP_VERSION}`,
       '--user-data-dir',
       '${pluginDataDir}/profile',
       '--output-dir',
       '${pluginDataDir}/output',
-      '--output-mode',
-      'file',
       '--save-session',
       '--viewport-size',
       '1440x900',
@@ -109,7 +108,7 @@ export const MCP_PLUGIN_MARKETPLACE: McpCuratedMarketplacePlugin[] = [
     name: 'Filesystem MCP',
     description: '在用户授权的目录中读取、搜索和管理文件。',
     command: 'npx',
-    args: ['-y', '@modelcontextprotocol/server-filesystem', '${workspace}'],
+    args: ['-y', '@modelcontextprotocol/server-filesystem@2026.7.10', '${workspace}'],
     env: {},
     source: 'market',
     risk: 'write',
@@ -120,7 +119,7 @@ export const MCP_PLUGIN_MARKETPLACE: McpCuratedMarketplacePlugin[] = [
     name: 'Memory MCP',
     description: '为 AI 提供可持久化的知识图谱记忆工具。',
     command: 'npx',
-    args: ['-y', '@modelcontextprotocol/server-memory'],
+    args: ['-y', '@modelcontextprotocol/server-memory@2026.7.4'],
     env: {},
     source: 'market',
     risk: 'write',
@@ -131,7 +130,7 @@ export const MCP_PLUGIN_MARKETPLACE: McpCuratedMarketplacePlugin[] = [
     name: 'Sequential Thinking MCP',
     description: '为复杂研究任务提供可检查的分步分析工具。',
     command: 'npx',
-    args: ['-y', '@modelcontextprotocol/server-sequential-thinking'],
+    args: ['-y', '@modelcontextprotocol/server-sequential-thinking@2026.7.4'],
     env: {},
     source: 'market',
     risk: 'read',
@@ -142,7 +141,7 @@ export const MCP_PLUGIN_MARKETPLACE: McpCuratedMarketplacePlugin[] = [
     name: 'GitHub MCP',
     description: '搜索仓库、读取 Issue 与 Pull Request；需要配置 GitHub Token。',
     command: 'npx',
-    args: ['-y', '@modelcontextprotocol/server-github'],
+    args: ['-y', '@modelcontextprotocol/server-github@2025.4.8'],
     env: { GITHUB_PERSONAL_ACCESS_TOKEN: '' },
     source: 'market',
     risk: 'network',
@@ -175,7 +174,7 @@ async function searchNpmMcpPlugins(query: string): Promise<McpMarketplaceCandida
   const text = query ? `${query} mcp` : 'academic research literature citation paper mcp';
   const url = `https://registry.npmjs.org/-/v1/search?text=${encodeURIComponent(text)}&size=20`;
   const response = await fetch(url, {
-    headers: { accept: 'application/json', 'user-agent': 'Scholar-Harness/1.0.9' },
+    headers: { accept: 'application/json', 'user-agent': 'Scholar-Harness/1.0.10' },
     signal: AbortSignal.timeout(10_000),
   });
   if (!response.ok) throw new Error(`npm Registry 返回 HTTP ${response.status}`);
@@ -195,7 +194,7 @@ async function searchNpmMcpPlugins(query: string): Promise<McpMarketplaceCandida
       const metadataResponse = await fetch(
         `https://registry.npmjs.org/${encodeURIComponent(String(pkg.name))}/latest`,
         {
-          headers: { accept: 'application/json', 'user-agent': 'Scholar-Harness/1.0.9' },
+          headers: { accept: 'application/json', 'user-agent': 'Scholar-Harness/1.0.10' },
           signal: AbortSignal.timeout(8_000),
         },
       );
@@ -213,7 +212,7 @@ async function searchNpmMcpPlugins(query: string): Promise<McpMarketplaceCandida
       name: String(pkg.name),
       description: String(pkg.description || 'npm MCP package'),
       command: 'npx',
-      args: hasExecutable ? ['-y', String(pkg.name)] : [],
+      args: hasExecutable ? ['-y', `${String(pkg.name)}@${String(pkg.version)}`] : [],
       env: {},
       source: 'market' as const,
       risk: 'network' as const,
@@ -260,7 +259,7 @@ async function searchGithubMcpPlugins(query: string): Promise<McpMarketplaceCand
   const headers: Record<string, string> = {
     accept: 'application/vnd.github+json',
     'x-github-api-version': '2022-11-28',
-    'user-agent': 'Scholar-Harness/1.0.9',
+    'user-agent': 'Scholar-Harness/1.0.10',
   };
   const githubToken = String(process.env.GITHUB_TOKEN || process.env.GH_TOKEN || '').trim();
   if (githubToken) headers.authorization = `Bearer ${githubToken}`;
@@ -330,7 +329,7 @@ async function searchSmitheryMcpPlugins(query: string, config: McpMarketplaceCon
       name: String(server.displayName || qualifiedName || 'Smithery MCP'),
       description: String(server.description || ''),
       command: 'npx',
-      args: ['-y', '@smithery/cli@latest', 'run', qualifiedName],
+      args: ['-y', '@smithery/cli@4.11.1', 'run', qualifiedName],
       env: {},
       source: 'market' as const,
       risk: 'network' as const,
@@ -346,13 +345,13 @@ async function searchSmitheryMcpPlugins(query: string, config: McpMarketplaceCon
 async function searchGlamaMcpPlugins(query: string): Promise<McpMarketplaceCandidate[]> {
   const url = `https://glama.ai/api/mcp/v1/servers?query=${encodeURIComponent(query || 'academic research')}&first=20`;
   const response = await fetch(url, {
-    headers: { accept: 'application/json', 'user-agent': 'Scholar-Harness/1.0.9' },
+    headers: { accept: 'application/json', 'user-agent': 'Scholar-Harness/1.0.10' },
     signal: AbortSignal.timeout(10_000),
   });
   if (!response.ok) throw new Error(`Glama 返回 HTTP ${response.status}`);
   const payload = await response.json();
   const githubHeaders: Record<string, string> = {
-    'user-agent': 'Scholar-Harness/1.0.9',
+    'user-agent': 'Scholar-Harness/1.0.10',
     'x-github-api-version': '2022-11-28',
   };
   const githubToken = String(process.env.GITHUB_TOKEN || process.env.GH_TOKEN || '').trim();
@@ -399,12 +398,15 @@ async function searchPulseMcpPlugins(query: string, config: McpMarketplaceConfig
     const packages = Array.isArray(server.packages) ? server.packages : [];
     const npmPackage = packages.find((item: any) => String(item.registryType || item.registry || '').toLowerCase().includes('npm'));
     const packageName = String(npmPackage?.identifier || npmPackage?.name || '');
+    const packageVersion = String(npmPackage?.version || server.version || '').trim();
     return {
       id: marketplaceId('pulsemcp', String(server.name || server.id || name)),
       name,
       description: String(server.description || ''),
       command: 'npx',
-      args: packageName ? ['-y', packageName] : [],
+      args: packageName && packageVersion
+        ? ['-y', `${packageName}@${packageVersion}`]
+        : [],
       env: {},
       source: 'market' as const,
       risk: 'network' as const,
@@ -412,7 +414,7 @@ async function searchPulseMcpPlugins(query: string, config: McpMarketplaceConfig
       iconUrl: String(server.iconUrl || ''),
       origin: 'pulsemcp' as const,
       url: String(server.websiteUrl || server.repository?.url || 'https://www.pulsemcp.com/servers'),
-      installable: !!packageName,
+      installable: !!packageName && !!packageVersion,
     };
   });
 }
@@ -420,7 +422,7 @@ async function searchPulseMcpPlugins(query: string, config: McpMarketplaceConfig
 async function searchMcpSoPlugins(query: string): Promise<McpMarketplaceCandidate[]> {
   const url = `https://mcp.so/servers?q=${encodeURIComponent(query || 'academic research')}`;
   const response = await fetch(url, {
-    headers: { accept: 'text/html', 'user-agent': 'Scholar-Harness/1.0.9' },
+    headers: { accept: 'text/html', 'user-agent': 'Scholar-Harness/1.0.10' },
     signal: AbortSignal.timeout(10_000),
   });
   if (!response.ok) throw new Error(`MCP.so 返回 HTTP ${response.status}`);
@@ -805,7 +807,7 @@ export class McpStdioSession {
       await this.request('initialize', {
         protocolVersion: '2024-11-05',
         capabilities: {},
-        clientInfo: { name: 'scholar-harness', version: '1.0.9' },
+        clientInfo: { name: 'scholar-harness', version: '1.0.10' },
       }, this.timeouts.initializeMs === undefined ? 60_000 : this.timeouts.initializeMs);
       this.notify('notifications/initialized', {});
       this.initialized = true;
@@ -1106,15 +1108,18 @@ export async function discoverMcpPlugin(
 
 export async function installBrowserAssistMcpPlugin(): Promise<McpPluginRecord> {
   const existing = (await listMcpPlugins()).find(plugin => plugin.id === BROWSER_ASSIST_PLUGIN_ID);
-  if (existing?.status === 'ready' && existing.tools.length > 0) {
-    return existing.enabled
-      ? existing
-      : setMcpPluginEnabled(BROWSER_ASSIST_PLUGIN_ID, true);
-  }
-
   const template = MCP_PLUGIN_MARKETPLACE.find(plugin => plugin.id === BROWSER_ASSIST_PLUGIN_ID);
   if (!template) {
     throw new Error('Browser Assist MCP 内置安装配置缺失');
+  }
+
+  const launchConfigCurrent = existing
+    && existing.command === template.command
+    && JSON.stringify(existing.args) === JSON.stringify(template.args);
+  if (existing?.status === 'ready' && existing.tools.length > 0 && launchConfigCurrent) {
+    return existing.enabled
+      ? existing
+      : setMcpPluginEnabled(BROWSER_ASSIST_PLUGIN_ID, true);
   }
 
   await saveMcpPlugin({

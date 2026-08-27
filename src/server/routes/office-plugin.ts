@@ -1,7 +1,5 @@
-import { createWriteStream, existsSync, statSync } from 'fs';
+import { existsSync, statSync } from 'fs';
 import * as fs from 'fs/promises';
-import * as http from 'http';
-import * as https from 'https';
 import * as path from 'path';
 import { createHash, randomUUID } from 'crypto';
 
@@ -21,6 +19,11 @@ import {
   getOfficeCliStatus,
   runOfficeCliProcess,
 } from '../services/office-cli-service';
+import {
+  downloadFileWithRetry,
+  requestJsonWithRetry,
+  requestTextWithRetry,
+} from '../services/resilient-download';
 
 const router = Router();
 
@@ -113,26 +116,27 @@ function getOfficeCliAssetName(): string {
 }
 
 async function fetchLatestOfficeCliRelease(): Promise<GitHubReleasePayload> {
-  const response = await fetch('https://api.github.com/repos/iOfficeAI/OfficeCLI/releases/latest', {
-    headers: {
-      'User-Agent': 'ScholarHarness',
-      'Accept': 'application/vnd.github+json',
+  return requestJsonWithRetry<GitHubReleasePayload>(
+    'https://api.github.com/repos/iOfficeAI/OfficeCLI/releases/latest',
+    {
+      label: '读取 OfficeCLI Release',
+      timeoutMs: 30_000,
+      maxAttempts: 4,
+      headers: {
+        'User-Agent': 'ScholarHarness',
+        'Accept': 'application/vnd.github+json',
+      },
     },
-  });
-  if (!response.ok) {
-    throw new Error(`读取 OfficeCLI Release 失败，HTTP ${response.status}`);
-  }
-  return await response.json() as GitHubReleasePayload;
+  );
 }
 
 async function fetchText(url: string): Promise<string> {
-  const response = await fetch(url, {
+  return requestTextWithRetry(url, {
+    label: '读取 OfficeCLI SHA256SUMS',
+    timeoutMs: 30_000,
+    maxAttempts: 4,
     headers: { 'User-Agent': 'ScholarHarness' },
   });
-  if (!response.ok) {
-    throw new Error(`读取 ${url} 失败，HTTP ${response.status}`);
-  }
-  return await response.text();
 }
 
 function parseSha256FromSums(sumsText: string, assetName: string): string {
@@ -147,54 +151,6 @@ async function sha256File(filePath: string): Promise<string> {
   const buffer = await fs.readFile(filePath);
   hash.update(buffer);
   return hash.digest('hex').toLowerCase();
-}
-
-function downloadOfficeCliFile(
-  url: string,
-  destination: string,
-  onProgress?: (progress: number, message: string) => void,
-  redirectCount = 0
-): Promise<void> {
-  return new Promise((resolve, reject) => {
-    if (redirectCount > 5) {
-      reject(new Error('下载 OfficeCLI 重定向次数过多'));
-      return;
-    }
-    const client = url.startsWith('https:') ? https : http;
-    const request = client.get(url, { headers: { 'User-Agent': 'ScholarHarness' } }, response => {
-      const statusCode = response.statusCode || 0;
-      if (statusCode >= 300 && statusCode < 400 && response.headers.location) {
-        response.resume();
-        const nextUrl = new URL(response.headers.location, url).toString();
-        downloadOfficeCliFile(nextUrl, destination, onProgress, redirectCount + 1).then(resolve, reject);
-        return;
-      }
-      if (statusCode < 200 || statusCode >= 300) {
-        response.resume();
-        reject(new Error(`下载 OfficeCLI 失败，HTTP ${statusCode}`));
-        return;
-      }
-      const total = Number(response.headers['content-length'] || 0);
-      let downloaded = 0;
-      const file = createWriteStream(destination);
-      response.on('data', chunk => {
-        downloaded += Buffer.isBuffer(chunk) ? chunk.length : Buffer.byteLength(chunk);
-        if (total > 0 && onProgress) {
-          const percent = Math.min(75, Math.max(8, Math.round(downloaded / total * 70)));
-          onProgress(percent, `正在下载 OfficeCLI ${Math.round(downloaded / 1024 / 1024)}MB/${Math.round(total / 1024 / 1024)}MB`);
-        }
-      });
-      response.pipe(file);
-      file.on('finish', () => {
-        file.close(() => resolve());
-      });
-      file.on('error', reject);
-    });
-    request.on('error', reject);
-    request.setTimeout(120_000, () => {
-      request.destroy(new Error('下载 OfficeCLI 超时'));
-    });
-  });
 }
 
 async function runOfficeCliInstallJob(): Promise<void> {
@@ -244,8 +200,26 @@ async function runOfficeCliInstallJob(): Promise<void> {
       version: release.tag_name || '',
       installDir: binDir,
     });
-    await downloadOfficeCliFile(asset.browser_download_url, downloadedAssetPath, (progress, message) => {
-      updateOfficeCliInstallJob({ progress, message });
+    await downloadFileWithRetry({
+      url: asset.browser_download_url,
+      destination: downloadedAssetPath,
+      label: '下载 OfficeCLI',
+      headers: { 'User-Agent': 'ScholarHarness' },
+      maxAttempts: 4,
+      timeoutMs: 120_000,
+      onProgress: progress => {
+        const percent = Math.min(75, Math.max(8, 8 + Math.round(progress.percent * 0.67)));
+        const resumed = progress.resumed ? '（断点续传）' : '';
+        updateOfficeCliInstallJob({
+          progress: percent,
+          message: `正在下载 OfficeCLI ${Math.round(progress.downloadedBytes / 1024 / 1024)}MB/${Math.round(progress.totalBytes / 1024 / 1024)}MB${resumed}`,
+        });
+      },
+      onRetry: (attempt, maxAttempts, error) => {
+        updateOfficeCliInstallJob({
+          message: `OfficeCLI 下载连接中断，正在进行第 ${attempt}/${maxAttempts} 次尝试：${error.message}`,
+        });
+      },
     });
 
     if (sumsAsset?.browser_download_url) {
@@ -255,6 +229,7 @@ async function runOfficeCliInstallJob(): Promise<void> {
       if (expectedHash) {
         const actualHash = await sha256File(downloadedAssetPath);
         if (actualHash !== expectedHash) {
+          await fs.rm(downloadedAssetPath, { force: true });
           throw new Error(`OfficeCLI SHA256 校验失败：expected ${expectedHash}, actual ${actualHash}`);
         }
       } else {
@@ -294,12 +269,16 @@ async function runOfficeCliInstallJob(): Promise<void> {
       stderr: result.stderr.slice(-4000),
     });
   } catch (error) {
+    const detail = (error as Error).message;
+    const actionableDetail = /下载|Release|SHA256SUMS|ECONN|ETIMEDOUT|ENOTFOUND/i.test(detail)
+      ? `${detail}。请检查 GitHub 网络访问或设置 HTTPS_PROXY；也可以手动下载 OfficeCLI 后保存可执行文件路径。`
+      : detail;
     updateOfficeCliInstallJob({
       status: 'failed',
       stage: 'failed',
       progress: currentOfficeCliInstallJob?.progress || 0,
       message: 'OfficeCLI 插件安装失败',
-      error: (error as Error).message,
+      error: actionableDetail,
     });
     logger.error('[OfficePlugin] Install job failed:', error);
   }

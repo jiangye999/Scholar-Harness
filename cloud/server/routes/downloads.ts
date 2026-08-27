@@ -33,19 +33,19 @@ const DOWNLOAD_ASSETS: DownloadAsset[] = [
     key: 'windows',
     label: 'Windows 安装包',
     platform: 'windows',
-    downloadUrl: '/downloads/scholar-harness-setup-1.0.9.exe',
+    downloadUrl: '/downloads/scholar-harness-setup-1.0.10.exe',
   },
   {
     key: 'mac-arm64',
     label: 'Mac M 系列',
     platform: 'macos-arm64',
-    downloadUrl: 'https://github.com/jiangye999/Scholar-Harness/releases/download/v1.0.9/scholar-harness-1.0.9-arm64.dmg',
+    downloadUrl: 'https://github.com/jiangye999/Scholar-Harness/releases/download/v1.0.10/scholar-harness-1.0.10-arm64.dmg',
   },
   {
     key: 'mac-x64',
     label: 'Mac Intel',
     platform: 'macos-x64',
-    downloadUrl: 'https://github.com/jiangye999/Scholar-Harness/releases/download/v1.0.9/scholar-harness-1.0.9-x64.dmg',
+    downloadUrl: 'https://github.com/jiangye999/Scholar-Harness/releases/download/v1.0.10/scholar-harness-1.0.10-x64.dmg',
   },
   {
     key: 'manual',

@@ -155,7 +155,7 @@ async function installPythonWithSystemPackageManager(): Promise<ProcessResult> {
       message: '正在通过 winget 安装 Python（安装过程可在后台继续）...',
       packageManager: 'winget',
     });
-    const packageIds = ['Python.Python.3.14', 'Python.Python.3.13', 'Python.Python.3.12'];
+    const packageIds = ['Python.Python.3.12', 'Python.Python.3.13', 'Python.Python.3.14'];
     const failures: string[] = [];
     for (const packageId of packageIds) {
       updatePythonInstallJob({
@@ -171,7 +171,7 @@ async function installPythonWithSystemPackageManager(): Promise<ProcessResult> {
         '--accept-package-agreements',
         '--accept-source-agreements',
         '--disable-interactivity',
-      ], process.cwd(), null);
+      ], process.cwd(), 30 * 60_000);
       if (result.exitCode === 0 && !result.timedOut) return result;
       failures.push(`${packageId}: ${result.stderr || result.stdout || `exit ${result.exitCode}`}`);
     }
@@ -194,7 +194,7 @@ async function installPythonWithSystemPackageManager(): Promise<ProcessResult> {
       message: '正在通过 Homebrew 安装 Python（安装过程可在后台继续）...',
       packageManager: 'Homebrew',
     });
-    return await runProcess(brew, ['install', 'python'], process.cwd(), null);
+    return await runProcess(brew, ['install', 'python'], process.cwd(), 30 * 60_000);
   }
 
   throw new Error(`当前平台暂不支持一键安装 Python：${process.platform}。请使用系统包管理器安装后点击“自动检测”。`);

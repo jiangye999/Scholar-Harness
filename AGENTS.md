@@ -1,7 +1,7 @@
 # AGENTS.md - Scholar Harness 当前开发指南
 
 **项目**: Scholar Harness 论文写作助手  
-**当前版本**: 1.0.9
+**当前版本**: 1.0.10
 **产品形态**: Electron 桌面软件 + 本地 Express 服务 + 云端账号/授权服务 + 官网下载页  
 **技术栈**: Node.js 22+ / TypeScript / Express / Electron / Vitest / Next.js  
 **核心架构**: 两级 AI Agent 协作 + PDF Wiki 句子级证据库 + 混合检索 + 数据分析/R 作图工作流

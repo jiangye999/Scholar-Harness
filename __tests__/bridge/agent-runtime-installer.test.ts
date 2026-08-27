@@ -40,7 +40,7 @@ describe('Coding Agent runtime installer', () => {
     });
     const installCall = calls.find(call => call.args[0] === 'install');
     expect(installCall?.executable).toBe('npm-test.cmd');
-    expect(installCall?.args).toContain(packageName);
+    expect(installCall?.args.some(arg => arg.startsWith(`${packageName}@`))).toBe(true);
     expect(installCall?.args).toContain('--global');
     extraArgs.forEach(arg => expect(installCall?.args).toContain(arg));
   });

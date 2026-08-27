@@ -60,7 +60,7 @@ describe('composer model selection policy', () => {
     expect(appSource).toContain("return String(model || '').trim() || '未配置'");
     expect(appSource).toContain("if (codex.enabled !== true) return '未配置'");
     expect(appSource).toContain("runtime && String(runtime.model || '').trim()");
-    expect(appSource).toContain('v=1.0.9-composer-unconfigured-state');
+    expect(appSource).toContain('v=1.0.10-composer-unconfigured-state');
   });
 
   it('computes unconfigured and hydrated provider labels from real configuration state', () => {
@@ -137,6 +137,6 @@ describe('composer model selection policy', () => {
     expect(bootstrapStart).toBeGreaterThan(initStart);
     expect(bootstrapStart).toBeLessThan(recoverStart);
     expect(appSource).toContain('window.composerConfigBootstrap = composerConfigBootstrap;');
-    expect(appSource).toContain('v=1.0.9-composer-bootstrap-first');
+    expect(appSource).toContain('v=1.0.10-composer-bootstrap-first');
   });
 });

@@ -1,8 +1,8 @@
 {
-  "version": "1.0.9",
-  "downloadUrl": "https://scholarharness.com/downloads/scholar-harness-setup-1.0.9.exe",
-  "macArm64DownloadUrl": "https://github.com/jiangye999/Scholar-Harness/releases/download/v1.0.9/scholar-harness-1.0.9-arm64.dmg",
-  "macX64DownloadUrl": "https://github.com/jiangye999/Scholar-Harness/releases/download/v1.0.9/scholar-harness-1.0.9-x64.dmg",
+  "version": "1.0.10",
+  "downloadUrl": "https://scholarharness.com/downloads/scholar-harness-setup-1.0.10.exe",
+  "macArm64DownloadUrl": "https://github.com/jiangye999/Scholar-Harness/releases/download/v1.0.10/scholar-harness-1.0.10-arm64.dmg",
+  "macX64DownloadUrl": "https://github.com/jiangye999/Scholar-Harness/releases/download/v1.0.10/scholar-harness-1.0.10-x64.dmg",
   "publishedAt": "2026-08-27",
-  "releaseNotes": "1.0.9 更新：优化 Agent 首轮与后续消息提交机制，仅发送当前问题和必要会话提示；移除提交前的工作区全量扫描与批量快捷方式重建，修复提交增量长时间卡住问题；完善每日论文项目入库、论文草稿与图表增量输出及多入口任务状态。"
+  "releaseNotes": "1.0.10 更新：修复 Browser Assist MCP 参数兼容问题；为 OfficeCLI 与 R 下载增加自动重试、断点续传和代理支持；固定内置 MCP、Marker、Reasonix 与 Agent CLI 依赖版本；补充 Python/PDF 插件超时及兼容性检查，提高一键安装可靠性。"
 }

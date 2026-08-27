@@ -5,7 +5,7 @@
 
 import { spawn } from 'child_process';
 import { randomUUID } from 'crypto';
-import { createWriteStream, existsSync, readFileSync } from 'fs';
+import { existsSync, readFileSync } from 'fs';
 import * as http from 'http';
 import * as https from 'https';
 import * as zlib from 'zlib';
@@ -21,6 +21,7 @@ import { getDataDir, getMemoryDir, getProjectOwnedDataDir, sanitizeUserId } from
 import { buildToolRuntimeEnv } from '../../utils/tool-runtime-env';
 import { researchSessionManager } from '../../research/research-session-manager';
 import { prepareWorkspaceOutputDirectory } from '../services/workspace-directory';
+import { downloadFileWithRetry, requestTextWithRetry } from '../services/resilient-download';
 
 const router = Router();
 
@@ -2269,11 +2270,12 @@ function updateRInstallJob(patch: Partial<RInstallJob>): void {
 async function resolveRWindowsInstaller(): Promise<{ url: string; filename: string }> {
   const baseUrl = 'https://cran.r-project.org/bin/windows/base/';
   try {
-    const response = await fetch(baseUrl);
-    if (!response.ok) {
-      throw new Error(`CRAN index HTTP ${response.status}`);
-    }
-    const html = await response.text();
+    const html = await requestTextWithRetry(baseUrl, {
+      label: '读取 CRAN Windows 安装包列表',
+      timeoutMs: 30_000,
+      maxAttempts: 4,
+      headers: { 'User-Agent': 'ScholarHarness' },
+    });
     const matches = Array.from(html.matchAll(/href=["'](R-([0-9.]+)-win\.exe)["']/gi));
     if (matches.length) {
       matches.sort((a, b) => compareVersionStrings(b[2], a[2]));
@@ -2294,49 +2296,6 @@ function compareVersionStrings(a: string, b: string): number {
     if (diff !== 0) return diff;
   }
   return 0;
-}
-
-function downloadFile(url: string, destination: string, onProgress?: (progress: number, message: string) => void, redirectCount = 0): Promise<void> {
-  return new Promise((resolve, reject) => {
-    if (redirectCount > 5) {
-      reject(new Error('下载 R 安装包重定向次数过多'));
-      return;
-    }
-    const client = url.startsWith('https:') ? https : http;
-    const request = client.get(url, response => {
-      const statusCode = response.statusCode || 0;
-      if (statusCode >= 300 && statusCode < 400 && response.headers.location) {
-        response.resume();
-        const nextUrl = new URL(response.headers.location, url).toString();
-        downloadFile(nextUrl, destination, onProgress, redirectCount + 1).then(resolve, reject);
-        return;
-      }
-      if (statusCode < 200 || statusCode >= 300) {
-        response.resume();
-        reject(new Error(`下载 R 安装包失败，HTTP ${statusCode}`));
-        return;
-      }
-      const total = Number(response.headers['content-length'] || 0);
-      let downloaded = 0;
-      const file = createWriteStream(destination);
-      response.on('data', chunk => {
-        downloaded += Buffer.isBuffer(chunk) ? chunk.length : Buffer.byteLength(chunk);
-        if (total > 0 && onProgress) {
-          const percent = Math.min(55, Math.max(5, Math.round(downloaded / total * 55)));
-          onProgress(percent, `正在下载 R 安装包 ${Math.round(downloaded / 1024 / 1024)}MB/${Math.round(total / 1024 / 1024)}MB`);
-        }
-      });
-      response.pipe(file);
-      file.on('finish', () => {
-        file.close(() => resolve());
-      });
-      file.on('error', reject);
-    });
-    request.on('error', reject);
-    request.setTimeout(120_000, () => {
-      request.destroy(new Error('下载 R 安装包超时'));
-    });
-  });
 }
 
 function buildRPackageInstallScript(): string {
@@ -2362,7 +2321,7 @@ function buildRPackageInstallScript(): string {
     'clubSandwich',
   ];
   return [
-    'options(repos = c(CRAN = "https://cloud.r-project.org"))',
+    'options(repos = c(CRAN = "https://cloud.r-project.org"), timeout = 600)',
     'scholar_user_lib <- Sys.getenv("R_LIBS_USER")',
     'if (!nzchar(scholar_user_lib)) scholar_user_lib <- file.path(Sys.getenv("LOCALAPPDATA"), "ScholarHarness", "R-library")',
     'dir.create(scholar_user_lib, recursive = TRUE, showWarnings = FALSE)',
@@ -2372,8 +2331,13 @@ function buildRPackageInstallScript(): string {
     'missing <- setdiff(packages, installed)',
     'cat("Required packages:", paste(packages, collapse = ", "), "\\n")',
     'if (length(missing) > 0) {',
-    '  cat("Installing missing packages:", paste(missing, collapse = ", "), "\\n")',
-    '  install.packages(missing, dependencies = TRUE)',
+    '  for (attempt in seq_len(3)) {',
+    '    missing <- setdiff(packages, rownames(installed.packages()))',
+    '    if (length(missing) == 0) break',
+    '    cat("Installing missing packages (attempt", attempt, "/3):", paste(missing, collapse = ", "), "\\n")',
+    '    try(install.packages(missing, dependencies = TRUE), silent = FALSE)',
+    '    if (attempt < 3) Sys.sleep(2 ^ attempt)',
+    '  }',
     '} else {',
     '  cat("All required packages are already installed.\\n")',
     '}',
@@ -2405,8 +2369,26 @@ async function runRPluginInstallJob(): Promise<void> {
       const installer = await resolveRWindowsInstaller();
       const installerPath = path.join(downloadDir, installer.filename);
       updateRInstallJob({ downloadUrl: installer.url, installDir, message: `正在下载 ${installer.filename}...` });
-      await downloadFile(installer.url, installerPath, (progress, message) => {
-        updateRInstallJob({ progress, message });
+      await downloadFileWithRetry({
+        url: installer.url,
+        destination: installerPath,
+        label: '下载 R 安装包',
+        headers: { 'User-Agent': 'ScholarHarness' },
+        maxAttempts: 4,
+        timeoutMs: 120_000,
+        onProgress: progress => {
+          const percent = Math.min(55, Math.max(5, 5 + Math.round(progress.percent * 0.5)));
+          const resumed = progress.resumed ? '（断点续传）' : '';
+          updateRInstallJob({
+            progress: percent,
+            message: `正在下载 R 安装包 ${Math.round(progress.downloadedBytes / 1024 / 1024)}MB/${Math.round(progress.totalBytes / 1024 / 1024)}MB${resumed}`,
+          });
+        },
+        onRetry: (attempt, maxAttempts, error) => {
+          updateRInstallJob({
+            message: `R 安装包连接中断，正在进行第 ${attempt}/${maxAttempts} 次尝试：${error.message}`,
+          });
+        },
       });
 
       updateRInstallJob({ stage: 'install', progress: 60, message: '正在静默安装 R 到软件数据目录...' });
@@ -2472,12 +2454,16 @@ async function runRPluginInstallJob(): Promise<void> {
       stderr: packageResult.stderr.slice(-4000),
     });
   } catch (error) {
+    const detail = (error as Error).message;
+    const actionableDetail = /下载|CRAN|ECONN|ETIMEDOUT|ENOTFOUND/i.test(detail)
+      ? `${detail}。请检查 CRAN 网络访问或设置 HTTPS_PROXY；也可以手动安装 R 后点击“重新检测”。`
+      : detail;
     updateRInstallJob({
       status: 'failed',
       stage: 'failed',
       progress: currentRInstallJob?.progress || 0,
       message: 'R 插件安装失败',
-      error: (error as Error).message,
+      error: actionableDetail,
     });
     logger.error('[RCodePlugin] Install job failed:', error);
   }

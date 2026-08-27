@@ -18,7 +18,7 @@ const RUNTIME_INSTALLERS: Record<CodingAgentRuntimeId, CodingAgentRuntimeInstall
     label: 'Codex',
     packageName: '@openai/codex',
     commandName: 'codex',
-    installArgs: ['install', '--global', '--no-audit', '--no-fund', '@openai/codex'],
+    installArgs: ['install', '--global', '--no-audit', '--no-fund', '@openai/codex@0.149.1'],
     authenticationHint: '部署完成后首次使用时，请按 Codex CLI 提示登录。',
   },
   pi: {
@@ -26,7 +26,7 @@ const RUNTIME_INSTALLERS: Record<CodingAgentRuntimeId, CodingAgentRuntimeInstall
     label: 'Pi',
     packageName: '@earendil-works/pi-coding-agent',
     commandName: 'pi',
-    installArgs: ['install', '--global', '--no-audit', '--no-fund', '--ignore-scripts', '@earendil-works/pi-coding-agent'],
+    installArgs: ['install', '--global', '--no-audit', '--no-fund', '--ignore-scripts', '@earendil-works/pi-coding-agent@0.84.3'],
     authenticationHint: '部署完成后，请在 Pi 中使用 /login 配置模型提供商。',
   },
   opencode: {
@@ -34,7 +34,7 @@ const RUNTIME_INSTALLERS: Record<CodingAgentRuntimeId, CodingAgentRuntimeInstall
     label: 'OpenCode',
     packageName: 'opencode-ai',
     commandName: 'opencode',
-    installArgs: ['install', '--global', '--no-audit', '--no-fund', 'opencode-ai'],
+    installArgs: ['install', '--global', '--no-audit', '--no-fund', 'opencode-ai@1.18.23'],
     authenticationHint: '部署完成后，请在 OpenCode 中使用 /connect 配置模型提供商。',
   },
 };

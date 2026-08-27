@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest';
 import {
   BROWSER_ASSIST_PLUGIN_ID,
   MCP_PLUGIN_MARKETPLACE,
+  PLAYWRIGHT_MCP_VERSION,
   filterMcpToolsForPlugin,
   validateMcpPluginToolCallPolicy,
   type McpDiscoveredTool,
@@ -22,10 +23,21 @@ describe('Browser Assist MCP', () => {
     const plugin = MCP_PLUGIN_MARKETPLACE.find(item => item.id === BROWSER_ASSIST_PLUGIN_ID);
     expect(plugin).toBeDefined();
     expect(plugin?.command).toBe('npx');
-    expect(plugin?.args).toContain('@playwright/mcp@latest');
+    expect(plugin?.args).toContain(`@playwright/mcp@${PLAYWRIGHT_MCP_VERSION}`);
+    expect(plugin?.args).not.toContain('--output-mode');
     expect(plugin?.args).toContain('--user-data-dir');
     expect(plugin?.args).toContain('${pluginDataDir}/profile');
     expect(plugin?.description).toContain('用户人工接管');
+  });
+
+  it('pins every curated npm launcher so upstream latest releases cannot break installs', () => {
+    const packageSpecs = MCP_PLUGIN_MARKETPLACE.flatMap(plugin => plugin.args)
+      .filter(arg => arg.startsWith('@'));
+    expect(packageSpecs.length).toBeGreaterThan(0);
+    packageSpecs.forEach(spec => {
+      expect(spec).not.toMatch(/@latest$/);
+      expect(spec).toMatch(/@[^@]+$/);
+    });
   });
 
   it('exposes navigation and interaction but removes code execution and browser installation', () => {

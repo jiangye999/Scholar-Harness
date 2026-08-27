@@ -1405,7 +1405,7 @@
             embedding: !!nextVisited.embedding,
             plugins: !!nextVisited.plugins
           },
-          version: '1.0.9',
+          version: '1.0.10',
           updatedAt: new Date().toISOString()
         }));
       } catch (e) {}

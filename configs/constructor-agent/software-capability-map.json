@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "appVersion": "1.0.9",
+  "appVersion": "1.0.10",
   "purpose": "Constructor Agent build-time software capability map",
   "sourceMode": "generated-at-build-time",
   "domains": [
@@ -2228,6 +2228,7 @@
       "src/server/services/project-memory.ts",
       "src/server/services/project-writing-status.ts",
       "src/server/services/prompt-context-policy.ts",
+      "src/server/services/resilient-download.ts",
       "src/server/services/session-log.ts",
       "src/server/services/skill-optimization.ts",
       "src/server/services/textual-tool-call.ts",

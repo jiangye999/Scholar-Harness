@@ -174,6 +174,7 @@ import { createDiscussionFrameworkRouter } from "./routes/discussion-framework";
 import { getCostReport } from "./services/cache-metrics";
 import { buildCompactionSummaryPrompt } from "./services/compaction";
 import { getAuthorizedLocalPreviewRoots } from "./services/local-preview-roots";
+import { requestTextWithRetry } from "./services/resilient-download";
 import {
   getMirroredLocalOutputCandidatePaths,
   pickNewestExistingLocalOutputPath,
@@ -11544,7 +11545,8 @@ const PDF_WIKI_OBSIDIAN_ENTRY_DIR = "兼容论点组";
 const PDF_WIKI_OBSIDIAN_WORKSPACE_DIR = "obsidian-vaults";
 const PDF_WIKI_OBSIDIAN_MANIFEST_FILE = ".scholar-harness-obsidian.json";
 const PDF_WIKI_GALAXY_VIEW_PLUGIN_ID = "galaxy-view";
-const PDF_WIKI_GALAXY_VIEW_RELEASE_BASE = "https://github.com/Longwind1984/galaxy-view/releases/latest/download";
+const PDF_WIKI_GALAXY_VIEW_VERSION = "0.6.1";
+const PDF_WIKI_GALAXY_VIEW_RELEASE_BASE = `https://github.com/Longwind1984/galaxy-view/releases/download/${PDF_WIKI_GALAXY_VIEW_VERSION}`;
 
 async function exportPdfWikiObsidianVault(userId: string, store: PdfWikiStore, options: PdfWikiObsidianExportOptions = {}): Promise<PdfWikiObsidianExportResult> {
   const points = sortPdfWikiSentencePointsForObsidian(store.sentenceCloud?.points || []);
@@ -11736,17 +11738,16 @@ async function configurePdfWikiGalaxyViewVault(vaultDir: string): Promise<void> 
 
 async function fetchPdfWikiGalaxyViewAsset(fileName: string): Promise<Buffer> {
   const url = `${PDF_WIKI_GALAXY_VIEW_RELEASE_BASE}/${encodeURIComponent(fileName)}`;
-  const response = await fetch(url, {
+  const content = await requestTextWithRetry(url, {
+    label: `下载 Galaxy View ${fileName}`,
+    maxAttempts: 4,
+    timeoutMs: 60_000,
     headers: {
       "Accept": "application/octet-stream",
       "User-Agent": "Scholar-Harness-Pdf-Wiki",
     },
-    redirect: "follow",
   });
-  if (!response.ok) {
-    throw new Error(`下载 Galaxy View ${fileName} 失败（HTTP ${response.status}）`);
-  }
-  return Buffer.from(await response.arrayBuffer());
+  return Buffer.from(content, "utf-8");
 }
 
 async function installPdfWikiGalaxyView(vaultDir: string): Promise<{ galaxyViewInstalled: boolean; pluginDir: string; version: string }> {

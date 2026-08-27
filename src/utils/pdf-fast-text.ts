@@ -61,9 +61,9 @@ export function getPdfFastTextInstallCommand(): string {
   const venvDir = getPdfFastTextVenvDir();
   const python = getPdfFastTextPythonPath();
   if (process.platform === 'win32') {
-    return `python -m venv "${venvDir}" && "${python}" -m pip install --upgrade pip setuptools wheel && "${python}" -m pip install pdftext==0.6.3`;
+    return `python -m venv "${venvDir}" && "${python}" -m pip install --retries 5 --timeout 60 --upgrade pip setuptools wheel && "${python}" -m pip install --retries 5 --timeout 60 pdftext==0.6.3`;
   }
-  return `python3 -m venv "${venvDir}" && "${python}" -m pip install --upgrade pip setuptools wheel && "${python}" -m pip install pdftext==0.6.3`;
+  return `python3 -m venv "${venvDir}" && "${python}" -m pip install --retries 5 --timeout 60 --upgrade pip setuptools wheel && "${python}" -m pip install --retries 5 --timeout 60 pdftext==0.6.3`;
 }
 
 function getElectronResourcesPath(): string {

@@ -699,7 +699,7 @@ class CodexAppServerManager {
     }
     try {
       await this.request(session, 'initialize', {
-        clientInfo: { name: 'scholar-harness', title: 'Scholar Harness', version: '1.0.9' },
+        clientInfo: { name: 'scholar-harness', title: 'Scholar Harness', version: '1.0.10' },
         capabilities: {
           experimentalApi: true,
           requestAttestation: false,

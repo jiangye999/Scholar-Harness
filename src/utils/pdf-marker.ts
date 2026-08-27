@@ -74,9 +74,9 @@ export function getPdfMarkerInstallCommand(): string {
   const venvDir = getPdfMarkerVenvDir();
   const python = getPdfMarkerPythonPath();
   if (process.platform === 'win32') {
-    return `python -m venv "${venvDir}" && "${python}" -m pip install --upgrade pip setuptools wheel && "${python}" -m pip install marker-pdf`;
+    return `python -m venv "${venvDir}" && "${python}" -m pip install --retries 5 --timeout 60 --upgrade pip setuptools wheel && "${python}" -m pip install --retries 5 --timeout 60 marker-pdf==2.0.0`;
   }
-  return `python3 -m venv "${venvDir}" && "${python}" -m pip install --upgrade pip setuptools wheel && "${python}" -m pip install marker-pdf`;
+  return `python3 -m venv "${venvDir}" && "${python}" -m pip install --retries 5 --timeout 60 --upgrade pip setuptools wheel && "${python}" -m pip install --retries 5 --timeout 60 marker-pdf==2.0.0`;
 }
 
 function markerExecutableCandidates(): string[] {
